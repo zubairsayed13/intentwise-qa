@@ -5133,6 +5133,258 @@ function DrillModal({ target, onClose, onNavigate }) {
   return null;
 }
 
+
+// ─── DB Explorer Tab ──────────────────────────────────────────────────────────
+const API_BASE = "https://intentwise-backend-production.up.railway.app";
+
+function DBExplorerTab() {
+  const T = useTheme();
+  const [schemas,      setSchemas]      = useState([]);
+  const [loading,      setLoading]      = useState(true);
+  const [error,        setError]        = useState(null);
+  const [expandedSchemas, setExpandedSchemas] = useState({});
+  const [preview,      setPreview]      = useState(null);  // {schema, table, data}
+  const [previewLoading, setPreviewLoading] = useState(false);
+  const [sql,          setSql]          = useState("");
+  const [queryResult,  setQueryResult]  = useState(null);
+  const [queryLoading, setQueryLoading] = useState(false);
+  const [queryError,   setQueryError]   = useState(null);
+  const [view,         setView]         = useState("explorer"); // explorer | query
+
+  useEffect(() => {
+    fetch(API_BASE + "/api/tables")
+      .then(r => r.json())
+      .then(data => {
+        if (data.error) { setError(data.error); }
+        else {
+          setSchemas(data);
+          // auto-expand first schema
+          if (data.length > 0) setExpandedSchemas({ [data[0].schema]: true });
+        }
+        setLoading(false);
+      })
+      .catch(e => { setError(e.message); setLoading(false); });
+  }, []);
+
+  const toggleSchema = (s) =>
+    setExpandedSchemas(p => ({ ...p, [s]: !p[s] }));
+
+  const loadPreview = async (schema, table) => {
+    setPreview({ schema, table, data: null });
+    setPreviewLoading(true);
+    try {
+      const res = await fetch(`${API_BASE}/api/preview?schema=${encodeURIComponent(schema)}&table=${encodeURIComponent(table)}&limit=50`);
+      const data = await res.json();
+      setPreview({ schema, table, data });
+    } catch(e) {
+      setPreview({ schema, table, data: { error: e.message } });
+    }
+    setPreviewLoading(false);
+  };
+
+  const runQuery = async () => {
+    if (!sql.trim()) return;
+    setQueryLoading(true); setQueryResult(null); setQueryError(null);
+    try {
+      const res = await fetch(API_BASE + "/api/query?sql=" + encodeURIComponent(sql));
+      const data = await res.json();
+      if (data.error) setQueryError(data.error);
+      else setQueryResult(data);
+    } catch(e) {
+      setQueryError(e.message);
+    }
+    setQueryLoading(false);
+  };
+
+  const totalTables = schemas.reduce((a, s) => a + s.tables.length, 0);
+
+  return (
+    <div style={{ height:"calc(100vh - 120px)", display:"flex", flexDirection:"column", gap:0 }}>
+
+      {/* Header */}
+      <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom:14 }}>
+        <div>
+          <div style={{ fontSize:16, fontWeight:800, color:T.text, display:"flex", alignItems:"center", gap:8 }}>
+            <Database size={16} color={T.cyan}/> Database Explorer
+            <span style={{ fontSize:11, color:T.muted, fontWeight:400 }}>· Redshift · {schemas.length} schemas · {totalTables} tables</span>
+          </div>
+          <div style={{ fontSize:11, color:T.muted, marginTop:3 }}>{API_BASE}</div>
+        </div>
+        <div style={{ display:"flex", gap:6 }}>
+          {["explorer","query"].map(v => (
+            <button key={v} onClick={()=>setView(v)} style={{ padding:"7px 16px", borderRadius:7, border:`1px solid ${v===view?T.accent+"50":"transparent"}`, background:v===view?`${T.accent}15`:"transparent", color:v===view?T.accentL:T.muted, fontSize:12, fontWeight:v===view?700:400, cursor:"pointer" }}>
+              {v==="explorer" ? "🗂 Explorer" : "⚡ SQL Query"}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      {/* Explorer view */}
+      {view === "explorer" && (
+        <div style={{ display:"grid", gridTemplateColumns:"240px 1fr", gap:14, flex:1, minHeight:0 }}>
+
+          {/* Left: schema/table tree */}
+          <div style={{ background:T.card, border:`1px solid ${T.border}`, borderRadius:10, overflow:"auto" }}>
+            {loading && <div style={{ padding:20, color:T.muted, fontSize:12 }}>Loading tables…</div>}
+            {error   && <div style={{ padding:20, color:T.red,  fontSize:12 }}>Error: {error}</div>}
+            {schemas.map(s => (
+              <div key={s.schema}>
+                <div
+                  onClick={()=>toggleSchema(s.schema)}
+                  style={{ display:"flex", alignItems:"center", gap:8, padding:"10px 14px", cursor:"pointer", borderBottom:`1px solid ${T.border}`, background:expandedSchemas[s.schema]?`${T.accent}08`:"transparent" }}
+                  className="row-hover"
+                >
+                  <span style={{ fontSize:12 }}>{expandedSchemas[s.schema] ? "📂" : "📁"}</span>
+                  <span style={{ fontSize:12, fontWeight:700, color:T.text, flex:1 }}>{s.schema}</span>
+                  <span style={{ fontSize:10, color:T.muted, background:T.border, borderRadius:10, padding:"1px 7px" }}>{s.tables.length}</span>
+                </div>
+                {expandedSchemas[s.schema] && s.tables.map(t => (
+                  <div
+                    key={t.name}
+                    onClick={()=>loadPreview(s.schema, t.name)}
+                    className="row-hover"
+                    style={{ display:"flex", alignItems:"center", gap:8, padding:"8px 14px 8px 28px", cursor:"pointer", borderBottom:`1px solid ${T.border}`, background:preview?.schema===s.schema&&preview?.table===t.name?`${T.cyan}12`:"transparent" }}
+                  >
+                    <span style={{ fontSize:11 }}>🗃</span>
+                    <div style={{ flex:1, minWidth:0 }}>
+                      <div style={{ fontSize:11, color:preview?.schema===s.schema&&preview?.table===t.name?T.cyan:T.text, fontWeight:preview?.schema===s.schema&&preview?.table===t.name?700:400, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{t.name}</div>
+                      <div style={{ fontSize:9, color:T.dim }}>{t.column_count} cols</div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            ))}
+          </div>
+
+          {/* Right: preview panel */}
+          <div style={{ background:T.card, border:`1px solid ${T.border}`, borderRadius:10, overflow:"hidden", display:"flex", flexDirection:"column" }}>
+            {!preview && (
+              <div style={{ flex:1, display:"flex", alignItems:"center", justifyContent:"center", flexDirection:"column", gap:10, color:T.muted }}>
+                <Database size={32} color={T.border2}/>
+                <div style={{ fontSize:13 }}>Click any table to preview its data</div>
+              </div>
+            )}
+            {previewLoading && (
+              <div style={{ flex:1, display:"flex", alignItems:"center", justifyContent:"center", gap:10, color:T.muted }}>
+                <RefreshCw size={16} color={T.accent} style={{animation:"spin 1s linear infinite"}}/>
+                <span style={{ fontSize:13 }}>Loading preview…</span>
+              </div>
+            )}
+            {preview && !previewLoading && preview.data && (
+              <div style={{ display:"flex", flexDirection:"column", height:"100%" }}>
+                {/* Table header */}
+                <div style={{ padding:"12px 18px", borderBottom:`1px solid ${T.border}`, display:"flex", alignItems:"center", gap:10, flexShrink:0 }}>
+                  <code style={{ fontSize:13, fontWeight:800, color:T.cyan, fontFamily:"Consolas,monospace" }}>{preview.schema}.{preview.table}</code>
+                  {preview.data.total_rows !== undefined && (
+                    <span style={{ fontSize:11, color:T.muted }}>{preview.data.total_rows?.toLocaleString()} total rows · showing first 50</span>
+                  )}
+                  {preview.data.error && <span style={{ fontSize:11, color:T.red }}>{preview.data.error}</span>}
+                  <button
+                    onClick={()=>setSql(`SELECT * FROM "${preview.schema}"."${preview.table}" LIMIT 100`)}
+                    style={{ marginLeft:"auto", background:`${T.accent}15`, border:`1px solid ${T.accent}40`, borderRadius:7, padding:"5px 12px", cursor:"pointer", fontSize:11, color:T.accentL, fontWeight:700 }}
+                    onClick={()=>{ setSql(`SELECT * FROM "${preview.schema}"."${preview.table}" LIMIT 100`); setView("query"); }}
+                  >
+                    ⚡ Open in SQL
+                  </button>
+                </div>
+                {/* Columns strip */}
+                {preview.data.columns && (
+                  <div style={{ display:"flex", gap:6, padding:"8px 18px", overflowX:"auto", borderBottom:`1px solid ${T.border}`, flexShrink:0 }}>
+                    {preview.data.columns.map(c => (
+                      <div key={c.name} style={{ background:T.isDark?"#0A0C10":T.bg, border:`1px solid ${T.border2}`, borderRadius:6, padding:"3px 10px", whiteSpace:"nowrap" }}>
+                        <div style={{ fontSize:10, fontWeight:700, color:T.text }}>{c.name}</div>
+                        <div style={{ fontSize:9, color:T.dim }}>{c.type}</div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+                {/* Data table */}
+                {preview.data.rows && preview.data.rows.length > 0 && (
+                  <div style={{ flex:1, overflow:"auto" }}>
+                    <table style={{ width:"100%", borderCollapse:"collapse", fontSize:11 }}>
+                      <thead>
+                        <tr style={{ background:T.isDark?"#0A0C10":T.bg, position:"sticky", top:0 }}>
+                          {preview.data.columns.map(c => (
+                            <th key={c.name} style={{ padding:"8px 12px", textAlign:"left", color:T.muted, fontWeight:700, fontSize:10, textTransform:"uppercase", letterSpacing:"0.04em", borderBottom:`1px solid ${T.border}`, whiteSpace:"nowrap" }}>{c.name}</th>
+                          ))}
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {preview.data.rows.map((row, i) => (
+                          <tr key={i} style={{ borderBottom:`1px solid ${T.border}`, background:i%2===0?"transparent":(T.isDark?"#0A0C1040":"#F8FAFC") }}>
+                            {preview.data.columns.map(c => (
+                              <td key={c.name} style={{ padding:"7px 12px", color:row[c.name]===null?T.dim:T.text, fontFamily:typeof row[c.name]==="number"?"Consolas,monospace":"inherit", whiteSpace:"nowrap", maxWidth:200, overflow:"hidden", textOverflow:"ellipsis" }}>
+                                {row[c.name]===null ? <span style={{color:T.dim,fontStyle:"italic"}}>null</span> : String(row[c.name])}
+                              </td>
+                            ))}
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* SQL Query view */}
+      {view === "query" && (
+        <div style={{ display:"flex", flexDirection:"column", gap:12, flex:1, minHeight:0 }}>
+          <div style={{ background:T.card, border:`1px solid ${T.border}`, borderRadius:10, padding:14 }}>
+            <div style={{ fontSize:11, fontWeight:700, color:T.muted, marginBottom:8, textTransform:"uppercase", letterSpacing:"0.04em" }}>SQL Query</div>
+            <textarea
+              value={sql}
+              onChange={e=>setSql(e.target.value)}
+              placeholder={`SELECT * FROM "schema"."table" LIMIT 100`}
+              rows={5}
+              style={{ width:"100%", background:T.isDark?"#0A0C10":T.bg, border:`1px solid ${T.border2}`, borderRadius:8, padding:"10px 14px", color:T.text, fontSize:12, fontFamily:"Consolas,monospace", outline:"none", resize:"vertical", lineHeight:1.6 }}
+            />
+            <div style={{ display:"flex", gap:8, marginTop:10, alignItems:"center" }}>
+              <button
+                onClick={runQuery}
+                disabled={queryLoading||!sql.trim()}
+                style={{ background:T.accent, border:"none", borderRadius:8, padding:"9px 22px", cursor:"pointer", color:"white", fontSize:12, fontWeight:700, display:"flex", alignItems:"center", gap:7, opacity:queryLoading?0.7:1 }}
+              >
+                {queryLoading ? <><RefreshCw size={13} style={{animation:"spin 1s linear infinite"}}/>Running…</> : <>⚡ Run Query</>}
+              </button>
+              {queryResult && <span style={{ fontSize:11, color:T.green }}>✓ {queryResult.count} rows returned</span>}
+              {queryError  && <span style={{ fontSize:11, color:T.red   }}>✗ {queryError}</span>}
+            </div>
+          </div>
+
+          {queryResult && queryResult.columns && (
+            <div style={{ flex:1, background:T.card, border:`1px solid ${T.border}`, borderRadius:10, overflow:"auto" }}>
+              <table style={{ width:"100%", borderCollapse:"collapse", fontSize:11 }}>
+                <thead>
+                  <tr style={{ background:T.isDark?"#0A0C10":T.bg, position:"sticky", top:0 }}>
+                    {queryResult.columns.map(c => (
+                      <th key={c} style={{ padding:"8px 12px", textAlign:"left", color:T.muted, fontWeight:700, fontSize:10, textTransform:"uppercase", borderBottom:`1px solid ${T.border}`, whiteSpace:"nowrap" }}>{c}</th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody>
+                  {queryResult.rows.map((row, i) => (
+                    <tr key={i} style={{ borderBottom:`1px solid ${T.border}`, background:i%2===0?"transparent":(T.isDark?"#0A0C1040":"#F8FAFC") }}>
+                      {queryResult.columns.map(c => (
+                        <td key={c} style={{ padding:"7px 12px", color:row[c]===null?T.dim:T.text, fontFamily:typeof row[c]==="number"?"Consolas,monospace":"inherit", whiteSpace:"nowrap", maxWidth:220, overflow:"hidden", textOverflow:"ellipsis" }}>
+                          {row[c]===null ? <span style={{color:T.dim,fontStyle:"italic"}}>null</span> : String(row[c])}
+                        </td>
+                      ))}
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </div>
+      )}
+
+    </div>
+  );
+}
+
 // ─── Main App ─────────────────────────────────────────────────────────────────
 export default function AIOpsMonitor() {
   const [theme, setTheme] = useState("light");
@@ -5198,6 +5450,7 @@ export default function AIOpsMonitor() {
     { id:"gates",      label:"Human-in-the-Loop",    icon:Lock,            count:PENDING_APPROVALS.length },
     { id:"history",    label:"Audit Trail",          icon:History,         count:0 },
     { id:"sources",    label:"Data Sources",         icon:Database,        count:DATASOURCES.filter(d=>d.status!=="healthy").length },
+    { id:"dbexplorer", label:"DB Explorer",          icon:Database,        count:0, badge:"LIVE" },
   ];
 
   return (
@@ -5440,6 +5693,11 @@ export default function AIOpsMonitor() {
               </div>
               <StagingPanel />
             </div>
+          )}
+
+          {/* ── DB Explorer Tab ── */}
+          {activeTab === "dbexplorer" && (
+            <DBExplorerTab />
           )}
 
           {/* ── Dashboard Tab ── */}

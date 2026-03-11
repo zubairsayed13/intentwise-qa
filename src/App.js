@@ -1,0 +1,5505 @@
+import React, { useState, useEffect, useCallback, useRef } from "react";
+
+import {
+  Activity, AlertTriangle, Bell, CheckCircle, ChevronDown, ChevronRight,
+  Clock, Database, Filter, RefreshCw, Search, Settings, Shield, Slack,
+  TrendingUp, TrendingDown, Zap, XCircle, Eye, BarChart3, Circle,
+  Mail, Cpu, GitBranch, Layers, ArrowUpRight, ArrowDownRight, Minus,
+  Play, Pause, MessageSquare, Sparkles, Bot, Wrench, X, Check,
+  MoreVertical, ExternalLink, Info, ChevronUp, AlertCircle,
+  Plus, Trash2, ToggleLeft, ToggleRight, Copy, Send, Lock,
+  Hash, Type, Calendar, BarChart2, List, FlaskConical, Wand2,
+  CheckSquare, Tag, GitMerge, Radio, AtSign, Webhook,
+  MoveVertical, GripVertical, ArrowDown, Repeat, Split,
+  Flag, StopCircle, Timer, FileCode, AlarmClock,
+  ChevronLeft, Save, Rocket, BookOpen, Edit2, Edit3,
+  Sun, Moon, LayoutDashboard, History, TestTube2, BrainCircuit, Link2,
+  TableProperties, BarChart, Workflow, GitPullRequest, ArrowRight, Maximize2, AlertOctagon
+} from "lucide-react";
+
+// ─── Palette & Theme ───────────────────────────────────────────────────────────
+const DARK_THEME = {
+  bg:      "#0A0C10", surface:"#0F1117", card:"#13161E",
+  border:  "#1E2330", border2:"#252A3A",
+  text:    "#E2E8F0", muted:"#64748B",   dim:"#334155",
+  accent:  "#6366F1", accentL:"#818CF8",
+  green:   "#10B981", yellow:"#F59E0B",  red:"#EF4444",
+  orange:  "#F97316", cyan:"#06B6D4",    purple:"#8B5CF6",
+  isDark: true,
+};
+const LIGHT_THEME = {
+  bg:      "#F8FAFC", surface:"#FFFFFF", card:"#FFFFFF",
+  border:  "#E2E8F0", border2:"#CBD5E1",
+  text:    "#0F172A", muted:"#64748B",   dim:"#94A3B8",
+  accent:  "#4F46E5", accentL:"#6366F1",
+  green:   "#059669", yellow:"#D97706",  red:"#DC2626",
+  orange:  "#EA580C", cyan:"#0891B2",    purple:"#7C3AED",
+  isDark: false,
+};
+// C is set at runtime via ThemeContext — this default is used by non-hook components
+let C = DARK_THEME;
+
+// ─── Demo Data ─────────────────────────────────────────────────────────────────
+
+const DATASOURCES = [
+  { id:"pg1", name:"prod-postgres",   type:"PostgreSQL", status:"healthy",  latency:12,   tables:84,  host:"prod-db.intentwise.internal", port:"5432", database:"intentwise_prod",   schema:"public",     user:"prod_reader",    sslMode:"require",  syncSchedule:"*/5 * * * *",  description:"Primary production Postgres — source of truth for report table." },
+  { id:"rs1", name:"analytics-rs",    type:"Redshift",   status:"degraded", latency:340,  tables:212, host:"analytics.abc123.us-east-1.redshift.amazonaws.com", port:"5439", database:"analytics", schema:"public", user:"rs_user", sslMode:"require", syncSchedule:"0 * * * *", description:"Main Redshift cluster for campaign and keyword analytics." },
+  { id:"bq1", name:"gds-bigquery",    type:"BigQuery",   status:"healthy",  latency:87,   tables:56,  host:"bigquery.googleapis.com",     port:"443",  database:"intentwise-gds",     schema:"ads_data",   user:"service-account@intentwise.iam.gserviceaccount.com", sslMode:"require", syncSchedule:"0 */2 * * *", description:"GDS BigQuery — Google Ads data pipeline output." },
+  { id:"sf1", name:"snowflake-dw",    type:"Snowflake",  status:"healthy",  latency:64,   tables:130, host:"intentwise.snowflakecomputing.com", port:"443", database:"ANALYTICS_DW", schema:"PUBLIC", user:"snowflake_svc", sslMode:"require", syncSchedule:"0 4 * * *", description:"Snowflake data warehouse for cross-channel analytics." },
+  { id:"my1", name:"mysql-reporting", type:"MySQL",      status:"offline",  latency:null, tables:28,  host:"mysql-reporting.intentwise.internal", port:"3306", database:"reporting_db", schema:"",       user:"mysql_reader",   sslMode:"require",  syncSchedule:"*/30 * * * *", description:"MySQL reporting DB — currently offline, connection refused." },
+  { id:"gs1", name:"ops-gsheets",     type:"GSheets",    status:"healthy",  latency:220,  tables:14,  host:"sheets.googleapis.com",       port:"443",  database:"ops-spreadsheets",   schema:"",           user:"sheets-svc@intentwise.iam.gserviceaccount.com", sslMode:"require", syncSchedule:"0 9 * * 1-5", description:"Google Sheets ops data — SLA trackers and manual overrides." },
+];
+
+const SEVERITY = { critical: C.red, high: C.orange, medium: C.yellow, low: C.cyan, info: C.muted };
+
+const ALERTS_RAW = [
+  { id:"A001", ts:"09:14 AM", severity:"critical", source:"analytics-rs",  table:"tbl_amzn_campaign_report",  rule:"RPT-002", title:"Download succeeded but replication failed", status:"open",    aiSuggestion:"Redshift copy job stalled. Re-trigger GDS copy pipeline for campaign_summary. ETA ~8 min.", canAutoFix:true },
+  { id:"A002", ts:"09:08 AM", severity:"critical", source:"prod-postgres",  table:"report",                    rule:"RPT-001", title:"23 missing downloads detected for today",   status:"triaged", aiSuggestion:"Start new Step Function execution with original payload. 23 profiles missing for report_date=today.", canAutoFix:true },
+  { id:"A003", ts:"08:55 AM", severity:"high",     source:"analytics-rs",  table:"tbl_amzn_keyword_report",   rule:"RPT-004", title:"Duplicate rows: 1,842 dupes in keyword report",status:"open",   aiSuggestion:"Run DISTINCT dedup query and refresh keyword summary table. Pattern seen 3x this week — recommend adding unique constraint.", canAutoFix:false },
+  { id:"A004", ts:"08:44 AM", severity:"high",     source:"snowflake-dw",  table:"account_performance",       rule:"AUT-007", title:"Row count dropped 34% vs 7-day avg",          status:"open",   aiSuggestion:"Anomaly detected. Compare against upstream Step Function execution — possible partial download. Check CloudWatch logs.", canAutoFix:false },
+  { id:"A005", ts:"08:31 AM", severity:"medium",   source:"gds-bigquery",  table:"advertised_product_summary",rule:"RPT-005", title:"3 downloads failed with no retry attempted",  status:"open",   aiSuggestion:"Redrive from failed Step Function state. All 3 are requester-step failures — safe to auto-redrive.", canAutoFix:true },
+  { id:"A006", ts:"07:59 AM", severity:"medium",   source:"prod-postgres",  table:"report",                   rule:"RPT-003", title:"12 reports stuck in pending >4.5 hours",      status:"open",   aiSuggestion:"Force-transition stuck rows to failed state, then re-queue for processing. Common pattern on Monday mornings.", canAutoFix:true },
+  { id:"A007", ts:"07:22 AM", severity:"low",      source:"ops-gsheets",   table:"budget_tracker",            rule:"AUT-011", title:"Stale data: sheet not updated in 26 hours",   status:"open",   aiSuggestion:"Send Slack nudge to @finance-team. Sheet typically updates at 6 AM — may be blocked on upstream data.", canAutoFix:false },
+  { id:"A008", ts:"06:48 AM", severity:"info",     source:"snowflake-dw",  table:"keyword_summary",           rule:"AUT-003", title:"Schema drift: 2 new columns detected",        status:"resolved",aiSuggestion:"New columns: 'bid_adjustment_pct', 'impression_share'. Auto-added to validation schema. No action needed.", canAutoFix:false },
+];
+
+const AGENT_LOGS = {
+  ag1: [
+    { ts:"09:15:04 AM", level:"info",  msg:"Started scheduled run #3" },
+    { ts:"09:15:06 AM", level:"info",  msg:"Checking 23 profiles in prod-postgres.report" },
+    { ts:"09:15:08 AM", level:"warn",  msg:"5 profiles missing downloads (profile_ids: 48102, 48291…)" },
+    { ts:"09:15:10 AM", level:"info",  msg:"Triggering Step Function for 3 auto-fixable profiles" },
+    { ts:"09:15:12 AM", level:"ok",    msg:"3 executions started. 2 require manual review → Alert A002 raised" },
+    { ts:"09:00:01 AM", level:"info",  msg:"Run #2 complete — 0 missing downloads detected" },
+    { ts:"08:00:00 AM", level:"info",  msg:"Run #1 complete — 0 missing downloads detected" },
+  ],
+  ag2: [
+    { ts:"09:10:02 AM", level:"info",  msg:"Scanning report table for stuck/pending rows" },
+    { ts:"09:10:05 AM", level:"warn",  msg:"12 rows stuck in 'pending' for >6h" },
+    { ts:"09:10:07 AM", level:"info",  msg:"Checking Step Function execution status for each…" },
+    { ts:"09:10:09 AM", level:"ok",    msg:"8 rows redriven successfully via Step Function redrive" },
+    { ts:"09:10:11 AM", level:"warn",  msg:"4 rows need manual review — execution history unavailable" },
+    { ts:"09:10:12 AM", level:"ok",    msg:"Alert A006 raised for manual review cases" },
+  ],
+  ag3: [
+    { ts:"06:48:01 AM", level:"info",  msg:"Schema scan started on snowflake-dw.keyword_summary" },
+    { ts:"06:48:14 AM", level:"warn",  msg:"2 new columns detected: bid_adjustment_pct, impression_share" },
+    { ts:"06:48:15 AM", level:"ok",    msg:"Auto-generated 2 new validation rules (NOT NULL + range check)" },
+    { ts:"06:48:16 AM", level:"info",  msg:"Scan complete. Next run: 12:00 PM" },
+  ],
+  ag4: [
+    { ts:"08:44:00 AM", level:"info",  msg:"Row count check on account_performance" },
+    { ts:"08:44:03 AM", level:"warn",  msg:"Count: 14,203 — 34% below 7-day avg (21,580)" },
+    { ts:"08:44:04 AM", level:"ok",    msg:"Alert A004 raised (high severity)" },
+    { ts:"08:00:00 AM", level:"info",  msg:"Row count normal: 21,840 rows" },
+    { ts:"07:00:00 AM", level:"info",  msg:"Row count normal: 22,012 rows" },
+  ],
+  ag5: [
+    { ts:"08:55:00 AM", level:"info",  msg:"Duplicate scan on tbl_amzn_keyword_report" },
+    { ts:"08:55:04 AM", level:"warn",  msg:"1,842 duplicate rows found on (report_date, profile_id, keyword_id)" },
+    { ts:"08:55:05 AM", level:"ok",    msg:"Alert A005 raised. Agent paused pending manual dedup." },
+  ],
+  ag6: [
+    { ts:"09:14:00 AM", level:"info",  msg:"Replication check: 6 GDS copy jobs" },
+    { ts:"09:14:02 AM", level:"warn",  msg:"analytics-rs latency: 340ms (threshold: 200ms)" },
+    { ts:"09:14:03 AM", level:"ok",    msg:"All 6 copy jobs completed — data replicated" },
+    { ts:"09:14:04 AM", level:"info",  msg:"Replication lag noted. Alert A001 cross-referenced." },
+  ],
+};
+
+const AGENT_CONFIG_DEFAULTS = {
+  ag1: { schedule:"0 * * * *",   targets:["prod-postgres.report"], threshold:"0 missing", alertOn:"any_missing", autoFix:true  },
+  ag2: { schedule:"*/30 * * * *", targets:["prod-postgres.report"], threshold:"0 stuck >6h", alertOn:"stuck_rows", autoFix:true  },
+  ag3: { schedule:"0 6 * * *",    targets:["snowflake-dw.*"],        threshold:"any new column", alertOn:"schema_change", autoFix:true  },
+  ag4: { schedule:"0 * * * *",    targets:["snowflake-dw.account_performance"], threshold:"<80% of 7d avg", alertOn:"row_anomaly", autoFix:false },
+  ag5: { schedule:"0 9 * * *",    targets:["analytics-rs.tbl_amzn_keyword_report"], threshold:">0 dupes", alertOn:"duplicates", autoFix:false },
+  ag6: { schedule:"*/15 * * * *", targets:["analytics-rs (all tables)"], threshold:"latency >200ms", alertOn:"replication_lag", autoFix:false },
+};
+
+const AGENTS = [
+  { id:"ag1", name:"Ads Download Monitor",   icon:"📥", status:"running", lastRun:"09:15 AM", nextRun:"10:00 AM", runsToday:3,  issuesFound:5, fixed:3, successRate:87, avgDuration:"4.1s" },
+  { id:"ag2", name:"Report Status Watcher",  icon:"📊", status:"running", lastRun:"09:10 AM", nextRun:"09:40 AM", runsToday:8,  issuesFound:2, fixed:2, successRate:94, avgDuration:"2.8s" },
+  { id:"ag3", name:"Schema Drift Detector",  icon:"🔍", status:"idle",    lastRun:"06:48 AM", nextRun:"12:00 PM", runsToday:1,  issuesFound:1, fixed:0, successRate:100, avgDuration:"5.6s" },
+  { id:"ag4", name:"Row Count Anomaly",      icon:"📉", status:"running", lastRun:"08:44 AM", nextRun:"09:44 AM", runsToday:5,  issuesFound:1, fixed:0, successRate:80, avgDuration:"2.1s" },
+  { id:"ag5", name:"Duplicate Row Scanner",  icon:"🔎", status:"paused",  lastRun:"08:55 AM", nextRun:"—",        runsToday:2,  issuesFound:1, fixed:0, successRate:50, avgDuration:"3.4s" },
+  { id:"ag6", name:"Replication Checker",    icon:"🔄", status:"running", lastRun:"09:14 AM", nextRun:"09:29 AM", runsToday:12, issuesFound:1, fixed:1, successRate:92, avgDuration:"1.8s" },
+];
+
+const SPARKLINE = [42,38,55,61,48,70,65,82,74,88,91,76,68,84,79,93,87,72,96,88];
+
+// ─── Eval Framework Data ──────────────────────────────────────────────────────
+const EVAL_CASES = {
+  ag1: [
+    {
+      id:"ev-ag1-001", category:"agent_output", label:"Missing download detection",
+      input:"23 profiles checked. report table queried for report_date = today.",
+      expected:"Correctly identify all profiles with status != 'processed' and report missing downloads",
+      actual:"5 profiles missing downloads identified (profile_ids: 48102, 48291, 48293, 48304, 48512). Step Functions triggered for 3.",
+      verdict:null, score:null, judgeRationale:null, ts:"09:15 AM"
+    },
+    {
+      id:"ev-ag1-002", category:"rule_quality", label:"Alert severity classification",
+      input:"5 missing downloads found for report_date = today.",
+      expected:"Raise alert with severity=critical when >3 profiles missing",
+      actual:"Alert A002 raised with severity=high (not critical). 5 profiles affected.",
+      verdict:null, score:null, judgeRationale:null, ts:"09:15 AM"
+    },
+    {
+      id:"ev-ag1-003", category:"claude_response", label:"AI auto-fix suggestion quality",
+      input:"Prompt: '5 profiles missing downloads. Suggest fix.' → Claude response: 'Trigger Step Function executions for missing profiles. Check IAM role permissions.'",
+      expected:"Response should name specific Step Function ARN, specify which profiles, and give retry strategy",
+      actual:"Claude response was generic — did not name specific profiles or Step Function ARN. Mentioned IAM permissions correctly.",
+      verdict:null, score:null, judgeRationale:null, ts:"09:15 AM"
+    },
+  ],
+  ag2: [
+    {
+      id:"ev-ag2-001", category:"agent_output", label:"Stuck row identification",
+      input:"report table scanned. Rows with status=pending and download_date < NOW()-6h.",
+      expected:"Find all rows stuck >6h and attempt Step Function redrive",
+      actual:"12 stuck rows found. 8 redriven via Step Function. 4 flagged for manual review (execution history missing).",
+      verdict:null, score:null, judgeRationale:null, ts:"09:10 AM"
+    },
+    {
+      id:"ev-ag2-002", category:"claude_response", label:"Triage recommendation quality",
+      input:"Prompt: '4 rows could not be redriven — execution history unavailable. What should ops do?'",
+      expected:"Recommend checking CloudWatch logs, suggest manual status update, provide SQL snippet",
+      actual:"Claude recommended checking CloudWatch logs and provided a SQL UPDATE snippet. Did not mention Step Function console.",
+      verdict:null, score:null, judgeRationale:null, ts:"09:10 AM"
+    },
+  ],
+  ag3: [
+    {
+      id:"ev-ag3-001", category:"rule_quality", label:"Schema drift rule auto-generation",
+      input:"2 new columns detected: bid_adjustment_pct (FLOAT), impression_share (FLOAT) on keyword_summary.",
+      expected:"Generate NOT NULL rule + range check (0.0–1.0) for both new columns automatically",
+      actual:"Generated NOT NULL rule for both columns. Range check only generated for impression_share, not bid_adjustment_pct.",
+      verdict:null, score:null, judgeRationale:null, ts:"06:48 AM"
+    },
+  ],
+  ag4: [
+    {
+      id:"ev-ag4-001", category:"agent_output", label:"Row count anomaly threshold",
+      input:"Today: 14,203 rows. 7-day avg: 21,580. Threshold: <80% of avg.",
+      expected:"Flag as anomaly since 14,203 / 21,580 = 65.8% (below 80% threshold)",
+      actual:"Anomaly correctly flagged at 65.8% of average. Alert A004 raised as high severity.",
+      verdict:null, score:null, judgeRationale:null, ts:"08:44 AM"
+    },
+  ],
+  ag5: [
+    {
+      id:"ev-ag5-001", category:"rule_quality", label:"Duplicate detection precision",
+      input:"tbl_amzn_keyword_report scanned for duplicates on composite key (report_date, profile_id, keyword_id).",
+      expected:"Return exact duplicate groups with row counts, not just a total count",
+      actual:"1,842 duplicate rows found. Returned total count only — did not return per-group breakdown in alert.",
+      verdict:null, score:null, judgeRationale:null, ts:"08:55 AM"
+    },
+  ],
+  ag6: [
+    {
+      id:"ev-ag6-001", category:"agent_output", label:"Replication lag detection",
+      input:"analytics-rs latency: 340ms. Threshold: 200ms. All 6 GDS copy jobs completed.",
+      expected:"Flag latency breach AND verify data freshness in downstream tables",
+      actual:"Latency breach correctly flagged. Copy job completion verified. Downstream freshness check was skipped.",
+      verdict:null, score:null, judgeRationale:null, ts:"09:14 AM"
+    },
+  ],
+};
+
+const CATEGORY_META = {
+  agent_output:   { label:"Agent Output",    color:"#6366F1", icon:"🤖", desc:"Did the agent correctly detect and act on the issue?" },
+  rule_quality:   { label:"Rule Quality",    color:"#8B5CF6", icon:"✓",  desc:"Are validation rules catching real failures accurately?" },
+  claude_response:{ label:"Claude Response", color:"#06B6D4", icon:"✨", desc:"Are Claude API suggestions specific, actionable, and correct?" },
+};
+
+
+// ─── QA Process Health Data ────────────────────────────────────────────────────
+const QA_STAGES = [
+  {
+    id:"detect", label:"Detect", icon:"🔍",
+    desc:"Identify data quality failures across all pipelines",
+    autonomyPct: 92,
+    aiActions: 847, humanActions: 74,
+    trend: +8,
+    color: "#6366F1",
+    status: "high",
+    details: "Agents continuously monitor 6 data sources, 84 tables, 212 rules. Alert latency < 5 min."
+  },
+  {
+    id:"triage", label:"Triage", icon:"⚖️",
+    desc:"Classify severity, correlate root cause, route to right handler",
+    autonomyPct: 74,
+    aiActions: 612, humanActions: 218,
+    trend: +14,
+    color: "#8B5CF6",
+    status: "medium",
+    details: "AI classifies 74% of alerts autonomously. 26% escalated for human judgment (novel patterns, ambiguous severity)."
+  },
+  {
+    id:"fix", label:"Fix",    icon:"🔧",
+    desc:"Execute remediation — retry jobs, redrive pipelines, patch data",
+    autonomyPct: 58,
+    aiActions: 423, humanActions: 312,
+    trend: +22,
+    color: "#06B6D4",
+    status: "medium",
+    details: "Step Function redrive, Mage pipeline retrigger fully automated. Manual SQL patches and schema changes still require approval."
+  },
+  {
+    id:"verify", label:"Verify", icon:"✅",
+    desc:"Confirm fix resolved the issue and downstream is healthy",
+    autonomyPct: 81,
+    aiActions: 701, humanActions: 164,
+    trend: +5,
+    color: "#10B981",
+    status: "high",
+    details: "Post-fix validation runs automatically against the original failing rule + downstream dependencies."
+  },
+];
+
+const RULE_COVERAGE = [
+  { source:"prod-postgres",   tables:84,  covered:78, critical:12, failing:2  },
+  { source:"analytics-rs",    tables:212, covered:156,critical:31, failing:8  },
+  { source:"gds-bigquery",    tables:56,  covered:56, critical:8,  failing:0  },
+  { source:"snowflake-dw",    tables:130, covered:94, critical:18, failing:1  },
+  { source:"mysql-reporting", tables:28,  covered:10, critical:4,  failing:4  },
+  { source:"ops-gsheets",     tables:14,  covered:14, critical:0,  failing:0  },
+];
+
+const ROADMAP_MILESTONES = [
+  { id:"m1", phase:"Phase 1", label:"Automated Detection",         target:"Q1 2025", status:"done",     pct:100, desc:"All pipelines monitored. Alert latency < 5 min. Zero manual polling." },
+  { id:"m2", phase:"Phase 2", label:"AI-Assisted Triage",          target:"Q2 2025", status:"done",     pct:100, desc:"Claude-powered root cause analysis. Correlated alert groups. Severity auto-classification." },
+  { id:"m3", phase:"Phase 3", label:"Semi-Autonomous Remediation", target:"Q3 2025", status:"active",   pct:62,  desc:"Step Function redrive, Mage retrigger automated. Approval gates for high-risk fixes." },
+  { id:"m4", phase:"Phase 4", label:"Self-Evolving Rule Corpus",   target:"Q4 2025", status:"active",   pct:35,  desc:"Schema drift auto-generates rules. Eval framework scores rule quality. Rules retire when stale." },
+  { id:"m5", phase:"Phase 5", label:"Fully Agentic QE Loop",       target:"Q1 2026", status:"planned",  pct:0,   desc:"End-to-end detect→triage→fix→verify without human touch for known failure patterns." },
+  { id:"m6", phase:"Phase 6", label:"Predictive Quality Control",  target:"Q3 2026", status:"planned",  pct:0,   desc:"Anomaly prediction before failures occur. Proactive pipeline gating based on upstream signals." },
+];
+
+
+// ─── Notification Center Data ──────────────────────────────────────────────────
+const NOTIF_CHANNELS = [
+  { id:"slack-ops",   type:"slack",  name:"#ops-alerts",        webhook:"https://hooks.slack.com/...", enabled:true,  severities:["critical","high"],    events:["detect","fix_failed"] },
+  { id:"slack-qa",    type:"slack",  name:"#qa-monitoring",     webhook:"https://hooks.slack.com/...", enabled:true,  severities:["critical","high","medium"], events:["detect","verify","eval"] },
+  { id:"email-eng",   type:"email",  name:"eng-oncall@intentwise.com", enabled:true,  severities:["critical"], events:["detect","escalate"] },
+  { id:"email-mgr",   type:"email",  name:"team-leads@intentwise.com", enabled:false, severities:["critical"], events:["escalate"] },
+];
+
+const NOTIF_TEMPLATES = {
+  detect: {
+    subject:"[{{severity}}] Quality Issue Detected — {{source}}.{{table}}",
+    body:`🔴 *Quality Issue Detected*
+• Rule: {{rule}}
+• Table: {{source}}.{{table}}
+• Severity: {{severity}}
+• Time: {{ts}} IST
+• AI Suggestion: {{ai_suggestion}}
+<{{drill_url}}|View in Agentic QA Platform>`
+  },
+  fix_failed: {
+    subject:"[ACTION REQUIRED] Auto-Fix Failed — {{source}}.{{table}}",
+    body:`⚠️ *Auto-Remediation Failed*
+• Issue: {{title}}
+• Attempted fix: {{fix_action}}
+• Reason: {{failure_reason}}
+• Manual action required
+<{{drill_url}}|Open Triage Panel>`
+  },
+  verify: {
+    subject:"[RESOLVED] Quality Issue Verified Fixed — {{rule}}",
+    body:`✅ *Issue Resolved*
+• Rule: {{rule}}
+• Table: {{source}}.{{table}}
+• Fixed by: AI auto-remediation
+• Verified at: {{ts}} IST`
+  },
+  escalate: {
+    subject:"[ESCALATION] Unresolved Quality Issue — {{source}}",
+    body:`🚨 *Escalation Required*
+• Issue unresolved for {{duration}}
+• {{open_count}} related alerts open
+• Assigned to: {{assignee}}
+• Dashboard: <{{drill_url}}|View>`
+  },
+};
+
+const NOTIF_HISTORY = [
+  { id:"nh1", ts:"09:15 AM", channel:"#ops-alerts",  event:"detect",   title:"Missing downloads — 5 profiles", status:"delivered" },
+  { id:"nh2", ts:"09:10 AM", channel:"#qa-monitoring",event:"detect",   title:"Stuck pending rows — 12 rows",   status:"delivered" },
+  { id:"nh3", ts:"08:55 AM", channel:"#ops-alerts",  event:"detect",   title:"Duplicate rows — keyword report",  status:"delivered" },
+  { id:"nh4", ts:"08:44 AM", channel:"eng-oncall@intentwise.com", event:"escalate", title:"Row count anomaly — 48h unresolved", status:"delivered" },
+  { id:"nh5", ts:"06:48 AM", channel:"#qa-monitoring",event:"verify",   title:"Schema drift resolved — keyword_summary", status:"delivered" },
+];
+
+// ─── Run History Data ─────────────────────────────────────────────────────────
+const RUN_HISTORY = [
+  { id:"RH-001", type:"rule",     name:"Campaign report row count > 1000", source:"analytics-rs",  table:"tbl_amzn_campaign_report",   ts:"09:10 AM", duration:"1.2s",  result:"pass",   detail:"2,847 rows found. Threshold: 1000. ✓" },
+  { id:"RH-002", type:"rule",     name:"Report table freshness < 6h",      source:"prod-postgres", table:"report",                     ts:"09:00 AM", duration:"0.8s",  result:"fail",   detail:"Last update: 8h 22m ago. Threshold: 6h. ✗ Triggered alert A-003." },
+  { id:"RH-003", type:"agent",    name:"Ads Download Monitor",              source:"—",             table:"—",                          ts:"09:15 AM", duration:"4.1s",  result:"pass",   detail:"23 profiles checked. 0 missing. All Step Functions healthy." },
+  { id:"RH-004", type:"gate",     name:"Data Available Confirmation",       source:"—",             table:"—",                          ts:"09:08 AM", duration:"—",     result:"pending",detail:"Waiting for approval from @Abhishek. Escalates in 18 min." },
+  { id:"RH-005", type:"rule",     name:"Keyword report unique rows",        source:"analytics-rs",  table:"tbl_amzn_keyword_report",    ts:"08:55 AM", duration:"3.4s",  result:"fail",   detail:"1,842 duplicate rows found on (report_date, profile_id, keyword_id). Triggered alert A-003." },
+  { id:"RH-006", type:"workflow", name:"Report Status Auto-Triage",         source:"—",             table:"—",                          ts:"08:40 AM", duration:"12.3s", result:"pass",   detail:"8 reports triaged. 5 redriven. 3 new executions started." },
+  { id:"RH-007", type:"rule",     name:"Account perf row count anomaly",    source:"snowflake-dw",  table:"account_performance",        ts:"08:44 AM", duration:"2.1s",  result:"fail",   detail:"Row count: 14,203 (vs 7-day avg 21,580). Drop: 34.2%. Triggered alert A-004." },
+  { id:"RH-008", type:"agent",    name:"Replication Checker",               source:"analytics-rs",  table:"—",                          ts:"09:14 AM", duration:"1.8s",  result:"pass",   detail:"All 6 GDS copy jobs verified. Redshift latency: 340ms (degraded)." },
+  { id:"RH-009", type:"gate",     name:"Mage Pause Approval",               source:"—",             table:"—",                          ts:"Yesterday 4:22 PM", duration:"8m 14s", result:"pass", detail:"Approved by @Zubair at 4:30 PM. Bluewheel + Maryruth paused successfully." },
+  { id:"RH-010", type:"workflow", name:"Ads Download Failure SOP",          source:"—",             table:"—",                          ts:"Yesterday 4:20 PM", duration:"2h 14m", result:"pass", detail:"Full SOP completed. 5 gates passed. All refreshes done. Completion notice sent." },
+  { id:"RH-011", type:"rule",     name:"Profile ID valid format",           source:"prod-postgres", table:"report",                     ts:"06:00 AM", duration:"1.1s",  result:"pass",   detail:"All 48,291 profile_id values match expected format. ✓" },
+  { id:"RH-012", type:"agent",    name:"Schema Drift Detector",             source:"snowflake-dw",  table:"keyword_summary",            ts:"06:48 AM", duration:"5.6s",  result:"pass",   detail:"2 new columns detected: bid_adjustment_pct, impression_share. Rules auto-generated." },
+];
+
+// ─── Rule Test Data ────────────────────────────────────────────────────────────
+const RULE_TEST_SAMPLES = {
+  not_null:  { cols:["profile_id","campaign_id","report_date"], rows:[{profile_id:"48291",campaign_id:"C-001",report_date:"2026-03-10"},{profile_id:null,campaign_id:"C-002",report_date:"2026-03-10"},{profile_id:"48293",campaign_id:"C-003",report_date:"2026-03-10"}] },
+  row_count: { meta:{ today:2847, yesterday:2901, avg7d:2855, threshold:1000 } },
+  freshness: { meta:{ lastUpdate:"2026-03-10 01:03 AM", ageHours:8.3, thresholdHours:6 } },
+  unique:    { cols:["report_date","profile_id","keyword_id"], dupes:[{report_date:"2026-03-09",profile_id:"48291",keyword_id:"KW-991",count:3},{report_date:"2026-03-09",profile_id:"48102",keyword_id:"KW-114",count:2}] },
+};
+
+// ─── Root Cause Data ──────────────────────────────────────────────────────────
+const CORRELATED_GROUPS = [
+  {
+    id:"CG-001", ts:"09:14 AM", confidence:96,
+    title:"Redshift replication lag cascade",
+    rootCause:"analytics-rs Redshift latency spiked to 340ms at ~8:40 AM, causing downstream copy jobs to stall. This single event triggered 3 separate alerts.",
+    alerts:["A001","A003","A004"],
+    affectedSystems:["analytics-rs","tbl_amzn_campaign_report","tbl_amzn_keyword_report","account_performance"],
+    suggestedFix:"Check Redshift cluster WLM queues. Re-trigger stalled GDS copy jobs. Monitor latency — if >300ms for >10 min, scale cluster.",
+    pattern:"Seen 2x in last 30 days. Usually resolves within 45 min without intervention.",
+  },
+  {
+    id:"CG-002", ts:"09:08 AM", confidence:88,
+    title:"Missing downloads → stuck pending chain",
+    rootCause:"Step Function execution for 23 profiles failed at requester step around 3:30 AM. This caused both the missing download alert and the stuck-pending alert as rows aged in the report table.",
+    alerts:["A002","A006"],
+    affectedSystems:["prod-postgres","report","AWS Step Functions"],
+    suggestedFix:"Start new executions for 23 missing profiles. Force-clear 12 stuck-pending rows. Check IAM permissions on Step Function role — failed 3x this week.",
+    pattern:"Missing + stuck-pending co-occur 80% of the time. Consider a combined remediation workflow.",
+  },
+];
+
+// ─── Rules & Gates Data ────────────────────────────────────────────────────────
+
+const RULE_TYPES = [
+  { id:"not_null",      label:"Not Null",         icon:"∅",  desc:"Column must have no NULLs" },
+  { id:"row_count",     label:"Row Count",         icon:"#",  desc:"Row count within threshold" },
+  { id:"freshness",     label:"Freshness",         icon:"⏱",  desc:"Data updated within window" },
+  { id:"unique",        label:"Uniqueness",        icon:"◈",  desc:"Column values are unique" },
+  { id:"range",         label:"Value Range",       icon:"↔",  desc:"Values within min/max bounds" },
+  { id:"regex",         label:"Regex Pattern",     icon:".*", desc:"Values match pattern" },
+  { id:"ref_integrity", label:"Ref Integrity",     icon:"⇥",  desc:"FK exists in reference table" },
+  { id:"custom_sql",    label:"Custom SQL",        icon:"{}", desc:"Custom SQL assertion" },
+];
+
+const INIT_RULES = [
+  { id:"VR-001", name:"Campaign report not null profiles",  type:"not_null",      source:"analytics-rs",  table:"tbl_amzn_campaign_report",   column:"profile_id",    severity:"critical", status:"active",  lastRun:"09:10 AM", lastResult:"pass", aiGen:false, schedule:"*/30 * * * *" },
+  { id:"VR-002", name:"Campaign report row count > 1000",   type:"row_count",     source:"analytics-rs",  table:"tbl_amzn_campaign_report",   column:"*",             severity:"high",     status:"active",  lastRun:"09:10 AM", lastResult:"pass", aiGen:false, schedule:"0 * * * *" },
+  { id:"VR-003", name:"Report table freshness < 6h",        type:"freshness",     source:"prod-postgres", table:"report",                     column:"updated_at",    severity:"high",     status:"active",  lastRun:"09:00 AM", lastResult:"fail", aiGen:true,  schedule:"0 */2 * * *" },
+  { id:"VR-004", name:"Keyword report unique rows",         type:"unique",        source:"analytics-rs",  table:"tbl_amzn_keyword_report",    column:"report_date,profile_id,keyword_id", severity:"critical", status:"active", lastRun:"08:55 AM", lastResult:"fail", aiGen:true, schedule:"0 6 * * *" },
+  { id:"VR-005", name:"Account perf row count anomaly",     type:"row_count",     source:"snowflake-dw",  table:"account_performance",        column:"*",             severity:"high",     status:"active",  lastRun:"08:44 AM", lastResult:"fail", aiGen:true,  schedule:"0 */1 * * *" },
+  { id:"VR-006", name:"Budget tracker freshness < 25h",     type:"freshness",     source:"ops-gsheets",   table:"budget_tracker",             column:"last_modified", severity:"medium",   status:"active",  lastRun:"07:22 AM", lastResult:"fail", aiGen:true,  schedule:"0 8 * * *" },
+  { id:"VR-007", name:"Profile ID valid format",            type:"regex",         source:"prod-postgres", table:"report",                     column:"profile_id",    severity:"medium",   status:"paused",  lastRun:"06:00 AM", lastResult:"pass", aiGen:false, schedule:"0 6 * * *" },
+  { id:"VR-008", name:"Download status enum check",         type:"custom_sql",    source:"prod-postgres", table:"report",                     column:"status",        severity:"low",      status:"active",  lastRun:"09:00 AM", lastResult:"pass", aiGen:false, schedule:"*/15 * * * *" },
+];
+
+const AI_SUGGESTED_RULES = [
+  { table:"tbl_amzn_campaign_report",   type:"not_null",      column:"campaign_id",    reason:"campaign_id is NULL in 0.02% of rows — low but persistent",   confidence:94 },
+  { table:"tbl_amzn_keyword_report",    type:"range",         column:"clicks",         reason:"clicks has outliers >50k, likely data error",                  confidence:88 },
+  { table:"account_performance",        type:"ref_integrity", column:"profile_id",     reason:"profile_id doesn't always match profiles table",               confidence:91 },
+  { table:"report",                     type:"row_count",     column:"*",              reason:"Mondays consistently have 30% fewer rows — anomaly baseline",   confidence:79 },
+];
+
+const INIT_GATES = [
+  { id:"GT-001", name:"Mage Pause Approval",        type:"approval", triggers:["VR-003","VR-005"], channels:["slack","email"], slackChannel:"#dev-python-support",                        emailTo:"ops@intentwise.com",       status:"active", approvers:["@Zubair","@Raghavendra"], lastTriggered:"Yesterday 4:20 PM", autoEscalate:30, pendingCount:0 },
+  { id:"GT-002", name:"Data Available Confirmation", type:"approval", triggers:["VR-001","VR-004"], channels:["slack"],         slackChannel:"#dev-python-support",                        emailTo:"",                         status:"active", approvers:["@Abhishek","@Abhiraj"],   lastTriggered:"Today 9:08 AM",     autoEscalate:30, pendingCount:1 },
+  { id:"GT-003", name:"Critical Alert Broadcast",    type:"notify",   triggers:["VR-004","VR-005"], channels:["slack","email"], slackChannel:"#notifications-data-availability-issues",   emailTo:"data-team@intentwise.com", status:"active", approvers:[],                         lastTriggered:"Today 8:55 AM",     autoEscalate:0,  pendingCount:0 },
+  { id:"GT-004", name:"Schema Drift Review",         type:"approval", triggers:["VR-007"],          channels:["email"],         slackChannel:"",                                           emailTo:"platform@intentwise.com",  status:"active", approvers:["@Zubair"],               lastTriggered:"Today 6:48 AM",     autoEscalate:60, pendingCount:0 },
+  { id:"GT-005", name:"Auto-fix Gatekeeper",         type:"gate",     triggers:["VR-003","VR-006"], channels:["slack"],         slackChannel:"#dev-python-support",                        emailTo:"",                         status:"paused", approvers:["@Raghavendra"],           lastTriggered:"—",                 autoEscalate:15, pendingCount:0 },
+];
+
+const PENDING_APPROVALS = [
+  { id:"PA-001", gate:"GT-002", title:"Data Available Confirmation", alert:"A002", desc:"23 missing downloads detected — Ads Team confirm data availability before refreshes proceed.", requestedAt:"09:08 AM", requestedBy:"Report Status Agent", severity:"critical" },
+];
+
+// ─── Tiny Sparkline ────────────────────────────────────────────────────────────
+function Spark({ data, color = C.accent, h = 32, w = 80 }) {
+  const max = Math.max(...data), min = Math.min(...data);
+  const pts = data.map((v, i) => {
+    const x = (i / (data.length - 1)) * w;
+    const y = h - ((v - min) / (max - min || 1)) * h;
+    return `${x},${y}`;
+  }).join(" ");
+  return (
+    <svg width={w} height={h} viewBox={`0 0 ${w} ${h}`} style={{ overflow: "visible" }}>
+      <polyline points={pts} fill="none" stroke={color} strokeWidth="1.5" strokeLinejoin="round" />
+    </svg>
+  );
+}
+
+// ─── Status Dot ───────────────────────────────────────────────────────────────
+function Dot({ status }) {
+  const map = { healthy:"#10B981", degraded:"#F59E0B", offline:"#EF4444", running:"#6366F1", idle:"#64748B", paused:"#F97316", open:"#EF4444", triaged:"#F59E0B", resolved:"#10B981", critical:"#EF4444", high:"#F97316", medium:"#F59E0B", low:"#06B6D4", info:"#64748B" };
+  const col = map[status] || "#64748B";
+  const pulse = ["running","open","critical","degraded"].includes(status);
+  return (
+    <span style={{ position:"relative", display:"inline-flex", alignItems:"center", justifyContent:"center", width:10, height:10 }}>
+      {pulse && <span style={{ position:"absolute", width:10, height:10, borderRadius:"50%", background:col, opacity:0.3, animation:"ping 1.5s infinite" }} />}
+      <span style={{ width:8, height:8, borderRadius:"50%", background:col, display:"block" }} />
+    </span>
+  );
+}
+
+// ─── Severity Badge ───────────────────────────────────────────────────────────
+function SevBadge({ sev }) {
+  const bg = { critical:"#450A0A", high:"#431407", medium:"#422006", low:"#083344", info:"#1E293B" };
+  const col = SEVERITY[sev] || C.muted;
+  return (
+    <span style={{ background: bg[sev]||"#1E293B", color: col, border:`1px solid ${col}33`, borderRadius:4, padding:"1px 7px", fontSize:10, fontWeight:700, letterSpacing:"0.06em", textTransform:"uppercase" }}>
+      {sev}
+    </span>
+  );
+}
+
+// ─── Card ─────────────────────────────────────────────────────────────────────
+function Card({ children, style, className, ...rest }) {
+  return (
+    <div style={{ background: C.card, border: `1px solid ${C.border}`, borderRadius: 10, ...style }} className={className} {...rest}>
+      {children}
+    </div>
+  );
+}
+
+// ─── Section Header ───────────────────────────────────────────────────────────
+function SectionHeader({ icon: Icon, title, subtitle, action }) {
+  return (
+    <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom:16 }}>
+      <div style={{ display:"flex", alignItems:"center", gap:10 }}>
+        <div style={{ width:32, height:32, borderRadius:8, background:`${C.accent}20`, display:"flex", alignItems:"center", justifyContent:"center" }}>
+          <Icon size={16} color={C.accentL} />
+        </div>
+        <div>
+          <div style={{ fontSize:13, fontWeight:700, color:C.text, letterSpacing:"0.01em" }}>{title}</div>
+          {subtitle && <div style={{ fontSize:11, color:C.muted, marginTop:1 }}>{subtitle}</div>}
+        </div>
+      </div>
+      {action}
+    </div>
+  );
+}
+
+
+// ─── Workflow Builder Data ─────────────────────────────────────────────────────
+
+const NODE_PALETTE = [
+  { type:"trigger",   label:"Trigger",         color:"#6366F1", icon:"⚡", desc:"Start the workflow" },
+  { type:"monitor",   label:"Monitor",         color:"#06B6D4", icon:"👁", desc:"Watch a data source or metric" },
+  { type:"validate",  label:"Validate",        color:"#8B5CF6", icon:"✓",  desc:"Run a validation rule" },
+  { type:"condition", label:"Condition",       color:"#F59E0B", icon:"◇",  desc:"Branch on a condition" },
+  { type:"action",    label:"Action",          color:"#10B981", icon:"⚙",  desc:"Execute a remediation" },
+  { type:"notify",    label:"Notify",          color:"#E01E5A", icon:"📣", desc:"Send Slack/email alert" },
+  { type:"approve",   label:"Approval Gate",   color:"#F97316", icon:"🔒", desc:"Pause for human approval" },
+  { type:"wait",      label:"Wait",            color:"#64748B", icon:"⏳", desc:"Wait for a duration or event" },
+  { type:"loop",      label:"Loop / Retry",    color:"#EC4899", icon:"↺",  desc:"Retry up to N times" },
+  { type:"end",       label:"End",             color:"#334155", icon:"■",  desc:"Terminate the workflow" },
+];
+
+const TRIGGER_OPTIONS = [
+  "Scheduled (cron)", "Slack alert received", "Validation rule failed",
+  "Row count anomaly", "Step Function failure", "Manual / API call",
+];
+
+const ACTION_OPTIONS = [
+  "Pause Mage package", "Resume Mage package", "Redrive Step Function",
+  "Start new Step Function", "Run dbt model", "Trigger GDS copy job",
+  "Query Redshift", "Query BigQuery", "Run custom SQL",
+];
+
+const makeNode = (type, yOffset) => {
+  const palette = NODE_PALETTE.find(p => p.type === type);
+  return {
+    id: `node_${Date.now()}_${Math.random().toString(36).slice(2,6)}`,
+    type,
+    label: palette?.label || type,
+    color: palette?.color || "#64748B",
+    icon:  palette?.icon  || "?",
+    config: {},
+    yOffset,
+  };
+};
+
+const INIT_WORKFLOWS = [
+  {
+    id: "WF-001", name: "Ads Download Failure SOP", status: "active",
+    description: "Detects missing Ads downloads, pauses Mage packages, validates Redshift, runs refreshes, sends completion notice.",
+    lastRun: "Today 9:15 AM", runs: 42, successRate: 94,
+    nodes: [
+      { id:"n1", type:"trigger",   label:"Scheduled Trigger",         color:"#6366F1", icon:"⚡", config:{ schedule:"0 16 * * 1-5", desc:"Runs at 4 PM IST on weekdays" }, yOffset:0 },
+      { id:"n2", type:"monitor",   label:"Check Ads Data Availability",color:"#06B6D4", icon:"👁", config:{ source:"prod-postgres", table:"report", metric:"missing downloads" }, yOffset:1 },
+      { id:"n3", type:"condition", label:"Downloads missing?",         color:"#F59E0B", icon:"◇", config:{ expr:"missing_count > 0", yes:"Escalate", no:"End" }, yOffset:2 },
+      { id:"n4", type:"notify",    label:"Notify Ads Team on Slack",   color:"#E01E5A", icon:"📣", config:{ channel:"#dev-python-support", mention:"@Abhishek @Abhiraj" }, yOffset:3 },
+      { id:"n5", type:"approve",   label:"Approve: Pause Mage Jobs",   color:"#F97316", icon:"🔒", config:{ approvers:"@Zubair @Raghavendra", escalateAfter:30 }, yOffset:4 },
+      { id:"n6", type:"action",    label:"Pause Bluewheel Packages",   color:"#10B981", icon:"⚙", config:{ action:"Pause Mage package", target:"bluewheel" }, yOffset:5 },
+      { id:"n7", type:"wait",      label:"Wait for Data Confirmation", color:"#64748B", icon:"⏳", config:{ waitFor:"Slack confirmation", timeout:120 }, yOffset:6 },
+      { id:"n8", type:"validate",  label:"Validate Redshift Tables",   color:"#8B5CF6", icon:"✓", config:{ rules:["VR-001","VR-002","VR-003"] }, yOffset:7 },
+      { id:"n9", type:"action",    label:"Run Sequential Refreshes",   color:"#10B981", icon:"⚙", config:{ action:"Run dbt model", target:"campaign,keyword,account" }, yOffset:8 },
+      { id:"n10",type:"approve",   label:"Approve: Resume & Copy",     color:"#F97316", icon:"🔒", config:{ approvers:"@Zubair", escalateAfter:15 }, yOffset:9 },
+      { id:"n11",type:"action",    label:"Resume Packages + GDS Copy", color:"#10B981", icon:"⚙", config:{ action:"Resume Mage package", target:"all" }, yOffset:10 },
+      { id:"n12",type:"notify",    label:"Send Completion Notice",     color:"#E01E5A", icon:"📣", config:{ channel:"#dev-python-support", msg:"✅ Ads Data Issue Resolved" }, yOffset:11 },
+      { id:"n13",type:"end",       label:"End",                        color:"#334155", icon:"■", config:{}, yOffset:12 },
+    ],
+  },
+  {
+    id: "WF-002", name: "Report Status Auto-Triage", status: "active",
+    description: "Monitors report table every 30 min, classifies failures, auto-redrives or escalates.",
+    lastRun: "Today 9:10 AM", runs: 187, successRate: 98,
+    nodes: [
+      { id:"n1", type:"trigger",   label:"Every 30 min",               color:"#6366F1", icon:"⚡", config:{ schedule:"*/30 * * * *" }, yOffset:0 },
+      { id:"n2", type:"monitor",   label:"Scan report_status table",   color:"#06B6D4", icon:"👁", config:{ source:"prod-postgres", table:"report" }, yOffset:1 },
+      { id:"n3", type:"condition", label:"Any failures?",              color:"#F59E0B", icon:"◇", config:{ expr:"failed_count > 0" }, yOffset:2 },
+      { id:"n4", type:"action",    label:"Classify Step Function",     color:"#10B981", icon:"⚙", config:{ action:"Query Redshift", target:"step_functions" }, yOffset:3 },
+      { id:"n5", type:"condition", label:"Requester failure?",         color:"#F59E0B", icon:"◇", config:{ expr:"failure_step == 'requester'" }, yOffset:4 },
+      { id:"n6", type:"action",    label:"New Step Function Execution",color:"#10B981", icon:"⚙", config:{ action:"Start new Step Function" }, yOffset:5 },
+      { id:"n7", type:"action",    label:"Redrive from failed state",  color:"#10B981", icon:"⚙", config:{ action:"Redrive Step Function" }, yOffset:6 },
+      { id:"n8", type:"loop",      label:"Retry up to 3 times",        color:"#EC4899", icon:"↺", config:{ maxRetries:3, interval:10 }, yOffset:7 },
+      { id:"n9", type:"notify",    label:"Alert if still failing",     color:"#E01E5A", icon:"📣", config:{ channel:"#dev-python-support", severity:"high" }, yOffset:8 },
+      { id:"n10",type:"end",       label:"End",                        color:"#334155", icon:"■", config:{}, yOffset:9 },
+    ],
+  },
+  {
+    id: "WF-003", name: "Schema Drift Detection", status: "paused",
+    description: "Daily schema scan across all datasources; auto-creates validation rules for new columns.",
+    lastRun: "Today 6:48 AM", runs: 14, successRate: 100,
+    nodes: [
+      { id:"n1", type:"trigger",  label:"Daily at 6 AM IST",            color:"#6366F1", icon:"⚡", config:{ schedule:"0 6 * * *" }, yOffset:0 },
+      { id:"n2", type:"action",   label:"Scan all schemas",             color:"#10B981", icon:"⚙", config:{ action:"Query BigQuery", target:"all_sources" }, yOffset:1 },
+      { id:"n3", type:"validate", label:"Detect new / removed columns", color:"#8B5CF6", icon:"✓", config:{ rules:["VR-007"] }, yOffset:2 },
+      { id:"n4", type:"condition","label":"Drift detected?",            color:"#F59E0B", icon:"◇", config:{ expr:"drift_count > 0" }, yOffset:3 },
+      { id:"n5", type:"action",   label:"Auto-generate rules via AI",   color:"#10B981", icon:"⚙", config:{ action:"Run custom SQL", target:"rule_generator" }, yOffset:4 },
+      { id:"n6", type:"notify",   label:"Notify platform team",         color:"#E01E5A", icon:"📣", config:{ channel:"#dev-python-support", emailTo:"platform@intentwise.com" }, yOffset:5 },
+      { id:"n7", type:"end",      label:"End",                          color:"#334155", icon:"■", config:{}, yOffset:6 },
+    ],
+  },
+];
+
+
+
+
+
+// ─── Staging Environment Data ─────────────────────────────────────────────────
+const STAGING_TABLES = [
+  { name:"report",             rows:142800, prodRows:143200, status:"synced",   lastSync:"Today 08:00" },
+  { name:"campaign_report",    rows:89200,  prodRows:89200,  status:"synced",   lastSync:"Today 08:00" },
+  { name:"keyword_summary",    rows:54100,  prodRows:55300,  status:"stale",    lastSync:"Yesterday"   },
+  { name:"account_performance",rows:12400,  prodRows:12400,  status:"synced",   lastSync:"Today 08:00" },
+  { name:"profile_metadata",   rows:0,      prodRows:880,    status:"missing",  lastSync:"Never"       },
+  { name:"ad_group_stats",     rows:31200,  prodRows:31200,  status:"synced",   lastSync:"Today 08:00" },
+];
+
+const STAGING_VALIDATION_RULES = INIT_RULES.slice(0, 6).map(r => ({ ...r }));
+
+// ─── Staging Environment Panel ────────────────────────────────────────────────
+function StagingPanel() {
+  const T = useTheme();
+  const [view, setView] = useState("config"); // config | tables | validate
+  const [saved, setSaved] = useState(false);
+
+  // Connection form state
+  const [host,     setHost]     = useState("staging-cluster.abc123.us-east-1.redshift.amazonaws.com");
+  const [port,     setPort]     = useState("5439");
+  const [database, setDatabase] = useState("staging_db");
+  const [schema,   setSchema]   = useState("public");
+  const [user,     setUser]     = useState("staging_user");
+  const [password, setPassword] = useState("");
+  const [sslMode,  setSslMode]  = useState("require");
+  const [showPass, setShowPass] = useState(false);
+  const [testing,  setTesting]  = useState(false);
+  const [testResult, setTestResult] = useState(null); // null | {ok, msg}
+
+  // Validation state
+  const [selectedRules, setSelectedRules] = useState(
+    STAGING_VALIDATION_RULES.map(r => r.id)
+  );
+  const [targetTable, setTargetTable] = useState("report");
+  const [running,  setRunning]  = useState(false);
+  const [results,  setResults]  = useState(null);
+
+  const testConnection = async () => {
+    setTesting(true); setTestResult(null);
+    await new Promise(r => setTimeout(r, 1800));
+    if (!host || !database || !user) {
+      setTestResult({ ok:false, msg:"Host, database and user are required." });
+    } else {
+      setTestResult({ ok:true, msg:`Connected to ${database} on ${host}:${port} — ${STAGING_TABLES.length} tables discovered.` });
+      setSaved(true);
+    }
+    setTesting(false);
+  };
+
+  const runValidation = async () => {
+    setRunning(true); setResults(null);
+    await new Promise(r => setTimeout(r, 2200));
+    const rules = STAGING_VALIDATION_RULES.filter(r => selectedRules.includes(r.id));
+    setResults(rules.map(r => ({
+      ...r,
+      stagingResult: Math.random() > 0.25 ? "pass" : "fail",
+      rowsChecked: Math.floor(Math.random() * 50000) + 5000,
+      duration: (Math.random() * 1.8 + 0.2).toFixed(2) + "s",
+      detail: Math.random() > 0.25
+        ? "All checks passed on staging."
+        : "Found " + (Math.floor(Math.random() * 12) + 1) + " rows violating constraint — do not promote.",
+    })));
+    setRunning(false);
+  };
+
+  const toggleRule = (id) =>
+    setSelectedRules(p => p.includes(id) ? p.filter(x => x !== id) : [...p, id]);
+
+  const inp = (val, set, placeholder, type="text", mono=false) => (
+    <input
+      type={type} value={val}
+      onChange={e => { set(e.target.value); setSaved(false); setTestResult(null); }}
+      placeholder={placeholder}
+      style={{ width:"100%", background:T.isDark?"#0A0C10":T.bg, border:`1px solid ${T.border2}`, borderRadius:7, padding:"8px 11px", color:T.text, fontSize:12, outline:"none", fontFamily:mono?"Consolas,monospace":"inherit" }}
+    />
+  );
+
+  const field = (label, child, hint) => (
+    <div style={{ marginBottom:13 }}>
+      <div style={{ fontSize:10, color:T.muted, fontWeight:700, textTransform:"uppercase", letterSpacing:"0.04em", marginBottom:5 }}>{label}</div>
+      {child}
+      {hint && <div style={{ fontSize:10, color:T.dim, marginTop:3 }}>{hint}</div>}
+    </div>
+  );
+
+  const TABS = [["config","Connection"], ["tables","Tables"], ["validate","Run Validation"]];
+  const passCount = results ? results.filter(r => r.stagingResult === "pass").length : 0;
+  const failCount = results ? results.filter(r => r.stagingResult === "fail").length : 0;
+
+  return (
+    <div style={{ background:T.card, border:`2px solid ${T.accent}30`, borderRadius:12, overflow:"hidden", marginTop:18 }}>
+
+      {/* Header */}
+      <div style={{ padding:"14px 20px", background:T.isDark?`${T.accent}10`:`${T.accent}06`, borderBottom:`1px solid ${T.border}`, display:"flex", alignItems:"center", gap:12 }}>
+        <div style={{ width:36, height:36, borderRadius:9, background:`${T.accent}20`, display:"flex", alignItems:"center", justifyContent:"center", fontSize:18 }}>🗄️</div>
+        <div style={{ flex:1 }}>
+          <div style={{ fontSize:14, fontWeight:800, color:T.text, display:"flex", alignItems:"center", gap:8 }}>
+            Staging Environment
+            <span style={{ fontSize:9, color:saved?T.green:T.orange, background:saved?`${T.green}15`:`${T.orange}15`, border:`1px solid ${saved?T.green:T.orange}40`, borderRadius:10, padding:"2px 8px", fontWeight:700, textTransform:"uppercase" }}>
+              {saved ? "Connected" : "Not configured"}
+            </span>
+          </div>
+          <div style={{ fontSize:11, color:T.muted, marginTop:2 }}>Separate Redshift cluster · validate rules before promoting to production</div>
+        </div>
+        {/* Sub-tab switcher */}
+        <div style={{ display:"flex", gap:4 }}>
+          {TABS.map(([id, label]) => (
+            <button key={id} onClick={() => setView(id)} style={{ padding:"6px 14px", borderRadius:7, border:`1px solid ${view===id?T.accent+"50":"transparent"}`, background:view===id?`${T.accent}15`:"transparent", color:view===id?T.accentL:T.muted, fontSize:11, fontWeight:view===id?700:400, cursor:"pointer" }}>
+              {label}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      <div style={{ padding:"20px" }}>
+
+        {/* ── Connection Config ── */}
+        {view === "config" && (
+          <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:20 }}>
+            <div>
+              <div style={{ fontSize:12, fontWeight:700, color:T.text, marginBottom:14, display:"flex", alignItems:"center", gap:6 }}>
+                <Database size={13} color={T.cyan}/> Redshift Cluster
+              </div>
+              {field("Host", inp(host, setHost, "cluster.abc.us-east-1.redshift.amazonaws.com", "text", true))}
+              <div style={{ display:"grid", gridTemplateColumns:"2fr 1fr", gap:10 }}>
+                {field("Database", inp(database, setDatabase, "staging_db"))}
+                {field("Port",     inp(port,     setPort,     "5439", "text", true))}
+              </div>
+              {field("Schema", inp(schema, setSchema, "public"))}
+            </div>
+            <div>
+              <div style={{ fontSize:12, fontWeight:700, color:T.text, marginBottom:14, display:"flex", alignItems:"center", gap:6 }}>
+                <Lock size={13} color={T.orange}/> Credentials
+              </div>
+              {field("Username", inp(user, setUser, "staging_user"))}
+              {field("Password", (
+                <div style={{ position:"relative" }}>
+                  <input
+                    type={showPass?"text":"password"} value={password}
+                    onChange={e=>{ setPassword(e.target.value); setSaved(false); setTestResult(null); }}
+                    placeholder="••••••••••••"
+                    style={{ width:"100%", background:T.isDark?"#0A0C10":T.bg, border:`1px solid ${T.border2}`, borderRadius:7, padding:"8px 36px 8px 11px", color:T.text, fontSize:12, outline:"none", fontFamily:"Consolas,monospace" }}
+                  />
+                  <button onClick={()=>setShowPass(p=>!p)} style={{ position:"absolute", right:8, top:"50%", transform:"translateY(-50%)", background:"none", border:"none", cursor:"pointer", color:T.muted }}>
+                    <Eye size={13}/>
+                  </button>
+                </div>
+              ), "Stored in memory only — not persisted")}
+              {field("SSL Mode", (
+                <select value={sslMode} onChange={e=>setSslMode(e.target.value)} style={{ width:"100%", background:T.isDark?"#0A0C10":T.bg, border:`1px solid ${T.border2}`, borderRadius:7, padding:"8px 11px", color:T.text, fontSize:12, outline:"none" }}>
+                  {["require","verify-ca","verify-full","disable"].map(m=><option key={m}>{m}</option>)}
+                </select>
+              ))}
+            </div>
+
+            {/* Test + save row — full width */}
+            <div style={{ gridColumn:"1/-1", display:"flex", gap:10, alignItems:"center" }}>
+              <button onClick={testConnection} disabled={testing} style={{ background:T.accent, border:"none", borderRadius:8, padding:"9px 22px", cursor:"pointer", color:"white", fontSize:12, fontWeight:700, display:"flex", alignItems:"center", gap:7, opacity:testing?0.7:1 }}>
+                {testing ? <><RefreshCw size={13} style={{animation:"spin 1s linear infinite"}}/> Testing…</> : <><Zap size={13}/> Test Connection</>}
+              </button>
+              {testResult && (
+                <div style={{ flex:1, padding:"8px 14px", background:testResult.ok?`${T.green}12`:`${T.red}12`, border:`1px solid ${testResult.ok?T.green:T.red}30`, borderRadius:8, fontSize:12, color:testResult.ok?T.green:T.red }}>
+                  {testResult.ok ? "✅ " : "✗ "}{testResult.msg}
+                </div>
+              )}
+            </div>
+          </div>
+        )}
+
+        {/* ── Tables ── */}
+        {view === "tables" && (
+          <div>
+            {!saved && (
+              <div style={{ padding:"14px 16px", background:`${T.yellow}10`, border:`1px solid ${T.yellow}30`, borderRadius:8, marginBottom:16, fontSize:12, color:T.yellow }}>
+                ⚠️ Configure and test your staging connection first to see live table data.
+              </div>
+            )}
+            <div style={{ display:"grid", gridTemplateColumns:"repeat(6,1fr)", gap:6, padding:"8px 10px", fontSize:10, color:T.dim, fontWeight:700, textTransform:"uppercase", letterSpacing:"0.04em", borderBottom:`1px solid ${T.border}`, marginBottom:4 }}>
+              {["Table","Staging Rows","Prod Rows","Drift","Status","Last Sync"].map(h=><span key={h}>{h}</span>)}
+            </div>
+            {STAGING_TABLES.map(t => {
+              const drift = t.prodRows - t.rows;
+              const sc = {synced:T.green, stale:T.yellow, missing:T.red}[t.status];
+              return (
+                <div key={t.name} className="row-hover" style={{ display:"grid", gridTemplateColumns:"repeat(6,1fr)", gap:6, padding:"10px 10px", borderBottom:`1px solid ${T.border}`, alignItems:"center", borderRadius:6 }}>
+                  <code style={{ fontSize:11, color:T.text, fontFamily:"Consolas,monospace" }}>{t.name}</code>
+                  <span style={{ fontSize:11, color:T.text }}>{t.rows.toLocaleString()}</span>
+                  <span style={{ fontSize:11, color:T.text }}>{t.prodRows.toLocaleString()}</span>
+                  <span style={{ fontSize:11, color:drift>0?T.orange:T.green, fontFamily:"Consolas,monospace" }}>{drift>0?`-${drift.toLocaleString()}`:drift===0?"—":`+${Math.abs(drift)}`}</span>
+                  <span style={{ fontSize:10, fontWeight:700, color:sc, background:`${sc}12`, borderRadius:10, padding:"2px 9px", textTransform:"uppercase", width:"fit-content" }}>{t.status}</span>
+                  <span style={{ fontSize:10, color:T.dim }}>{t.lastSync}</span>
+                </div>
+              );
+            })}
+            <div style={{ marginTop:12, fontSize:11, color:T.muted, display:"flex", gap:16 }}>
+              <span>✅ {STAGING_TABLES.filter(t=>t.status==="synced").length} synced</span>
+              <span style={{color:T.yellow}}>⚠️ {STAGING_TABLES.filter(t=>t.status==="stale").length} stale</span>
+              <span style={{color:T.red}}>✗ {STAGING_TABLES.filter(t=>t.status==="missing").length} missing</span>
+            </div>
+          </div>
+        )}
+
+        {/* ── Run Validation ── */}
+        {view === "validate" && (
+          <div style={{ display:"grid", gridTemplateColumns:"260px 1fr", gap:20 }}>
+
+            {/* Left: rule selector */}
+            <div>
+              <div style={{ fontSize:12, fontWeight:700, color:T.text, marginBottom:10, display:"flex", alignItems:"center", gap:6 }}>
+                <Shield size={13} color={T.purple}/> Select Rules
+              </div>
+              <div style={{ fontSize:10, color:T.muted, marginBottom:10 }}>Choose which quality rules to run against staging before promoting.</div>
+              {STAGING_VALIDATION_RULES.map(r => (
+                <div key={r.id} onClick={()=>toggleRule(r.id)} className="row-hover" style={{ display:"flex", alignItems:"center", gap:8, padding:"8px 10px", borderRadius:7, cursor:"pointer", marginBottom:4, background:selectedRules.includes(r.id)?`${T.accent}10`:"transparent", border:`1px solid ${selectedRules.includes(r.id)?T.accent+"40":"transparent"}` }}>
+                  <div style={{ width:14, height:14, borderRadius:3, border:`2px solid ${selectedRules.includes(r.id)?T.accent:T.border2}`, background:selectedRules.includes(r.id)?T.accent:"transparent", display:"flex", alignItems:"center", justifyContent:"center", flexShrink:0 }}>
+                    {selectedRules.includes(r.id) && <Check size={9} color="white"/>}
+                  </div>
+                  <div style={{ flex:1 }}>
+                    <div style={{ fontSize:11, fontWeight:600, color:T.text }}>{r.name}</div>
+                    <code style={{ fontSize:9, color:T.dim, fontFamily:"Consolas,monospace" }}>{r.id}</code>
+                  </div>
+                </div>
+              ))}
+
+              <div style={{ marginTop:12 }}>
+                <div style={{ fontSize:10, color:T.muted, fontWeight:700, textTransform:"uppercase", letterSpacing:"0.04em", marginBottom:6 }}>Target Table</div>
+                <select value={targetTable} onChange={e=>setTargetTable(e.target.value)} style={{ width:"100%", background:T.isDark?"#0A0C10":T.bg, border:`1px solid ${T.border2}`, borderRadius:7, padding:"8px 11px", color:T.text, fontSize:12, outline:"none" }}>
+                  {STAGING_TABLES.map(t=><option key={t.name} value={t.name}>{t.name}</option>)}
+                </select>
+              </div>
+
+              <button onClick={runValidation} disabled={running||selectedRules.length===0||!saved} style={{ marginTop:14, width:"100%", background:saved?T.purple:"#334155", border:"none", borderRadius:8, padding:"10px", cursor:saved&&selectedRules.length>0?"pointer":"not-allowed", color:"white", fontSize:12, fontWeight:700, display:"flex", alignItems:"center", justifyContent:"center", gap:7, opacity:running?0.7:1 }}>
+                {running ? <><RefreshCw size={13} style={{animation:"spin 1s linear infinite"}}/> Running…</> : <><Play size={13}/> Run {selectedRules.length} Rule{selectedRules.length!==1?"s":""} on Staging</>}
+              </button>
+              {!saved && <div style={{ fontSize:10, color:T.orange, marginTop:6 }}>Connect to staging first</div>}
+            </div>
+
+            {/* Right: results */}
+            <div>
+              <div style={{ fontSize:12, fontWeight:700, color:T.text, marginBottom:10, display:"flex", alignItems:"center", justifyContent:"space-between" }}>
+                <span style={{ display:"flex", alignItems:"center", gap:6 }}><TestTube2 size={13} color={T.cyan}/> Validation Results</span>
+                {results && (
+                  <span style={{ fontSize:11, color:T.muted }}>
+                    <span style={{color:T.green, fontWeight:700}}>{passCount} passed</span>
+                    {" · "}
+                    <span style={{color:failCount>0?T.red:T.muted, fontWeight:failCount>0?700:400}}>{failCount} failed</span>
+                  </span>
+                )}
+              </div>
+
+              {!results && !running && (
+                <div style={{ padding:"40px 20px", textAlign:"center", color:T.muted, fontSize:12, border:`2px dashed ${T.border}`, borderRadius:10 }}>
+                  Select rules and click Run to validate staging data before promoting to production.
+                </div>
+              )}
+
+              {running && (
+                <div style={{ padding:"32px 20px", textAlign:"center" }}>
+                  <RefreshCw size={24} color={T.accent} style={{animation:"spin 1s linear infinite", marginBottom:12}}/>
+                  <div style={{ fontSize:13, color:T.muted }}>Running {selectedRules.length} rules against <code style={{color:T.cyan,fontFamily:"Consolas,monospace"}}>{targetTable}</code> on staging…</div>
+                </div>
+              )}
+
+              {results && !running && (
+                <div>
+                  {/* Summary banner */}
+                  <div style={{ padding:"12px 16px", background:failCount===0?`${T.green}12`:`${T.red}10`, border:`1px solid ${failCount===0?T.green:T.red}30`, borderRadius:9, marginBottom:14, display:"flex", alignItems:"center", gap:10 }}>
+                    <span style={{ fontSize:22 }}>{failCount===0?"✅":"⚠️"}</span>
+                    <div>
+                      <div style={{ fontSize:13, fontWeight:700, color:failCount===0?T.green:T.red }}>
+                        {failCount===0 ? "All checks passed — safe to promote" : `${failCount} check${failCount>1?"s":""} failed — review before promoting`}
+                      </div>
+                      <div style={{ fontSize:11, color:T.muted, marginTop:2 }}>
+                        Validated against <code style={{fontFamily:"Consolas,monospace",color:T.cyan}}>{targetTable}</code> on staging · {new Date().toLocaleTimeString("en-IN",{timeZone:"Asia/Kolkata",hour:"2-digit",minute:"2-digit"})} IST
+                      </div>
+                    </div>
+                  </div>
+
+                  {results.map(r => {
+                    const pass = r.stagingResult === "pass";
+                    return (
+                      <div key={r.id} style={{ display:"flex", gap:12, padding:"11px 14px", borderRadius:8, marginBottom:8, background:pass?`${T.green}08`:`${T.red}08`, border:`1px solid ${pass?T.green:T.red}25` }}>
+                        <div style={{ fontSize:18, flexShrink:0 }}>{pass?"✅":"❌"}</div>
+                        <div style={{ flex:1 }}>
+                          <div style={{ fontSize:12, fontWeight:700, color:T.text, marginBottom:2 }}>{r.name}</div>
+                          <div style={{ fontSize:10, color:T.muted, marginBottom:4 }}>{r.detail}</div>
+                          <div style={{ display:"flex", gap:12, fontSize:10, color:T.dim }}>
+                            <span>Rows checked: <span style={{color:T.text,fontWeight:600}}>{r.rowsChecked?.toLocaleString()}</span></span>
+                            <span>Duration: <span style={{color:T.text,fontWeight:600,fontFamily:"Consolas,monospace"}}>{r.duration}</span></span>
+                            <code style={{ color:T.dim, fontFamily:"Consolas,monospace" }}>{r.id}</code>
+                          </div>
+                        </div>
+                        <span style={{ fontSize:10, fontWeight:700, color:pass?T.green:T.red, textTransform:"uppercase", alignSelf:"center" }}>{r.stagingResult}</span>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+
+          </div>
+        )}
+
+      </div>
+    </div>
+  );
+}
+
+// ─── Workflow Detail Drawer ───────────────────────────────────────────────────
+function WorkflowDetailDrawer({ workflow: wf, onClose, onEdit }) {
+  const T = useTheme();
+  if (!wf) return null;
+
+  const NODE_TYPE_META = {
+    trigger:   { label:"Trigger",    color:"#6366F1", bg:"#6366F115" },
+    monitor:   { label:"Monitor",    color:"#06B6D4", bg:"#06B6D415" },
+    condition: { label:"Condition",  color:"#F59E0B", bg:"#F59E0B15" },
+    notify:    { label:"Notify",     color:"#E01E5A", bg:"#E01E5A15" },
+    approve:   { label:"Approval",   color:"#F97316", bg:"#F9731615" },
+    action:    { label:"Action",     color:"#10B981", bg:"#10B98115" },
+    wait:      { label:"Wait",       color:"#64748B", bg:"#64748B15" },
+    validate:  { label:"Validate",   color:"#8B5CF6", bg:"#8B5CF615" },
+    loop:      { label:"Loop",       color:"#EC4899", bg:"#EC489915" },
+    end:       { label:"End",        color:"#334155", bg:"#33415515" },
+  };
+
+  // Fake run history per workflow
+  const RUN_LOG = [
+    { ts:"Today 09:15", status:"success", duration:"4m 12s", trigger:"scheduled" },
+    { ts:"Today 06:48", status:"success", duration:"3m 55s", trigger:"scheduled" },
+    { ts:"Yesterday 09:15", status:"failed",  duration:"1m 02s", trigger:"scheduled", failAt:"Validate Redshift Tables" },
+    { ts:"Yesterday 06:50", status:"success", duration:"4m 30s", trigger:"manual" },
+    { ts:"2 days ago 09:15", status:"success", duration:"4m 08s", trigger:"scheduled" },
+  ].slice(0, wf.runs > 0 ? 5 : 0);
+
+  const overlay = {
+    position:"fixed", inset:0, zIndex:900,
+    background:"rgba(0,0,0,0.45)", display:"flex", justifyContent:"flex-end"
+  };
+  const panel = {
+    width:520, height:"100vh", background:T.surface,
+    borderLeft:`1px solid ${T.border2}`, display:"flex", flexDirection:"column",
+    animation:"slidein 0.22s ease", boxShadow:"-8px 0 40px rgba(0,0,0,0.35)"
+  };
+
+  return (
+    <div style={overlay} onClick={onClose}>
+      <style>{`@keyframes slidein{from{transform:translateX(100%)}to{transform:translateX(0)}}`}</style>
+      <div style={panel} onClick={e=>e.stopPropagation()}>
+
+        {/* ── Header ── */}
+        <div style={{ padding:"20px 22px 16px", borderBottom:`1px solid ${T.border}`, flexShrink:0 }}>
+          <div style={{ display:"flex", alignItems:"flex-start", justifyContent:"space-between", gap:10 }}>
+            <div style={{ flex:1 }}>
+              <div style={{ display:"flex", alignItems:"center", gap:8, marginBottom:4 }}>
+                <div style={{ width:34, height:34, borderRadius:9, background:`${T.accent}20`, display:"flex", alignItems:"center", justifyContent:"center" }}>
+                  <GitBranch size={15} color={T.accentL}/>
+                </div>
+                <div>
+                  <div style={{ fontSize:15, fontWeight:800, color:T.text }}>{wf.name}</div>
+                  <code style={{ fontSize:10, color:T.dim }}>{wf.id}</code>
+                </div>
+              </div>
+              <div style={{ fontSize:11, color:T.muted, lineHeight:1.7, marginTop:6 }}>{wf.description}</div>
+            </div>
+            <button onClick={onClose} style={{ background:"none", border:"none", cursor:"pointer", color:T.muted, flexShrink:0 }}><X size={16}/></button>
+          </div>
+
+          {/* Status + stats row */}
+          <div style={{ display:"flex", gap:10, marginTop:14, flexWrap:"wrap" }}>
+            <span style={{ fontSize:10, color:wf.status==="active"?T.green:T.orange, background:wf.status==="active"?`${T.green}15`:`${T.orange}15`, border:`1px solid ${wf.status==="active"?T.green:T.orange}40`, borderRadius:12, padding:"3px 10px", fontWeight:700, textTransform:"uppercase" }}>{wf.status}</span>
+            {[["Steps", wf.nodes.length], ["Total Runs", wf.runs], ["Success", wf.successRate+"%"], ["Last Run", wf.lastRun]].map(([l,v])=>(
+              <span key={l} style={{ fontSize:10, color:T.muted }}><span style={{ fontWeight:700, color:T.text }}>{v}</span> {l}</span>
+            ))}
+          </div>
+
+          {/* Action buttons */}
+          <div style={{ display:"flex", gap:8, marginTop:14 }}>
+            <button onClick={onEdit} style={{ flex:1, background:T.accent, border:"none", borderRadius:8, padding:"8px", cursor:"pointer", color:"white", fontSize:12, fontWeight:700, display:"flex", alignItems:"center", justifyContent:"center", gap:6 }}>
+              <Edit2 size={13}/> Open in Editor
+            </button>
+            <button style={{ background:`${T.green}15`, border:`1px solid ${T.green}40`, borderRadius:8, padding:"8px 16px", cursor:"pointer", color:T.green, fontSize:12, fontWeight:700, display:"flex", alignItems:"center", gap:6 }}>
+              <Play size={12}/> Run Now
+            </button>
+            <button style={{ background:wf.status==="active"?`${T.orange}15`:`${T.green}15`, border:`1px solid ${wf.status==="active"?T.orange:T.green}40`, borderRadius:8, padding:"8px 14px", cursor:"pointer", color:wf.status==="active"?T.orange:T.green, fontSize:12, fontWeight:700 }}>
+              {wf.status==="active"?"Pause":"Resume"}
+            </button>
+          </div>
+        </div>
+
+        <div style={{ flex:1, overflowY:"auto" }}>
+
+          {/* ── Step-by-step breakdown ── */}
+          <div style={{ padding:"18px 22px" }}>
+            <div style={{ fontSize:12, fontWeight:700, color:T.text, marginBottom:14, display:"flex", alignItems:"center", gap:8 }}>
+              <Layers size={13} color={T.accentL}/> Workflow Steps
+              <span style={{ fontSize:10, color:T.muted, fontWeight:400 }}>({wf.nodes.length} nodes)</span>
+            </div>
+
+            <div style={{ position:"relative", paddingLeft:20 }}>
+              {/* Spine */}
+              <div style={{ position:"absolute", left:8, top:8, bottom:8, width:2, background:T.border, borderRadius:1 }}/>
+
+              {wf.nodes.map((node, i) => {
+                const meta = NODE_TYPE_META[node.type] || NODE_TYPE_META.action;
+                const isEnd = node.type==="end";
+                const isApprove = node.type==="approve";
+                const isNotify  = node.type==="notify";
+                return (
+                  <div key={node.id} style={{ display:"flex", gap:12, marginBottom:10, position:"relative" }}>
+                    {/* Node on spine */}
+                    <div style={{ position:"absolute", left:-12, top:10, width:18, height:18, borderRadius:"50%", background:meta.color, display:"flex", alignItems:"center", justifyContent:"center", zIndex:1, flexShrink:0 }}>
+                      <span style={{ fontSize:9 }}>{node.icon}</span>
+                    </div>
+
+                    {/* Content card */}
+                    <div style={{ flex:1, background:meta.bg, border:`1px solid ${meta.color}30`, borderRadius:8, padding:"10px 12px", marginLeft:10 }}>
+                      <div style={{ display:"flex", alignItems:"center", gap:8, marginBottom:node.config&&Object.keys(node.config).length>0?6:0 }}>
+                        <span style={{ fontSize:9, color:meta.color, background:`${meta.color}20`, borderRadius:10, padding:"1px 7px", fontWeight:700, textTransform:"uppercase", letterSpacing:"0.04em" }}>{meta.label}</span>
+                        <span style={{ fontSize:12, fontWeight:700, color:T.text }}>{node.label}</span>
+                        {isApprove && <span style={{ fontSize:9, color:T.orange, background:`${T.orange}15`, borderRadius:10, padding:"1px 7px", fontWeight:600 }}>⏸ Human gate</span>}
+                        {isNotify  && <span style={{ fontSize:9, color:T.cyan,   background:`${T.cyan}15`,   borderRadius:10, padding:"1px 7px", fontWeight:600 }}>📡 Alert</span>}
+                      </div>
+
+                      {/* Config details */}
+                      {Object.entries(node.config||{}).filter(([k,v])=>v).map(([k,v])=>(
+                        <div key={k} style={{ fontSize:10, color:T.muted, display:"flex", gap:6, marginTop:3 }}>
+                          <span style={{ color:T.dim, minWidth:70, fontWeight:600, textTransform:"capitalize" }}>{k.replace(/_/g," ")}:</span>
+                          <span style={{ color:T.text, fontFamily:typeof v==="string"&&v.includes("*")?"Consolas,monospace":"inherit" }}>{String(v)}</span>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+
+          {/* ── Run History ── */}
+          {RUN_LOG.length > 0 && (
+            <div style={{ padding:"0 22px 22px" }}>
+              <div style={{ fontSize:12, fontWeight:700, color:T.text, marginBottom:12, display:"flex", alignItems:"center", gap:8 }}>
+                <History size={13} color={T.accentL}/> Recent Runs
+              </div>
+              {RUN_LOG.map((r,i)=>(
+                <div key={i} style={{ display:"flex", alignItems:"center", gap:10, padding:"8px 10px", borderRadius:7, borderBottom:`1px solid ${T.border}` }}>
+                  <div style={{ width:7, height:7, borderRadius:"50%", background:r.status==="success"?T.green:T.red, flexShrink:0 }}/>
+                  <div style={{ flex:1 }}>
+                    <div style={{ fontSize:11, color:T.text }}>{r.ts}</div>
+                    {r.failAt && <div style={{ fontSize:10, color:T.red, marginTop:2 }}>Failed at: {r.failAt}</div>}
+                  </div>
+                  <span style={{ fontSize:10, color:T.muted }}>{r.duration}</span>
+                  <span style={{ fontSize:9, color:r.trigger==="manual"?T.cyan:T.dim, fontWeight:600, textTransform:"uppercase" }}>{r.trigger}</span>
+                  <span style={{ fontSize:9, fontWeight:700, color:r.status==="success"?T.green:T.red, textTransform:"uppercase" }}>{r.status}</span>
+                </div>
+              ))}
+            </div>
+          )}
+
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ─── Workflow Builder Tab ─────────────────────────────────────────────────────
+function WorkflowBuilderTab() {
+  const [workflows, setWorkflows]   = useState(INIT_WORKFLOWS);
+  const [selected, setSelected]     = useState(null);   // workflow id or "new"
+  const [drawerWf, setDrawerWf]     = useState(null);   // workflow shown in detail drawer
+  const [editNode, setEditNode]     = useState(null);   // node being configured
+  const [dragOver, setDragOver]     = useState(null);   // index drop target
+  const [dragging, setDragging]     = useState(null);   // palette type or node id
+  const [aiLoading, setAiLoading]   = useState(false);
+  const [aiPrompt, setAiPrompt]     = useState("");
+  const [saveFlash, setSaveFlash]   = useState(false);
+  const [runSim, setRunSim]         = useState(null);   // null | index of running node
+
+  const wf = selected && selected !== "new"
+    ? workflows.find(w => w.id === selected)
+    : null;
+
+  const [nodes, setNodes] = useState([]);
+  const [wfName, setWfName] = useState("");
+  const [wfDesc, setWfDesc] = useState("");
+  const [wfStatus, setWfStatus] = useState("active");
+
+  // Load workflow into editor
+  useEffect(() => {
+    if (wf) {
+      setNodes(wf.nodes.map(n => ({ ...n })));
+      setWfName(wf.name);
+      setWfDesc(wf.description);
+      setWfStatus(wf.status);
+    } else if (selected === "new") {
+      setNodes([makeNode("trigger", 0), makeNode("end", 1)]);
+      setWfName("New Workflow");
+      setWfDesc("");
+      setWfStatus("active");
+    }
+  }, [selected]);
+
+  // Save
+  const save = () => {
+    if (!wfName.trim()) return;
+    const numbered = nodes.map((n, i) => ({ ...n, yOffset: i }));
+    if (selected === "new") {
+      const newWf = {
+        id: `WF-${String(workflows.length + 1).padStart(3, "0")}`,
+        name: wfName, description: wfDesc, status: wfStatus,
+        lastRun: "—", runs: 0, successRate: 100,
+        nodes: numbered,
+      };
+      setWorkflows(p => [...p, newWf]);
+      setSelected(newWf.id);
+    } else {
+      setWorkflows(p => p.map(w => w.id === selected
+        ? { ...w, name: wfName, description: wfDesc, status: wfStatus, nodes: numbered }
+        : w));
+    }
+    setSaveFlash(true);
+    setTimeout(() => setSaveFlash(false), 1800);
+  };
+
+  // Delete node
+  const deleteNode = (id) => setNodes(p => p.filter(n => n.id !== id));
+
+  // Add node at position (from palette drop)
+  const addNodeAt = (type, idx) => {
+    const n = makeNode(type, idx);
+    setNodes(p => {
+      const arr = [...p];
+      arr.splice(idx, 0, n);
+      return arr.map((x, i) => ({ ...x, yOffset: i }));
+    });
+  };
+
+  // Reorder
+  const moveNode = (fromIdx, toIdx) => {
+    setNodes(p => {
+      const arr = [...p];
+      const [item] = arr.splice(fromIdx, 1);
+      arr.splice(toIdx, 0, item);
+      return arr.map((x, i) => ({ ...x, yOffset: i }));
+    });
+  };
+
+  // Save node config
+  const saveNodeConfig = (id, patch) => {
+    setNodes(p => p.map(n => n.id === id ? { ...n, ...patch } : n));
+    setEditNode(null);
+  };
+
+  // Simulate run
+  const simulate = async () => {
+    setRunSim(0);
+    for (let i = 0; i < nodes.length; i++) {
+      setRunSim(i);
+      await new Promise(r => setTimeout(r, 600));
+    }
+    setRunSim(null);
+  };
+
+  // AI generate workflow
+  const generateWithAI = async () => {
+    if (!aiPrompt.trim() || aiLoading) return;
+    setAiLoading(true);
+    try {
+      const res = await fetch("https://api.anthropic.com/v1/messages", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          model: "claude-sonnet-4-20250514",
+          max_tokens: 1000,
+          system: `You are a data ops workflow designer for Intentwise. Convert the user's SOP description into a workflow node array. 
+Available node types: trigger, monitor, validate, condition, action, notify, approve, wait, loop, end.
+Available colors: trigger=#6366F1, monitor=#06B6D4, validate=#8B5CF6, condition=#F59E0B, action=#10B981, notify=#E01E5A, approve=#F97316, wait=#64748B, loop=#EC4899, end=#334155.
+Icons: trigger=⚡, monitor=👁, validate=✓, condition=◇, action=⚙, notify=📣, approve=🔒, wait=⏳, loop=↺, end=■.
+Respond ONLY with a JSON object (no markdown): {"name":"string","description":"string","nodes":[{"id":"n1","type":"string","label":"string","color":"string","icon":"string","config":{},"yOffset":0},...]}
+Always start with trigger, always end with end. Use 5–12 nodes. Make them specific to the user's use case.`,
+          messages: [{ role: "user", content: aiPrompt }],
+        }),
+      });
+      const data = await res.json();
+      const raw = data.content?.find(b => b.type === "text")?.text || "{}";
+      const clean = raw.replace(/```json|```/g, "").trim();
+      const parsed = JSON.parse(clean);
+      setNodes(parsed.nodes || []);
+      if (parsed.name) setWfName(parsed.name);
+      if (parsed.description) setWfDesc(parsed.description);
+      setSelected("new");
+    } catch (e) {
+      console.error(e);
+    }
+    setAiLoading(false);
+    setAiPrompt("");
+  };
+
+  const typeColor = Object.fromEntries(NODE_PALETTE.map(p => [p.type, p.color]));
+
+  // ── Node Config Modal ──────────────────────────────────────────────────────
+  const NodeConfigModal = ({ node, onSave, onClose }) => {
+    const [label, setLabel] = useState(node.label);
+    const [cfg, setCfg] = useState({ ...node.config });
+    const set = (k, v) => setCfg(p => ({ ...p, [k]: v }));
+    const palette = NODE_PALETTE.find(p => p.type === node.type);
+
+    const fields = {
+      trigger:   [["Schedule (cron)", "schedule", "text"], ["Description", "desc", "text"]],
+      monitor:   [["Data Source", "source", "ds-select"], ["Table / Metric", "table", "text"], ["What to watch", "metric", "text"]],
+      validate:  [["Validation Rules (IDs)", "rules", "text"], ["Fail threshold", "threshold", "text"]],
+      condition: [["Expression", "expr", "text"], ["True branch label", "yes", "text"], ["False branch label", "no", "text"]],
+      action:    [["Action", "action", "action-select"], ["Target", "target", "text"], ["Parameters", "params", "text"]],
+      notify:    [["Slack Channel", "channel", "text"], ["Mention", "mention", "text"], ["Email To", "emailTo", "text"], ["Message", "msg", "text"]],
+      approve:   [["Approvers", "approvers", "text"], ["Escalate after (min)", "escalateAfter", "number"]],
+      wait:      [["Wait for", "waitFor", "text"], ["Timeout (min)", "timeout", "number"]],
+      loop:      [["Max retries", "maxRetries", "number"], ["Interval (min)", "interval", "number"]],
+      end:       [],
+    };
+
+    return (
+      <div style={{ position: "fixed", inset: 0, background: "#000000CC", zIndex: 70, display: "flex", alignItems: "center", justifyContent: "center" }}>
+        <div style={{ background: C.card, border: `1px solid ${node.color}40`, borderRadius: 14, padding: "26px", width: 480, maxHeight: "80vh", overflowY: "auto" }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 20 }}>
+            <div style={{ width: 38, height: 38, borderRadius: 10, background: `${node.color}25`, border: `1px solid ${node.color}50`, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 18 }}>
+              {node.icon}
+            </div>
+            <div>
+              <div style={{ fontSize: 13, fontWeight: 700, color: C.text }}>Configure Node</div>
+              <div style={{ fontSize: 10, color: node.color, textTransform: "uppercase", fontWeight: 700, letterSpacing: "0.06em" }}>{palette?.label}</div>
+            </div>
+            <button onClick={onClose} style={{ marginLeft: "auto", background: "none", border: "none", cursor: "pointer", color: C.muted }}><X size={15} /></button>
+          </div>
+
+          <div style={{ marginBottom: 14 }}>
+            <div style={{ fontSize: 10, color: C.muted, marginBottom: 5, textTransform: "uppercase", fontWeight: 700 }}>Node Label</div>
+            <input value={label} onChange={e => setLabel(e.target.value)} style={{ width: "100%", background: C.bg, border: `1px solid ${C.border2}`, borderRadius: 7, padding: "8px 12px", color: C.text, fontSize: 12, outline: "none" }} />
+          </div>
+
+          {(fields[node.type] || []).map(([lbl, key, inputType]) => (
+            <div key={key} style={{ marginBottom: 12 }}>
+              <div style={{ fontSize: 10, color: C.muted, marginBottom: 5, textTransform: "uppercase", fontWeight: 700 }}>{lbl}</div>
+              {inputType === "ds-select" ? (
+                <select value={cfg[key] || ""} onChange={e => set(key, e.target.value)} style={{ width: "100%", background: C.bg, border: `1px solid ${C.border2}`, borderRadius: 7, padding: "8px 12px", color: C.text, fontSize: 12, outline: "none" }}>
+                  <option value="">— select source —</option>
+                  {DATASOURCES.map(d => <option key={d.id} value={d.name}>{d.name}</option>)}
+                </select>
+              ) : inputType === "action-select" ? (
+                <select value={cfg[key] || ""} onChange={e => set(key, e.target.value)} style={{ width: "100%", background: C.bg, border: `1px solid ${C.border2}`, borderRadius: 7, padding: "8px 12px", color: C.text, fontSize: 12, outline: "none" }}>
+                  <option value="">— select action —</option>
+                  {ACTION_OPTIONS.map(a => <option key={a} value={a}>{a}</option>)}
+                </select>
+              ) : (
+                <input type={inputType === "number" ? "number" : "text"} value={cfg[key] || ""} onChange={e => set(key, e.target.value)} style={{ width: "100%", background: C.bg, border: `1px solid ${C.border2}`, borderRadius: 7, padding: "8px 12px", color: C.text, fontSize: 12, outline: "none", fontFamily: key === "schedule" ? "monospace" : "inherit" }} />
+              )}
+            </div>
+          ))}
+
+          <div style={{ display: "flex", gap: 8, marginTop: 18 }}>
+            <button onClick={() => onSave(node.id, { label, config: cfg })} style={{ flex: 1, background: node.color, border: "none", borderRadius: 8, padding: "10px", cursor: "pointer", color: "white", fontSize: 12, fontWeight: 700 }}>
+              Save
+            </button>
+            <button onClick={onClose} style={{ background: C.bg, border: `1px solid ${C.border2}`, borderRadius: 8, padding: "10px 18px", cursor: "pointer", color: C.muted, fontSize: 12 }}>
+              Cancel
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  };
+
+  // ── Canvas Node ────────────────────────────────────────────────────────────
+  const CanvasNode = ({ node, idx, isRunning, isDragOver }) => {
+    const isEnd     = node.type === "end";
+    const isTrigger = node.type === "trigger";
+    const isGate    = node.type === "approve" || node.type === "condition";
+
+    return (
+      <div
+        draggable
+        onDragStart={() => setDragging(`node:${idx}`)}
+        onDragOver={e => { e.preventDefault(); setDragOver(idx); }}
+        onDrop={e => {
+          e.preventDefault();
+          if (dragging && dragging.startsWith("node:")) {
+            const fromIdx = parseInt(dragging.split(":")[1]);
+            if (fromIdx !== idx) moveNode(fromIdx, idx);
+          } else if (dragging && !dragging.startsWith("node:")) {
+            addNodeAt(dragging, idx);
+          }
+          setDragging(null); setDragOver(null);
+        }}
+        onDragEnd={() => { setDragging(null); setDragOver(null); }}
+        style={{ position: "relative", marginBottom: 0 }}
+      >
+        {/* Drop indicator */}
+        {isDragOver && (
+          <div style={{ height: 3, background: C.accentL, borderRadius: 2, margin: "2px 24px", opacity: 0.8 }} />
+        )}
+
+        {/* Connector line from above (not for trigger) */}
+        {!isTrigger && (
+          <div style={{ display: "flex", justifyContent: "center", marginBottom: 0 }}>
+            <div style={{ width: 2, height: 20, background: `${node.color}60` }} />
+          </div>
+        )}
+
+        <div style={{
+          display: "flex", alignItems: "center", gap: 0,
+          padding: "0 20px",
+        }}>
+          {/* Grip */}
+          <div style={{ cursor: "grab", color: C.dim, paddingRight: 8, flexShrink: 0 }}>
+            <GripVertical size={14} />
+          </div>
+
+          {/* Node card */}
+          <div style={{
+            flex: 1,
+            background: isRunning ? `${node.color}25` : `${node.color}10`,
+            border: `1.5px solid ${isRunning ? node.color : node.color + "40"}`,
+            borderRadius: isEnd || isTrigger ? 24 : isGate ? 12 : 10,
+            padding: "12px 16px",
+            transition: "all 0.2s",
+            boxShadow: isRunning ? `0 0 16px ${node.color}50` : "none",
+            cursor: "pointer",
+          }}
+            onClick={() => setEditNode(node)}
+          >
+            <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+              <span style={{ fontSize: 18, width: 24, textAlign: "center" }}>{node.icon}</span>
+              <div style={{ flex: 1 }}>
+                <div style={{ fontSize: 12, fontWeight: 700, color: isRunning ? node.color : C.text }}>{node.label}</div>
+                {node.config?.schedule && <div style={{ fontSize: 10, color: C.muted, fontFamily:"'Consolas', 'Cascadia Code', 'Fira Code', 'Courier New', monospace", marginTop: 2 }}>{node.config.schedule}</div>}
+                {node.config?.source  && <div style={{ fontSize: 10, color: C.muted, marginTop: 2 }}>{node.config.source}{node.config.table ? ` → ${node.config.table}` : ""}</div>}
+                {node.config?.channel && <div style={{ fontSize: 10, color: "#E01E5A", marginTop: 2 }}>{node.config.channel}{node.config.mention ? ` ${node.config.mention}` : ""}</div>}
+                {node.config?.approvers && <div style={{ fontSize: 10, color: C.yellow, marginTop: 2 }}>Approvers: {node.config.approvers}</div>}
+                {node.config?.action  && <div style={{ fontSize: 10, color: C.cyan, marginTop: 2 }}>{node.config.action}{node.config.target ? ` → ${node.config.target}` : ""}</div>}
+                {node.config?.expr    && <div style={{ fontSize: 10, color: C.yellow, fontFamily:"'Consolas', 'Cascadia Code', 'Fira Code', 'Courier New', monospace", marginTop: 2 }}>if {node.config.expr}</div>}
+                {node.config?.waitFor && <div style={{ fontSize: 10, color: C.muted, marginTop: 2 }}>Wait for: {node.config.waitFor}{node.config.timeout ? ` (${node.config.timeout}m timeout)` : ""}</div>}
+                {node.config?.maxRetries && <div style={{ fontSize: 10, color: "#EC4899", marginTop: 2 }}>Max {node.config.maxRetries} retries · {node.config.interval}m apart</div>}
+              </div>
+              <div style={{ display: "flex", gap: 4, flexShrink: 0 }}>
+                {isRunning && <span style={{ fontSize: 10, color: node.color, animation: "pulse 1s infinite" }}>▶</span>}
+                <span style={{ fontSize: 9, color: node.color, background: `${node.color}15`, border: `1px solid ${node.color}30`, borderRadius: 4, padding: "1px 6px", fontWeight: 700, textTransform: "uppercase" }}>
+                  {NODE_PALETTE.find(p => p.type === node.type)?.label || node.type}
+                </span>
+              </div>
+            </div>
+          </div>
+
+          {/* Delete */}
+          {!isEnd && !isTrigger && (
+            <button
+              onClick={e => { e.stopPropagation(); deleteNode(node.id); }}
+              style={{ background: "none", border: "none", cursor: "pointer", color: C.dim, paddingLeft: 8, flexShrink: 0 }}
+            >
+              <Trash2 size={13} />
+            </button>
+          )}
+        </div>
+
+        {/* Connector arrow to next */}
+        {!isEnd && (
+          <div style={{ display: "flex", justifyContent: "center", marginTop: 0 }}>
+            <div style={{ display: "flex", flexDirection: "column", alignItems: "center" }}>
+              <div style={{ width: 2, height: 10, background: `${node.color}40` }} />
+              <ArrowDown size={12} color={`${node.color}60`} />
+            </div>
+          </div>
+        )}
+      </div>
+    );
+  };
+
+  // ── List view ──────────────────────────────────────────────────────────────
+  if (!selected) {
+    return (
+      <div>
+        {drawerWf && (
+          <WorkflowDetailDrawer
+            workflow={drawerWf}
+            onClose={()=>setDrawerWf(null)}
+            onEdit={()=>{ setSelected(drawerWf.id); setDrawerWf(null); }}
+          />
+        )}
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 18 }}>
+          <SectionHeader icon={GitBranch} title="Remediation Workflows" subtitle={`${workflows.length} workflows · ${workflows.filter(w => w.status === "active").length} active`} />
+          <div style={{ display: "flex", gap: 8 }}>
+            <button onClick={() => setSelected("new")} style={{ background: `${C.accent}20`, border: `1px solid ${C.accent}50`, borderRadius: 8, padding: "8px 16px", cursor: "pointer", fontSize: 11, color: C.accentL, fontWeight: 700, display: "flex", alignItems: "center", gap: 6 }}>
+              <Plus size={13} /> New Workflow
+            </button>
+          </div>
+        </div>
+
+        {/* AI generate strip */}
+        <Card style={{ padding: "16px 20px", marginBottom: 18, background: `linear-gradient(135deg, ${C.card} 0%, #160F2E 100%)`, border: `1px solid ${C.purple}30` }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 12 }}>
+            <Wand2 size={14} color={C.purple} />
+            <span style={{ fontSize: 12, fontWeight: 700, color: C.text }}>Generate Workflow with AI</span>
+            <span style={{ fontSize: 10, color: C.muted }}>Describe your SOP in plain English</span>
+          </div>
+          <div style={{ display: "flex", gap: 10 }}>
+            <input
+              value={aiPrompt}
+              onChange={e => setAiPrompt(e.target.value)}
+              onKeyDown={e => e.key === "Enter" && generateWithAI()}
+              placeholder='e.g. "Every hour check if Redshift keyword report has duplicate rows, if yes pause Mage, alert Slack, wait for approval then run dedup fix"'
+              style={{ flex: 1, background: C.bg, border: `1px solid ${C.border2}`, borderRadius: 8, padding: "9px 14px", color: C.text, fontSize: 12, outline: "none" }}
+            />
+            <button onClick={generateWithAI} disabled={aiLoading} style={{ background: C.purple, border: "none", borderRadius: 8, padding: "9px 20px", cursor: "pointer", color: "white", fontSize: 12, fontWeight: 700, display: "flex", alignItems: "center", gap: 8, whiteSpace: "nowrap" }}>
+              {aiLoading ? <><RefreshCw size={13} style={{ animation: "spin 1s linear infinite" }} /> Building…</> : <><Sparkles size={13} /> Generate</>}
+            </button>
+          </div>
+        </Card>
+
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 14 }}>
+          {workflows.map(w => (
+            <Card key={w.id} style={{ padding: "18px 20px", cursor: "pointer", transition: "border-color 0.15s" }}
+              onMouseEnter={e => e.currentTarget.style.borderColor = C.accent + "60"}
+              onMouseLeave={e => e.currentTarget.style.borderColor = C.border}
+              onClick={() => setDrawerWf(w)}
+            >
+              <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", marginBottom: 10 }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                  <div style={{ width: 32, height: 32, borderRadius: 8, background: `${C.accent}20`, display: "flex", alignItems: "center", justifyContent: "center" }}>
+                    <GitBranch size={14} color={C.accentL} />
+                  </div>
+                  <div>
+                    <div style={{ fontSize: 12, fontWeight: 700, color: C.text }}>{w.name}</div>
+                    <div style={{ fontSize: 10, color: C.muted, fontFamily:"'Consolas', 'Cascadia Code', 'Fira Code', 'Courier New', monospace" }}>{w.id}</div>
+                  </div>
+                </div>
+                <span style={{ fontSize: 9, color: w.status === "active" ? C.green : C.orange, background: w.status === "active" ? `${C.green}15` : `${C.orange}15`, border: `1px solid ${w.status === "active" ? C.green : C.orange}40`, borderRadius: 4, padding: "2px 7px", fontWeight: 700, textTransform: "uppercase" }}>
+                  {w.status}
+                </span>
+              </div>
+              <div style={{ fontSize: 11, color: C.muted, lineHeight: 1.6, marginBottom: 12, minHeight: 36 }}>{w.description}</div>
+
+              {/* Node type chips */}
+              <div style={{ display: "flex", flexWrap: "wrap", gap: 4, marginBottom: 12 }}>
+                {[...new Set(w.nodes.map(n => n.type))].map(t => {
+                  const p = NODE_PALETTE.find(x => x.type === t);
+                  return p ? (
+                    <span key={t} style={{ fontSize: 9, color: p.color, background: `${p.color}15`, border: `1px solid ${p.color}30`, borderRadius: 4, padding: "1px 6px" }}>{p.icon} {p.label}</span>
+                  ) : null;
+                })}
+              </div>
+
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 6 }}>
+                {[["Steps", w.nodes.length, C.accentL], ["Runs", w.runs, C.cyan], ["Success", `${w.successRate}%`, w.successRate > 95 ? C.green : C.yellow]].map(([l, v, c]) => (
+                  <div key={l} style={{ textAlign: "center", background: `${C.border}50`, borderRadius: 6, padding: "5px" }}>
+                    <div style={{ fontSize: 14, fontWeight: 800, color: c }}>{v}</div>
+                    <div style={{ fontSize: 9, color: C.muted }}>{l}</div>
+                  </div>
+                ))}
+              </div>
+              <div style={{ marginTop: 10, fontSize: 10, color: C.dim }}>Last run: {w.lastRun}</div>
+            </Card>
+          ))}
+        </div>
+      </div>
+    );
+  }
+
+  // ── Editor view ────────────────────────────────────────────────────────────
+  return (
+    <div style={{ display: "flex", gap: 0, height: "calc(100vh - 160px)", minHeight: 600 }}>
+      {editNode && (
+        <NodeConfigModal node={editNode} onSave={saveNodeConfig} onClose={() => setEditNode(null)} />
+      )}
+
+      {/* Left: Palette */}
+      <div style={{ width: 200, flexShrink: 0, background: C.surface, border: `1px solid ${C.border}`, borderRadius: "10px 0 0 10px", padding: "16px 12px", overflowY: "auto" }}>
+        <div style={{ fontSize: 10, color: C.muted, fontWeight: 700, letterSpacing: "0.08em", textTransform: "uppercase", marginBottom: 12 }}>Node Palette</div>
+        <div style={{ fontSize: 10, color: C.dim, marginBottom: 10 }}>Drag onto canvas ↓</div>
+        {NODE_PALETTE.map(p => (
+          <div
+            key={p.type}
+            draggable
+            onDragStart={() => setDragging(p.type)}
+            onDragEnd={() => setDragging(null)}
+            style={{ display: "flex", alignItems: "center", gap: 8, padding: "8px 10px", borderRadius: 8, marginBottom: 4, background: `${p.color}10`, border: `1px solid ${p.color}30`, cursor: "grab", transition: "all 0.15s" }}
+          >
+            <span style={{ fontSize: 16, width: 20, textAlign: "center" }}>{p.icon}</span>
+            <div>
+              <div style={{ fontSize: 11, fontWeight: 700, color: p.color }}>{p.label}</div>
+              <div style={{ fontSize: 9, color: C.muted, lineHeight: 1.4 }}>{p.desc}</div>
+            </div>
+          </div>
+        ))}
+      </div>
+
+      {/* Center: Canvas */}
+      <div style={{ flex: 1, background: C.bg, border: `1px solid ${C.border}`, borderLeft: "none", borderRight: "none", display: "flex", flexDirection: "column" }}>
+        {/* Canvas toolbar */}
+        <div style={{ padding: "10px 16px", borderBottom: `1px solid ${C.border}`, display: "flex", alignItems: "center", gap: 10, background: C.surface }}>
+          <button onClick={() => setSelected(null)} style={{ background: "none", border: "none", cursor: "pointer", color: C.muted, display: "flex", alignItems: "center", gap: 5, fontSize: 11 }}>
+            <ChevronLeft size={13} /> Back
+          </button>
+          <div style={{ width: 1, height: 16, background: C.border }} />
+          <input
+            value={wfName}
+            onChange={e => setWfName(e.target.value)}
+            style={{ background: "none", border: "none", color: C.text, fontSize: 13, fontWeight: 700, outline: "none", flex: 1 }}
+          />
+          <select value={wfStatus} onChange={e => setWfStatus(e.target.value)} style={{ background: C.bg, border: `1px solid ${C.border2}`, borderRadius: 6, padding: "4px 8px", color: C.text, fontSize: 11, outline: "none" }}>
+            <option value="active">Active</option>
+            <option value="paused">Paused</option>
+            <option value="draft">Draft</option>
+          </select>
+          <button onClick={simulate} disabled={runSim !== null} style={{ background: `${C.green}18`, border: `1px solid ${C.green}40`, borderRadius: 7, padding: "6px 14px", cursor: "pointer", fontSize: 11, color: C.green, fontWeight: 700, display: "flex", alignItems: "center", gap: 6 }}>
+            <Play size={12} /> Simulate
+          </button>
+          <button onClick={save} style={{ background: saveFlash ? C.green : C.accent, border: "none", borderRadius: 7, padding: "6px 16px", cursor: "pointer", fontSize: 11, color: "white", fontWeight: 700, display: "flex", alignItems: "center", gap: 6, transition: "background 0.3s" }}>
+            {saveFlash ? <><Check size={12} /> Saved!</> : <><Save size={12} /> Save</>}
+          </button>
+        </div>
+
+        {/* Canvas body */}
+        <div
+          style={{ flex: 1, overflowY: "auto", padding: "20px 0 40px" }}
+          onDragOver={e => e.preventDefault()}
+          onDrop={e => {
+            e.preventDefault();
+            if (dragging && !dragging.startsWith("node:")) {
+              addNodeAt(dragging, nodes.length - 1);
+              setDragging(null); setDragOver(null);
+            }
+          }}
+        >
+          {nodes.map((node, idx) => (
+            <CanvasNode
+              key={node.id}
+              node={node}
+              idx={idx}
+              isRunning={runSim === idx}
+              isDragOver={dragOver === idx}
+            />
+          ))}
+
+          {/* Drop zone at bottom */}
+          <div
+            style={{ margin: "8px 20px 0", height: 40, border: `2px dashed ${dragging && !dragging.startsWith("node:") ? C.accentL : C.border}`, borderRadius: 8, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 11, color: C.dim, transition: "all 0.15s" }}
+            onDragOver={e => { e.preventDefault(); setDragOver(nodes.length); }}
+            onDrop={e => {
+              e.preventDefault();
+              if (dragging && !dragging.startsWith("node:")) {
+                addNodeAt(dragging, nodes.length - 1);
+                setDragging(null); setDragOver(null);
+              }
+            }}
+          >
+            + Drop node here
+          </div>
+        </div>
+      </div>
+
+      {/* Right: Inspector */}
+      <div style={{ width: 240, flexShrink: 0, background: C.surface, border: `1px solid ${C.border}`, borderLeft: "none", borderRadius: "0 10px 10px 0", padding: "16px 14px", overflowY: "auto", display: "flex", flexDirection: "column", gap: 16 }}>
+        {/* Workflow meta */}
+        <div>
+          <div style={{ fontSize: 10, color: C.muted, fontWeight: 700, letterSpacing: "0.08em", textTransform: "uppercase", marginBottom: 10 }}>Workflow Info</div>
+          <textarea
+            value={wfDesc}
+            onChange={e => setWfDesc(e.target.value)}
+            placeholder="Description…"
+            rows={3}
+            style={{ width: "100%", background: C.bg, border: `1px solid ${C.border2}`, borderRadius: 7, padding: "8px 10px", color: C.text, fontSize: 11, outline: "none", resize: "none", lineHeight: 1.6 }}
+          />
+        </div>
+
+        {/* Step summary */}
+        <div>
+          <div style={{ fontSize: 10, color: C.muted, fontWeight: 700, letterSpacing: "0.08em", textTransform: "uppercase", marginBottom: 10 }}>Step Summary</div>
+          {nodes.map((n, i) => (
+            <div key={n.id} onClick={() => setEditNode(n)} style={{ display: "flex", alignItems: "center", gap: 8, padding: "6px 8px", borderRadius: 7, marginBottom: 3, cursor: "pointer", background: runSim === i ? `${n.color}15` : "transparent", border: `1px solid ${runSim === i ? n.color + "40" : "transparent"}`, transition: "all 0.2s" }}>
+              <span style={{ fontSize: 11 }}>{n.icon}</span>
+              <span style={{ fontSize: 10, color: runSim === i ? n.color : C.muted, flex: 1, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{n.label}</span>
+              <span style={{ fontSize: 9, color: C.dim }}>{i + 1}</span>
+            </div>
+          ))}
+        </div>
+
+        {/* Stats */}
+        {wf && (
+          <div>
+            <div style={{ fontSize: 10, color: C.muted, fontWeight: 700, letterSpacing: "0.08em", textTransform: "uppercase", marginBottom: 10 }}>Run History</div>
+            {[["Total Runs", wf.runs], ["Success Rate", `${wf.successRate}%`], ["Last Run", wf.lastRun]].map(([l, v]) => (
+              <div key={l} style={{ display: "flex", justifyContent: "space-between", padding: "6px 0", borderBottom: `1px solid ${C.border}` }}>
+                <span style={{ fontSize: 10, color: C.muted }}>{l}</span>
+                <span style={{ fontSize: 10, color: C.text, fontWeight: 600 }}>{v}</span>
+              </div>
+            ))}
+          </div>
+        )}
+
+        {/* Generated YAML preview */}
+        <div>
+          <div style={{ fontSize: 10, color: C.muted, fontWeight: 700, letterSpacing: "0.08em", textTransform: "uppercase", marginBottom: 8 }}>YAML Export</div>
+          <div style={{ background: C.bg, borderRadius: 7, padding: "10px", fontFamily:"'Consolas', 'Cascadia Code', 'Fira Code', 'Courier New', monospace", fontSize: 9, color: C.cyan, lineHeight: 1.7, maxHeight: 180, overflowY: "auto" }}>
+            {`workflow:\n  name: ${wfName}\n  status: ${wfStatus}\n  steps:\n`}
+            {nodes.map((n, i) => `  - id: step_${i + 1}\n    type: ${n.type}\n    label: "${n.label}"\n`).join("")}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+
+// ─── Validation Rules Tab ─────────────────────────────────────────────────────
+function ValidationRulesTab() {
+  const [rules, setRules]           = useState(INIT_RULES);
+  const [view, setView]             = useState("list");   // list | builder | nlp | scan
+  const [nlpInput, setNlpInput]     = useState("");
+  const [nlpLoading, setNlpLoading] = useState(false);
+  const [nlpResult, setNlpResult]   = useState(null);
+  const [scanLoading, setScanLoading] = useState(false);
+  const [scanResults, setScanResults] = useState(null);
+  const [selectedDs, setSelectedDs] = useState("analytics-rs");
+  const [filterStatus, setFilterStatus] = useState("all");
+
+  // Builder state
+  const [builder, setBuilder] = useState({ name:"", type:"not_null", source:"analytics-rs", table:"", column:"", severity:"high", schedule:"0 * * * *", params:{} });
+
+  const visibleRules = rules.filter(r => filterStatus === "all" || r.status === filterStatus);
+
+  const toggleRule = (id) => setRules(p => p.map(r => r.id===id ? {...r, status: r.status==="active"?"paused":"active"} : r));
+
+  const runNlpParse = async () => {
+    if (!nlpInput.trim() || nlpLoading) return;
+    setNlpLoading(true); setNlpResult(null);
+    try {
+      const res = await fetch("https://api.anthropic.com/v1/messages", {
+        method:"POST", headers:{"Content-Type":"application/json"},
+        body: JSON.stringify({
+          model:"claude-sonnet-4-20250514", max_tokens:1000,
+          system:`You are a data validation rule generator for Intentwise. Convert natural language into a structured JSON rule. Available rule types: not_null, row_count, freshness, unique, range, regex, ref_integrity, custom_sql. Available sources: prod-postgres, analytics-rs, gds-bigquery, snowflake-dw, ops-gsheets. Respond ONLY with JSON in this exact shape, no markdown: {"name":"string","type":"string","source":"string","table":"string","column":"string","severity":"critical|high|medium|low","schedule":"cron string","params":{},"sql_hint":"example SQL for this check"}`,
+          messages:[{ role:"user", content: nlpInput }]
+        })
+      });
+      const data = await res.json();
+      const raw = data.content?.find(b=>b.type==="text")?.text || "{}";
+      const clean = raw.replace(/```json|```/g,"").trim();
+      setNlpResult(JSON.parse(clean));
+    } catch { setNlpResult({ error:"Could not parse. Try rephrasing." }); }
+    setNlpLoading(false);
+  };
+
+  const runSchemaScan = async () => {
+    setScanLoading(true); setScanResults(null);
+    try {
+      const res = await fetch("https://api.anthropic.com/v1/messages", {
+        method:"POST", headers:{"Content-Type":"application/json"},
+        body: JSON.stringify({
+          model:"claude-sonnet-4-20250514", max_tokens:1000,
+          system:`You are a data quality AI for Intentwise. Given a datasource name, generate realistic validation rule suggestions based on common Amazon Ads / e-commerce data patterns. Respond ONLY with a JSON array of 4 suggestions (no markdown): [{"table":"string","column":"string","type":"string","name":"string","severity":"string","reason":"string","confidence":number}]`,
+          messages:[{ role:"user", content:`Generate validation rules for datasource: ${selectedDs}` }]
+        })
+      });
+      const data = await res.json();
+      const raw = data.content?.find(b=>b.type==="text")?.text || "[]";
+      const clean = raw.replace(/```json|```/g,"").trim();
+      setScanResults(JSON.parse(clean));
+    } catch { setScanResults([]); }
+    setScanLoading(false);
+  };
+
+  const acceptNlpRule = () => {
+    if (!nlpResult || nlpResult.error) return;
+    const newRule = { ...nlpResult, id:`VR-${String(rules.length+1).padStart(3,"0")}`, status:"active", lastRun:"—", lastResult:"pending", aiGen:true };
+    setRules(p => [...p, newRule]);
+    setNlpInput(""); setNlpResult(null); setView("list");
+  };
+
+  const acceptScanRule = (r) => {
+    const newRule = { id:`VR-${String(rules.length+1).padStart(3,"0")}`, name:r.name, type:r.type, source:selectedDs, table:r.table, column:r.column, severity:r.severity, status:"active", lastRun:"—", lastResult:"pending", aiGen:true, schedule:"0 * * * *" };
+    setRules(p => [...p, newRule]);
+    setScanResults(p => p ? p.filter(x=>x.name!==r.name) : p);
+  };
+
+  const submitBuilder = () => {
+    if (!builder.name || !builder.table) return;
+    const newRule = { ...builder, id:`VR-${String(rules.length+1).padStart(3,"0")}`, status:"active", lastRun:"—", lastResult:"pending", aiGen:false };
+    setRules(p => [...p, newRule]); setView("list");
+    setBuilder({ name:"", type:"not_null", source:"analytics-rs", table:"", column:"", severity:"high", schedule:"0 * * * *", params:{} });
+  };
+
+  const resultColor = { pass:C.green, fail:C.red, pending:C.muted };
+  const typeIcon = { not_null:"∅", row_count:"#", freshness:"⏱", unique:"◈", range:"↔", regex:".*", ref_integrity:"⇥", custom_sql:"{}" };
+
+  const Btn = ({active, onClick, children}) => (
+    <button onClick={onClick} style={{ padding:"7px 14px", borderRadius:7, border:`1px solid ${active?C.accent+"60":C.border2}`, background:active?`${C.accent}18`:C.bg, color:active?C.accentL:C.muted, fontSize:11, fontWeight:active?700:500, cursor:"pointer" }}>
+      {children}
+    </button>
+  );
+
+  return (
+    <div>
+      {/* Sub-nav */}
+      <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom:18 }}>
+        <div style={{ display:"flex", gap:6 }}>
+          <Btn active={view==="list"}    onClick={()=>setView("list")}>📋 All Rules ({rules.length})</Btn>
+          <Btn active={view==="builder"} onClick={()=>setView("builder")}>🔨 Visual Builder</Btn>
+          <Btn active={view==="nlp"}     onClick={()=>setView("nlp")}>✨ Natural Language</Btn>
+          <Btn active={view==="scan"}    onClick={()=>setView("scan")}>🔍 Schema Scan</Btn>
+        </div>
+        <div style={{ display:"flex", gap:6 }}>
+          {["all","active","paused"].map(s=>(
+            <button key={s} onClick={()=>setFilterStatus(s)} style={{ padding:"5px 12px", borderRadius:6, border:`1px solid ${filterStatus===s?C.accent+"50":C.border2}`, background:filterStatus===s?`${C.accent}15`:C.bg, color:filterStatus===s?C.accentL:C.muted, fontSize:10, fontWeight:700, textTransform:"uppercase", cursor:"pointer" }}>{s}</button>
+          ))}
+        </div>
+      </div>
+
+      {/* ── List View ── */}
+      {view==="list" && (
+        <Card>
+          <div style={{ padding:"14px 16px", borderBottom:`1px solid ${C.border}`, display:"flex", alignItems:"center", justifyContent:"space-between" }}>
+            <div style={{ fontSize:13, fontWeight:700, color:C.text }}>Validation Rules</div>
+            <div style={{ display:"flex", gap:6 }}>
+              <span style={{ fontSize:11, color:C.green }}>{rules.filter(r=>r.lastResult==="pass").length} passing</span>
+              <span style={{ color:C.dim }}>·</span>
+              <span style={{ fontSize:11, color:C.red }}>{rules.filter(r=>r.lastResult==="fail").length} failing</span>
+            </div>
+          </div>
+          {/* Table header */}
+          <div style={{ display:"grid", gridTemplateColumns:"64px minmax(180px,1fr) 110px 120px 100px 90px 90px 80px 60px", gap:12, padding:"10px 18px", borderBottom:`1px solid ${C.border}`, background:C.isDark?"#0A0C10":C.border }}>
+            {["ID","Name / Table","Type","Source","Severity","Last Run","Result","Status",""].map(h=>(
+              <div key={h} style={{ fontSize:9, color:C.dim, fontWeight:700, letterSpacing:"0.08em", textTransform:"uppercase" }}>{h}</div>
+            ))}
+          </div>
+          {visibleRules.map(r => (
+            <div key={r.id} className="row-hover" style={{ display:"grid", gridTemplateColumns:"64px minmax(180px,1fr) 110px 120px 100px 90px 90px 80px 60px", gap:12, padding:"11px 18px", borderBottom:`1px solid ${C.border}`, alignItems:"center", animation:"fadein 0.2s ease" }}>
+              <div style={{ fontSize:10, color:C.muted, fontFamily:"'Consolas', 'Cascadia Code', 'Fira Code', 'Courier New', monospace" }}>{r.id}</div>
+              <div>
+                <div style={{ fontSize:12, fontWeight:600, color:C.text, display:"flex", alignItems:"center", gap:6 }}>
+                  {r.name}
+                  {r.aiGen && <span style={{ fontSize:9, color:C.purple, background:`${C.purple}18`, border:`1px solid ${C.purple}30`, borderRadius:4, padding:"1px 5px" }}>AI</span>}
+                </div>
+                <div style={{ fontSize:10, color:C.muted, marginTop:1 }}>{r.table} · <code style={{color:C.dim,fontSize:9}}>{r.column}</code></div>
+              </div>
+              <div style={{ display:"flex", alignItems:"center", gap:5 }}>
+                <span style={{ fontSize:12, color:C.muted }}>{typeIcon[r.type]||"?"}</span>
+                <span style={{ fontSize:10, color:C.muted }}>{RULE_TYPES.find(t=>t.id===r.type)?.label||r.type}</span>
+              </div>
+              <div style={{ fontSize:10, color:C.muted }}>{r.source}</div>
+              <SevBadge sev={r.severity} />
+              <div style={{ fontSize:10, color:C.muted }}>{r.lastRun}</div>
+              <div style={{ fontSize:11, fontWeight:700, color:resultColor[r.lastResult]||C.muted, textTransform:"uppercase" }}>{r.lastResult}</div>
+              <div>
+                <button onClick={()=>toggleRule(r.id)} style={{ display:"flex", alignItems:"center", gap:5, background:"none", border:"none", cursor:"pointer", padding:0 }}>
+                  {r.status==="active"
+                    ? <><span style={{width:28,height:16,borderRadius:8,background:C.green,display:"block",position:"relative"}}><span style={{position:"absolute",right:2,top:2,width:12,height:12,borderRadius:"50%",background:"white"}} /></span><span style={{fontSize:10,color:C.green}}>ON</span></>
+                    : <><span style={{width:28,height:16,borderRadius:8,background:C.dim,display:"block",position:"relative"}}><span style={{position:"absolute",left:2,top:2,width:12,height:12,borderRadius:"50%",background:"white"}} /></span><span style={{fontSize:10,color:C.muted}}>OFF</span></>
+                  }
+                </button>
+              </div>
+              <div style={{ display:"flex", gap:4 }}>
+                <button style={{ background:C.border, border:"none", borderRadius:5, padding:"4px 6px", cursor:"pointer", color:C.muted }}><Play size={10}/></button>
+                <button style={{ background:C.border, border:"none", borderRadius:5, padding:"4px 6px", cursor:"pointer", color:C.red }}><Trash2 size={10}/></button>
+              </div>
+            </div>
+          ))}
+        </Card>
+      )}
+
+      {/* ── Visual Builder ── */}
+      {view==="builder" && (
+        <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:16 }}>
+          <Card style={{ padding:"20px" }}>
+            <SectionHeader icon={FlaskConical} title="Visual Rule Builder" subtitle="Define conditions with a form interface" />
+            <div style={{ display:"flex", flexDirection:"column", gap:12 }}>
+              {[["Rule Name", "name", "text", "e.g. Campaign ID not null"],
+                ["Data Source", "source", "select-ds", ""],
+                ["Table", "table", "text", "e.g. tbl_amzn_campaign_report"],
+                ["Column", "column", "text", "e.g. profile_id  (use * for row count)"]
+              ].map(([label, key, type, ph]) => (
+                <div key={key}>
+                  <div style={{ fontSize:10, color:C.muted, marginBottom:5, fontWeight:600, letterSpacing:"0.06em", textTransform:"uppercase" }}>{label}</div>
+                  {type==="select-ds"
+                    ? <select value={builder[key]} onChange={e=>setBuilder(p=>({...p,[key]:e.target.value}))} style={{ width:"100%", background:C.bg, border:`1px solid ${C.border2}`, borderRadius:7, padding:"8px 10px", color:C.text, fontSize:12, outline:"none" }}>
+                        {DATASOURCES.map(d=><option key={d.id} value={d.name}>{d.name}</option>)}
+                      </select>
+                    : <input value={builder[key]} onChange={e=>setBuilder(p=>({...p,[key]:e.target.value}))} placeholder={ph} style={{ width:"100%", background:C.bg, border:`1px solid ${C.border2}`, borderRadius:7, padding:"8px 10px", color:C.text, fontSize:12, outline:"none" }} />
+                  }
+                </div>
+              ))}
+
+              <div>
+                <div style={{ fontSize:10, color:C.muted, marginBottom:8, fontWeight:600, letterSpacing:"0.06em", textTransform:"uppercase" }}>Rule Type</div>
+                <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:6 }}>
+                  {RULE_TYPES.map(t=>(
+                    <button key={t.id} onClick={()=>setBuilder(p=>({...p,type:t.id}))} style={{ padding:"8px 10px", borderRadius:7, border:`1px solid ${builder.type===t.id?C.accent+"60":C.border2}`, background:builder.type===t.id?`${C.accent}15`:C.bg, cursor:"pointer", textAlign:"left", display:"flex", alignItems:"center", gap:8 }}>
+                      <span style={{ fontSize:14, width:18 }}>{t.icon}</span>
+                      <div>
+                        <div style={{ fontSize:11, fontWeight:700, color:builder.type===t.id?C.accentL:C.text }}>{t.label}</div>
+                        <div style={{ fontSize:9, color:C.muted }}>{t.desc}</div>
+                      </div>
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:10 }}>
+                <div>
+                  <div style={{ fontSize:10, color:C.muted, marginBottom:5, fontWeight:600, textTransform:"uppercase" }}>Severity</div>
+                  <select value={builder.severity} onChange={e=>setBuilder(p=>({...p,severity:e.target.value}))} style={{ width:"100%", background:C.bg, border:`1px solid ${C.border2}`, borderRadius:7, padding:"8px 10px", color:C.text, fontSize:12, outline:"none" }}>
+                    {["critical","high","medium","low"].map(s=><option key={s}>{s}</option>)}
+                  </select>
+                </div>
+                <div>
+                  <div style={{ fontSize:10, color:C.muted, marginBottom:5, fontWeight:600, textTransform:"uppercase" }}>Schedule (cron)</div>
+                  <input value={builder.schedule} onChange={e=>setBuilder(p=>({...p,schedule:e.target.value}))} style={{ width:"100%", background:C.bg, border:`1px solid ${C.border2}`, borderRadius:7, padding:"8px 10px", color:C.text, fontSize:12, outline:"none", fontFamily:"'Consolas', 'Cascadia Code', 'Fira Code', 'Courier New', monospace" }} />
+                </div>
+              </div>
+
+              <button onClick={submitBuilder} style={{ background:`${C.accent}`, border:"none", borderRadius:8, padding:"10px", cursor:"pointer", color:"white", fontSize:12, fontWeight:700, marginTop:4 }}>
+                + Add Rule
+              </button>
+            </div>
+          </Card>
+
+          {/* Preview */}
+          <Card style={{ padding:"20px" }}>
+            <SectionHeader icon={Eye} title="Rule Preview" subtitle="SQL that will be executed" />
+            <div style={{ background:C.bg, borderRadius:8, padding:"14px", fontFamily:"'Consolas', 'Cascadia Code', 'Fira Code', 'Courier New', monospace", fontSize:11, color:C.cyan, lineHeight:1.8, minHeight:180 }}>
+              {builder.type==="not_null"      && `SELECT COUNT(*) as null_count\nFROM ${builder.table||"<table>"}\nWHERE ${builder.column||"<column>"} IS NULL;`}
+              {builder.type==="row_count"     && `SELECT COUNT(*) as total_rows\nFROM ${builder.table||"<table>"}\nWHERE report_date = CURRENT_DATE;`}
+              {builder.type==="freshness"     && `SELECT MAX(${builder.column||"updated_at"}) as latest\nFROM ${builder.table||"<table>"};\n-- Assert: latest > NOW() - INTERVAL '6 hours'`}
+              {builder.type==="unique"        && `SELECT ${builder.column||"<column>"}, COUNT(*) as cnt\nFROM ${builder.table||"<table>"}\nGROUP BY ${builder.column||"<column>"}\nHAVING COUNT(*) > 1;`}
+              {builder.type==="range"         && `SELECT COUNT(*) as out_of_range\nFROM ${builder.table||"<table>"}\nWHERE ${builder.column||"<column>"} NOT BETWEEN <min> AND <max>;`}
+              {builder.type==="regex"         && `SELECT COUNT(*) as invalid\nFROM ${builder.table||"<table>"}\nWHERE ${builder.column||"<column>"} !~ '<pattern>';`}
+              {builder.type==="ref_integrity" && `SELECT COUNT(*) as orphans\nFROM ${builder.table||"<table>"} a\nLEFT JOIN <ref_table> r ON a.${builder.column||"<col>"} = r.id\nWHERE r.id IS NULL;`}
+              {builder.type==="custom_sql"    && `-- Write your assertion SQL\n-- Must return 0 rows to pass\nSELECT *\nFROM ${builder.table||"<table>"}\nWHERE <your condition>;`}
+            </div>
+            <div style={{ marginTop:14 }}>
+              <div style={{ fontSize:10, color:C.muted, marginBottom:8, fontWeight:600 }}>RULE SUMMARY</div>
+              {[["Name", builder.name||"—"], ["Type", RULE_TYPES.find(t=>t.id===builder.type)?.label||"—"], ["Source", builder.source], ["Table", builder.table||"—"], ["Column", builder.column||"—"], ["Severity", builder.severity], ["Schedule", builder.schedule]].map(([k,v])=>(
+                <div key={k} style={{ display:"flex", justifyContent:"space-between", padding:"5px 0", borderBottom:`1px solid ${C.border}` }}>
+                  <span style={{ fontSize:11, color:C.muted }}>{k}</span>
+                  <span style={{ fontSize:11, color:C.text, fontFamily: k==="Schedule"?"monospace":"inherit" }}>{v}</span>
+                </div>
+              ))}
+            </div>
+          </Card>
+        </div>
+      )}
+
+      {/* ── NLP View ── */}
+      {view==="nlp" && (
+        <Card style={{ padding:"22px" }}>
+          <SectionHeader icon={Wand2} title="Natural Language → Rule" subtitle="Describe a validation in plain English; AI generates the rule" />
+          <div style={{ display:"flex", gap:10, marginBottom:16 }}>
+            <input
+              value={nlpInput}
+              onChange={e=>setNlpInput(e.target.value)}
+              onKeyDown={e=>e.key==="Enter" && runNlpParse()}
+              placeholder='e.g. "Ensure no null values in profile_id on the campaign report table in Redshift"'
+              style={{ flex:1, background:C.bg, border:`1px solid ${C.border2}`, borderRadius:8, padding:"10px 14px", color:C.text, fontSize:12, outline:"none" }}
+            />
+            <button onClick={runNlpParse} disabled={nlpLoading} style={{ background:C.accent, border:"none", borderRadius:8, padding:"10px 20px", cursor:"pointer", color:"white", fontSize:12, fontWeight:700, display:"flex", alignItems:"center", gap:8 }}>
+              {nlpLoading ? <><RefreshCw size={13} style={{animation:"spin 1s linear infinite"}}/> Parsing…</> : <><Sparkles size={13}/> Generate</>}
+            </button>
+          </div>
+
+          <div style={{ display:"flex", flexWrap:"wrap", gap:8, marginBottom:20 }}>
+            {["no nulls in profile_id on campaign report", "keyword report must have unique rows per date", "account_performance row count must be within 20% of 7-day average", "report table must be updated within last 6 hours"].map(ex=>(
+              <button key={ex} onClick={()=>setNlpInput(ex)} style={{ background:C.bg, border:`1px solid ${C.border2}`, borderRadius:20, padding:"4px 12px", cursor:"pointer", fontSize:10, color:C.muted }}>
+                "{ex}"
+              </button>
+            ))}
+          </div>
+
+          {nlpResult && !nlpResult.error && (
+            <div style={{ background:`${C.green}08`, border:`1px solid ${C.green}30`, borderRadius:10, padding:"18px 20px" }}>
+              <div style={{ display:"flex", alignItems:"center", gap:8, marginBottom:14 }}>
+                <Sparkles size={14} color={C.green} />
+                <span style={{ fontSize:13, fontWeight:700, color:C.green }}>Rule Generated</span>
+              </div>
+              <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:10, marginBottom:14 }}>
+                {[["Name", nlpResult.name], ["Type", nlpResult.type], ["Source", nlpResult.source], ["Table", nlpResult.table], ["Column", nlpResult.column], ["Severity", nlpResult.severity]].map(([k,v])=>(
+                  <div key={k} style={{ background:C.card, borderRadius:7, padding:"8px 12px" }}>
+                    <div style={{ fontSize:9, color:C.muted, marginBottom:3, textTransform:"uppercase", fontWeight:700 }}>{k}</div>
+                    <div style={{ fontSize:12, color:C.text, fontWeight:600 }}>{v||"—"}</div>
+                  </div>
+                ))}
+              </div>
+              {nlpResult.sql_hint && (
+                <div style={{ background:C.bg, borderRadius:8, padding:"10px 14px", fontFamily:"'Consolas', 'Cascadia Code', 'Fira Code', 'Courier New', monospace", fontSize:11, color:C.cyan, marginBottom:14 }}>
+                  {nlpResult.sql_hint}
+                </div>
+              )}
+              <div style={{ display:"flex", gap:8 }}>
+                <button onClick={acceptNlpRule} style={{ background:C.green, border:"none", borderRadius:8, padding:"9px 22px", cursor:"pointer", color:"white", fontSize:12, fontWeight:700 }}>
+                  ✓ Accept & Add Rule
+                </button>
+                <button onClick={()=>setNlpResult(null)} style={{ background:C.bg, border:`1px solid ${C.border2}`, borderRadius:8, padding:"9px 18px", cursor:"pointer", color:C.muted, fontSize:12 }}>
+                  Discard
+                </button>
+              </div>
+            </div>
+          )}
+          {nlpResult?.error && (
+            <div style={{ background:`${C.red}10`, border:`1px solid ${C.red}30`, borderRadius:8, padding:"12px 16px", fontSize:12, color:C.red }}>{nlpResult.error}</div>
+          )}
+        </Card>
+      )}
+
+      {/* ── Schema Scan View ── */}
+      {view==="scan" && (
+        <Card style={{ padding:"22px" }}>
+          <SectionHeader icon={Database} title="Schema Scan → Auto-suggest Rules" subtitle="AI scans your datasource schema and proposes validation rules" />
+          <div style={{ display:"flex", gap:10, marginBottom:20, alignItems:"center" }}>
+            <select value={selectedDs} onChange={e=>setSelectedDs(e.target.value)} style={{ background:C.bg, border:`1px solid ${C.border2}`, borderRadius:8, padding:"9px 14px", color:C.text, fontSize:12, outline:"none" }}>
+              {DATASOURCES.filter(d=>d.status!=="offline").map(d=><option key={d.id} value={d.name}>{d.name} ({d.type})</option>)}
+            </select>
+            <button onClick={runSchemaScan} disabled={scanLoading} style={{ background:C.accent, border:"none", borderRadius:8, padding:"9px 20px", cursor:"pointer", color:"white", fontSize:12, fontWeight:700, display:"flex", alignItems:"center", gap:8 }}>
+              {scanLoading ? <><RefreshCw size={13} style={{animation:"spin 1s linear infinite"}}/> Scanning…</> : <><Database size={13}/> Run Scan</>}
+            </button>
+          </div>
+
+          {/* Static AI suggestions (always visible) */}
+          <div style={{ marginBottom:16 }}>
+            <div style={{ fontSize:11, color:C.muted, marginBottom:10, fontWeight:600, letterSpacing:"0.06em" }}>AI-SUGGESTED (from prior scans)</div>
+            {AI_SUGGESTED_RULES.map((r,i) => (
+              <div key={i} style={{ display:"flex", alignItems:"center", gap:12, padding:"11px 14px", background:`${C.purple}08`, border:`1px solid ${C.purple}20`, borderRadius:8, marginBottom:8 }}>
+                <div style={{ width:36, height:36, borderRadius:8, background:`${C.purple}20`, display:"flex", alignItems:"center", justifyContent:"center", flexShrink:0 }}>
+                  <span style={{ fontSize:13 }}>{typeIcon[r.type]||"?"}</span>
+                </div>
+                <div style={{ flex:1 }}>
+                  <div style={{ fontSize:12, fontWeight:700, color:C.text }}>{RULE_TYPES.find(t=>t.id===r.type)?.label} on <code style={{color:C.cyan,fontSize:11}}>{r.table}.{r.column}</code></div>
+                  <div style={{ fontSize:11, color:C.muted, marginTop:2 }}>{r.reason}</div>
+                </div>
+                <div style={{ textAlign:"right", flexShrink:0 }}>
+                  <div style={{ fontSize:13, fontWeight:800, color:r.confidence>90?C.green:r.confidence>80?C.yellow:C.orange }}>{r.confidence}%</div>
+                  <div style={{ fontSize:9, color:C.muted }}>confidence</div>
+                </div>
+                <button onClick={()=>acceptScanRule({...r, name:`${RULE_TYPES.find(t=>t.id===r.type)?.label} on ${r.table}.${r.column}`})} style={{ background:`${C.green}18`, border:`1px solid ${C.green}40`, borderRadius:7, padding:"6px 12px", cursor:"pointer", fontSize:11, color:C.green, fontWeight:700 }}>
+                  + Add
+                </button>
+              </div>
+            ))}
+          </div>
+
+          {/* Live scan results */}
+          {scanResults && (
+            <div>
+              <div style={{ fontSize:11, color:C.cyan, marginBottom:10, fontWeight:600, letterSpacing:"0.06em" }}>LIVE SCAN RESULTS — {selectedDs}</div>
+              {scanResults.length === 0
+                ? <div style={{ color:C.muted, fontSize:12 }}>No new suggestions from scan.</div>
+                : scanResults.map((r,i)=>(
+                    <div key={i} style={{ display:"flex", alignItems:"center", gap:12, padding:"11px 14px", background:`${C.cyan}06`, border:`1px solid ${C.cyan}20`, borderRadius:8, marginBottom:8 }}>
+                      <div style={{ flex:1 }}>
+                        <div style={{ fontSize:12, fontWeight:700, color:C.text }}>{r.name}</div>
+                        <div style={{ fontSize:11, color:C.muted, marginTop:2 }}>{r.reason}</div>
+                      </div>
+                      <SevBadge sev={r.severity} />
+                      <div style={{ textAlign:"right", flexShrink:0 }}>
+                        <div style={{ fontSize:13, fontWeight:800, color:C.cyan }}>{r.confidence}%</div>
+                        <div style={{ fontSize:9, color:C.muted }}>confidence</div>
+                      </div>
+                      <button onClick={()=>acceptScanRule(r)} style={{ background:`${C.green}18`, border:`1px solid ${C.green}40`, borderRadius:7, padding:"6px 12px", cursor:"pointer", fontSize:11, color:C.green, fontWeight:700 }}>+ Add</button>
+                    </div>
+                  ))
+              }
+            </div>
+          )}
+        </Card>
+      )}
+    </div>
+  );
+}
+
+// ─── Approval Gates Tab ───────────────────────────────────────────────────────
+function ApprovalGatesTab() {
+  const [gates, setGates]       = useState(INIT_GATES);
+  const [pending, setPending]   = useState(PENDING_APPROVALS);
+  const [view, setView]         = useState("gates");   // gates | config | pending
+  const [editGate, setEditGate] = useState(null);
+  const [testStatus, setTestStatus] = useState({});
+
+  const toggleGate = (id) => setGates(p=>p.map(g=>g.id===id?{...g,status:g.status==="active"?"paused":"active"}:g));
+
+  const testChannel = async (gateId, channel) => {
+    setTestStatus(p=>({...p,[`${gateId}-${channel}`]:"sending"}));
+    await new Promise(r=>setTimeout(r,1400));
+    setTestStatus(p=>({...p,[`${gateId}-${channel}`]:"sent"}));
+    setTimeout(()=>setTestStatus(p=>{const n={...p};delete n[`${gateId}-${channel}`];return n;}), 3000);
+  };
+
+  const approvePA = (id) => setPending(p=>p.filter(x=>x.id!==id));
+  const rejectPA  = (id) => setPending(p=>p.filter(x=>x.id!==id));
+
+  const typeColor = { approval:`${C.yellow}`, notify:C.cyan, gate:C.purple };
+  const typeIcon  = { approval:"🔒", notify:"📢", gate:"⚙️" };
+
+  const ChannelPill = ({ch}) => {
+    const map = { slack:["#4A154B","#E01E5A",<Slack size={10}/>], email:["#1a3a5c","#60A5FA",<Mail size={10}/>] };
+    const [bg,col,icon] = map[ch]||["#1E2330",C.muted,null];
+    return <span style={{ display:"inline-flex", alignItems:"center", gap:4, background:bg, color:col, border:`1px solid ${col}40`, borderRadius:12, padding:"2px 8px", fontSize:10, fontWeight:600 }}>{icon}{ch}</span>;
+  };
+
+  const GateForm = ({gate, onSave, onClose}) => {
+    const [form, setForm] = useState(gate || { name:"", type:"approval", triggers:[], channels:["slack"], slackChannel:"", emailTo:"", approvers:[""], autoEscalate:30, status:"active" });
+    const set = (k,v) => setForm(p=>({...p,[k]:v}));
+    const toggleCh = (ch) => set("channels", form.channels.includes(ch)?form.channels.filter(c=>c!==ch):[...form.channels,ch]);
+    return (
+      <div style={{ position:"fixed", inset:0, background:"#000000BB", zIndex:60, display:"flex", alignItems:"center", justifyContent:"center" }}>
+        <div style={{ background:C.card, border:`1px solid ${C.border2}`, borderRadius:14, padding:"28px", width:540, maxHeight:"85vh", overflowY:"auto" }}>
+          <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:22 }}>
+            <div style={{ fontSize:14, fontWeight:700, color:C.text }}>Configure Gate</div>
+            <button onClick={onClose} style={{ background:"none", border:"none", cursor:"pointer", color:C.muted }}><X size={16}/></button>
+          </div>
+          <div style={{ display:"flex", flexDirection:"column", gap:14 }}>
+            {/* Name */}
+            <div>
+              <div style={{ fontSize:10, color:C.muted, marginBottom:5, textTransform:"uppercase", fontWeight:700 }}>Gate Name</div>
+              <input value={form.name} onChange={e=>set("name",e.target.value)} placeholder="e.g. Mage Pause Approval" style={{ width:"100%", background:C.bg, border:`1px solid ${C.border2}`, borderRadius:7, padding:"9px 12px", color:C.text, fontSize:12, outline:"none" }} />
+            </div>
+            {/* Type */}
+            <div>
+              <div style={{ fontSize:10, color:C.muted, marginBottom:8, textTransform:"uppercase", fontWeight:700 }}>Gate Type</div>
+              <div style={{ display:"flex", gap:8 }}>
+                {[["approval","🔒 Approval","Requires human approve/reject"],["notify","📢 Notify","Send alert, no action needed"],["gate","⚙️ Gate","Block pipeline until condition met"]].map(([id,label,desc])=>(
+                  <button key={id} onClick={()=>set("type",id)} style={{ flex:1, padding:"10px 8px", borderRadius:8, border:`1px solid ${form.type===id?typeColor[id]+"60":C.border2}`, background:form.type===id?typeColor[id]+"15":C.bg, cursor:"pointer", textAlign:"center" }}>
+                    <div style={{ fontSize:16, marginBottom:4 }}>{label.split(" ")[0]}</div>
+                    <div style={{ fontSize:11, fontWeight:700, color:form.type===id?typeColor[id]:C.text }}>{label.slice(2)}</div>
+                    <div style={{ fontSize:9, color:C.muted, marginTop:2 }}>{desc}</div>
+                  </button>
+                ))}
+              </div>
+            </div>
+            {/* Channels */}
+            <div>
+              <div style={{ fontSize:10, color:C.muted, marginBottom:8, textTransform:"uppercase", fontWeight:700 }}>Notification Channels</div>
+              <div style={{ display:"flex", gap:8 }}>
+                {["slack","email"].map(ch=>(
+                  <button key={ch} onClick={()=>toggleCh(ch)} style={{ flex:1, padding:"10px", borderRadius:8, border:`1px solid ${form.channels.includes(ch)?(ch==="slack"?"#E01E5A":"#60A5FA"):C.border2}`, background:form.channels.includes(ch)?`${ch==="slack"?"#4A154B":"#1a3a5c"}`:C.bg, cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center", gap:8 }}>
+                    {ch==="slack" ? <Slack size={14} color={form.channels.includes(ch)?"#E01E5A":C.muted}/> : <Mail size={14} color={form.channels.includes(ch)?"#60A5FA":C.muted}/>}
+                    <span style={{ fontSize:12, fontWeight:600, color:form.channels.includes(ch)?C.text:C.muted, textTransform:"capitalize" }}>{ch}</span>
+                    {form.channels.includes(ch) && <Check size={12} color={C.green}/>}
+                  </button>
+                ))}
+              </div>
+            </div>
+            {/* Slack config */}
+            {form.channels.includes("slack") && (
+              <div>
+                <div style={{ fontSize:10, color:C.muted, marginBottom:5, textTransform:"uppercase", fontWeight:700 }}>Slack Channel</div>
+                <div style={{ position:"relative" }}>
+                  <span style={{ position:"absolute", left:10, top:"50%", transform:"translateY(-50%)", color:C.muted, fontSize:13 }}>#</span>
+                  <input value={form.slackChannel.replace("#","")} onChange={e=>set("slackChannel","#"+e.target.value.replace("#",""))} placeholder="dev-python-support" style={{ width:"100%", background:C.bg, border:`1px solid ${C.border2}`, borderRadius:7, padding:"9px 12px 9px 26px", color:C.text, fontSize:12, outline:"none" }} />
+                </div>
+                <div style={{ marginTop:8, padding:"10px 12px", background:`${C.border}50`, borderRadius:7 }}>
+                  <div style={{ fontSize:10, color:C.muted, marginBottom:6, fontWeight:700 }}>SLACK BLOCK KIT PREVIEW</div>
+                  <div style={{ background:"#1a1d24", borderRadius:6, padding:"10px 12px", borderLeft:"4px solid #E01E5A" }}>
+                    <div style={{ fontSize:11, color:"#E01E5A", fontWeight:700 }}>🔒 Approval Required · {form.name||"Gate Name"}</div>
+                    <div style={{ fontSize:11, color:"#94A3B8", marginTop:4 }}>Triggered by: <code style={{color:"#60A5FA",fontSize:10}}>Ops Agent</code></div>
+                    <div style={{ display:"flex", gap:6, marginTop:8 }}>
+                      <span style={{ background:"#0D7C3D", color:"white", borderRadius:4, padding:"3px 10px", fontSize:11, fontWeight:700 }}>✓ Approve</span>
+                      <span style={{ background:"#8B0000", color:"white", borderRadius:4, padding:"3px 10px", fontSize:11, fontWeight:700 }}>✗ Reject</span>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            )}
+            {/* Email config */}
+            {form.channels.includes("email") && (
+              <div>
+                <div style={{ fontSize:10, color:C.muted, marginBottom:5, textTransform:"uppercase", fontWeight:700 }}>Email To</div>
+                <div style={{ position:"relative" }}>
+                  <AtSign size={13} color={C.muted} style={{ position:"absolute", left:10, top:"50%", transform:"translateY(-50%)" }} />
+                  <input value={form.emailTo} onChange={e=>set("emailTo",e.target.value)} placeholder="ops@intentwise.com" style={{ width:"100%", background:C.bg, border:`1px solid ${C.border2}`, borderRadius:7, padding:"9px 12px 9px 30px", color:C.text, fontSize:12, outline:"none" }} />
+                </div>
+                <div style={{ marginTop:8, padding:"10px 12px", background:`${C.border}50`, borderRadius:7 }}>
+                  <div style={{ fontSize:10, color:C.muted, marginBottom:4, fontWeight:700 }}>EMAIL PREVIEW</div>
+                  <div style={{ fontSize:11, color:C.text }}>Subject: <span style={{color:C.yellow}}>[Intentwise Ops] Action Required: {form.name||"Gate Name"}</span></div>
+                  <div style={{ fontSize:10, color:C.muted, marginTop:3 }}>Body: Alert details + approve/reject link</div>
+                  <div style={{ fontSize:10, color:C.muted }}>Reply-To: ops-noreply@intentwise.com</div>
+                </div>
+              </div>
+            )}
+            {/* Approvers */}
+            {form.type==="approval" && (
+              <div>
+                <div style={{ fontSize:10, color:C.muted, marginBottom:5, textTransform:"uppercase", fontWeight:700 }}>Approvers</div>
+                <input value={form.approvers.join(", ")} onChange={e=>set("approvers",e.target.value.split(",").map(s=>s.trim()))} placeholder="@Zubair, @Raghavendra" style={{ width:"100%", background:C.bg, border:`1px solid ${C.border2}`, borderRadius:7, padding:"9px 12px", color:C.text, fontSize:12, outline:"none" }} />
+              </div>
+            )}
+            {/* Escalation */}
+            <div>
+              <div style={{ fontSize:10, color:C.muted, marginBottom:5, textTransform:"uppercase", fontWeight:700 }}>Auto-Escalate After (minutes, 0 = off)</div>
+              <input type="number" value={form.autoEscalate} onChange={e=>set("autoEscalate",parseInt(e.target.value)||0)} style={{ width:"100%", background:C.bg, border:`1px solid ${C.border2}`, borderRadius:7, padding:"9px 12px", color:C.text, fontSize:12, outline:"none" }} />
+            </div>
+            <div style={{ display:"flex", gap:8, paddingTop:8 }}>
+              <button onClick={()=>onSave(form)} style={{ flex:1, background:C.accent, border:"none", borderRadius:8, padding:"10px", cursor:"pointer", color:"white", fontSize:12, fontWeight:700 }}>Save Gate</button>
+              <button onClick={onClose} style={{ background:C.bg, border:`1px solid ${C.border2}`, borderRadius:8, padding:"10px 20px", cursor:"pointer", color:C.muted, fontSize:12 }}>Cancel</button>
+            </div>
+          </div>
+        </div>
+      </div>
+    );
+  };
+
+  const saveGate = (form) => {
+    if (form.id) { setGates(p=>p.map(g=>g.id===form.id?{...g,...form}:g)); }
+    else { setGates(p=>[...p,{...form,id:`GT-${String(p.length+1).padStart(3,"0")}`,lastTriggered:"—",pendingCount:0}]); }
+    setEditGate(null);
+  };
+
+  const Btn = ({active,onClick,children}) => (
+    <button onClick={onClick} style={{ padding:"7px 14px", borderRadius:7, border:`1px solid ${active?C.accent+"60":C.border2}`, background:active?`${C.accent}18`:C.bg, color:active?C.accentL:C.muted, fontSize:11, fontWeight:active?700:500, cursor:"pointer" }}>
+      {children}
+    </button>
+  );
+
+  return (
+    <div>
+      {editGate !== null && <GateForm gate={editGate===true?null:editGate} onSave={saveGate} onClose={()=>setEditGate(null)} />}
+
+      {/* Sub-nav */}
+      <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom:18 }}>
+        <div style={{ display:"flex", gap:6 }}>
+          <Btn active={view==="gates"}   onClick={()=>setView("gates")}>⚙️ Gates ({gates.length})</Btn>
+          <Btn active={view==="pending"} onClick={()=>setView("pending")}>
+            🔔 Pending Approvals {pending.length>0 && <span style={{ background:C.red, color:"white", borderRadius:8, padding:"0 6px", fontSize:10, marginLeft:4 }}>{pending.length}</span>}
+          </Btn>
+          <Btn active={view==="config"}  onClick={()=>setView("config")}>🔗 Integration Config</Btn>
+        </div>
+        <button onClick={()=>setEditGate(true)} style={{ background:`${C.accent}20`, border:`1px solid ${C.accent}50`, borderRadius:8, padding:"7px 16px", cursor:"pointer", fontSize:11, color:C.accentL, fontWeight:700, display:"flex", alignItems:"center", gap:6 }}>
+          <Plus size={13}/> New Gate
+        </button>
+      </div>
+
+      {/* ── Gates List ── */}
+      {view==="gates" && (
+        <div style={{ display:"flex", flexDirection:"column", gap:12 }}>
+          {gates.map(g => (
+            <Card key={g.id} style={{ padding:"16px 20px" }}>
+              <div style={{ display:"flex", alignItems:"flex-start", justifyContent:"space-between" }}>
+                <div style={{ display:"flex", alignItems:"flex-start", gap:14 }}>
+                  <div style={{ width:40, height:40, borderRadius:10, background:`${typeColor[g.type]}18`, border:`1px solid ${typeColor[g.type]}30`, display:"flex", alignItems:"center", justifyContent:"center", fontSize:18, flexShrink:0 }}>
+                    {typeIcon[g.type]}
+                  </div>
+                  <div>
+                    <div style={{ display:"flex", alignItems:"center", gap:10, marginBottom:6 }}>
+                      <span style={{ fontSize:13, fontWeight:700, color:C.text }}>{g.name}</span>
+                      <span style={{ fontSize:9, color:typeColor[g.type], background:`${typeColor[g.type]}15`, border:`1px solid ${typeColor[g.type]}30`, borderRadius:4, padding:"1px 7px", fontWeight:700, textTransform:"uppercase", letterSpacing:"0.06em" }}>{g.type}</span>
+                      <span style={{ fontSize:9, color:C.muted, fontFamily:"'Consolas', 'Cascadia Code', 'Fira Code', 'Courier New', monospace" }}>{g.id}</span>
+                    </div>
+                    <div style={{ display:"flex", flexWrap:"wrap", gap:6, marginBottom:8 }}>
+                      {g.channels.map(ch=><ChannelPill key={ch} ch={ch}/>)}
+                      {g.approvers.map(a=><span key={a} style={{ fontSize:10, color:C.accentL, background:`${C.accent}15`, border:`1px solid ${C.accent}30`, borderRadius:10, padding:"2px 8px" }}>{a}</span>)}
+                    </div>
+                    <div style={{ display:"flex", gap:16, fontSize:10, color:C.muted }}>
+                      <span>Triggers: {g.triggers.join(", ")}</span>
+                      <span>Last fired: {g.lastTriggered}</span>
+                      {g.autoEscalate>0 && <span>Escalate after {g.autoEscalate}m</span>}
+                    </div>
+                    {g.slackChannel && <div style={{ fontSize:10, color:C.muted, marginTop:4 }}>Slack: <code style={{color:"#E01E5A",fontSize:10}}>{g.slackChannel}</code></div>}
+                    {g.emailTo && <div style={{ fontSize:10, color:C.muted }}>Email: <code style={{color:"#60A5FA",fontSize:10}}>{g.emailTo}</code></div>}
+                  </div>
+                </div>
+                <div style={{ display:"flex", flexDirection:"column", alignItems:"flex-end", gap:8 }}>
+                  {g.pendingCount > 0 && (
+                    <div style={{ background:`${C.yellow}20`, border:`1px solid ${C.yellow}50`, borderRadius:6, padding:"3px 10px", fontSize:11, color:C.yellow, fontWeight:700 }}>
+                      {g.pendingCount} pending
+                    </div>
+                  )}
+                  <div style={{ display:"flex", gap:6 }}>
+                    {g.channels.map(ch=>(
+                      <button key={ch} onClick={()=>testChannel(g.id,ch)} style={{ background:C.bg, border:`1px solid ${C.border2}`, borderRadius:6, padding:"5px 10px", cursor:"pointer", fontSize:10, color: testStatus[`${g.id}-${ch}`]==="sent"?C.green:testStatus[`${g.id}-${ch}`]==="sending"?C.yellow:C.muted, display:"flex", alignItems:"center", gap:5 }}>
+                        {testStatus[`${g.id}-${ch}`]==="sending" ? <RefreshCw size={10} style={{animation:"spin 1s linear infinite"}}/> : testStatus[`${g.id}-${ch}`]==="sent" ? <Check size={10}/> : <Send size={10}/>}
+                        Test {ch}
+                      </button>
+                    ))}
+                    <button onClick={()=>setEditGate(g)} style={{ background:C.bg, border:`1px solid ${C.border2}`, borderRadius:6, padding:"5px 10px", cursor:"pointer", fontSize:10, color:C.muted }}>Edit</button>
+                    <button onClick={()=>toggleGate(g.id)} style={{ background:g.status==="active"?`${C.green}15`:`${C.orange}15`, border:`1px solid ${g.status==="active"?C.green:C.orange}40`, borderRadius:6, padding:"5px 10px", cursor:"pointer", fontSize:10, color:g.status==="active"?C.green:C.orange, fontWeight:700 }}>
+                      {g.status==="active"?"Active":"Paused"}
+                    </button>
+                  </div>
+                </div>
+              </div>
+            </Card>
+          ))}
+        </div>
+      )}
+
+      {/* ── Pending Approvals ── */}
+      {view==="pending" && (
+        <div>
+          {pending.length===0 ? (
+            <Card style={{ padding:"40px", textAlign:"center" }}>
+              <CheckCircle size={32} color={C.green} style={{ margin:"0 auto 12px" }}/>
+              <div style={{ fontSize:14, fontWeight:700, color:C.text, marginBottom:6 }}>All clear</div>
+              <div style={{ fontSize:12, color:C.muted }}>No pending approvals right now.</div>
+            </Card>
+          ) : pending.map(pa=>(
+            <Card key={pa.id} style={{ padding:"20px", marginBottom:12, border:`1px solid ${SEVERITY[pa.severity]}40` }}>
+              <div style={{ display:"flex", alignItems:"flex-start", gap:14 }}>
+                <div style={{ width:40, height:40, borderRadius:10, background:`${SEVERITY[pa.severity]}18`, display:"flex", alignItems:"center", justifyContent:"center", flexShrink:0 }}>
+                  <Lock size={18} color={SEVERITY[pa.severity]}/>
+                </div>
+                <div style={{ flex:1 }}>
+                  <div style={{ display:"flex", alignItems:"center", gap:8, marginBottom:6 }}>
+                    <span style={{ fontSize:13, fontWeight:700, color:C.text }}>{pa.title}</span>
+                    <SevBadge sev={pa.severity}/>
+                    <span style={{ fontSize:10, color:C.muted, fontFamily:"'Consolas', 'Cascadia Code', 'Fira Code', 'Courier New', monospace" }}>{pa.id}</span>
+                  </div>
+                  <div style={{ fontSize:12, color:C.muted, lineHeight:1.6, marginBottom:10 }}>{pa.desc}</div>
+                  <div style={{ fontSize:10, color:C.dim }}>Requested by <span style={{color:C.accentL}}>{pa.requestedBy}</span> at {pa.requestedAt} · Gate: <span style={{color:C.yellow}}>{pa.gate}</span> · Alert: <span style={{color:C.cyan}}>{pa.alert}</span></div>
+                </div>
+                <div style={{ display:"flex", gap:8, flexShrink:0 }}>
+                  <button onClick={()=>approvePA(pa.id)} style={{ background:`${C.green}20`, border:`1px solid ${C.green}50`, borderRadius:8, padding:"9px 20px", cursor:"pointer", fontSize:12, color:C.green, fontWeight:700, display:"flex", alignItems:"center", gap:6 }}>
+                    <Check size={13}/> Approve
+                  </button>
+                  <button onClick={()=>rejectPA(pa.id)} style={{ background:`${C.red}15`, border:`1px solid ${C.red}40`, borderRadius:8, padding:"9px 20px", cursor:"pointer", fontSize:12, color:C.red, fontWeight:700, display:"flex", alignItems:"center", gap:6 }}>
+                    <X size={13}/> Reject
+                  </button>
+                </div>
+              </div>
+            </Card>
+          ))}
+        </div>
+      )}
+
+      {/* ── Integration Config ── */}
+      {view==="config" && (
+        <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:16 }}>
+          {/* Slack */}
+          <Card style={{ padding:"20px" }}>
+            <div style={{ display:"flex", alignItems:"center", gap:10, marginBottom:16 }}>
+              <div style={{ width:36, height:36, borderRadius:9, background:"#4A154B", display:"flex", alignItems:"center", justifyContent:"center" }}><Slack size={16} color="#E01E5A"/></div>
+              <div>
+                <div style={{ fontSize:13, fontWeight:700, color:C.text }}>Slack Integration</div>
+                <div style={{ fontSize:10, color:C.green }}>● Connected · Bolt SDK</div>
+              </div>
+            </div>
+            {[["Bot Token", "xoxb-••••••••••••", false],["Signing Secret", "••••••••••••••••", false],["Default Channel", "#dev-python-support", true],["Webhook URL", "https://hooks.slack.com/…", true]].map(([k,v,editable])=>(
+              <div key={k} style={{ marginBottom:10 }}>
+                <div style={{ fontSize:10, color:C.muted, marginBottom:4, fontWeight:600, textTransform:"uppercase" }}>{k}</div>
+                <div style={{ background:C.bg, border:`1px solid ${C.border2}`, borderRadius:7, padding:"8px 12px", fontSize:11, color:editable?C.text:C.dim, fontFamily:"'Consolas', 'Cascadia Code', 'Fira Code', 'Courier New', monospace", display:"flex", alignItems:"center", justifyContent:"space-between" }}>
+                  <span>{v}</span>
+                  {editable && <Copy size={11} color={C.muted} style={{cursor:"pointer"}}/>}
+                </div>
+              </div>
+            ))}
+            <div style={{ marginTop:12, padding:"10px 12px", background:`${C.green}10`, border:`1px solid ${C.green}30`, borderRadius:8 }}>
+              <div style={{ fontSize:10, color:C.green, fontWeight:700, marginBottom:4 }}>INTERACTIVE BUTTONS</div>
+              <div style={{ fontSize:11, color:C.muted }}>Approve/Reject buttons wired via Block Kit. Responses posted back to source channel.</div>
+            </div>
+          </Card>
+
+          {/* Email */}
+          <Card style={{ padding:"20px" }}>
+            <div style={{ display:"flex", alignItems:"center", gap:10, marginBottom:16 }}>
+              <div style={{ width:36, height:36, borderRadius:9, background:"#1a3a5c", display:"flex", alignItems:"center", justifyContent:"center" }}><Mail size={16} color="#60A5FA"/></div>
+              <div>
+                <div style={{ fontSize:13, fontWeight:700, color:C.text }}>Email · SendGrid</div>
+                <div style={{ fontSize:10, color:C.yellow }}>● Configured · Verify DNS</div>
+              </div>
+            </div>
+            {[["API Key", "SG.••••••••••••", false],["From Address", "ops-noreply@intentwise.com", true],["Reply-To", "ops@intentwise.com", true],["SMTP Host", "smtp.sendgrid.net:587", false]].map(([k,v,editable])=>(
+              <div key={k} style={{ marginBottom:10 }}>
+                <div style={{ fontSize:10, color:C.muted, marginBottom:4, fontWeight:600, textTransform:"uppercase" }}>{k}</div>
+                <div style={{ background:C.bg, border:`1px solid ${C.border2}`, borderRadius:7, padding:"8px 12px", fontSize:11, color:editable?C.text:C.dim, fontFamily:"'Consolas', 'Cascadia Code', 'Fira Code', 'Courier New', monospace", display:"flex", alignItems:"center", justifyContent:"space-between" }}>
+                  <span>{v}</span>
+                  {editable && <Copy size={11} color={C.muted} style={{cursor:"pointer"}}/>}
+                </div>
+              </div>
+            ))}
+            <div style={{ marginTop:12, padding:"10px 12px", background:`${C.yellow}10`, border:`1px solid ${C.yellow}30`, borderRadius:8 }}>
+              <div style={{ fontSize:10, color:C.yellow, fontWeight:700, marginBottom:4 }}>APPROVAL LINK</div>
+              <div style={{ fontSize:11, color:C.muted }}>Email contains signed approve/reject URL. Valid for 2 hours. One-click from inbox.</div>
+            </div>
+          </Card>
+
+          {/* Webhook */}
+          <Card style={{ padding:"20px", gridColumn:"1/-1" }}>
+            <div style={{ display:"flex", alignItems:"center", gap:10, marginBottom:16 }}>
+              <div style={{ width:36, height:36, borderRadius:9, background:`${C.purple}20`, display:"flex", alignItems:"center", justifyContent:"center" }}><Webhook size={16} color={C.purple}/></div>
+              <div>
+                <div style={{ fontSize:13, fontWeight:700, color:C.text }}>Inbound Webhooks</div>
+                <div style={{ fontSize:10, color:C.muted }}>Receive approve/reject callbacks from external systems</div>
+              </div>
+            </div>
+            <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr 1fr", gap:10 }}>
+              {[
+                { method:"POST", path:"/webhooks/approve/{gate_id}", desc:"Approve a gate programmatically", color:C.green },
+                { method:"POST", path:"/webhooks/reject/{gate_id}",  desc:"Reject a gate programmatically", color:C.red },
+                { method:"POST", path:"/webhooks/slack/interactive",  desc:"Slack Block Kit button handler",  color:"#E01E5A" },
+              ].map(w=>(
+                <div key={w.path} style={{ background:C.bg, border:`1px solid ${C.border2}`, borderRadius:8, padding:"12px 14px" }}>
+                  <div style={{ display:"flex", alignItems:"center", gap:6, marginBottom:6 }}>
+                    <span style={{ fontSize:9, background:`${w.color}20`, color:w.color, border:`1px solid ${w.color}40`, borderRadius:4, padding:"2px 7px", fontWeight:700 }}>{w.method}</span>
+                  </div>
+                  <code style={{ fontSize:10, color:C.cyan, display:"block", marginBottom:5 }}>{w.path}</code>
+                  <div style={{ fontSize:10, color:C.muted }}>{w.desc}</div>
+                </div>
+              ))}
+            </div>
+            <div style={{ marginTop:12, background:C.bg, borderRadius:8, padding:"12px 14px" }}>
+              <div style={{ fontSize:10, color:C.muted, marginBottom:6, fontWeight:700 }}>PAYLOAD EXAMPLE</div>
+              <code style={{ fontSize:10, color:C.cyan, lineHeight:1.8 }}>
+                {"{"} "gate_id": "GT-002", "decision": "approve", "approver": "zubair@intentwise.com", "token": "••••" {"}"}
+              </code>
+            </div>
+          </Card>
+        </div>
+      )}
+    </div>
+  );
+}
+
+
+// ─── Theme Context ────────────────────────────────────────────────────────────
+const ThemeCtx = React.createContext(DARK_THEME);
+const useTheme = () => React.useContext(ThemeCtx);
+
+// ─── Command Center Tab ───────────────────────────────────────────────────────
+function CommandCenterTab({ onNavigate }) {
+  const T = useTheme();
+  const critCount  = ALERTS_RAW.filter(a=>a.severity==="critical"&&a.status!=="resolved").length;
+  const openCount  = ALERTS_RAW.filter(a=>a.status==="open").length;
+  const runningAg  = AGENTS.filter(a=>a.status==="running").length;
+  const pendingGt  = PENDING_APPROVALS.length;
+  const healthyDs  = DATASOURCES.filter(d=>d.status==="healthy").length;
+  const failRules  = INIT_RULES.filter(r=>r.lastResult==="fail").length;
+  const [now, setNow] = useState(new Date());
+  useEffect(()=>{ const t=setInterval(()=>setNow(new Date()),1000); return()=>clearInterval(t); },[]);
+
+  const timeStr = now.toLocaleTimeString("en-IN",{timeZone:"Asia/Kolkata",hour:"2-digit",minute:"2-digit",second:"2-digit"});
+  const dateStr = now.toLocaleDateString("en-IN",{timeZone:"Asia/Kolkata",weekday:"long",month:"short",day:"numeric"});
+
+  // Stage autonomy summary from QA_STAGES
+  const overallAuto = Math.round(
+    QA_STAGES.reduce((s,st)=>s+st.aiActions,0) /
+    QA_STAGES.reduce((s,st)=>s+st.aiActions+st.humanActions,0) * 100
+  );
+
+  const metricGrid = [
+    { label:"Critical Alerts",   value:critCount,                  color:critCount>0?T.red:T.green,    icon:"🔴", sub:"need immediate action",    tab:"alerts" },
+    { label:"Open Issues",       value:openCount,                  color:T.orange,                     icon:"🔔", sub:"AI-triaged queue",          tab:"alerts" },
+    { label:"QA Agents Active",  value:runningAg,                  color:T.green,                      icon:"🤖", sub:`of ${AGENTS.length} total`, tab:"agents" },
+    { label:"Pending Approvals", value:pendingGt,                  color:pendingGt>0?T.yellow:T.green, icon:"🔒", sub:"awaiting human review",    tab:"gates" },
+    { label:"Healthy Sources",   value:`${healthyDs}/${DATASOURCES.length}`, color:healthyDs===DATASOURCES.length?T.green:T.yellow, icon:"🗄️", sub:"pipeline coverage", tab:"sources" },
+    { label:"Rules Failing",     value:failRules,                  color:failRules>0?T.red:T.green,    icon:"✓",  sub:"of "+INIT_RULES.length+" total", tab:"rules" },
+  ];
+
+  return (
+    <div style={{ paddingBottom:24 }}>
+
+      {/* ── Header strip: IST clock + autonomy score ── */}
+      <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom:20, padding:"16px 22px", background:T.isDark?`${T.accent}10`:`${T.accent}06`, border:`1px solid ${T.accent}28`, borderRadius:12 }}>
+        <div style={{ display:"flex", alignItems:"center", gap:14 }}>
+          <div style={{ width:46, height:46, borderRadius:13, background:`${T.accent}22`, display:"flex", alignItems:"center", justifyContent:"center" }}>
+            <LayoutDashboard size={21} color={T.accentL}/>
+          </div>
+          <div>
+            <div style={{ fontSize:14, fontWeight:800, color:T.text }}>Ops Command Center</div>
+            <div style={{ fontSize:11, color:T.muted, marginTop:3 }}>{dateStr} · IST · Agentic QA Platform</div>
+          </div>
+        </div>
+        <div style={{ display:"flex", alignItems:"center", gap:28 }}>
+          {/* Overall autonomy pill */}
+          <div style={{ textAlign:"center" }}>
+            <div style={{ fontSize:11, color:T.muted, marginBottom:3, fontWeight:600 }}>Overall Autonomy</div>
+            <div style={{ display:"flex", alignItems:"baseline", gap:3 }}>
+              <span style={{ fontSize:32, fontWeight:900, color:T.green, lineHeight:1 }}>{overallAuto}%</span>
+              <span style={{ fontSize:11, color:T.green }}>AI-driven</span>
+            </div>
+          </div>
+          {/* IST clock */}
+          <div style={{ textAlign:"right" }}>
+            <div style={{ fontSize:30, fontWeight:800, color:T.accent, letterSpacing:"0.04em", fontFamily:"Consolas,monospace" }}>{timeStr}</div>
+            <div style={{ fontSize:10, color:T.muted }}>India Standard Time</div>
+          </div>
+        </div>
+      </div>
+
+      {/* ── 6-metric grid (clickable → tab) ── */}
+      <div style={{ display:"grid", gridTemplateColumns:"repeat(3,1fr)", gap:14, marginBottom:20 }}>
+        {metricGrid.map(m=>(
+          <div key={m.label} onClick={()=>onNavigate&&onNavigate(m.tab)} style={{ background:T.card, border:`1px solid ${T.border}`, borderRadius:12, padding:"18px 20px", display:"flex", alignItems:"center", gap:14, cursor:"pointer", transition:"border-color 0.15s" }} className="row-hover">
+            <div style={{ fontSize:30 }}>{m.icon}</div>
+            <div style={{ flex:1 }}>
+              <div style={{ fontSize:32, fontWeight:900, color:m.color, lineHeight:1 }}>{m.value}</div>
+              <div style={{ fontSize:12, fontWeight:700, color:T.text, marginTop:5 }}>{m.label}</div>
+              <div style={{ fontSize:10, color:T.muted, marginTop:2 }}>{m.sub}</div>
+            </div>
+            <ArrowRight size={14} color={T.dim}/>
+          </div>
+        ))}
+      </div>
+
+      {/* ── Pipeline autonomy mini-bars ── */}
+      <div style={{ background:T.card, border:`1px solid ${T.border}`, borderRadius:12, padding:"16px 20px", marginBottom:18 }}>
+        <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom:14 }}>
+          <div style={{ fontSize:13, fontWeight:700, color:T.text, display:"flex", alignItems:"center", gap:8 }}>
+            <Activity size={14} color={T.accentL}/> QA Pipeline — Autonomy Snapshot
+          </div>
+          <button onClick={()=>onNavigate&&onNavigate("qahealth")} style={{ background:`${T.accent}15`, border:`1px solid ${T.accent}40`, borderRadius:6, padding:"4px 12px", cursor:"pointer", fontSize:10, color:T.accentL, fontWeight:700, display:"flex", alignItems:"center", gap:5 }}>
+            Full Report <ArrowRight size={10}/>
+          </button>
+        </div>
+        <div style={{ display:"flex", gap:10 }}>
+          {QA_STAGES.map((st,i)=>(
+            <React.Fragment key={st.id}>
+              <div style={{ flex:1, textAlign:"center" }}>
+                <div style={{ fontSize:18, marginBottom:4 }}>{st.icon}</div>
+                <div style={{ height:6, background:T.border, borderRadius:3, marginBottom:5, overflow:"hidden" }}>
+                  <div style={{ height:6, borderRadius:3, width:`${st.autonomyPct}%`, background:st.color }}/>
+                </div>
+                <div style={{ fontSize:11, fontWeight:800, color:st.color }}>{st.autonomyPct}%</div>
+                <div style={{ fontSize:9, color:T.muted }}>{st.label}</div>
+              </div>
+              {i<QA_STAGES.length-1 && <div style={{ display:"flex", alignItems:"center", paddingTop:6 }}><ArrowRight size={12} color={T.dim}/></div>}
+            </React.Fragment>
+          ))}
+        </div>
+      </div>
+
+      {/* ── 4-panel grid ── */}
+      <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:16 }}>
+
+        {/* Top alerts */}
+        <div style={{ background:T.card, border:`1px solid ${T.border}`, borderRadius:12, padding:"16px 18px" }}>
+          <div style={{ fontSize:12, fontWeight:700, color:T.text, marginBottom:12, display:"flex", alignItems:"center", justifyContent:"space-between" }}>
+            <span style={{ display:"flex", alignItems:"center", gap:8 }}><Bell size={13} color={T.red}/> Top Detected Issues</span>
+            <button onClick={()=>onNavigate&&onNavigate("alerts")} style={{ background:"none", border:"none", cursor:"pointer", fontSize:10, color:T.accentL, fontWeight:600, display:"flex", alignItems:"center", gap:4 }}>All <ArrowRight size={10}/></button>
+          </div>
+          {ALERTS_RAW.filter(a=>a.status==="open").slice(0,5).map(a=>{
+            const sc={critical:T.red,high:T.orange,medium:T.yellow,low:T.cyan}[a.severity]||T.muted;
+            return(
+              <div key={a.id} className="row-hover" onClick={()=>window._drillFn&&window._drillFn("alert",a)} style={{ display:"flex", alignItems:"center", gap:8, padding:"7px 6px", borderRadius:6, cursor:"pointer" }}>
+                <div style={{ width:7, height:7, borderRadius:"50%", background:sc, flexShrink:0, animation:a.severity==="critical"?"ping 2s infinite":"none" }}/>
+                <span style={{ fontSize:11, color:T.text, flex:1, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{a.title}</span>
+                <span style={{ fontSize:9, color:sc, fontWeight:700, textTransform:"uppercase", flexShrink:0 }}>{a.severity}</span>
+                <span style={{ fontSize:9, color:T.dim, flexShrink:0 }}>{a.ts}</span>
+              </div>
+            );
+          })}
+        </div>
+
+        {/* Agent fleet */}
+        <div style={{ background:T.card, border:`1px solid ${T.border}`, borderRadius:12, padding:"16px 18px" }}>
+          <div style={{ fontSize:12, fontWeight:700, color:T.text, marginBottom:12, display:"flex", alignItems:"center", justifyContent:"space-between" }}>
+            <span style={{ display:"flex", alignItems:"center", gap:8 }}><Bot size={13} color={T.green}/> QA Agent Fleet</span>
+            <button onClick={()=>onNavigate&&onNavigate("agents")} style={{ background:"none", border:"none", cursor:"pointer", fontSize:10, color:T.accentL, fontWeight:600, display:"flex", alignItems:"center", gap:4 }}>Manage <ArrowRight size={10}/></button>
+          </div>
+          {AGENTS.map(a=>{
+            const sc={running:T.green,idle:T.muted,paused:T.orange}[a.status]||T.muted;
+            return(
+              <div key={a.id} className="row-hover" style={{ display:"flex", alignItems:"center", gap:8, padding:"7px 6px", borderRadius:6, cursor:"pointer" }}>
+                <span style={{ fontSize:14 }}>{a.icon}</span>
+                <span style={{ fontSize:11, color:T.text, flex:1 }}>{a.name}</span>
+                <div style={{ height:4, width:48, background:T.border, borderRadius:2, overflow:"hidden" }}>
+                  <div style={{ height:4, borderRadius:2, width:`${a.successRate}%`, background:a.successRate>=90?T.green:a.successRate>=70?T.yellow:T.red }}/>
+                </div>
+                <span style={{ fontSize:9, color:sc, fontWeight:700, textTransform:"uppercase", width:48, textAlign:"right" }}>{a.status}</span>
+              </div>
+            );
+          })}
+        </div>
+
+        {/* Datasource health */}
+        <div style={{ background:T.card, border:`1px solid ${T.border}`, borderRadius:12, padding:"16px 18px" }}>
+          <div style={{ fontSize:12, fontWeight:700, color:T.text, marginBottom:12, display:"flex", alignItems:"center", justifyContent:"space-between" }}>
+            <span style={{ display:"flex", alignItems:"center", gap:8 }}><Database size={13} color={T.cyan}/> Data Source Health</span>
+            <button onClick={()=>onNavigate&&onNavigate("sources")} style={{ background:"none", border:"none", cursor:"pointer", fontSize:10, color:T.accentL, fontWeight:600, display:"flex", alignItems:"center", gap:4 }}>Details <ArrowRight size={10}/></button>
+          </div>
+          {DATASOURCES.map(ds=>{
+            const sc={healthy:T.green,degraded:T.yellow,offline:T.red}[ds.status]||T.muted;
+            return(
+              <div key={ds.id} className="row-hover" style={{ display:"flex", alignItems:"center", gap:8, padding:"7px 6px", borderRadius:6, cursor:"pointer" }}>
+                <div style={{ width:7, height:7, borderRadius:"50%", background:sc, flexShrink:0 }}/>
+                <span style={{ fontSize:11, color:T.text, flex:1 }}>{ds.name}</span>
+                <span style={{ fontSize:10, color:T.muted }}>{ds.type}</span>
+                <span style={{ fontSize:10, color:ds.latency&&ds.latency>200?T.yellow:T.green, fontFamily:"Consolas,monospace" }}>{ds.latency?`${ds.latency}ms`:"—"}</span>
+                <span style={{ fontSize:9, color:sc, fontWeight:700, textTransform:"uppercase" }}>{ds.status}</span>
+              </div>
+            );
+          })}
+        </div>
+
+        {/* Roadmap progress + pending approvals */}
+        <div style={{ background:T.card, border:`1px solid ${T.border}`, borderRadius:12, padding:"16px 18px" }}>
+          <div style={{ fontSize:12, fontWeight:700, color:T.text, marginBottom:12, display:"flex", alignItems:"center", justifyContent:"space-between" }}>
+            <span style={{ display:"flex", alignItems:"center", gap:8 }}><Rocket size={13} color={T.purple}/> Agentic QE Roadmap</span>
+            <button onClick={()=>onNavigate&&onNavigate("qahealth")} style={{ background:"none", border:"none", cursor:"pointer", fontSize:10, color:T.accentL, fontWeight:600, display:"flex", alignItems:"center", gap:4 }}>Full view <ArrowRight size={10}/></button>
+          </div>
+          {ROADMAP_MILESTONES.map(m=>{
+            const mc={done:T.green,active:T.accent,planned:T.dim}[m.status];
+            return(
+              <div key={m.id} style={{ display:"flex", alignItems:"center", gap:10, padding:"6px 0", borderBottom:`1px solid ${T.border}` }}>
+                <div style={{ width:14, height:14, borderRadius:"50%", background:m.status==="done"?mc:T.card, border:`2px solid ${mc}`, display:"flex", alignItems:"center", justifyContent:"center", flexShrink:0 }}>
+                  {m.status==="done"&&<Check size={8} color={mc}/>}
+                  {m.status==="active"&&<div style={{ width:5, height:5, borderRadius:"50%", background:mc, animation:"ping 2s infinite" }}/>}
+                </div>
+                <span style={{ fontSize:11, color:m.status==="planned"?T.dim:T.text, flex:1 }}>{m.label}</span>
+                {m.status==="active" && (
+                  <div style={{ width:52, height:4, background:T.border, borderRadius:2, overflow:"hidden" }}>
+                    <div style={{ height:4, borderRadius:2, width:`${m.pct}%`, background:mc }}/>
+                  </div>
+                )}
+                <span style={{ fontSize:9, color:mc, fontWeight:700, textTransform:"uppercase", flexShrink:0 }}>{m.status==="done"?"done":m.status==="active"?`${m.pct}%`:"planned"}</span>
+              </div>
+            );
+          })}
+
+          {/* Pending approvals inline */}
+          {pendingGt>0 && (
+            <div style={{ marginTop:12, padding:"10px 12px", background:`${T.yellow}10`, border:`1px solid ${T.yellow}30`, borderRadius:8 }}>
+              <div style={{ fontSize:11, fontWeight:700, color:T.yellow, marginBottom:6, display:"flex", alignItems:"center", gap:6 }}>
+                <Lock size={11}/> {pendingGt} Pending Approval{pendingGt>1?"s":""}
+              </div>
+              {PENDING_APPROVALS.slice(0,2).map(p=>(
+                <div key={p.id} style={{ fontSize:11, color:T.text, marginBottom:6 }}>
+                  <div style={{ marginBottom:4 }}>{p.title}</div>
+                  <div style={{ display:"flex", gap:6 }}>
+                    <button onClick={()=>onNavigate&&onNavigate("gates")} style={{ background:`${T.green}20`, border:`1px solid ${T.green}40`, borderRadius:6, padding:"3px 12px", cursor:"pointer", fontSize:10, color:T.green, fontWeight:700 }}>Review</button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+
+      </div>
+    </div>
+  );
+}
+
+// ─── Run History Tab ──────────────────────────────────────────────────────────
+function RunHistoryTab() {
+  const T = useTheme();
+  const [filter, setFilter] = useState("all");
+  const [search, setSearch] = useState("");
+  const [expanded, setExpanded] = useState(null);
+
+  const rows = RUN_HISTORY.filter(r=>{
+    if(filter!=="all" && r.type!==filter) return false;
+    if(search && !r.name.toLowerCase().includes(search.toLowerCase()) && !r.table.toLowerCase().includes(search.toLowerCase())) return false;
+    return true;
+  });
+
+  const typeColor={rule:T.purple,agent:T.green,workflow:T.accent,gate:T.yellow};
+  const typeIcon ={rule:"✓",agent:"🤖",workflow:"⚡",gate:"🔒"};
+  const resultColor={pass:T.green,fail:T.red,pending:T.yellow};
+
+  const stats=[
+    ["Total Runs", RUN_HISTORY.length, T.text],
+    ["Passed",     RUN_HISTORY.filter(r=>r.result==="pass").length,    T.green],
+    ["Failed",     RUN_HISTORY.filter(r=>r.result==="fail").length,    T.red],
+    ["Pending",    RUN_HISTORY.filter(r=>r.result==="pending").length, T.yellow],
+  ];
+
+  return(
+    <div>
+      {/* Stats row */}
+      <div style={{ display:"grid", gridTemplateColumns:"repeat(4,1fr)", gap:12, marginBottom:18 }}>
+        {stats.map(([l,v,c])=>(
+          <div key={l} style={{ background:T.card, border:`1px solid ${T.border}`, borderRadius:10, padding:"14px 18px" }}>
+            <div style={{ fontSize:26, fontWeight:800, color:c }}>{v}</div>
+            <div style={{ fontSize:11, color:T.muted, marginTop:4 }}>{l}</div>
+          </div>
+        ))}
+      </div>
+
+      {/* Filter bar */}
+      <div style={{ display:"flex", gap:8, marginBottom:14, alignItems:"center" }}>
+        <div style={{ position:"relative", flex:1, maxWidth:260 }}>
+          <Search size={12} color={T.dim} style={{ position:"absolute", left:10, top:"50%", transform:"translateY(-50%)" }}/>
+          <input value={search} onChange={e=>setSearch(e.target.value)} placeholder="Search runs…" style={{ width:"100%", background:T.bg, border:`1px solid ${T.border2}`, borderRadius:7, padding:"7px 10px 7px 28px", color:T.text, fontSize:11, outline:"none" }}/>
+        </div>
+        {["all","rule","agent","workflow","gate"].map(f=>(
+          <button key={f} onClick={()=>setFilter(f)} style={{ padding:"6px 12px", borderRadius:6, border:`1px solid ${filter===f?(typeColor[f]||T.accent)+"60":T.border2}`, background:filter===f?`${typeColor[f]||T.accent}15`:T.bg, color:filter===f?typeColor[f]||T.accentL:T.muted, fontSize:10, fontWeight:700, textTransform:"uppercase", cursor:"pointer" }}>
+            {f==="all"?"All":f}
+          </button>
+        ))}
+      </div>
+
+      {/* Table */}
+      <div style={{ background:T.card, border:`1px solid ${T.border}`, borderRadius:10, overflow:"hidden" }}>
+        <div style={{ display:"grid", gridTemplateColumns:"72px 90px minmax(200px,1fr) 130px 110px 80px 80px 28px", gap:12, padding:"10px 18px", background:T.isDark?"#0A0C10":T.border, borderBottom:`1px solid ${T.border}` }}>
+          {["ID","Type","Name / Table","Source","Timestamp","Duration","Result",""].map(h=>(
+            <div key={h} style={{ fontSize:10, color:T.dim, fontWeight:700, letterSpacing:"0.06em", textTransform:"uppercase", whiteSpace:"nowrap" }}>{h}</div>
+          ))}
+        </div>
+        {rows.map(r=>(
+          <div key={r.id}>
+            <div onClick={()=>setExpanded(expanded===r.id?null:r.id)} className="row-hover" style={{ display:"grid", gridTemplateColumns:"72px 90px minmax(200px,1fr) 130px 110px 80px 80px 28px", gap:12, padding:"11px 18px", borderBottom:`1px solid ${T.border}`, cursor:"pointer", background:expanded===r.id?`${T.accent}08`:"transparent" }}>
+              <div style={{ fontSize:10, color:T.muted, fontFamily:"'Consolas', 'Cascadia Code', 'Fira Code', 'Courier New', monospace" }}>{r.id}</div>
+              <div style={{ display:"flex", alignItems:"center", gap:5 }}>
+                <span style={{ fontSize:11 }}>{typeIcon[r.type]}</span>
+                <span style={{ fontSize:9, color:typeColor[r.type]||T.muted, background:`${typeColor[r.type]||T.muted}15`, border:`1px solid ${typeColor[r.type]||T.muted}30`, borderRadius:4, padding:"1px 5px", fontWeight:700, textTransform:"uppercase" }}>{r.type}</span>
+              </div>
+              <div>
+                <div style={{ fontSize:11, fontWeight:600, color:T.text, whiteSpace:"nowrap", overflow:"hidden", textOverflow:"ellipsis" }}>{r.name}</div>
+                {r.table!=="—"&&<div style={{ fontSize:9, color:T.muted, fontFamily:"'Consolas', 'Cascadia Code', 'Fira Code', 'Courier New', monospace" }}>{r.table}</div>}
+              </div>
+              <div style={{ fontSize:10, color:T.muted }}>{r.source}</div>
+              <div style={{ fontSize:10, color:T.muted }}>{r.ts}</div>
+              <div style={{ fontSize:10, color:T.muted, fontFamily:"'Consolas', 'Cascadia Code', 'Fira Code', 'Courier New', monospace" }}>{r.duration}</div>
+              <div style={{ fontSize:11, fontWeight:700, color:resultColor[r.result]||T.muted, textTransform:"uppercase" }}>{r.result}</div>
+              <div style={{ color:T.dim }}>{expanded===r.id?<ChevronUp size={13}/>:<ChevronDown size={13}/>}</div>
+            </div>
+            {expanded===r.id&&(
+              <div style={{ padding:"12px 18px 16px 92px", background:T.isDark?`${T.border}30`:`${T.border}60`, borderBottom:`1px solid ${T.border}` }}>
+                <div style={{ fontSize:10, color:T.muted, marginBottom:6, fontWeight:700, letterSpacing:"0.05em", textTransform:"uppercase" }}>Execution Detail</div>
+                <div style={{ fontSize:12, color:T.text, lineHeight:1.8 }}>{r.detail}</div>
+              </div>
+            )}
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+// ─── Rule Test Runner Tab ─────────────────────────────────────────────────────
+function RuleTestRunnerTab() {
+  const T = useTheme();
+  const [selectedRule, setSelectedRule] = useState(INIT_RULES[0]);
+  const [running, setRunning] = useState(false);
+  const [result, setResult] = useState(null);
+  const [aiExplain, setAiExplain] = useState("");
+  const [aiLoading, setAiLoading] = useState(false);
+
+  const runTest = async () => {
+    setRunning(true); setResult(null); setAiExplain("");
+    await new Promise(r=>setTimeout(r,1200));
+    const sample = RULE_TEST_SAMPLES[selectedRule.type];
+    let res;
+    if(selectedRule.type==="not_null"){
+      const nullRows = sample.rows.filter(r=>r[sample.cols[0]]===null);
+      res = { pass:nullRows.length===0, summary:`Found ${nullRows.length} NULL value(s) in ${selectedRule.column}`, rows:sample.rows, nullCount:nullRows.length };
+    } else if(selectedRule.type==="row_count"){
+      const m=sample.meta;
+      res = { pass:m.today>=m.threshold, summary:`Today: ${m.today.toLocaleString()} rows | 7-day avg: ${m.avg7d.toLocaleString()} | Threshold: ${m.threshold.toLocaleString()}`, meta:m };
+    } else if(selectedRule.type==="freshness"){
+      const m=sample.meta;
+      res = { pass:m.ageHours<=m.thresholdHours, summary:`Last update ${m.ageHours}h ago. Threshold: ${m.thresholdHours}h. Last timestamp: ${m.lastUpdate}`, meta:m };
+    } else if(selectedRule.type==="unique"){
+      const dupes=sample.dupes;
+      res = { pass:dupes.length===0, summary:`${dupes.length} duplicate group(s) found on (${selectedRule.column})`, dupes };
+    } else {
+      res = { pass:Math.random()>0.4, summary:"Custom rule executed. See details below." };
+    }
+    setResult(res);
+    setRunning(false);
+    // Auto-explain failures
+    if(!res.pass) await explainFailure(res);
+  };
+
+  const explainFailure = async (res) => {
+    setAiLoading(true);
+    try {
+      const resp = await fetch("https://api.anthropic.com/v1/messages",{
+        method:"POST", headers:{"Content-Type":"application/json"},
+        body: JSON.stringify({
+          model:"claude-sonnet-4-20250514", max_tokens:400,
+          system:"You are a data quality AI for Intentwise. Given a failed validation rule test, explain what the failure means in plain English, its likely root cause, and a concise recommended fix. Be specific and actionable. 2-3 sentences max.",
+          messages:[{role:"user",content:`Rule: ${selectedRule.name} (${selectedRule.type}) on ${selectedRule.table}.${selectedRule.column}. Result: ${res.summary}. Explain the failure and recommend a fix.`}]
+        })
+      });
+      const data = await resp.json();
+      setAiExplain(data.content?.find(b=>b.type==="text")?.text || "");
+    } catch(e){ setAiExplain(""); }
+    setAiLoading(false);
+  };
+
+  return(
+    <div style={{ display:"grid", gridTemplateColumns:"280px 1fr", gap:16, height:"calc(100vh - 200px)", minHeight:500 }}>
+      {/* Rule selector */}
+      <div style={{ background:T.card, border:`1px solid ${T.border}`, borderRadius:10, overflow:"hidden", display:"flex", flexDirection:"column" }}>
+        <div style={{ padding:"12px 16px", borderBottom:`1px solid ${T.border}`, fontSize:11, fontWeight:700, color:T.text }}>Select Rule to Test</div>
+        <div style={{ flex:1, overflowY:"auto" }}>
+          {INIT_RULES.map(r=>(
+            <div key={r.id} onClick={()=>{setSelectedRule(r);setResult(null);setAiExplain("");}} style={{ padding:"10px 14px", borderBottom:`1px solid ${T.border}`, cursor:"pointer", background:selectedRule.id===r.id?`${T.accent}12`:"transparent", borderLeft:`3px solid ${selectedRule.id===r.id?T.accent:"transparent"}` }}>
+              <div style={{ fontSize:11, fontWeight:selectedRule.id===r.id?700:500, color:selectedRule.id===r.id?T.text:T.muted }}>{r.name}</div>
+              <div style={{ fontSize:9, color:T.dim, marginTop:2 }}>{r.table} · {r.type}</div>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      {/* Test panel */}
+      <div style={{ display:"flex", flexDirection:"column", gap:14 }}>
+        {/* Rule detail */}
+        <div style={{ background:T.card, border:`1px solid ${T.border}`, borderRadius:10, padding:"16px 20px" }}>
+          <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom:12 }}>
+            <div>
+              <div style={{ fontSize:13, fontWeight:700, color:T.text }}>{selectedRule.name}</div>
+              <div style={{ fontSize:10, color:T.muted, marginTop:2 }}>{selectedRule.source} → {selectedRule.table} · column: <code style={{color:T.cyan,fontSize:10}}>{selectedRule.column}</code></div>
+            </div>
+            <button onClick={runTest} disabled={running} style={{ background:T.accent, border:"none", borderRadius:8, padding:"9px 22px", cursor:"pointer", color:"white", fontSize:12, fontWeight:700, display:"flex", alignItems:"center", gap:8 }}>
+              {running?<><RefreshCw size={13} style={{animation:"spin 1s linear infinite"}}/>Running…</>:<><TestTube2 size={13}/>Run Test</>}
+            </button>
+          </div>
+          {/* SQL preview */}
+          <div style={{ background:T.isDark?"#0A0C10":T.border, borderRadius:7, padding:"10px 14px", fontFamily:"'Consolas', 'Cascadia Code', 'Fira Code', 'Courier New', monospace", fontSize:11, color:T.cyan, lineHeight:1.8 }}>
+            {selectedRule.type==="not_null"   &&`SELECT COUNT(*) FROM ${selectedRule.table} WHERE ${selectedRule.column} IS NULL;`}
+            {selectedRule.type==="row_count"  &&`SELECT COUNT(*) FROM ${selectedRule.table} WHERE report_date = CURRENT_DATE;`}
+            {selectedRule.type==="freshness"  &&`SELECT MAX(${selectedRule.column}) as latest FROM ${selectedRule.table};`}
+            {selectedRule.type==="unique"     &&`SELECT ${selectedRule.column}, COUNT(*) FROM ${selectedRule.table} GROUP BY ${selectedRule.column} HAVING COUNT(*)>1;`}
+            {selectedRule.type==="custom_sql" &&`-- Custom SQL assertion for ${selectedRule.table}`}
+            {selectedRule.type==="regex"      &&`SELECT COUNT(*) FROM ${selectedRule.table} WHERE ${selectedRule.column} !~ '<pattern>';`}
+            {!["not_null","row_count","freshness","unique","custom_sql","regex"].includes(selectedRule.type)&&`-- ${selectedRule.type} check on ${selectedRule.table}`}
+          </div>
+        </div>
+
+        {/* Result */}
+        {result&&(
+          <div style={{ background:T.card, border:`1px solid ${result.pass?T.green:T.red}40`, borderRadius:10, padding:"18px 20px" }}>
+            <div style={{ display:"flex", alignItems:"center", gap:10, marginBottom:14 }}>
+              <div style={{ width:36, height:36, borderRadius:9, background:`${result.pass?T.green:T.red}20`, display:"flex", alignItems:"center", justifyContent:"center" }}>
+                {result.pass?<CheckCircle size={18} color={T.green}/>:<XCircle size={18} color={T.red}/>}
+              </div>
+              <div>
+                <div style={{ fontSize:14, fontWeight:800, color:result.pass?T.green:T.red }}>{result.pass?"PASSED":"FAILED"}</div>
+                <div style={{ fontSize:11, color:T.muted, marginTop:2 }}>{result.summary}</div>
+              </div>
+            </div>
+
+            {/* Sample data table */}
+            {result.rows&&(
+              <div style={{ marginBottom:12 }}>
+                <div style={{ fontSize:10, color:T.muted, marginBottom:6, fontWeight:700, letterSpacing:"0.06em" }}>SAMPLE DATA</div>
+                <div style={{ background:T.isDark?"#0A0C10":T.border, borderRadius:7, overflow:"hidden" }}>
+                  <div style={{ display:"grid", gridTemplateColumns:`repeat(${Object.keys(result.rows[0]).length},1fr)`, background:T.isDark?"#0F1117":"#E2E8F0", padding:"6px 12px" }}>
+                    {Object.keys(result.rows[0]).map(k=><div key={k} style={{ fontSize:9, color:T.dim, fontWeight:700, textTransform:"uppercase" }}>{k}</div>)}
+                  </div>
+                  {result.rows.map((row,i)=>{
+                    const isNull=Object.values(row).some(v=>v===null);
+                    return(
+                      <div key={i} style={{ display:"grid", gridTemplateColumns:`repeat(${Object.keys(row).length},1fr)`, padding:"7px 12px", borderTop:`1px solid ${T.border}`, background:isNull?`${T.red}10`:"transparent" }}>
+                        {Object.values(row).map((v,j)=><div key={j} style={{ fontSize:11, color:v===null?T.red:T.text, fontFamily:"'Consolas', 'Cascadia Code', 'Fira Code', 'Courier New', monospace" }}>{v===null?"NULL":String(v)}</div>)}
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
+
+            {result.dupes&&result.dupes.length>0&&(
+              <div style={{ marginBottom:12 }}>
+                <div style={{ fontSize:10, color:T.muted, marginBottom:6, fontWeight:700, letterSpacing:"0.06em" }}>DUPLICATE GROUPS</div>
+                {result.dupes.map((d,i)=>(
+                  <div key={i} style={{ background:`${T.red}10`, border:`1px solid ${T.red}25`, borderRadius:7, padding:"8px 12px", marginBottom:6, fontFamily:"'Consolas', 'Cascadia Code', 'Fira Code', 'Courier New', monospace", fontSize:11, color:T.text }}>
+                    {Object.entries(d).map(([k,v])=><span key={k} style={{ marginRight:12 }}>{k}: <strong style={{color:k==="count"?T.red:T.cyan}}>{v}</strong></span>)}
+                  </div>
+                ))}
+              </div>
+            )}
+
+            {/* AI explanation */}
+            {(aiExplain||aiLoading)&&(
+              <div style={{ background:`${T.purple}10`, border:`1px solid ${T.purple}30`, borderRadius:8, padding:"12px 14px" }}>
+                <div style={{ display:"flex", alignItems:"center", gap:7, marginBottom:6 }}>
+                  <BrainCircuit size={13} color={T.purple}/>
+                  <span style={{ fontSize:10, fontWeight:700, color:T.purple, letterSpacing:"0.06em" }}>AI EXPLANATION</span>
+                </div>
+                {aiLoading
+                  ?<div style={{ display:"flex", gap:4 }}>{[0,1,2].map(i=><span key={i} style={{ width:6,height:6,borderRadius:"50%",background:T.purple,animation:`bounce 1.2s ${i*0.2}s infinite`,display:"inline-block" }}/>)}</div>
+                  :<div style={{ fontSize:11, color:T.text, lineHeight:1.7 }}>{aiExplain}</div>
+                }
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ─── AI Root Cause Tab ────────────────────────────────────────────────────────
+function RootCauseTab() {
+  const T = useTheme();
+  const [loading, setLoading] = useState(false);
+  const [groups, setGroups] = useState(CORRELATED_GROUPS);
+  const [expanded, setExpanded] = useState("CG-001");
+  const [aiAnalysis, setAiAnalysis] = useState({});
+  const [analyzing, setAnalyzing] = useState(null);
+
+  const analyzeWithAI = async (group) => {
+    if(aiAnalysis[group.id]||analyzing===group.id) return;
+    setAnalyzing(group.id);
+    try {
+      const res = await fetch("https://api.anthropic.com/v1/messages",{
+        method:"POST", headers:{"Content-Type":"application/json"},
+        body: JSON.stringify({
+          model:"claude-sonnet-4-20250514", max_tokens:600,
+          system:"You are a data pipeline root cause analyst for Intentwise. Given a correlated alert group, provide a deeper technical analysis: exact timeline of failure, cascade path, probability of recurrence, and a step-by-step remediation plan with estimated time for each step. Be concrete and specific. Format with clear sections.",
+          messages:[{role:"user",content:`Analyze this correlated alert group:
+Title: ${group.title}
+Root cause: ${group.rootCause}
+Alerts: ${group.alerts.join(", ")}
+Affected systems: ${group.affectedSystems.join(", ")}
+Pattern: ${group.pattern}`}]
+        })
+      });
+      const data = await res.json();
+      const text = data.content?.find(b=>b.type==="text")?.text||"Analysis unavailable.";
+      setAiAnalysis(p=>({...p,[group.id]:text}));
+    } catch(e){ setAiAnalysis(p=>({...p,[group.id]:"Analysis failed. Please retry."})); }
+    setAnalyzing(null);
+  };
+
+  const renderText = (txt) => txt.split(/(\*\*[^*]+\*\*|`[^`]+`)/g).map((part,i)=>{
+    if(part.startsWith("**")&&part.endsWith("**")) return <strong key={i} style={{color:T.text}}>{part.slice(2,-2)}</strong>;
+    if(part.startsWith("`")&&part.endsWith("`"))   return <code key={i} style={{background:T.isDark?"#1E2330":T.border,color:T.cyan,borderRadius:3,padding:"1px 5px",fontSize:10}}>{part.slice(1,-1)}</code>;
+    return part;
+  });
+
+  return(
+    <div>
+      <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom:18 }}>
+        <div style={{ display:"flex", alignItems:"center", gap:10 }}>
+          <div style={{ width:34, height:34, borderRadius:9, background:`${T.purple}20`, display:"flex", alignItems:"center", justifyContent:"center" }}><BrainCircuit size={16} color={T.purple}/></div>
+          <div>
+            <div style={{ fontSize:13, fontWeight:700, color:T.text }}>AI Root Cause Analyzer</div>
+            <div style={{ fontSize:11, color:T.muted }}>Correlated alert groups · {groups.length} active patterns</div>
+          </div>
+        </div>
+        <div style={{ display:"flex", alignItems:"center", gap:8, padding:"8px 14px", background:`${T.purple}10`, border:`1px solid ${T.purple}30`, borderRadius:8 }}>
+          <Sparkles size={12} color={T.purple}/>
+          <span style={{ fontSize:11, color:T.purple, fontWeight:600 }}>AI correlation engine active</span>
+        </div>
+      </div>
+
+      {/* Ungrouped alerts reminder */}
+      <div style={{ display:"flex", gap:8, marginBottom:16, flexWrap:"wrap" }}>
+        {ALERTS_RAW.filter(a=>!CORRELATED_GROUPS.flatMap(g=>g.alerts).includes(a.id)).map(a=>(
+          <div key={a.id} style={{ display:"flex", alignItems:"center", gap:6, padding:"4px 10px", background:T.card, border:`1px solid ${T.border}`, borderRadius:20 }}>
+            <div style={{ width:6, height:6, borderRadius:"50%", background:{critical:T.red,high:T.orange,medium:T.yellow,low:T.cyan}[a.severity]||T.muted }}/>
+            <span style={{ fontSize:10, color:T.muted }}>{a.id}</span>
+            <span style={{ fontSize:10, color:T.text }}>{a.title.slice(0,32)}…</span>
+            <span style={{ fontSize:9, color:T.muted, background:`${T.border}`, borderRadius:4, padding:"1px 6px" }}>standalone</span>
+          </div>
+        ))}
+      </div>
+
+      {groups.map(g=>(
+        <div key={g.id} style={{ background:T.card, border:`1px solid ${T.border}`, borderRadius:12, marginBottom:14, overflow:"hidden" }}>
+          {/* Group header */}
+          <div onClick={()=>setExpanded(expanded===g.id?null:g.id)} style={{ padding:"16px 20px", cursor:"pointer", display:"flex", alignItems:"flex-start", gap:14, borderBottom:expanded===g.id?`1px solid ${T.border}`:"none" }}>
+            <div style={{ width:42, height:42, borderRadius:11, background:`${T.purple}20`, border:`1px solid ${T.purple}40`, display:"flex", alignItems:"center", justifyContent:"center", flexShrink:0, fontSize:20 }}>🧠</div>
+            <div style={{ flex:1 }}>
+              <div style={{ display:"flex", alignItems:"center", gap:10, marginBottom:6 }}>
+                <span style={{ fontSize:13, fontWeight:700, color:T.text }}>{g.title}</span>
+                <span style={{ fontSize:10, color:T.purple, background:`${T.purple}15`, border:`1px solid ${T.purple}30`, borderRadius:12, padding:"2px 9px", fontWeight:700 }}>{g.confidence}% confidence</span>
+                <span style={{ fontSize:9, color:T.muted, fontFamily:"'Consolas', 'Cascadia Code', 'Fira Code', 'Courier New', monospace" }}>{g.id}</span>
+              </div>
+              <div style={{ display:"flex", gap:6, flexWrap:"wrap", marginBottom:6 }}>
+                {g.alerts.map(id=>{
+                  const a=ALERTS_RAW.find(x=>x.id===id);
+                  const sc={critical:T.red,high:T.orange,medium:T.yellow}[a?.severity]||T.muted;
+                  return <span key={id} style={{ fontSize:10, color:sc, background:`${sc}15`, border:`1px solid ${sc}30`, borderRadius:6, padding:"1px 8px", fontWeight:600 }}>{id}</span>;
+                })}
+              </div>
+              <div style={{ fontSize:11, color:T.muted }}>{g.rootCause}</div>
+            </div>
+            <div style={{ color:T.dim, flexShrink:0 }}>{expanded===g.id?<ChevronUp size={14}/>:<ChevronDown size={14}/>}</div>
+          </div>
+
+          {/* Expanded detail */}
+          {expanded===g.id&&(
+            <div style={{ padding:"18px 20px" }}>
+              <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:14, marginBottom:14 }}>
+                {/* Affected systems */}
+                <div style={{ background:T.isDark?"#0A0C10":T.border, borderRadius:8, padding:"12px 14px" }}>
+                  <div style={{ fontSize:10, color:T.muted, marginBottom:8, fontWeight:700, letterSpacing:"0.06em" }}>AFFECTED SYSTEMS</div>
+                  {g.affectedSystems.map(s=>(
+                    <div key={s} style={{ display:"flex", alignItems:"center", gap:7, padding:"4px 0" }}>
+                      <div style={{ width:5, height:5, borderRadius:"50%", background:T.red }}/>
+                      <span style={{ fontSize:11, color:T.text, fontFamily:"'Consolas', 'Cascadia Code', 'Fira Code', 'Courier New', monospace" }}>{s}</span>
+                    </div>
+                  ))}
+                </div>
+                {/* Pattern note */}
+                <div style={{ background:`${T.yellow}08`, border:`1px solid ${T.yellow}25`, borderRadius:8, padding:"12px 14px" }}>
+                  <div style={{ fontSize:10, color:T.yellow, marginBottom:6, fontWeight:700, letterSpacing:"0.06em" }}>PATTERN</div>
+                  <div style={{ fontSize:11, color:T.text, lineHeight:1.6 }}>{g.pattern}</div>
+                </div>
+              </div>
+
+              {/* Suggested fix */}
+              <div style={{ background:`${T.green}08`, border:`1px solid ${T.green}25`, borderRadius:8, padding:"14px", marginBottom:14 }}>
+                <div style={{ fontSize:10, color:T.green, marginBottom:8, fontWeight:700, letterSpacing:"0.06em" }}>SUGGESTED FIX</div>
+                {g.suggestedFix.split(". ").filter(Boolean).map((step,i)=>(
+                  <div key={i} style={{ display:"flex", gap:8, marginBottom:5 }}>
+                    <span style={{ fontSize:11, color:T.green, fontWeight:700, flexShrink:0 }}>{i+1}.</span>
+                    <span style={{ fontSize:11, color:T.text, lineHeight:1.6 }}>{step}.</span>
+                  </div>
+                ))}
+              </div>
+
+              {/* Deep AI analysis */}
+              <div>
+                {!aiAnalysis[g.id]&&analyzing!==g.id&&(
+                  <button onClick={()=>analyzeWithAI(g)} style={{ background:`${T.purple}18`, border:`1px solid ${T.purple}40`, borderRadius:8, padding:"9px 20px", cursor:"pointer", color:T.purple, fontSize:12, fontWeight:700, display:"flex", alignItems:"center", gap:8 }}>
+                    <BrainCircuit size={14}/> Deep AI Analysis
+                  </button>
+                )}
+                {analyzing===g.id&&(
+                  <div style={{ display:"flex", alignItems:"center", gap:10, padding:"12px 14px", background:`${T.purple}08`, borderRadius:8 }}>
+                    <RefreshCw size={13} color={T.purple} style={{animation:"spin 1s linear infinite"}}/>
+                    <span style={{ fontSize:11, color:T.purple }}>Analyzing cascade pattern…</span>
+                  </div>
+                )}
+                {aiAnalysis[g.id]&&(
+                  <div style={{ background:`${T.purple}08`, border:`1px solid ${T.purple}25`, borderRadius:8, padding:"14px 16px" }}>
+                    <div style={{ display:"flex", alignItems:"center", gap:7, marginBottom:10 }}>
+                      <BrainCircuit size={13} color={T.purple}/>
+                      <span style={{ fontSize:10, fontWeight:700, color:T.purple, letterSpacing:"0.06em" }}>DEEP AI ANALYSIS</span>
+                    </div>
+                    <div style={{ fontSize:11, color:T.text, lineHeight:1.8 }}>
+                      {aiAnalysis[g.id].split("\n").map((line,i)=><div key={i}>{renderText(line)}</div>)}
+                    </div>
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
+        </div>
+      ))}
+    </div>
+  );
+}
+
+// ─── AI Chat Panel ────────────────────────────────────────────────────────────
+function AIChatPanel({ alert, onClose }) {
+  const [messages, setMessages] = useState([
+    { role:"assistant", content:`I've analyzed **${alert.title}** on \`${alert.table}\`.\n\n${alert.aiSuggestion}\n\nWould you like me to take action, or do you want more details?` }
+  ]);
+  const [input, setInput] = useState("");
+  const [loading, setLoading] = useState(false);
+  const bottomRef = useRef(null);
+
+  useEffect(() => { bottomRef.current?.scrollIntoView({ behavior:"smooth" }); }, [messages]);
+
+  const send = async () => {
+    if (!input.trim() || loading) return;
+    const userMsg = input.trim();
+    setInput("");
+    setMessages(p => [...p, { role:"user", content: userMsg }]);
+    setLoading(true);
+    try {
+      const res = await fetch("https://api.anthropic.com/v1/messages", {
+        method:"POST",
+        headers:{ "Content-Type":"application/json" },
+        body: JSON.stringify({
+          model:"claude-sonnet-4-20250514",
+          max_tokens:1000,
+          system:`You are an expert Data QE AI agent for Intentwise. You help monitor, triage, and fix data pipeline issues. Be concise, technical, and actionable. The current alert context: ID=${alert.id}, Severity=${alert.severity}, Source=${alert.source}, Table=${alert.table}, Rule=${alert.rule}, Issue="${alert.title}". Provide specific, executable remediation steps. Format code in backticks.`,
+          messages: [...messages, { role:"user", content: userMsg }].map(m=>({ role:m.role, content:m.content }))
+        })
+      });
+      const data = await res.json();
+      const text = data.content?.find(b=>b.type==="text")?.text || "Unable to get response.";
+      setMessages(p => [...p, { role:"assistant", content: text }]);
+    } catch {
+      setMessages(p => [...p, { role:"assistant", content:"API error. Please try again." }]);
+    }
+    setLoading(false);
+  };
+
+  const renderText = (txt) => txt.split(/(\*\*[^*]+\*\*|`[^`]+`)/g).map((part, i) => {
+    if (part.startsWith("**") && part.endsWith("**")) return <strong key={i} style={{color:C.text}}>{part.slice(2,-2)}</strong>;
+    if (part.startsWith("`") && part.endsWith("`")) return <code key={i} style={{background:"#1E2330",color:C.cyan,borderRadius:3,padding:"1px 5px",fontSize:11}}>{part.slice(1,-1)}</code>;
+    return part;
+  });
+
+  return (
+    <div style={{ position:"fixed", right:0, top:0, bottom:0, width:420, background:C.surface, borderLeft:`1px solid ${C.border2}`, zIndex:50, display:"flex", flexDirection:"column" }}>
+      {/* Header */}
+      <div style={{ padding:"16px 20px", borderBottom:`1px solid ${C.border}`, display:"flex", alignItems:"center", justifyContent:"space-between" }}>
+        <div style={{ display:"flex", alignItems:"center", gap:10 }}>
+          <div style={{ width:32, height:32, borderRadius:8, background:`${C.purple}20`, display:"flex", alignItems:"center", justifyContent:"center" }}>
+            <Bot size={16} color={C.purple} />
+          </div>
+          <div>
+            <div style={{ fontSize:12, fontWeight:700, color:C.text }}>AI Agent Assistant</div>
+            <div style={{ fontSize:10, color:C.green, display:"flex", alignItems:"center", gap:4 }}><Dot status="running" /> Live analysis</div>
+          </div>
+        </div>
+        <button onClick={onClose} style={{ background:"none", border:"none", cursor:"pointer", color:C.muted, padding:4 }}><X size={16} /></button>
+      </div>
+
+      {/* Alert Context */}
+      <div style={{ margin:"12px 16px 0", padding:"10px 12px", background:`${C.border}60`, borderRadius:8, borderLeft:`3px solid ${SEVERITY[alert.severity]}` }}>
+        <div style={{ fontSize:10, color:C.muted, marginBottom:3 }}>ANALYZING ALERT {alert.id}</div>
+        <div style={{ fontSize:12, color:C.text, fontWeight:600 }}>{alert.title}</div>
+        <div style={{ fontSize:11, color:C.muted, marginTop:2 }}>{alert.source} → {alert.table}</div>
+      </div>
+
+      {/* Messages */}
+      <div style={{ flex:1, overflowY:"auto", padding:"12px 16px", display:"flex", flexDirection:"column", gap:12 }}>
+        {messages.map((m, i) => (
+          <div key={i} style={{ display:"flex", gap:8, flexDirection: m.role==="user" ? "row-reverse" : "row" }}>
+            <div style={{ width:28, height:28, borderRadius:7, background: m.role==="user" ? `${C.accent}30` : `${C.purple}25`, display:"flex", alignItems:"center", justifyContent:"center", flexShrink:0 }}>
+              {m.role==="user" ? <span style={{fontSize:11,color:C.accentL}}>You</span> : <Bot size={13} color={C.purple} />}
+            </div>
+            <div style={{ maxWidth:"82%", background: m.role==="user" ? `${C.accent}18` : C.card, border:`1px solid ${C.border}`, borderRadius:8, padding:"9px 12px", fontSize:12, color:C.text, lineHeight:1.7 }}>
+              {m.content.split("\n").map((line, j) => <div key={j}>{renderText(line)}</div>)}
+            </div>
+          </div>
+        ))}
+        {loading && (
+          <div style={{ display:"flex", gap:8, alignItems:"center" }}>
+            <div style={{ width:28, height:28, borderRadius:7, background:`${C.purple}25`, display:"flex", alignItems:"center", justifyContent:"center" }}><Bot size={13} color={C.purple} /></div>
+            <div style={{ background:C.card, border:`1px solid ${C.border}`, borderRadius:8, padding:"9px 14px" }}>
+              <span style={{ display:"inline-flex", gap:4 }}>
+                {[0,1,2].map(i=><span key={i} style={{ width:6, height:6, borderRadius:"50%", background:C.purple, animation:`bounce 1.2s ${i*0.2}s infinite` }} />)}
+              </span>
+            </div>
+          </div>
+        )}
+        <div ref={bottomRef} />
+      </div>
+
+      {/* Auto-fix pill */}
+      {alert.canAutoFix && (
+        <div style={{ margin:"0 16px", padding:"10px 14px", background:`${C.green}10`, border:`1px solid ${C.green}40`, borderRadius:8, display:"flex", alignItems:"center", justifyContent:"space-between" }}>
+          <div style={{ display:"flex", alignItems:"center", gap:8 }}>
+            <Wrench size={13} color={C.green} />
+            <span style={{ fontSize:11, color:C.green, fontWeight:600 }}>Auto-fix available</span>
+          </div>
+          <button style={{ background:`${C.green}20`, border:`1px solid ${C.green}50`, borderRadius:6, padding:"4px 12px", fontSize:11, color:C.green, cursor:"pointer", fontWeight:700 }}>
+            Run Fix
+          </button>
+        </div>
+      )}
+
+      {/* Input */}
+      <div style={{ padding:"12px 16px", borderTop:`1px solid ${C.border}`, display:"flex", gap:8 }}>
+        <input
+          value={input}
+          onChange={e=>setInput(e.target.value)}
+          onKeyDown={e=>e.key==="Enter" && send()}
+          placeholder="Ask about this alert…"
+          style={{ flex:1, background:C.bg, border:`1px solid ${C.border2}`, borderRadius:8, padding:"8px 12px", color:C.text, fontSize:12, outline:"none" }}
+        />
+        <button onClick={send} disabled={loading} style={{ background:C.accent, border:"none", borderRadius:8, padding:"8px 14px", cursor:"pointer", color:"white", display:"flex", alignItems:"center" }}>
+          <Zap size={14} />
+        </button>
+      </div>
+    </div>
+  );
+}
+
+// ─── Alert Row ────────────────────────────────────────────────────────────────
+function AlertRow({ alert, onAIClick, onDrill, onResolve, onAutoFix, onTriage, selected }) {
+  const [expanded, setExpanded] = useState(false);
+  const [fixing, setFixing] = useState(false);
+  const isResolved = alert.status === "resolved";
+  const statusColor = { open:C.red, triaged:C.yellow, resolved:C.green }[alert.status] || C.muted;
+
+  const handleAutoFix = async (e) => {
+    e.stopPropagation();
+    setFixing(true);
+    await new Promise(r => setTimeout(r, 1800)); // simulate fix running
+    onAutoFix && onAutoFix(alert.id);
+    setFixing(false);
+  };
+
+  const handleResolve = (e) => {
+    e.stopPropagation();
+    onResolve && onResolve(alert.id);
+  };
+
+  const handleInvestigate = (e) => {
+    e.stopPropagation();
+    onTriage && onTriage(alert.id);
+    onDrill && onDrill("alert", alert);
+  };
+
+  return (
+    <div style={{ borderBottom:`1px solid ${C.border}`, background: selected ? `${C.accent}08` : isResolved ? `${C.green}04` : "transparent", transition:"background 0.15s", opacity: isResolved ? 0.7 : 1 }}>
+      <div
+        onClick={()=>setExpanded(p=>!p)}
+        className="row-hover"
+        style={{ display:"flex", alignItems:"center", gap:14, padding:"12px 18px", cursor:"pointer" }}
+      >
+        <Dot status={alert.severity} />
+        <div style={{ width:62, flexShrink:0 }}><SevBadge sev={alert.severity} /></div>
+        <div style={{ flex:1, minWidth:0 }}>
+          <div onClick={e=>{e.stopPropagation();onDrill&&onDrill("alert",alert);}} style={{ fontSize:13, fontWeight:600, color:C.accentL, whiteSpace:"nowrap", overflow:"hidden", textOverflow:"ellipsis", cursor:"pointer", textDecoration:"underline", textDecorationColor:`${C.accentL}50`, textUnderlineOffset:3 }}>{alert.title}</div>
+          <div style={{ fontSize:11, color:C.muted, marginTop:3 }}>{alert.source} · <code style={{color:C.dim,fontSize:11,fontFamily:'Consolas,monospace'}}>{alert.table}</code> · {alert.rule}</div>
+        </div>
+        <div style={{ fontSize:11, color:C.muted, flexShrink:0, width:72, textAlign:"right" }}>{alert.ts}</div>
+        <span style={{ color:statusColor, fontSize:11, fontWeight:700, letterSpacing:"0.04em", textTransform:"uppercase", flexShrink:0, width:72, textAlign:"right" }}>{alert.autoFixed?"auto-fixed":alert.status}</span>
+        <button
+          onClick={e=>{e.stopPropagation();onAIClick(alert);}}
+          style={{ background:`${C.purple}20`, border:`1px solid ${C.purple}40`, borderRadius:6, padding:"4px 10px", cursor:"pointer", display:"flex", alignItems:"center", gap:5, flexShrink:0 }}
+        >
+          <Bot size={11} color={C.purple} />
+          <span style={{ fontSize:10, color:C.purple, fontWeight:600 }}>AI</span>
+        </button>
+        <span style={{ color:C.dim }}>{expanded ? <ChevronUp size={14}/> : <ChevronDown size={14}/>}</span>
+      </div>
+
+      {expanded && (
+        <div style={{ padding:"0 16px 14px 40px", display:"flex", gap:12 }}>
+          <div style={{ flex:1, background:`${C.border}40`, borderRadius:8, padding:"10px 14px", borderLeft:`3px solid ${SEVERITY[alert.severity]}` }}>
+            <div style={{ fontSize:10, color:C.muted, marginBottom:6, fontWeight:700, letterSpacing:"0.08em" }}>AI SUGGESTION</div>
+            <div style={{ fontSize:12, color:C.text, lineHeight:1.7 }}>{alert.aiSuggestion}</div>
+            {alert.autoFixed && (
+              <div style={{ marginTop:8, fontSize:11, color:C.green, fontWeight:700, display:"flex", alignItems:"center", gap:5 }}>
+                <Check size={12}/> Auto-fixed by AI · no manual action required
+              </div>
+            )}
+          </div>
+          <div style={{ display:"flex", flexDirection:"column", gap:6 }}>
+            {alert.canAutoFix && !isResolved && (
+              <button
+                onClick={handleAutoFix}
+                disabled={fixing}
+                style={{ background:fixing?`${C.green}08`:`${C.green}15`, border:`1px solid ${C.green}40`, borderRadius:7, padding:"7px 14px", cursor:fixing?"not-allowed":"pointer", fontSize:11, color:C.green, fontWeight:700, display:"flex", alignItems:"center", gap:6, whiteSpace:"nowrap", minWidth:110, justifyContent:"center" }}
+              >
+                {fixing ? <><RefreshCw size={11} style={{animation:"spin 1s linear infinite"}}/> Fixing…</> : <><Wrench size={12}/> Auto Fix</>}
+              </button>
+            )}
+            {!isResolved && (
+              <button
+                onClick={handleInvestigate}
+                style={{ background:`${C.accent}15`, border:`1px solid ${C.accent}40`, borderRadius:7, padding:"7px 14px", cursor:"pointer", fontSize:11, color:C.accentL, fontWeight:600, display:"flex", alignItems:"center", gap:6, minWidth:110, justifyContent:"center" }}
+              >
+                <Eye size={12}/> Investigate
+              </button>
+            )}
+            {!isResolved ? (
+              <button
+                onClick={handleResolve}
+                style={{ background:`${C.border}`, border:`1px solid ${C.border2}`, borderRadius:7, padding:"7px 14px", cursor:"pointer", fontSize:11, color:C.muted, display:"flex", alignItems:"center", gap:6, minWidth:110, justifyContent:"center" }}
+              >
+                <Check size={12}/> Mark Resolved
+              </button>
+            ) : (
+              <div style={{ padding:"7px 14px", fontSize:11, color:C.green, fontWeight:700, display:"flex", alignItems:"center", gap:6 }}>
+                <CheckCircle size={13}/> Resolved
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ─── Agent Card ───────────────────────────────────────────────────────────────
+
+// ─── Create / Assign Agent Modal ──────────────────────────────────────────────
+const AGENT_ICONS = ["📥","📊","🔍","📉","🔎","🔄","⚡","🔬","🧪","🤖","📡","🛡️","⚙️","🔁","📋"];
+const TASK_TYPES  = [
+  "Missing Data Detection",
+  "Pipeline Failure Triage",
+  "Schema Drift Monitoring",
+  "Row Count Anomaly",
+  "Duplicate Row Detection",
+  "Replication Lag Check",
+  "Step Function Monitor",
+  "Custom SQL Validation",
+  "Data Freshness Check",
+  "Alert Correlation",
+];
+
+function CreateAgentModal({ prefill, agents, onClose, onCreate }) {
+  const T = useTheme();
+  const [name,     setName]     = useState(prefill?.name  || "");
+  const [icon,     setIcon]     = useState(prefill?.icon  || "🤖");
+  const [taskType, setTaskType] = useState(TASK_TYPES[0]);
+  const [schedule, setSchedule] = useState("*/15 * * * *");
+  const [targets,  setTargets]  = useState("");
+  const [desc,     setDesc]     = useState(prefill?.reason || "");
+  const [autoFix,  setAutoFix]  = useState(false);
+  const [threshold,setThreshold]= useState("5");
+  const [errors,   setErrors]   = useState({});
+  const [saving,   setSaving]   = useState(false);
+
+  const validate = () => {
+    const e = {};
+    if (!name.trim())     e.name     = "Agent name is required";
+    if (!targets.trim())  e.targets  = "At least one target table is required";
+    if (!schedule.trim()) e.schedule = "Schedule (cron) is required";
+    return e;
+  };
+
+  const handleCreate = async () => {
+    const e = validate();
+    if (Object.keys(e).length) { setErrors(e); return; }
+    setSaving(true);
+    await new Promise(r => setTimeout(r, 800)); // brief UX pause
+    const newId = "ag" + (agents.length + 1);
+    onCreate({
+      id:          newId,
+      name:        name.trim(),
+      icon,
+      status:      "idle",
+      lastRun:     "—",
+      nextRun:     "—",
+      runsToday:   0,
+      issuesFound: 0,
+      fixed:       0,
+      successRate: 100,
+      avgDuration: "—",
+      schedule,
+      targets:     targets.split(",").map(t=>t.trim()).filter(Boolean),
+      taskType,
+      description: desc.trim(),
+      autoFix,
+    });
+    setSaving(false);
+  };
+
+  const overlay = {
+    position:"fixed", inset:0, background:"rgba(0,0,0,0.55)",
+    zIndex:1100, display:"flex", alignItems:"center", justifyContent:"center", padding:24,
+  };
+  const box = {
+    background:T.surface, border:`1px solid ${T.border2}`, borderRadius:14,
+    width:"100%", maxWidth:560, maxHeight:"90vh", display:"flex",
+    flexDirection:"column", overflow:"hidden",
+    boxShadow:"0 24px 60px rgba(0,0,0,0.4)", animation:"fadein 0.15s ease",
+  };
+  const field = (label, child, err) => (
+    <div style={{ marginBottom:14 }}>
+      <div style={{ fontSize:10, color:T.muted, fontWeight:700, textTransform:"uppercase", letterSpacing:"0.05em", marginBottom:6 }}>{label}</div>
+      {child}
+      {err && <div style={{ fontSize:10, color:T.red, marginTop:4 }}>{err}</div>}
+    </div>
+  );
+  const input = (val, set, placeholder, mono=false, err) => (
+    <input
+      value={val} onChange={e=>{ set(e.target.value); setErrors(p=>({...p})); }}
+      placeholder={placeholder}
+      style={{ width:"100%", background:T.isDark?"#0A0C10":T.bg, border:`1px solid ${err?T.red:T.border2}`, borderRadius:7, padding:"9px 12px", color:T.text, fontSize:12, outline:"none", fontFamily:mono?"Consolas,monospace":"inherit" }}
+    />
+  );
+
+  return (
+    <div style={overlay} onClick={onClose}>
+      <div style={box} onClick={e=>e.stopPropagation()}>
+
+        {/* Header */}
+        <div style={{ padding:"20px 24px 16px", borderBottom:`1px solid ${T.border}`, display:"flex", alignItems:"center", gap:12, flexShrink:0 }}>
+          <div style={{ width:40, height:40, borderRadius:11, background:"#6366F118", display:"flex", alignItems:"center", justifyContent:"center", fontSize:20 }}>{icon}</div>
+          <div style={{ flex:1 }}>
+            <div style={{ fontSize:15, fontWeight:800, color:T.text }}>Create QA Agent</div>
+            <div style={{ fontSize:11, color:T.muted, marginTop:2 }}>Configure a new autonomous quality monitoring agent</div>
+          </div>
+          <button onClick={onClose} style={{ background:"none", border:"none", cursor:"pointer", color:T.muted }}><X size={16}/></button>
+        </div>
+
+        {/* Body */}
+        <div style={{ flex:1, overflowY:"auto", padding:"20px 24px" }}>
+
+          {/* Icon picker */}
+          <div style={{ marginBottom:16 }}>
+            <div style={{ fontSize:10, color:T.muted, fontWeight:700, textTransform:"uppercase", letterSpacing:"0.05em", marginBottom:8 }}>Agent Icon</div>
+            <div style={{ display:"flex", flexWrap:"wrap", gap:6 }}>
+              {AGENT_ICONS.map(ic=>(
+                <button key={ic} onClick={()=>setIcon(ic)} style={{ width:36, height:36, borderRadius:8, border:`2px solid ${icon===ic?"#6366F1":T.border}`, background:icon===ic?"#6366F118":"transparent", fontSize:18, cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center", transition:"all 0.12s" }}>
+                  {ic}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          {/* Name */}
+          {field("Agent Name", input(name, setName, "e.g. Late Copy Re-runner", false, errors.name), errors.name)}
+
+          {/* Task type */}
+          {field("Task Type", (
+            <select value={taskType} onChange={e=>setTaskType(e.target.value)} style={{ width:"100%", background:T.isDark?"#0A0C10":T.bg, border:`1px solid ${T.border2}`, borderRadius:7, padding:"9px 12px", color:T.text, fontSize:12, outline:"none" }}>
+              {TASK_TYPES.map(t=><option key={t} value={t}>{t}</option>)}
+            </select>
+          ))}
+
+          {/* Target tables */}
+          {field("Target Tables", input(targets, setTargets, "report, campaign_data, keyword_summary (comma-separated)", false, errors.targets), errors.targets)}
+
+          {/* Schedule */}
+          {field("Schedule (cron)", input(schedule, setSchedule, "*/15 * * * *", true, errors.schedule), errors.schedule)}
+          <div style={{ fontSize:10, color:T.dim, marginTop:-10, marginBottom:14 }}>
+            Common: <span style={{color:"#6366F1",cursor:"pointer"}} onClick={()=>setSchedule("*/15 * * * *")}>every 15 min</span>
+            {" · "}<span style={{color:"#6366F1",cursor:"pointer"}} onClick={()=>setSchedule("0 * * * *")}>hourly</span>
+            {" · "}<span style={{color:"#6366F1",cursor:"pointer"}} onClick={()=>setSchedule("0 9 * * 1-5")}>weekdays 9 AM</span>
+          </div>
+
+          {/* Description */}
+          {field("Description / Task", (
+            <textarea value={desc} onChange={e=>setDesc(e.target.value)} rows={3} placeholder="What should this agent monitor or do?" style={{ width:"100%", background:T.isDark?"#0A0C10":T.bg, border:`1px solid ${T.border2}`, borderRadius:7, padding:"9px 12px", color:T.text, fontSize:12, outline:"none", fontFamily:"inherit", resize:"vertical", lineHeight:1.6 }}/>
+          ))}
+
+          {/* Auto-fix toggle */}
+          <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", padding:"12px 14px", background:T.isDark?"#0A0C10":T.bg, border:`1px solid ${T.border}`, borderRadius:8, marginBottom:14 }}>
+            <div>
+              <div style={{ fontSize:12, fontWeight:600, color:T.text }}>Enable Auto-Fix</div>
+              <div style={{ fontSize:10, color:T.muted, marginTop:2 }}>Agent will attempt automatic remediation before alerting</div>
+            </div>
+            <button onClick={()=>setAutoFix(p=>!p)} style={{ background:autoFix?"#10B98118":"transparent", border:`2px solid ${autoFix?"#10B981":T.border2}`, borderRadius:20, padding:"4px 16px", cursor:"pointer", fontSize:11, fontWeight:700, color:autoFix?"#10B981":T.muted, transition:"all 0.15s" }}>
+              {autoFix ? "ON" : "OFF"}
+            </button>
+          </div>
+
+          {/* Failure threshold */}
+          {field("Alert Threshold", (
+            <input type="number" min="1" max="100" value={threshold} onChange={e=>setThreshold(e.target.value)} style={{ width:"100%", background:T.isDark?"#0A0C10":T.bg, border:`1px solid ${T.border2}`, borderRadius:7, padding:"9px 12px", color:T.text, fontSize:12, outline:"none" }}/>
+          ))}
+          <div style={{ fontSize:10, color:T.dim, marginTop:-10, marginBottom:4 }}>Trigger alert when anomalies exceed this count</div>
+
+        </div>
+
+        {/* Footer */}
+        <div style={{ padding:"16px 24px", borderTop:`1px solid ${T.border}`, display:"flex", gap:10, flexShrink:0 }}>
+          <button
+            onClick={handleCreate}
+            disabled={saving}
+            style={{ flex:1, background:"#6366F1", border:"none", borderRadius:9, padding:"11px", cursor:"pointer", color:"white", fontSize:13, fontWeight:700, display:"flex", alignItems:"center", justifyContent:"center", gap:8, opacity:saving?0.7:1 }}
+          >
+            {saving ? <><RefreshCw size={14} style={{animation:"spin 1s linear infinite"}}/> Creating…</> : <><Bot size={14}/> Create Agent</>}
+          </button>
+          <button onClick={onClose} style={{ background:"none", border:`1px solid ${T.border2}`, borderRadius:9, padding:"11px 22px", cursor:"pointer", color:T.muted, fontSize:13, fontWeight:600 }}>
+            Cancel
+          </button>
+        </div>
+
+      </div>
+    </div>
+  );
+}
+
+// ─── Agent Fleet Tab ──────────────────────────────────────────────────────────
+function AgentFleetTab({ onDrill }) {
+  const T = useTheme();
+  const [agents, setAgents] = useState(AGENTS.map(a=>({...a})));
+  const [selected, setSelected] = useState(null); // agent id
+  const [panelTab, setPanelTab] = useState('activity'); // 'activity' | 'evals'
+  const [configEdit, setConfigEdit] = useState(null); // agent id being configured
+  const [configs, setConfigs] = useState({...AGENT_CONFIG_DEFAULTS});
+  const [liveLogs, setLiveLogs] = useState({...AGENT_LOGS});
+  const [running, setRunning] = useState(null); // id of agent being manually run
+  const [createModal, setCreateModal] = useState(null); // null | prefill obj
+  const logRef = useRef(null);
+
+  const selectedAgent = agents.find(a=>a.id===selected);
+
+  // Simulate a new log line every few seconds for running agents
+  useEffect(()=>{
+    const LIVE_MSGS = [
+      "Heartbeat OK — monitoring active",
+      "Fetching latest rows from datasource…",
+      "No anomalies detected in this cycle",
+      "Threshold check passed ✓",
+      "Cross-referencing with alert history…",
+      "Cycle complete. Sleeping until next run.",
+    ];
+    const t = setInterval(()=>{
+      setAgents(prev=>prev.map(a=>{
+        if(a.status!=="running") return a;
+        return {...a, lastRun: new Date().toLocaleTimeString("en-US",{hour:"2-digit",minute:"2-digit",second:"2-digit"})};
+      }));
+      // Add a live log line to each running agent
+      setLiveLogs(prev=>{
+        const next={...prev};
+        agents.forEach(a=>{
+          if(a.status!=="running") return;
+          const msg = LIVE_MSGS[Math.floor(Math.random()*LIVE_MSGS.length)];
+          const ts = new Date().toLocaleTimeString("en-US",{hour:"2-digit",minute:"2-digit",second:"2-digit"});
+          next[a.id] = [{ts, level:"info", msg}, ...(next[a.id]||[])].slice(0,20);
+        });
+        return next;
+      });
+    }, 4000);
+    return ()=>clearInterval(t);
+  }, [agents]);
+
+  // Scroll log to top when selected changes
+  useEffect(()=>{ if(logRef.current) logRef.current.scrollTop=0; setPanelTab('activity'); },[selected]);
+
+  const toggleStatus = (id)=>{
+    setAgents(prev=>prev.map(a=>{
+      if(a.id!==id) return a;
+      const next = a.status==="paused" ? "running" : a.status==="running" ? "paused" : "running";
+      return {...a, status:next};
+    }));
+  };
+
+  const runNow = async (id)=>{
+    setRunning(id);
+    const ts = new Date().toLocaleTimeString("en-US",{hour:"2-digit",minute:"2-digit",second:"2-digit"});
+    setLiveLogs(prev=>({...prev,[id]:[
+      {ts, level:"info", msg:"Manual run triggered by user"},
+      {ts, level:"info", msg:"Starting immediate execution…"},
+      ...(prev[id]||[])
+    ]}));
+    await new Promise(r=>setTimeout(r,2200));
+    const finishTs = new Date().toLocaleTimeString("en-US",{hour:"2-digit",minute:"2-digit",second:"2-digit"});
+    setLiveLogs(prev=>({...prev,[id]:[
+      {ts:finishTs, level:"ok", msg:"Manual run complete ✓"},
+      ...(prev[id]||[])
+    ]}));
+    setAgents(prev=>prev.map(a=>a.id===id?{...a,runsToday:a.runsToday+1,lastRun:finishTs}:a));
+    setRunning(null);
+  };
+
+  const saveConfig = (id, cfg)=>{
+    setConfigs(prev=>({...prev,[id]:cfg}));
+    setConfigEdit(null);
+  };
+
+  const logLevelColor = (level, T) => ({ok:"#10B981",warn:"#F59E0B",error:"#EF4444",info:"#64748B"})[level]||T.muted;
+
+  const statusCol = (s,T)=>({running:T.green,idle:T.muted,paused:T.orange}[s]||T.muted);
+
+  // ── Config Edit Panel ──────────────────────────────────────────────────────
+  if(configEdit){
+    const ag = agents.find(a=>a.id===configEdit);
+    const cfg = {...configs[configEdit]};
+    return <AgentConfigPanel agent={ag} config={cfg} onSave={c=>saveConfig(configEdit,c)} onCancel={()=>setConfigEdit(null)} />;
+  }
+
+  return (
+    <div>
+      {createModal !== null && (
+        <CreateAgentModal
+          prefill={createModal}
+          agents={agents}
+          onClose={()=>setCreateModal(null)}
+          onCreate={(newAgent)=>{
+            setAgents(p=>[...p, newAgent]);
+            setLiveLogs(p=>({...p, [newAgent.id]:[{ts:new Date().toLocaleTimeString("en-US",{hour:"2-digit",minute:"2-digit",second:"2-digit"}), level:"info", msg:"Agent created and initialized."}]}));
+            setConfigs(p=>({...p, [newAgent.id]:{ schedule:newAgent.schedule, targets:newAgent.targets||[], threshold:5, alertOn:"any_failure", autoFix:newAgent.autoFix||false }}));
+            setCreateModal(null);
+          }}
+        />
+      )}
+      <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom:16 }}>
+        <div>
+          <div style={{ fontSize:16, fontWeight:800, color:T.text, display:"flex", alignItems:"center", gap:8 }}>
+            <Bot size={16} color={T.accentL}/> QA Agent Fleet
+          </div>
+          <div style={{ fontSize:11, color:T.muted, marginTop:3 }}>
+            {agents.filter(a=>a.status==="running").length} autonomous · {agents.length} total · click a card to inspect
+          </div>
+        </div>
+        <button onClick={()=>setCreateModal({})} style={{ background:T.accent, border:"none", borderRadius:8, padding:"9px 18px", cursor:"pointer", color:"white", fontSize:12, fontWeight:700, display:"flex", alignItems:"center", gap:6, flexShrink:0 }}>
+          <Plus size={13}/> Assign New Agent
+        </button>
+      </div>
+    <div style={{ display:"flex", gap:16, minHeight:"calc(100vh - 200px)" }}>
+
+      {/* ── Left: 3-col compact grid ── */}
+      <div style={{ flex:"0 0 auto", width: selected ? 420 : "100%" }}>
+
+        {/* Fleet summary strip */}
+        <div style={{ display:"grid", gridTemplateColumns:"repeat(4,1fr)", gap:10, marginBottom:16 }}>
+          {[
+            ["Running",  agents.filter(a=>a.status==="running").length,  T.green],
+            ["Paused",   agents.filter(a=>a.status==="paused").length,   T.orange],
+            ["Idle",     agents.filter(a=>a.status==="idle").length,     T.muted],
+            ["Issues",   agents.reduce((s,a)=>s+a.issuesFound,0),        T.red],
+          ].map(([l,v,c])=>(
+            <div key={l} style={{ background:T.card, border:`1px solid ${T.border}`, borderRadius:9, padding:"12px 16px", display:"flex", alignItems:"center", gap:12 }}>
+              <div style={{ fontSize:24, fontWeight:800, color:c }}>{v}</div>
+              <div style={{ fontSize:11, color:T.muted, fontWeight:600 }}>{l}</div>
+            </div>
+          ))}
+        </div>
+
+        {/* 3-col agent grid */}
+        <div style={{ display:"grid", gridTemplateColumns:"repeat(3,1fr)", gap:12 }}>
+          {agents.map(a=>{
+            const sc = statusCol(a.status,T);
+            const isSelected = selected===a.id;
+            const isRunningNow = running===a.id;
+            return (
+              <div
+                key={a.id}
+                onClick={()=>setSelected(isSelected?null:a.id)}
+                style={{ background:T.card, border:`2px solid ${isSelected?T.accent:T.border}`, borderRadius:10, padding:"14px", cursor:"pointer", transition:"border-color 0.15s, box-shadow 0.15s", boxShadow:isSelected?`0 0 0 3px ${T.accent}20`:"none" }}
+              >
+                {/* Card header */}
+                <div style={{ display:"flex", alignItems:"flex-start", justifyContent:"space-between", marginBottom:10 }}>
+                  <div style={{ fontSize:26 }}>{a.icon}</div>
+                  <div style={{ display:"flex", alignItems:"center", gap:5 }}>
+                    <div style={{ width:7, height:7, borderRadius:"50%", background:sc, animation:a.status==="running"?"ping 2s infinite":"none" }}/>
+                    <span style={{ fontSize:9, color:sc, fontWeight:700, textTransform:"uppercase", letterSpacing:"0.05em" }}>{a.status}</span>
+                  </div>
+                </div>
+
+                {/* Name */}
+                <div style={{ fontSize:12, fontWeight:700, color:T.text, marginBottom:8, lineHeight:1.3 }}>{a.name}</div>
+
+                {/* Stats row */}
+                <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr 1fr", gap:4, marginBottom:10 }}>
+                  {[["Runs",a.runsToday,T.accentL],["Issues",a.issuesFound,a.issuesFound>0?T.orange:T.green],["Fixed",a.fixed,T.green]].map(([l,v,c])=>(
+                    <div key={l} style={{ textAlign:"center", background:`${T.border}60`, borderRadius:5, padding:"5px 2px" }}>
+                      <div style={{ fontSize:14, fontWeight:800, color:c }}>{v}</div>
+                      <div style={{ fontSize:9, color:T.muted }}>{l}</div>
+                    </div>
+                  ))}
+                </div>
+
+                {/* Success rate bar */}
+                <div style={{ marginBottom:10 }}>
+                  <div style={{ display:"flex", justifyContent:"space-between", fontSize:9, color:T.muted, marginBottom:3 }}>
+                    <span>Success rate</span><span style={{ color:a.successRate>=90?T.green:a.successRate>=70?T.yellow:T.red, fontWeight:700 }}>{a.successRate}%</span>
+                  </div>
+                  <div style={{ height:4, background:T.border, borderRadius:2 }}>
+                    <div style={{ height:4, borderRadius:2, width:`${a.successRate}%`, background:a.successRate>=90?T.green:a.successRate>=70?T.yellow:T.red, transition:"width 0.6s ease" }}/>
+                  </div>
+                </div>
+
+                {/* Controls */}
+                <div style={{ display:"flex", gap:5 }} onClick={e=>e.stopPropagation()}>
+                  <button
+                    onClick={()=>toggleStatus(a.id)}
+                    style={{ flex:1, background:a.status==="running"?`${T.orange}15`:`${T.green}15`, border:`1px solid ${a.status==="running"?T.orange:T.green}40`, borderRadius:6, padding:"5px 0", cursor:"pointer", fontSize:10, color:a.status==="running"?T.orange:T.green, fontWeight:700, display:"flex", alignItems:"center", justifyContent:"center", gap:4 }}
+                  >
+                    {a.status==="running"?<><Pause size={10}/>Pause</>:a.status==="paused"?<><Play size={10}/>Resume</>:<><Play size={10}/>Start</>}
+                  </button>
+                  <button
+                    onClick={()=>runNow(a.id)}
+                    disabled={isRunningNow||a.status==="paused"}
+                    style={{ flex:1, background:`${T.accent}15`, border:`1px solid ${T.accent}40`, borderRadius:6, padding:"5px 0", cursor:isRunningNow||a.status==="paused"?"not-allowed":"pointer", fontSize:10, color:T.accentL, fontWeight:700, display:"flex", alignItems:"center", justifyContent:"center", gap:4, opacity:a.status==="paused"?0.4:1 }}
+                  >
+                    {isRunningNow?<><RefreshCw size={10} style={{animation:"spin 1s linear infinite"}}/>Running</>:<><Play size={10}/>Run Now</>}
+                  </button>
+                  <button
+                    onClick={()=>setConfigEdit(a.id)}
+                    style={{ background:`${T.border}`, border:`1px solid ${T.border2}`, borderRadius:6, padding:"5px 8px", cursor:"pointer", color:T.muted }}
+                  >
+                    <Settings size={11}/>
+                  </button>
+                </div>
+
+                {/* Last / next run */}
+                <div style={{ marginTop:8, display:"flex", justifyContent:"space-between", fontSize:9, color:T.dim }}>
+                  <span>Last: <span style={{color:T.muted}}>{a.lastRun}</span></span>
+                  <span>Next: <span style={{color:T.muted}}>{a.nextRun}</span></span>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+
+        {/* Suggested new agents */}
+        <div style={{ marginTop:16, background:T.card, border:`1px solid ${T.border}`, borderRadius:10, padding:"16px 18px" }}>
+          <div style={{ display:"flex", alignItems:"center", gap:8, marginBottom:12 }}>
+            <Sparkles size={14} color={T.purple}/>
+            <span style={{ fontSize:13, fontWeight:700, color:T.text }}>Suggested New Agents</span>
+            <span style={{ fontSize:11, color:T.muted }}>— based on alert patterns</span>
+          </div>
+          {[
+            { name:"Late Copy Re-runner",    icon:"⚡", reason:"GDS BigQuery copy jobs fail silently 2×/week. Auto-retrigger after 30 min." },
+            { name:"Step Function Analyzer", icon:"🔬", reason:"3 Step Function failures manually triaged per day. Auto-classify & redrive requester failures." },
+          ].map(s=>(
+            <div key={s.name} style={{ display:"flex", alignItems:"center", gap:12, padding:"10px 12px", background:T.isDark?"#0A0C10":T.border, borderRadius:8, marginBottom:8, border:`1px solid ${T.border2}` }}>
+              <span style={{ fontSize:22 }}>{s.icon}</span>
+              <div style={{ flex:1 }}>
+                <div style={{ fontSize:12, fontWeight:700, color:T.text }}>{s.name}</div>
+                <div style={{ fontSize:11, color:T.muted, marginTop:2 }}>{s.reason}</div>
+              </div>
+              <button onClick={()=>setCreateModal({name:s.name, icon:s.icon, reason:s.reason})} style={{ background:`${T.accent}18`, border:`1px solid ${T.accent}40`, borderRadius:7, padding:"6px 14px", cursor:"pointer", fontSize:11, color:T.accentL, fontWeight:700, whiteSpace:"nowrap" }}>+ Create</button>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      {/* ── Right: Detail panel ── */}
+      {selected && selectedAgent && (
+        <div style={{ flex:1, minWidth:0, background:T.card, border:`1px solid ${T.border}`, borderRadius:12, display:"flex", flexDirection:"column", animation:"fadein 0.18s ease", overflow:"hidden" }}>
+          {/* Panel header */}
+          <div style={{ padding:"16px 18px", borderBottom:`1px solid ${T.border}`, display:"flex", alignItems:"center", gap:12 }}>
+            <span style={{ fontSize:26 }}>{selectedAgent.icon}</span>
+            <div style={{ flex:1 }}>
+              <div style={{ fontSize:14, fontWeight:800, color:T.text }}>{selectedAgent.name}</div>
+              <div style={{ fontSize:11, color:T.muted, marginTop:2 }}>Avg duration: {selectedAgent.avgDuration} · Success rate: {selectedAgent.successRate}%</div>
+            </div>
+            <div style={{ display:"flex", gap:6 }}>
+              <button onClick={()=>setConfigEdit(selected)} style={{ background:`${T.border}`, border:`1px solid ${T.border2}`, borderRadius:7, padding:"6px 12px", cursor:"pointer", color:T.muted, fontSize:11, display:"flex", alignItems:"center", gap:5 }}><Settings size={12}/>Config</button>
+              <button onClick={()=>setSelected(null)} style={{ background:"none", border:"none", cursor:"pointer", color:T.muted, padding:4 }}><X size={15}/></button>
+            </div>
+          </div>
+
+          {/* Config summary strip */}
+          <div style={{ padding:"10px 18px", borderBottom:`1px solid ${T.border}`, background:T.isDark?"#0A0C10":T.bg }}>
+            <div style={{ display:"flex", gap:10, flexWrap:"wrap" }}>
+              {[
+                ["Schedule", configs[selected]?.schedule],
+                ["Target", (configs[selected]?.targets||[]).join(", ")],
+                ["Alert on", configs[selected]?.alertOn],
+                ["Auto-fix", configs[selected]?.autoFix?"Enabled":"Disabled"],
+              ].map(([k,v])=>(
+                <div key={k} style={{ display:"flex", gap:5, alignItems:"center" }}>
+                  <span style={{ fontSize:10, color:T.dim, fontWeight:700 }}>{k}:</span>
+                  <code style={{ fontSize:10, color:T.cyan, background:`${T.cyan}10`, borderRadius:4, padding:"2px 7px", fontFamily:"Consolas,monospace" }}>{v}</code>
+                </div>
+              ))}
+            </div>
+          </div>
+
+          {/* Panel tabs */}
+          <div style={{ display:"flex", gap:4, padding:"8px 18px", borderBottom:`1px solid ${T.border}`, background:T.surface }}>
+            {[
+              { id:"activity", label:"Activity Feed", icon:"⚡" },
+              { id:"evals",    label:`Evals (${(EVAL_CASES[selected]||[]).length})`, icon:"🧪" },
+            ].map(tab=>(
+              <button key={tab.id} onClick={()=>setPanelTab(tab.id)} style={{ padding:"6px 14px", borderRadius:7, border:`1px solid ${panelTab===tab.id?T.accent+"50":"transparent"}`, background:panelTab===tab.id?`${T.accent}15`:"transparent", color:panelTab===tab.id?T.accentL:T.muted, fontSize:11, fontWeight:panelTab===tab.id?700:500, cursor:"pointer", display:"flex", alignItems:"center", gap:6 }}>
+                {tab.icon} {tab.label}
+              </button>
+            ))}
+          </div>
+
+          {/* ── Activity Feed ── */}
+          {panelTab==="activity" && (
+            <div style={{ flex:1, overflowY:"auto", padding:"14px 18px" }} ref={logRef}>
+              <div style={{ display:"flex", alignItems:"center", gap:8, marginBottom:12 }}>
+                <div style={{ width:7, height:7, borderRadius:"50%", background:selectedAgent.status==="running"?T.green:T.muted, animation:selectedAgent.status==="running"?"ping 2s infinite":"none" }}/>
+                <span style={{ fontSize:11, fontWeight:700, color:T.text }}>Live Activity Feed</span>
+                <span style={{ fontSize:10, color:T.muted }}>— {(liveLogs[selected]||[]).length} events</span>
+              </div>
+              {(liveLogs[selected]||[]).length===0 && (
+                <div style={{ textAlign:"center", color:T.muted, fontSize:12, padding:"24px 0" }}>No activity yet. Run the agent to see logs.</div>
+              )}
+              {(liveLogs[selected]||[]).map((log,i)=>{
+                const lc = logLevelColor(log.level,T);
+                const bg = {ok:`${T.green}08`,warn:`${T.yellow}08`,error:`${T.red}08`,info:"transparent"}[log.level]||"transparent";
+                return (
+                  <div key={i} style={{ display:"flex", gap:10, padding:"7px 10px", borderRadius:7, marginBottom:3, background:bg, animation:i===0?"fadein 0.2s ease":"none" }}>
+                    <span style={{ fontSize:9, color:T.dim, fontFamily:"Consolas,monospace", flexShrink:0, width:72, paddingTop:1 }}>{log.ts}</span>
+                    <span style={{ fontSize:10, color:lc, fontWeight:700, flexShrink:0, width:20 }}>{log.level==="ok"?"✓":log.level==="warn"?"⚠":log.level==="error"?"✗":"·"}</span>
+                    <span style={{ fontSize:12, color:T.text, flex:1, lineHeight:1.5 }}>{log.msg}</span>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+
+          {/* ── Evals Panel ── */}
+          {panelTab==="evals" && (
+            <div style={{ flex:1, overflowY:"auto" }}>
+              <AgentEvalsPanel agentId={selected} agent={selectedAgent} />
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  </div>
+  );
+}
+
+
+
+// ─── QA Process Health Tab ────────────────────────────────────────────────────
+function QAHealthTab() {
+  const T = useTheme();
+  const [activeStage, setActiveStage] = useState(null);
+
+  const totalAI    = QA_STAGES.reduce((s,st)=>s+st.aiActions,0);
+  const totalHuman = QA_STAGES.reduce((s,st)=>s+st.humanActions,0);
+  const overallAuto = Math.round((totalAI/(totalAI+totalHuman))*100);
+  const totalTables  = RULE_COVERAGE.reduce((s,r)=>s+r.tables,0);
+  const coveredTables= RULE_COVERAGE.reduce((s,r)=>s+r.covered,0);
+  const coveragePct  = Math.round((coveredTables/totalTables)*100);
+
+  const statusColor = (s) => ({high:T.green, medium:T.yellow, low:T.orange})[s]||T.muted;
+  const milestoneColor = (s) => ({done:T.green, active:T.accent, planned:T.muted})[s]||T.muted;
+
+  return (
+    <div style={{ paddingBottom:32 }}>
+
+      {/* ── Vision banner ── */}
+      <div style={{ background:T.isDark?"linear-gradient(135deg,#0F1117 0%,#1a1040 100%)":"linear-gradient(135deg,#EEF2FF 0%,#F5F3FF 100%)", border:`1px solid ${T.accent}30`, borderRadius:12, padding:"20px 24px", marginBottom:22, display:"flex", alignItems:"center", gap:18 }}>
+        <div style={{ width:48, height:48, borderRadius:14, background:`${T.accent}25`, display:"flex", alignItems:"center", justifyContent:"center", flexShrink:0 }}>
+          <span style={{ fontSize:24 }}>🤖</span>
+        </div>
+        <div style={{ flex:1 }}>
+          <div style={{ fontSize:16, fontWeight:800, color:T.text, marginBottom:4 }}>Agentic QA Process — Transition Dashboard</div>
+          <div style={{ fontSize:12, color:T.muted, lineHeight:1.7 }}>
+            Intentwise is transitioning from <span style={{color:T.orange,fontWeight:700}}>manual quality engineering</span> to a fully <span style={{color:T.green,fontWeight:700}}>AI-driven autonomous QA loop</span>. This view tracks autonomy levels across every stage of the detect→triage→fix→verify pipeline, rule coverage across all data sources, and the roadmap to zero-touch quality assurance.
+          </div>
+        </div>
+        <div style={{ textAlign:"center", flexShrink:0 }}>
+          <div style={{ fontSize:42, fontWeight:900, color:T.accent, lineHeight:1 }}>{overallAuto}%</div>
+          <div style={{ fontSize:11, color:T.muted, marginTop:4, fontWeight:600 }}>Overall Autonomy</div>
+        </div>
+      </div>
+
+      {/* ── Pipeline Autonomy — 4 stage cards ── */}
+      <div style={{ marginBottom:8 }}>
+        <div style={{ fontSize:13, fontWeight:700, color:T.text, marginBottom:4 }}>Pipeline Stage Autonomy</div>
+        <div style={{ fontSize:11, color:T.muted, marginBottom:14 }}>AI vs human intervention ratio per QA process stage. Click a stage for details.</div>
+      </div>
+
+      {/* Stage flow with arrows */}
+      <div style={{ display:"flex", alignItems:"stretch", gap:0, marginBottom:22 }}>
+        {QA_STAGES.map((stage, i) => {
+          const isActive = activeStage === stage.id;
+          const barW = stage.autonomyPct;
+          return (
+            <React.Fragment key={stage.id}>
+              <div
+                onClick={()=>setActiveStage(isActive ? null : stage.id)}
+                style={{ flex:1, background:T.card, border:`2px solid ${isActive?stage.color:T.border}`, borderRadius:10, padding:"16px 14px", cursor:"pointer", transition:"border-color 0.15s, box-shadow 0.15s", boxShadow:isActive?`0 0 0 3px ${stage.color}20`:"none" }}
+              >
+                {/* Icon + label */}
+                <div style={{ display:"flex", alignItems:"center", gap:8, marginBottom:12 }}>
+                  <span style={{ fontSize:20 }}>{stage.icon}</span>
+                  <div>
+                    <div style={{ fontSize:13, fontWeight:800, color:T.text }}>{stage.label}</div>
+                    <div style={{ fontSize:9, color:T.muted, marginTop:1 }}>{stage.desc}</div>
+                  </div>
+                </div>
+
+                {/* Big autonomy % */}
+                <div style={{ fontSize:36, fontWeight:900, color:stage.color, lineHeight:1, marginBottom:6 }}>{stage.autonomyPct}%</div>
+                <div style={{ fontSize:10, color:T.muted, marginBottom:10, fontWeight:600 }}>
+                  Autonomous · <span style={{ color:stage.trend>0?T.green:T.red }}>↑{Math.abs(stage.trend)}% MoM</span>
+                </div>
+
+                {/* Progress bar */}
+                <div style={{ height:6, background:T.border, borderRadius:3, marginBottom:10, overflow:"hidden" }}>
+                  <div style={{ height:6, borderRadius:3, width:`${barW}%`, background:stage.color, transition:"width 0.8s ease" }}/>
+                </div>
+
+                {/* AI vs Human breakdown */}
+                <div style={{ display:"flex", justifyContent:"space-between", fontSize:10 }}>
+                  <span><span style={{ color:stage.color, fontWeight:700 }}>{stage.aiActions}</span> <span style={{ color:T.muted }}>AI actions</span></span>
+                  <span><span style={{ color:T.orange, fontWeight:700 }}>{stage.humanActions}</span> <span style={{ color:T.muted }}>human</span></span>
+                </div>
+              </div>
+
+              {/* Arrow between stages */}
+              {i < QA_STAGES.length-1 && (
+                <div style={{ display:"flex", alignItems:"center", padding:"0 6px", flexShrink:0 }}>
+                  <ArrowRight size={16} color={T.border2} />
+                </div>
+              )}
+            </React.Fragment>
+          );
+        })}
+      </div>
+
+      {/* Stage detail panel */}
+      {activeStage && (() => {
+        const stage = QA_STAGES.find(s=>s.id===activeStage);
+        return (
+          <div style={{ background:`${stage.color}08`, border:`1px solid ${stage.color}30`, borderRadius:10, padding:"14px 18px", marginBottom:22, animation:"fadein 0.18s ease", display:"flex", gap:14, alignItems:"flex-start" }}>
+            <span style={{ fontSize:28 }}>{stage.icon}</span>
+            <div>
+              <div style={{ fontSize:13, fontWeight:700, color:stage.color, marginBottom:4 }}>{stage.label} — Stage Detail</div>
+              <div style={{ fontSize:12, color:T.text, lineHeight:1.8 }}>{stage.details}</div>
+            </div>
+            <button onClick={()=>setActiveStage(null)} style={{ marginLeft:"auto", background:"none", border:"none", cursor:"pointer", color:T.muted }}><X size={13}/></button>
+          </div>
+        );
+      })()}
+
+      {/* ── AI vs Manual Intervention Ratio ── */}
+      <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:16, marginBottom:22 }}>
+
+        {/* Donut-style ratio card */}
+        <div style={{ background:T.card, border:`1px solid ${T.border}`, borderRadius:10, padding:"18px 20px" }}>
+          <div style={{ fontSize:13, fontWeight:700, color:T.text, marginBottom:14 }}>AI vs Manual Intervention — Last 30 Days</div>
+          <div style={{ display:"flex", alignItems:"center", gap:20 }}>
+            {/* Stacked bar */}
+            <div style={{ flex:1 }}>
+              {QA_STAGES.map(stage => {
+                const total = stage.aiActions + stage.humanActions;
+                const aiPct = Math.round((stage.aiActions/total)*100);
+                return (
+                  <div key={stage.id} style={{ marginBottom:10 }}>
+                    <div style={{ display:"flex", justifyContent:"space-between", fontSize:11, marginBottom:4 }}>
+                      <span style={{ display:"flex", alignItems:"center", gap:6 }}>
+                        <span>{stage.icon}</span>
+                        <span style={{ fontWeight:600, color:T.text }}>{stage.label}</span>
+                      </span>
+                      <span style={{ color:stage.color, fontWeight:700 }}>{aiPct}% AI</span>
+                    </div>
+                    <div style={{ height:10, background:T.border, borderRadius:5, overflow:"hidden", display:"flex" }}>
+                      <div style={{ height:10, background:stage.color, width:`${aiPct}%`, transition:"width 0.8s ease" }}/>
+                      <div style={{ height:10, background:T.orange+"60", flex:1 }}/>
+                    </div>
+                    <div style={{ display:"flex", justifyContent:"space-between", fontSize:9, color:T.muted, marginTop:2 }}>
+                      <span>{stage.aiActions} autonomous</span>
+                      <span>{stage.humanActions} manual</span>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+            {/* Summary */}
+            <div style={{ textAlign:"center", flexShrink:0, minWidth:90 }}>
+              <div style={{ fontSize:38, fontWeight:900, color:T.accent, lineHeight:1 }}>{overallAuto}%</div>
+              <div style={{ fontSize:10, color:T.muted, marginTop:4 }}>Autonomous</div>
+              <div style={{ fontSize:10, color:T.orange, fontWeight:700, marginTop:8 }}>{100-overallAuto}%</div>
+              <div style={{ fontSize:10, color:T.muted }}>Manual</div>
+              <div style={{ marginTop:12, fontSize:9, color:T.green, background:`${T.green}15`, borderRadius:6, padding:"4px 8px", fontWeight:700 }}>↑ {Math.round(overallAuto*0.14)}% vs 6mo ago</div>
+            </div>
+          </div>
+        </div>
+
+        {/* Rule Coverage Heatmap */}
+        <div style={{ background:T.card, border:`1px solid ${T.border}`, borderRadius:10, padding:"18px 20px" }}>
+          <div style={{ fontSize:13, fontWeight:700, color:T.text, marginBottom:4 }}>Rule Coverage Heatmap</div>
+          <div style={{ fontSize:11, color:T.muted, marginBottom:14 }}>{coveragePct}% of tables have active quality rules · {coveredTables}/{totalTables} total</div>
+          {RULE_COVERAGE.map(r => {
+            const pct = Math.round((r.covered/r.tables)*100);
+            const heatColor = pct>=90?T.green:pct>=70?T.yellow:T.orange;
+            return (
+              <div key={r.source} style={{ marginBottom:8 }}>
+                <div style={{ display:"flex", justifyContent:"space-between", fontSize:11, marginBottom:3 }}>
+                  <span style={{ fontWeight:600, color:T.text }}>{r.source}</span>
+                  <div style={{ display:"flex", gap:10, fontSize:10 }}>
+                    {r.critical>0  && <span style={{ color:T.red,    fontWeight:700 }}>{r.critical} critical</span>}
+                    {r.failing>0   && <span style={{ color:T.orange, fontWeight:700 }}>{r.failing} failing</span>}
+                    <span style={{ color:heatColor, fontWeight:700 }}>{pct}%</span>
+                  </div>
+                </div>
+                {/* Heatmap-style segmented bar */}
+                <div style={{ display:"flex", gap:1, height:14, borderRadius:4, overflow:"hidden" }}>
+                  {Array.from({length:20}, (_,i) => {
+                    const threshold = (r.covered/r.tables)*20;
+                    const filled = i < threshold;
+                    const isCrit = i < (r.critical/r.tables)*20;
+                    const isFail = i < (r.failing/r.tables)*20;
+                    return (
+                      <div key={i} style={{ flex:1, borderRadius:1, background:!filled?T.border:isFail?T.red:isCrit?T.orange:heatColor, opacity:filled?1:0.3, transition:"background 0.3s" }}/>
+                    );
+                  })}
+                </div>
+                <div style={{ fontSize:9, color:T.dim, marginTop:2 }}>{r.covered}/{r.tables} tables covered</div>
+              </div>
+            );
+          })}
+        </div>
+      </div>
+
+      {/* ── Roadmap Tracker ── */}
+      <div style={{ background:T.card, border:`1px solid ${T.border}`, borderRadius:10, padding:"18px 20px" }}>
+        <div style={{ fontSize:13, fontWeight:700, color:T.text, marginBottom:4 }}>Transition Roadmap — Manual → Fully Agentic QE</div>
+        <div style={{ fontSize:11, color:T.muted, marginBottom:20 }}>Six phases to fully autonomous data quality. Each phase builds on the last.</div>
+
+        {/* Timeline track */}
+        <div style={{ position:"relative", paddingLeft:24 }}>
+          {/* Vertical spine */}
+          <div style={{ position:"absolute", left:10, top:8, bottom:8, width:2, background:T.border, borderRadius:1 }}/>
+
+          {ROADMAP_MILESTONES.map((m, i) => {
+            const mc = milestoneColor(m.status);
+            const isDone    = m.status==="done";
+            const isActive  = m.status==="active";
+            const isPlanned = m.status==="planned";
+            return (
+              <div key={m.id} style={{ display:"flex", gap:14, marginBottom:16, position:"relative" }}>
+                {/* Node on spine */}
+                <div style={{ position:"absolute", left:-14, top:6, width:16, height:16, borderRadius:"50%", background:isDone?mc:isActive?T.card:T.card, border:`2.5px solid ${mc}`, display:"flex", alignItems:"center", justifyContent:"center", zIndex:1, flexShrink:0 }}>
+                  {isDone && <Check size={9} color={mc}/>}
+                  {isActive && <div style={{ width:6, height:6, borderRadius:"50%", background:mc, animation:"ping 2s infinite" }}/>}
+                </div>
+
+                {/* Content */}
+                <div style={{ flex:1, background:T.isDark?"#0A0C10":T.bg, border:`1px solid ${isActive?mc+"40":T.border}`, borderRadius:9, padding:"12px 14px", marginLeft:10 }}>
+                  <div style={{ display:"flex", alignItems:"flex-start", justifyContent:"space-between", gap:10 }}>
+                    <div style={{ flex:1 }}>
+                      <div style={{ display:"flex", alignItems:"center", gap:8, marginBottom:4 }}>
+                        <span style={{ fontSize:10, color:mc, background:`${mc}15`, border:`1px solid ${mc}30`, borderRadius:12, padding:"1px 8px", fontWeight:700, textTransform:"uppercase", letterSpacing:"0.05em" }}>
+                          {m.status==="done"?"✓ Complete":m.status==="active"?"⚡ In Progress":"Planned"}
+                        </span>
+                        <span style={{ fontSize:10, color:T.dim, fontWeight:600 }}>{m.phase}</span>
+                        <span style={{ fontSize:10, color:T.dim }}>·</span>
+                        <span style={{ fontSize:10, color:T.dim }}>{m.target}</span>
+                      </div>
+                      <div style={{ fontSize:13, fontWeight:700, color:T.text, marginBottom:4 }}>{m.label}</div>
+                      <div style={{ fontSize:11, color:T.muted, lineHeight:1.7 }}>{m.desc}</div>
+                    </div>
+                    {(isDone || isActive) && (
+                      <div style={{ textAlign:"center", flexShrink:0, minWidth:52 }}>
+                        <div style={{ fontSize:20, fontWeight:900, color:mc }}>{m.pct}%</div>
+                        <div style={{ fontSize:9, color:T.muted }}>done</div>
+                      </div>
+                    )}
+                  </div>
+                  {/* Progress bar for active items */}
+                  {isActive && (
+                    <div style={{ marginTop:10, height:5, background:T.border, borderRadius:3, overflow:"hidden" }}>
+                      <div style={{ height:5, borderRadius:3, width:`${m.pct}%`, background:mc, transition:"width 1s ease" }}/>
+                    </div>
+                  )}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      </div>
+
+    </div>
+  );
+}
+
+
+// ─── Notification Center ──────────────────────────────────────────────────────
+function NotificationCenter({ onClose }) {
+  const T = useTheme();
+  const [tab, setTab]         = useState("channels");  // channels | templates | history
+  const [channels, setChannels] = useState(NOTIF_CHANNELS.map(c=>({...c})));
+  const [editTpl, setEditTpl]   = useState("detect");
+  const [templates, setTemplates] = useState({...NOTIF_TEMPLATES});
+  const [testSent, setTestSent]   = useState(null);
+  const [slackWebhook, setSlackWebhook] = useState("");
+  const [slackTestAlert, setSlackTestAlert] = useState(ALERTS_RAW[0]?.id || "");
+  const [slackResult, setSlackResult] = useState(null); // null | {ok,msg}
+  const [slackSending, setSlackSending] = useState(false);
+
+  const toggle = (id) =>
+    setChannels(p=>p.map(c=>c.id===id?{...c,enabled:!c.enabled}:c));
+
+  const typeIcon  = (t) => t==="slack"?"💬":"📧";
+  const typeColor = (t) => t==="slack"?T.cyan:T.accent;
+
+  const sendTest = async (ch) => {
+    setTestSent(ch.id+"_sending");
+    await new Promise(r=>setTimeout(r,1400));
+    setTestSent(ch.id+"_ok");
+    setTimeout(()=>setTestSent(null),2500);
+  };
+
+  const sendRealSlack = async () => {
+    if (!slackWebhook.startsWith("https://hooks.slack.com/")) {
+      setSlackResult({ ok:false, msg:"Invalid webhook URL. Must start with https://hooks.slack.com/" });
+      return;
+    }
+    const alert = ALERTS_RAW.find(a=>a.id===slackTestAlert) || ALERTS_RAW[0];
+    setSlackSending(true);
+    setSlackResult(null);
+    const sevEmoji = {critical:"🔴",high:"🟠",medium:"🟡",low:"🔵"}[alert.severity]||"⚪";
+    const payload = {
+      text: `${sevEmoji} *[${alert.severity.toUpperCase()}] Quality Issue Detected*`,
+      blocks: [
+        { type:"header", text:{ type:"plain_text", text:`${sevEmoji} Quality Alert — ${alert.severity.toUpperCase()}` } },
+        { type:"section", fields:[
+          { type:"mrkdwn", text:`*Rule:*\n${alert.rule}` },
+          { type:"mrkdwn", text:`*Source:*\n${alert.source}.${alert.table}` },
+          { type:"mrkdwn", text:`*Time (IST):*\n${alert.ts}` },
+          { type:"mrkdwn", text:`*Status:*\n${alert.status}` },
+        ]},
+        { type:"section", text:{ type:"mrkdwn", text:`*AI Suggestion:* ${alert.aiSuggestion}` } },
+        { type:"context", elements:[{ type:"mrkdwn", text:"Sent from *Intentwise Agentic QA Platform* · Test Alert" }] },
+      ]
+    };
+    try {
+      const resp = await fetch(slackWebhook, {
+        method:"POST",
+        headers:{ "Content-Type":"application/json" },
+        body: JSON.stringify(payload),
+      });
+      if (resp.ok) {
+        setSlackResult({ ok:true, msg:"✅ Message delivered to Slack!" });
+      } else {
+        const txt = await resp.text();
+        setSlackResult({ ok:false, msg:`Slack returned: ${txt}` });
+      }
+    } catch(err) {
+      setSlackResult({ ok:false, msg:`Network error: ${err.message}. (CORS will block browser → use from backend/Postman for production)` });
+    }
+    setSlackSending(false);
+  };
+
+  const EVENT_LABELS = {detect:"Issue Detected",fix_failed:"Fix Failed",verify:"Verified Fixed",escalate:"Escalation"};
+
+  const panel = {
+    position:"fixed", inset:0, background:"rgba(0,0,0,0.65)", zIndex:1100,
+    display:"flex", alignItems:"center", justifyContent:"center", padding:24
+  };
+  const box = {
+    background:T.surface, border:`1px solid ${T.border2}`, borderRadius:14,
+    width:"100%", maxWidth:740, maxHeight:"88vh", display:"flex",
+    flexDirection:"column", overflow:"hidden", boxShadow:"0 24px 80px rgba(0,0,0,0.5)"
+  };
+
+  return (
+    <div style={panel} onClick={onClose}>
+      <div style={box} onClick={e=>e.stopPropagation()}>
+        {/* Header */}
+        <div style={{ padding:"18px 22px", borderBottom:`1px solid ${T.border}`, display:"flex", alignItems:"center", gap:12 }}>
+          <div style={{ width:38, height:38, borderRadius:10, background:`${T.cyan}18`, display:"flex", alignItems:"center", justifyContent:"center" }}>
+            <Bell size={17} color={T.cyan}/>
+          </div>
+          <div style={{ flex:1 }}>
+            <div style={{ fontSize:15, fontWeight:800, color:T.text }}>Notification Center</div>
+            <div style={{ fontSize:11, color:T.muted, marginTop:2 }}>Route quality alerts to Slack &amp; email · manage message templates</div>
+          </div>
+          <button onClick={onClose} style={{ background:"none", border:"none", cursor:"pointer", color:T.muted }}><X size={16}/></button>
+        </div>
+
+        {/* Tabs */}
+        <div style={{ display:"flex", gap:4, padding:"10px 22px", borderBottom:`1px solid ${T.border}`, background:T.isDark?"#0A0C10":T.bg }}>
+          {[["channels","Channels"],["templates","Templates"],["history","Send History"]].map(([id,label])=>(
+            <button key={id} onClick={()=>setTab(id)} style={{ padding:"6px 16px", borderRadius:7, border:`1px solid ${tab===id?T.accent+"50":"transparent"}`, background:tab===id?`${T.accent}15`:"transparent", color:tab===id?T.accentL:T.muted, fontSize:11, fontWeight:tab===id?700:500, cursor:"pointer" }}>
+              {label}
+            </button>
+          ))}
+        </div>
+
+        <div style={{ flex:1, overflowY:"auto", padding:"18px 22px" }}>
+
+          {/* ── Channels ── */}
+          {tab==="channels" && (
+            <div>
+              {/* ── Live Slack Webhook Test ── */}
+              <div style={{ background:T.isDark?"#0A1A0A":`${T.green}06`, border:`1px solid ${T.green}30`, borderRadius:10, padding:"16px 18px", marginBottom:20 }}>
+                <div style={{ display:"flex", alignItems:"center", gap:8, marginBottom:12 }}>
+                  <span style={{ fontSize:18 }}>💬</span>
+                  <div>
+                    <div style={{ fontSize:13, fontWeight:700, color:T.text }}>Live Slack Test</div>
+                    <div style={{ fontSize:11, color:T.muted }}>Paste a Slack Incoming Webhook URL and fire a real alert message</div>
+                  </div>
+                </div>
+
+                {/* Webhook input */}
+                <div style={{ marginBottom:10 }}>
+                  <div style={{ fontSize:10, color:T.muted, fontWeight:700, marginBottom:5, textTransform:"uppercase", letterSpacing:"0.04em" }}>Incoming Webhook URL</div>
+                  <input
+                    value={slackWebhook}
+                    onChange={e=>setSlackWebhook(e.target.value)}
+                    placeholder="https://hooks.slack.com/services/T00000/B00000/XXXXXXXX"
+                    style={{ width:"100%", background:T.isDark?"#0A0C10":T.bg, border:`1px solid ${slackWebhook.startsWith("https://hooks.slack.com/")?T.green:T.border2}`, borderRadius:7, padding:"9px 12px", color:T.text, fontSize:12, outline:"none", fontFamily:"Consolas,monospace" }}
+                  />
+                  <div style={{ fontSize:10, color:T.dim, marginTop:4 }}>
+                    Get this from Slack → App → Incoming Webhooks → Add New Webhook to Workspace
+                  </div>
+                </div>
+
+                {/* Alert selector */}
+                <div style={{ marginBottom:12 }}>
+                  <div style={{ fontSize:10, color:T.muted, fontWeight:700, marginBottom:5, textTransform:"uppercase", letterSpacing:"0.04em" }}>Test Alert</div>
+                  <select value={slackTestAlert} onChange={e=>setSlackTestAlert(e.target.value)} style={{ width:"100%", background:T.isDark?"#0A0C10":T.bg, border:`1px solid ${T.border2}`, borderRadius:7, padding:"8px 12px", color:T.text, fontSize:12, outline:"none" }}>
+                    {ALERTS_RAW.map(a=>(
+                      <option key={a.id} value={a.id}>[{a.severity.toUpperCase()}] {a.title}</option>
+                    ))}
+                  </select>
+                </div>
+
+                {/* Preview */}
+                {slackTestAlert && (() => {
+                  const a = ALERTS_RAW.find(x=>x.id===slackTestAlert);
+                  if (!a) return null;
+                  const sevEmoji = {critical:"🔴",high:"🟠",medium:"🟡",low:"🔵"}[a.severity]||"⚪";
+                  return (
+                    <div style={{ background:T.isDark?"#1a2a1a":"#F0FDF4", border:`1px solid ${T.green}30`, borderRadius:7, padding:"10px 12px", marginBottom:12, fontFamily:"Consolas,monospace" }}>
+                      <div style={{ fontSize:10, color:T.dim, marginBottom:4, fontWeight:700 }}>PAYLOAD PREVIEW</div>
+                      <div style={{ fontSize:11, color:T.text, lineHeight:1.8 }}>
+                        <div>{sevEmoji} *[{a.severity.toUpperCase()}] Quality Issue Detected*</div>
+                        <div style={{ color:T.muted }}>Rule: {a.rule}</div>
+                        <div style={{ color:T.muted }}>Source: {a.source}.{a.table}</div>
+                        <div style={{ color:T.muted }}>Time: {a.ts} IST</div>
+                        <div style={{ color:T.cyan }}>AI: {a.aiSuggestion?.slice(0,60)}…</div>
+                      </div>
+                    </div>
+                  );
+                })()}
+
+                {/* Send button */}
+                <button
+                  onClick={sendRealSlack}
+                  disabled={slackSending || !slackWebhook}
+                  style={{ width:"100%", background:slackWebhook?T.green:"#334155", border:"none", borderRadius:8, padding:"10px", cursor:slackWebhook?"pointer":"not-allowed", color:"white", fontSize:13, fontWeight:700, display:"flex", alignItems:"center", justifyContent:"center", gap:8, opacity:slackSending?0.7:1, transition:"all 0.2s" }}
+                >
+                  {slackSending
+                    ? <><RefreshCw size={14} style={{animation:"spin 1s linear infinite"}}/> Sending to Slack…</>
+                    : <><Send size={14}/> Send Test Alert to Slack</>
+                  }
+                </button>
+
+                {/* Result */}
+                {slackResult && (
+                  <div style={{ marginTop:10, padding:"10px 12px", background:slackResult.ok?`${T.green}12`:`${T.red}12`, border:`1px solid ${slackResult.ok?T.green:T.red}30`, borderRadius:7, fontSize:12, color:slackResult.ok?T.green:T.red, lineHeight:1.6 }}>
+                    {slackResult.msg}
+                  </div>
+                )}
+              </div>
+              <div style={{ fontSize:11, color:T.muted, marginBottom:16 }}>
+                Channel routing — configure which channels receive alerts for each severity and event type.
+              </div>
+              {channels.map(ch=>(
+                <div key={ch.id} style={{ background:T.card, border:`1px solid ${ch.enabled?T.border2:T.border}`, borderRadius:10, padding:"14px 16px", marginBottom:12, opacity:ch.enabled?1:0.55, transition:"opacity 0.2s" }}>
+                  <div style={{ display:"flex", alignItems:"center", gap:10, marginBottom:10 }}>
+                    <span style={{ fontSize:20 }}>{typeIcon(ch.type)}</span>
+                    <div style={{ flex:1 }}>
+                      <div style={{ fontSize:13, fontWeight:700, color:T.text }}>{ch.name}</div>
+                      <code style={{ fontSize:10, color:T.dim, fontFamily:"Consolas,monospace" }}>{ch.webhook||ch.name}</code>
+                    </div>
+                    {/* Toggle */}
+                    <button onClick={()=>toggle(ch.id)} style={{ background:ch.enabled?`${T.green}18`:`${T.muted}18`, border:`1px solid ${ch.enabled?T.green:T.border2}`, borderRadius:20, padding:"5px 14px", cursor:"pointer", fontSize:11, fontWeight:700, color:ch.enabled?T.green:T.muted, display:"flex", alignItems:"center", gap:6 }}>
+                      {ch.enabled?<><Check size={11}/>Enabled</>:<><X size={11}/>Disabled</>}
+                    </button>
+                    {/* Test */}
+                    <button onClick={()=>sendTest(ch)} disabled={!ch.enabled||testSent?.startsWith(ch.id)} style={{ background:`${T.cyan}12`, border:`1px solid ${T.cyan}30`, borderRadius:7, padding:"5px 12px", cursor:ch.enabled?"pointer":"not-allowed", fontSize:11, color:T.cyan, fontWeight:600, display:"flex", alignItems:"center", gap:5, opacity:ch.enabled?1:0.4 }}>
+                      {testSent===ch.id+"_sending"?<><RefreshCw size={11} style={{animation:"spin 1s linear infinite"}}/>Sending…</>:testSent===ch.id+"_ok"?<><Check size={11}/>Sent!</>:<><Send size={11}/>Test</>}
+                    </button>
+                  </div>
+                  {/* Severity chips */}
+                  <div style={{ display:"flex", gap:6, flexWrap:"wrap", alignItems:"center" }}>
+                    <span style={{ fontSize:10, color:T.dim, fontWeight:700, marginRight:2 }}>Severities:</span>
+                    {["critical","high","medium","low"].map(s=>{
+                      const on = ch.severities.includes(s);
+                      const sc = {critical:T.red,high:T.orange,medium:T.yellow,low:T.cyan}[s];
+                      return <span key={s} style={{ fontSize:10, color:on?sc:T.dim, background:on?`${sc}15`:T.border, border:`1px solid ${on?sc+"40":T.border2}`, borderRadius:12, padding:"2px 9px", fontWeight:on?700:400, textTransform:"uppercase" }}>{s}</span>;
+                    })}
+                    <span style={{ fontSize:10, color:T.dim, fontWeight:700, marginLeft:8, marginRight:2 }}>Events:</span>
+                    {ch.events.map(ev=>(
+                      <span key={ev} style={{ fontSize:10, color:T.accent, background:`${T.accent}12`, border:`1px solid ${T.accent}30`, borderRadius:12, padding:"2px 9px", fontWeight:600 }}>{EVENT_LABELS[ev]||ev}</span>
+                    ))}
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+
+          {/* ── Templates ── */}
+          {tab==="templates" && (
+            <div style={{ display:"grid", gridTemplateColumns:"180px 1fr", gap:16 }}>
+              {/* Template selector */}
+              <div>
+                <div style={{ fontSize:10, color:T.muted, fontWeight:700, marginBottom:8, textTransform:"uppercase", letterSpacing:"0.05em" }}>Event Type</div>
+                {Object.entries(EVENT_LABELS).map(([id,label])=>(
+                  <button key={id} onClick={()=>setEditTpl(id)} style={{ display:"block", width:"100%", padding:"9px 12px", borderRadius:7, border:`1px solid ${editTpl===id?T.accent+"50":"transparent"}`, background:editTpl===id?`${T.accent}15`:"transparent", color:editTpl===id?T.accentL:T.muted, fontSize:12, fontWeight:editTpl===id?700:400, cursor:"pointer", textAlign:"left", marginBottom:4 }}>
+                    {label}
+                  </button>
+                ))}
+              </div>
+              {/* Template editor */}
+              <div>
+                <div style={{ fontSize:10, color:T.muted, fontWeight:700, marginBottom:6, textTransform:"uppercase", letterSpacing:"0.05em" }}>Subject</div>
+                <input
+                  value={templates[editTpl]?.subject||""}
+                  onChange={e=>setTemplates(p=>({...p,[editTpl]:{...p[editTpl],subject:e.target.value}}))}
+                  style={{ width:"100%", background:T.isDark?"#0A0C10":T.bg, border:`1px solid ${T.border2}`, borderRadius:7, padding:"8px 12px", color:T.text, fontSize:12, outline:"none", marginBottom:12, fontFamily:"Consolas,monospace" }}
+                />
+                <div style={{ fontSize:10, color:T.muted, fontWeight:700, marginBottom:6, textTransform:"uppercase", letterSpacing:"0.05em" }}>Message Body</div>
+                <textarea
+                  value={templates[editTpl]?.body||""}
+                  onChange={e=>setTemplates(p=>({...p,[editTpl]:{...p[editTpl],body:e.target.value}}))}
+                  rows={12}
+                  style={{ width:"100%", background:T.isDark?"#0A0C10":T.bg, border:`1px solid ${T.border2}`, borderRadius:7, padding:"10px 12px", color:T.text, fontSize:11, outline:"none", fontFamily:"Consolas,monospace", lineHeight:1.8, resize:"vertical" }}
+                />
+                <div style={{ marginTop:8, fontSize:10, color:T.dim }}>
+                  Variables: <code style={{color:T.cyan,fontFamily:"Consolas,monospace"}}>{'{{severity}} {{source}} {{table}} {{rule}} {{ts}} {{ai_suggestion}}'}</code>
+                </div>
+                <button style={{ marginTop:12, background:T.accent, border:"none", borderRadius:8, padding:"8px 20px", cursor:"pointer", color:"white", fontSize:12, fontWeight:700, display:"flex", alignItems:"center", gap:6 }}>
+                  <Save size={13}/> Save Template
+                </button>
+              </div>
+            </div>
+          )}
+
+          {/* ── History ── */}
+          {tab==="history" && (
+            <div>
+              <div style={{ fontSize:11, color:T.muted, marginBottom:14 }}>Recent notifications sent by the platform.</div>
+              {NOTIF_HISTORY.map(n=>(
+                <div key={n.id} className="row-hover" style={{ display:"flex", alignItems:"center", gap:12, padding:"10px 12px", borderRadius:8, borderBottom:`1px solid ${T.border}` }}>
+                  <span style={{ fontSize:18 }}>{n.channel.startsWith("#")?"💬":"📧"}</span>
+                  <div style={{ flex:1 }}>
+                    <div style={{ fontSize:12, fontWeight:600, color:T.text }}>{n.title}</div>
+                    <div style={{ fontSize:10, color:T.muted, marginTop:2 }}>{n.channel} · {n.ts}</div>
+                  </div>
+                  <span style={{ fontSize:10, fontWeight:700, color:T.green, background:`${T.green}12`, border:`1px solid ${T.green}30`, borderRadius:12, padding:"2px 9px", textTransform:"uppercase" }}>{n.status}</span>
+                </div>
+              ))}
+            </div>
+          )}
+
+        </div>
+      </div>
+    </div>
+  );
+}
+
+
+// ─── Command Palette (Cmd+K) ──────────────────────────────────────────────────
+function CommandPalette({ onClose, onNavigate }) {
+  const T = useTheme();
+  const [q, setQ]       = useState("");
+  const [sel, setSel]   = useState(0);
+  const inputRef        = useRef(null);
+
+  useEffect(()=>{ inputRef.current?.focus(); },[]);
+  useEffect(()=>{ setSel(0); },[q]);
+
+  const ALL_ITEMS = [
+    // Tabs
+    { type:"nav",   icon:"🏠", label:"Ops Command Center",   hint:"Tab",  action:"tab:dashboard"  },
+    { type:"nav",   icon:"🤖", label:"QA Process Health",    hint:"Tab",  action:"tab:qahealth"   },
+    { type:"nav",   icon:"🔔", label:"Detect & Triage",      hint:"Tab",  action:"tab:alerts"     },
+    { type:"nav",   icon:"🧠", label:"Root Cause Analysis",  hint:"Tab",  action:"tab:rootcause"  },
+    { type:"nav",   icon:"🤖", label:"QA Agents",            hint:"Tab",  action:"tab:agents"     },
+    { type:"nav",   icon:"🔀", label:"Remediation Flows",    hint:"Tab",  action:"tab:workflows"  },
+    { type:"nav",   icon:"✓",  label:"Quality Rules",        hint:"Tab",  action:"tab:rules"      },
+    { type:"nav",   icon:"🧪", label:"Rule Validation",      hint:"Tab",  action:"tab:testrules"  },
+    { type:"nav",   icon:"🔒", label:"Human-in-the-Loop",    hint:"Tab",  action:"tab:gates"      },
+    { type:"nav",   icon:"📋", label:"Audit Trail",          hint:"Tab",  action:"tab:history"    },
+    { type:"nav",   icon:"🗄️", label:"Data Sources",         hint:"Tab",  action:"tab:sources"    },
+    // Alerts
+    ...ALERTS_RAW.map(a=>({ type:"alert", icon:{critical:"🔴",high:"🟠",medium:"🟡",low:"🔵"}[a.severity]||"⚪", label:a.title, hint:a.severity, action:"drill:alert:"+a.id, data:a })),
+    // Agents
+    ...AGENTS.map(a=>({ type:"agent", icon:a.icon, label:a.name, hint:a.status, action:"drill:agent:"+a.id, data:a })),
+    // Rules
+    ...INIT_RULES.map(r=>({ type:"rule", icon:"✓", label:r.name, hint:r.type, action:"drill:rule:"+r.id, data:r })),
+    // Sources
+    ...DATASOURCES.map(d=>({ type:"source", icon:"🗄️", label:d.name, hint:d.status, action:"drill:source:"+d.id, data:d })),
+  ];
+
+  const TYPE_LABELS = { nav:"Navigation", alert:"Alert", agent:"Agent", rule:"Rule", source:"Source" };
+  const TYPE_COLORS = { nav:T.accent, alert:T.red, agent:T.green, rule:T.purple, source:T.cyan };
+
+  const filtered = q.trim()
+    ? ALL_ITEMS.filter(it=>it.label.toLowerCase().includes(q.toLowerCase())||it.hint?.toLowerCase().includes(q.toLowerCase())||TYPE_LABELS[it.type]?.toLowerCase().includes(q.toLowerCase()))
+    : ALL_ITEMS.filter(it=>it.type==="nav");
+
+  const handleKey = (e) => {
+    if(e.key==="ArrowDown"){ e.preventDefault(); setSel(s=>Math.min(s+1,filtered.length-1)); }
+    if(e.key==="ArrowUp")  { e.preventDefault(); setSel(s=>Math.max(s-1,0)); }
+    if(e.key==="Enter")    { e.preventDefault(); if(filtered[sel]) activate(filtered[sel]); }
+    if(e.key==="Escape")   { onClose(); }
+  };
+
+  const activate = (item) => {
+    if(item.action.startsWith("tab:")) {
+      onNavigate(item.action.replace("tab:",""));
+    } else if(item.action.startsWith("drill:alert:")) {
+      const a = ALERTS_RAW.find(x=>x.id===item.action.replace("drill:alert:",""));
+      if(a && window._drillFn) window._drillFn("alert",a);
+    } else if(item.action.startsWith("drill:agent:")) {
+      const a = AGENTS.find(x=>x.id===item.action.replace("drill:agent:",""));
+      if(a && window._drillFn) window._drillFn("agent",a);
+    } else if(item.action.startsWith("drill:rule:")) {
+      const r = INIT_RULES.find(x=>x.id===item.action.replace("drill:rule:",""));
+      if(r && window._drillFn) window._drillFn("rule",r);
+    } else if(item.action.startsWith("drill:source:")) {
+      const d = DATASOURCES.find(x=>x.id===item.action.replace("drill:source:",""));
+      if(d && window._drillFn) window._drillFn("datasource",d);
+    }
+    onClose();
+  };
+
+  // Group results
+  const grouped = {};
+  filtered.forEach(it=>{ if(!grouped[it.type]) grouped[it.type]=[]; grouped[it.type].push(it); });
+
+  let globalIdx = 0;
+
+  return (
+    <div style={{ position:"fixed", inset:0, background:"rgba(0,0,0,0.72)", zIndex:1200, display:"flex", alignItems:"flex-start", justifyContent:"center", paddingTop:"12vh" }} onClick={onClose}>
+      <div style={{ width:"100%", maxWidth:580, background:T.surface, border:`1px solid ${T.border2}`, borderRadius:14, overflow:"hidden", boxShadow:"0 32px 80px rgba(0,0,0,0.6)", animation:"fadein 0.12s ease" }} onClick={e=>e.stopPropagation()}>
+        {/* Search input */}
+        <div style={{ display:"flex", alignItems:"center", gap:10, padding:"14px 16px", borderBottom:`1px solid ${T.border}` }}>
+          <Search size={16} color={T.muted}/>
+          <input
+            ref={inputRef}
+            value={q}
+            onChange={e=>setQ(e.target.value)}
+            onKeyDown={handleKey}
+            placeholder="Search tabs, alerts, agents, rules…"
+            style={{ flex:1, background:"none", border:"none", outline:"none", color:T.text, fontSize:14, fontFamily:"inherit" }}
+          />
+          {q && <button onClick={()=>setQ("")} style={{ background:"none", border:"none", cursor:"pointer", color:T.muted }}><X size={13}/></button>}
+          <kbd style={{ fontSize:10, color:T.dim, background:T.border, borderRadius:4, padding:"2px 6px", fontFamily:"Consolas,monospace" }}>ESC</kbd>
+        </div>
+
+        {/* Results */}
+        <div style={{ maxHeight:420, overflowY:"auto" }}>
+          {filtered.length===0 && (
+            <div style={{ padding:"28px", textAlign:"center", color:T.muted, fontSize:12 }}>No results for "{q}"</div>
+          )}
+          {Object.entries(grouped).map(([type, items])=>(
+            <div key={type}>
+              <div style={{ padding:"8px 16px 4px", fontSize:10, color:T.dim, fontWeight:700, textTransform:"uppercase", letterSpacing:"0.06em" }}>{TYPE_LABELS[type]}</div>
+              {items.map(item=>{
+                const idx = globalIdx++;
+                const isSelected = idx===sel;
+                return (
+                  <div
+                    key={item.action}
+                    onClick={()=>activate(item)}
+                    onMouseEnter={()=>setSel(idx)}
+                    style={{ display:"flex", alignItems:"center", gap:12, padding:"9px 16px", cursor:"pointer", background:isSelected?`${T.accent}15`:"transparent", transition:"background 0.08s" }}
+                  >
+                    <span style={{ fontSize:16, flexShrink:0 }}>{item.icon}</span>
+                    <span style={{ flex:1, fontSize:13, color:T.text, fontWeight:isSelected?600:400 }}>{item.label}</span>
+                    <span style={{ fontSize:10, color:TYPE_COLORS[item.type]||T.muted, background:`${TYPE_COLORS[item.type]||T.muted}15`, borderRadius:10, padding:"2px 8px", fontWeight:600, textTransform:"uppercase", flexShrink:0 }}>{item.hint}</span>
+                    {isSelected && <ArrowRight size={13} color={T.accent}/>}
+                  </div>
+                );
+              })}
+            </div>
+          ))}
+        </div>
+
+        {/* Footer hint */}
+        <div style={{ padding:"8px 16px", borderTop:`1px solid ${T.border}`, display:"flex", gap:16, fontSize:10, color:T.dim }}>
+          <span><kbd style={{ background:T.border, borderRadius:3, padding:"1px 5px", fontFamily:"Consolas,monospace" }}>↑↓</kbd> navigate</span>
+          <span><kbd style={{ background:T.border, borderRadius:3, padding:"1px 5px", fontFamily:"Consolas,monospace" }}>↵</kbd> open</span>
+          <span><kbd style={{ background:T.border, borderRadius:3, padding:"1px 5px", fontFamily:"Consolas,monospace" }}>ESC</kbd> close</span>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ─── Agent Evals Panel ────────────────────────────────────────────────────────
+function AgentEvalsPanel({ agentId, agent }) {
+  const T = useTheme();
+  const [cases, setCases] = useState(
+    (EVAL_CASES[agentId]||[]).map(c=>({...c}))
+  );
+  const [running, setRunning] = useState(null);   // eval id being judged
+  const [runningAll, setRunningAll] = useState(false);
+  const [expanded, setExpanded] = useState(null);
+  const [filterCat, setFilterCat] = useState("all");
+
+  const updateCase = (id, patch) =>
+    setCases(prev => prev.map(c => c.id===id ? {...c,...patch} : c));
+
+  // Judge a single eval case via Claude API
+  const judgeCase = async (ec) => {
+    setRunning(ec.id);
+    updateCase(ec.id, { verdict:null, score:null, judgeRationale:"Evaluating…" });
+    try {
+      const res = await fetch("https://api.anthropic.com/v1/messages", {
+        method:"POST",
+        headers:{"Content-Type":"application/json"},
+        body: JSON.stringify({
+          model:"claude-sonnet-4-20250514",
+          max_tokens:600,
+          system:`You are an expert AI evaluator for a data quality monitoring platform (Intentwise). 
+You will be given an eval case with: category, expected output, and actual output.
+Your job: score the actual output vs expected on a scale of 1–10, give a verdict (PASS/PARTIAL/FAIL), and write a 2–3 sentence rationale.
+
+Scoring guide:
+- 9–10: Actual fully meets expected, specific and actionable
+- 7–8: Mostly correct, minor gaps
+- 5–6: Partially correct, significant gaps
+- 1–4: Wrong, missing key elements, or harmful
+
+Respond ONLY with valid JSON (no markdown):
+{"verdict":"PASS|PARTIAL|FAIL","score":8,"rationale":"Your 2-3 sentence rationale here."}`,
+          messages:[{
+            role:"user",
+            content:`Category: ${ec.category}
+Label: ${ec.label}
+Input context: ${ec.input}
+Expected: ${ec.expected}
+Actual: ${ec.actual}
+
+Evaluate the actual output.`
+          }]
+        })
+      });
+      const data = await res.json();
+      const raw = data.content?.find(b=>b.type==="text")?.text || "{}";
+      const parsed = JSON.parse(raw.replace(/```json|```/g,"").trim());
+      updateCase(ec.id, {
+        verdict: parsed.verdict || "FAIL",
+        score:   parsed.score   || 0,
+        judgeRationale: parsed.rationale || "No rationale returned.",
+      });
+    } catch(e) {
+      updateCase(ec.id, { verdict:"ERROR", score:0, judgeRationale:"Eval failed — API error." });
+    }
+    setRunning(null);
+  };
+
+  // Run all unscored cases
+  const judgeAll = async () => {
+    setRunningAll(true);
+    const unscored = cases.filter(c=>!c.verdict);
+    for (const ec of unscored) {
+      await judgeCase(ec);
+      await new Promise(r=>setTimeout(r,400));
+    }
+    setRunningAll(false);
+  };
+
+  const scored    = cases.filter(c=>c.verdict && c.verdict!=="ERROR");
+  const avgScore  = scored.length ? (scored.reduce((s,c)=>s+(c.score||0),0)/scored.length).toFixed(1) : null;
+  const passCount = cases.filter(c=>c.verdict==="PASS").length;
+  const partCount = cases.filter(c=>c.verdict==="PARTIAL").length;
+  const failCount = cases.filter(c=>c.verdict==="FAIL").length;
+
+  const verdictColor = v => ({PASS:T.green, PARTIAL:T.yellow, FAIL:T.red, ERROR:T.muted})[v] || T.muted;
+  const scoreColor   = s => s>=8?T.green:s>=6?T.yellow:T.red;
+  const catColor     = cat => CATEGORY_META[cat]?.color || T.muted;
+
+  const visible = cases.filter(c => filterCat==="all" || c.category===filterCat);
+
+  return (
+    <div style={{ padding:"16px 18px" }}>
+
+      {/* ── Header strip ── */}
+      <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom:16 }}>
+        <div style={{ display:"flex", alignItems:"center", gap:10 }}>
+          <div style={{ width:34, height:34, borderRadius:9, background:`${T.purple}20`, display:"flex", alignItems:"center", justifyContent:"center" }}>
+            <span style={{ fontSize:18 }}>🧪</span>
+          </div>
+          <div>
+            <div style={{ fontSize:13, fontWeight:800, color:T.text }}>Eval Framework</div>
+            <div style={{ fontSize:11, color:T.muted }}>{cases.length} cases · AI judge powered by Claude</div>
+          </div>
+        </div>
+        <button
+          onClick={judgeAll}
+          disabled={runningAll || cases.every(c=>c.verdict)}
+          style={{ background:T.purple, border:"none", borderRadius:8, padding:"8px 18px", cursor:runningAll||cases.every(c=>c.verdict)?"not-allowed":"pointer", color:"white", fontSize:12, fontWeight:700, display:"flex", alignItems:"center", gap:7, opacity:cases.every(c=>c.verdict)?0.4:1 }}
+        >
+          {runningAll
+            ? <><RefreshCw size={13} style={{animation:"spin 1s linear infinite"}}/>Judging…</>
+            : <><Sparkles size={13}/>Run All Evals</>
+          }
+        </button>
+      </div>
+
+      {/* ── Score summary ── */}
+      {scored.length > 0 && (
+        <div style={{ display:"grid", gridTemplateColumns:"repeat(4,1fr)", gap:10, marginBottom:16 }}>
+          {[
+            ["Avg Score", avgScore+"/10", avgScore>=8?T.green:avgScore>=6?T.yellow:T.red],
+            ["Pass",      passCount,      T.green],
+            ["Partial",   partCount,      T.yellow],
+            ["Fail",      failCount,      T.red],
+          ].map(([l,v,c])=>(
+            <div key={l} style={{ background:T.isDark?`${c}10`:`${c}08`, border:`1px solid ${c}30`, borderRadius:9, padding:"10px 14px", textAlign:"center" }}>
+              <div style={{ fontSize:22, fontWeight:800, color:c }}>{v}</div>
+              <div style={{ fontSize:10, color:T.muted, marginTop:3, fontWeight:600 }}>{l}</div>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* ── Category filter ── */}
+      <div style={{ display:"flex", gap:6, marginBottom:14, flexWrap:"wrap" }}>
+        {["all","agent_output","rule_quality","claude_response"].map(cat=>{
+          const meta = CATEGORY_META[cat];
+          const active = filterCat===cat;
+          const col = meta?.color || T.accent;
+          return (
+            <button key={cat} onClick={()=>setFilterCat(cat)} style={{ padding:"5px 12px", borderRadius:20, border:`1px solid ${active?col+"60":T.border2}`, background:active?`${col}15`:T.isDark?"#0A0C10":T.bg, color:active?col:T.muted, fontSize:10, fontWeight:active?700:500, cursor:"pointer" }}>
+              {meta?.icon||"🔎"} {meta?.label||"All"}
+            </button>
+          );
+        })}
+      </div>
+
+      {/* ── Eval cases ── */}
+      {visible.length===0 && (
+        <div style={{ textAlign:"center", color:T.muted, fontSize:12, padding:"24px 0" }}>No eval cases for this agent yet.</div>
+      )}
+
+      {visible.map(ec=>{
+        const isExpanded = expanded===ec.id;
+        const isRunning  = running===ec.id;
+        const catMeta    = CATEGORY_META[ec.category] || {};
+        const vc = ec.verdict ? verdictColor(ec.verdict) : T.muted;
+
+        return (
+          <div key={ec.id} style={{ background:T.isDark?"#0A0C10":T.bg, border:`1px solid ${isExpanded?T.accent+"40":T.border}`, borderRadius:10, marginBottom:10, overflow:"hidden", transition:"border-color 0.15s" }}>
+
+            {/* Case header row */}
+            <div
+              onClick={()=>setExpanded(isExpanded?null:ec.id)}
+              style={{ display:"flex", alignItems:"center", gap:10, padding:"11px 14px", cursor:"pointer" }}
+            >
+              {/* Category pill */}
+              <span style={{ fontSize:10, color:catMeta.color||T.muted, background:`${catMeta.color||T.muted}15`, border:`1px solid ${catMeta.color||T.muted}30`, borderRadius:12, padding:"2px 9px", fontWeight:700, flexShrink:0, whiteSpace:"nowrap" }}>
+                {catMeta.icon} {catMeta.label}
+              </span>
+
+              {/* Label */}
+              <span style={{ fontSize:12, fontWeight:600, color:T.text, flex:1 }}>{ec.label}</span>
+
+              {/* Score */}
+              {ec.score!=null && !isRunning && (
+                <span style={{ fontSize:13, fontWeight:800, color:scoreColor(ec.score), flexShrink:0 }}>{ec.score}/10</span>
+              )}
+
+              {/* Verdict badge */}
+              {ec.verdict && !isRunning && (
+                <span style={{ fontSize:10, fontWeight:700, color:vc, background:`${vc}15`, border:`1px solid ${vc}30`, borderRadius:12, padding:"2px 9px", flexShrink:0, textTransform:"uppercase" }}>
+                  {ec.verdict}
+                </span>
+              )}
+
+              {/* Run button */}
+              <button
+                onClick={e=>{e.stopPropagation(); judgeCase(ec);}}
+                disabled={!!running||runningAll}
+                style={{ background:isRunning?`${T.purple}10`:`${T.purple}18`, border:`1px solid ${T.purple}40`, borderRadius:6, padding:"5px 11px", cursor:running?"not-allowed":"pointer", color:T.purple, fontSize:10, fontWeight:700, display:"flex", alignItems:"center", gap:5, flexShrink:0, opacity:running&&!isRunning?0.4:1 }}
+              >
+                {isRunning
+                  ? <><RefreshCw size={11} style={{animation:"spin 1s linear infinite"}}/>Judging</>
+                  : <><Sparkles size={11}/>{ec.verdict?"Re-eval":"Judge"}</>
+                }
+              </button>
+
+              <span style={{ color:T.dim }}>{isExpanded?<ChevronUp size={13}/>:<ChevronDown size={13}/>}</span>
+            </div>
+
+            {/* Expanded detail — side-by-side comparison */}
+            {isExpanded && (
+              <div style={{ borderTop:`1px solid ${T.border}`, padding:"14px", animation:"fadein 0.18s ease" }}>
+
+                {/* Input context */}
+                <div style={{ marginBottom:12 }}>
+                  <div style={{ fontSize:10, color:T.dim, fontWeight:700, marginBottom:5, letterSpacing:"0.05em", textTransform:"uppercase" }}>Input Context</div>
+                  <div style={{ fontSize:11, color:T.muted, background:T.isDark?"#13161E":T.border, borderRadius:7, padding:"9px 12px", lineHeight:1.6 }}>{ec.input}</div>
+                </div>
+
+                {/* Side-by-side expected vs actual */}
+                <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:10, marginBottom:12 }}>
+                  <div>
+                    <div style={{ fontSize:10, color:T.green, fontWeight:700, marginBottom:5, letterSpacing:"0.05em", textTransform:"uppercase", display:"flex", alignItems:"center", gap:5 }}>
+                      <CheckCircle size={11}/> Expected
+                    </div>
+                    <div style={{ fontSize:11, color:T.text, background:`${T.green}08`, border:`1px solid ${T.green}25`, borderRadius:8, padding:"10px 12px", lineHeight:1.7, minHeight:70 }}>
+                      {ec.expected}
+                    </div>
+                  </div>
+                  <div>
+                    <div style={{ fontSize:10, color:T.cyan, fontWeight:700, marginBottom:5, letterSpacing:"0.05em", textTransform:"uppercase", display:"flex", alignItems:"center", gap:5 }}>
+                      <Eye size={11}/> Actual Output
+                    </div>
+                    <div style={{ fontSize:11, color:T.text, background:`${T.cyan}08`, border:`1px solid ${T.cyan}25`, borderRadius:8, padding:"10px 12px", lineHeight:1.7, minHeight:70 }}>
+                      {ec.actual}
+                    </div>
+                  </div>
+                </div>
+
+                {/* AI judge result */}
+                {(ec.judgeRationale || isRunning) && (
+                  <div style={{ background:`${T.purple}08`, border:`1px solid ${T.purple}25`, borderRadius:8, padding:"12px 14px" }}>
+                    <div style={{ display:"flex", alignItems:"center", gap:8, marginBottom:8 }}>
+                      <BrainCircuit size={13} color={T.purple}/>
+                      <span style={{ fontSize:10, fontWeight:700, color:T.purple, letterSpacing:"0.06em", textTransform:"uppercase" }}>Claude AI Judge</span>
+                      {ec.score!=null && !isRunning && (
+                        <span style={{ marginLeft:"auto", fontSize:15, fontWeight:800, color:scoreColor(ec.score) }}>{ec.score}/10</span>
+                      )}
+                      {ec.verdict && !isRunning && (
+                        <span style={{ fontSize:11, fontWeight:700, color:verdictColor(ec.verdict), background:`${verdictColor(ec.verdict)}15`, border:`1px solid ${verdictColor(ec.verdict)}30`, borderRadius:12, padding:"2px 10px", textTransform:"uppercase" }}>
+                          {ec.verdict}
+                        </span>
+                      )}
+                    </div>
+                    {isRunning
+                      ? <div style={{ display:"flex", alignItems:"center", gap:8, color:T.muted, fontSize:12 }}>
+                          <RefreshCw size={12} style={{animation:"spin 1s linear infinite", color:T.purple}}/> Claude is evaluating this output…
+                        </div>
+                      : <div style={{ fontSize:12, color:T.text, lineHeight:1.8 }}>{ec.judgeRationale}</div>
+                    }
+                  </div>
+                )}
+
+                {/* Prompt if not yet judged */}
+                {!ec.judgeRationale && !isRunning && (
+                  <div style={{ textAlign:"center", padding:"10px 0" }}>
+                    <button onClick={()=>judgeCase(ec)} style={{ background:`${T.purple}18`, border:`1px solid ${T.purple}40`, borderRadius:8, padding:"8px 20px", cursor:"pointer", color:T.purple, fontSize:12, fontWeight:700, display:"inline-flex", alignItems:"center", gap:7 }}>
+                      <Sparkles size={13}/>Run AI Judge on this case
+                    </button>
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+// ─── Agent Config Panel ───────────────────────────────────────────────────────
+function AgentConfigPanel({ agent, config, onSave, onCancel }) {
+  const T = useTheme();
+  const [cfg, setCfg] = useState({...config});
+  const set = (k,v) => setCfg(p=>({...p,[k]:v}));
+
+  const Field = ({label, k, placeholder}) => (
+    <div style={{ marginBottom:14 }}>
+      <label style={{ fontSize:11, color:T.muted, fontWeight:700, display:"block", marginBottom:5, letterSpacing:"0.04em", textTransform:"uppercase" }}>{label}</label>
+      <input
+        value={cfg[k]||""}
+        onChange={e=>set(k,e.target.value)}
+        placeholder={placeholder}
+        style={{ width:"100%", background:T.isDark?"#0A0C10":T.border, border:`1px solid ${T.border2}`, borderRadius:7, padding:"9px 12px", color:T.text, fontSize:12, outline:"none", fontFamily:"Consolas,monospace" }}
+      />
+    </div>
+  );
+
+  return (
+    <div style={{ background:T.card, border:`1px solid ${T.border}`, borderRadius:12, padding:"22px 24px", maxWidth:560 }}>
+      <div style={{ display:"flex", alignItems:"center", gap:12, marginBottom:20 }}>
+        <span style={{ fontSize:26 }}>{agent.icon}</span>
+        <div>
+          <div style={{ fontSize:14, fontWeight:800, color:T.text }}>{agent.name}</div>
+          <div style={{ fontSize:11, color:T.muted }}>Agent configuration</div>
+        </div>
+        <button onClick={onCancel} style={{ marginLeft:"auto", background:"none", border:"none", cursor:"pointer", color:T.muted }}><X size={16}/></button>
+      </div>
+
+      <Field label="Cron Schedule" k="schedule" placeholder="*/30 * * * *" />
+      <Field label="Target Tables / Sources" k="targets" placeholder="prod-postgres.report" />
+      <Field label="Threshold" k="threshold" placeholder="0 missing" />
+      <Field label="Alert Condition" k="alertOn" placeholder="any_missing" />
+
+      <div style={{ marginBottom:18 }}>
+        <label style={{ fontSize:11, color:T.muted, fontWeight:700, display:"block", marginBottom:8, letterSpacing:"0.04em", textTransform:"uppercase" }}>Auto-Fix</label>
+        <div style={{ display:"flex", gap:8 }}>
+          {[true,false].map(v=>(
+            <button key={String(v)} onClick={()=>set("autoFix",v)} style={{ flex:1, padding:"9px", borderRadius:7, border:`1px solid ${cfg.autoFix===v?T.accent+"60":T.border2}`, background:cfg.autoFix===v?`${T.accent}15`:T.isDark?"#0A0C10":T.border, cursor:"pointer", fontSize:12, fontWeight:cfg.autoFix===v?700:400, color:cfg.autoFix===v?T.accentL:T.muted }}>
+              {v?"✓ Enabled":"✗ Disabled"}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      <div style={{ background:T.isDark?"#0A0C10":T.bg, border:`1px solid ${T.border}`, borderRadius:8, padding:"10px 14px", marginBottom:18 }}>
+        <div style={{ fontSize:10, color:T.muted, marginBottom:6, fontWeight:700 }}>PREVIEW</div>
+        <code style={{ fontSize:11, color:T.cyan, fontFamily:"Consolas,monospace", lineHeight:1.8 }}>
+          schedule: {cfg.schedule}<br/>
+          targets: [{(cfg.targets||"").toString()}]<br/>
+          alert_on: {cfg.alertOn}<br/>
+          auto_fix: {String(cfg.autoFix)}
+        </code>
+      </div>
+
+      <div style={{ display:"flex", gap:10 }}>
+        <button onClick={()=>onSave(cfg)} style={{ flex:1, background:T.accent, border:"none", borderRadius:8, padding:"10px", cursor:"pointer", color:"white", fontSize:13, fontWeight:700, display:"flex", alignItems:"center", justifyContent:"center", gap:6 }}>
+          <Save size={14}/> Save Configuration
+        </button>
+        <button onClick={onCancel} style={{ background:T.isDark?"#0A0C10":T.border, border:`1px solid ${T.border2}`, borderRadius:8, padding:"10px 20px", cursor:"pointer", color:T.muted, fontSize:12 }}>
+          Cancel
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function AgentCard({ agent, onDrill }) {
+  // kept for DrillModal compat — not used in main tab anymore
+  const statusCol = { running:C.green, idle:C.muted, paused:C.orange }[agent.status] || C.muted;
+  return (
+    <div onClick={()=>onDrill&&onDrill('agent',agent)} style={{ background:C.card, border:`1px solid ${C.border}`, borderRadius:9, padding:"12px 14px", cursor:"pointer" }}>
+      <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom:8 }}>
+        <span style={{ fontSize:13, fontWeight:700, color:C.accentL }}>{agent.icon} {agent.name}</span>
+        <span style={{ fontSize:9, color:statusCol, fontWeight:700, textTransform:"uppercase" }}>{agent.status}</span>
+      </div>
+      <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr 1fr", gap:6 }}>
+        {[["Runs",agent.runsToday,C.accentL],["Issues",agent.issuesFound,agent.issuesFound>0?C.orange:C.green],["Fixed",agent.fixed,C.green]].map(([l,v,c])=>(
+          <div key={l} style={{ textAlign:"center", background:`${C.border}50`, borderRadius:5, padding:"6px 2px" }}>
+            <div style={{ fontSize:16, fontWeight:800, color:c }}>{v}</div>
+            <div style={{ fontSize:9, color:C.muted }}>{l}</div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+// ─── KPI Card ─────────────────────────────────────────────────────────────────
+function KPI({ label, value, sub, trend, icon: Icon, color, spark, onClick }) {
+  const up = trend > 0, down = trend < 0;
+  return (
+    <Card style={{ padding:"16px 18px", cursor:onClick?"pointer":"default" }} onClick={onClick}>
+      <div style={{ display:"flex", alignItems:"flex-start", justifyContent:"space-between", marginBottom:10 }}>
+        <div>
+          <div style={{ fontSize:11, color:C.muted, letterSpacing:"0.04em", textTransform:"uppercase", fontWeight:700, marginBottom:6 }}>{label}</div>
+          <div style={{ fontSize:30, fontWeight:800, color:color||C.text, lineHeight:1 }}>{value}</div>
+          {sub && <div style={{ fontSize:11, color:C.muted, marginTop:5 }}>{sub}</div>}
+        </div>
+        <div style={{ display:"flex", flexDirection:"column", alignItems:"flex-end", gap:8 }}>
+          <div style={{ width:34, height:34, borderRadius:9, background:`${color||C.accent}18`, display:"flex", alignItems:"center", justifyContent:"center" }}>
+            <Icon size={16} color={color||C.accentL} />
+          </div>
+          {spark && <Spark data={spark} color={color||C.accentL} />}
+        </div>
+      </div>
+      {trend !== undefined && (
+        <div style={{ display:"flex", alignItems:"center", gap:5 }}>
+          {up ? <ArrowUpRight size={13} color={C.green}/> : down ? <ArrowDownRight size={13} color={C.red}/> : <Minus size={13} color={C.muted}/>}
+          <span style={{ fontSize:11, color:up?C.green:down?C.red:C.muted, fontWeight:600 }}>{Math.abs(trend)}% vs yesterday</span>
+        </div>
+      )}
+    </Card>
+  );
+}
+
+// ─── Datasource Row ───────────────────────────────────────────────────────────
+const DS_ICONS = { PostgreSQL:"🐘", Redshift:"🔴", BigQuery:"🔵", Snowflake:"❄️", MySQL:"🐬", GSheets:"📊" };
+function DSRow({ ds, onDrill }) {
+  const statusCol = { healthy:C.green, degraded:C.yellow, offline:C.red }[ds.status] || C.muted;
+  return (
+    <div className="row-hover" style={{ display:"flex", alignItems:"center", gap:14, padding:"12px 18px", borderBottom:`1px solid ${C.border}` }}>
+      <span style={{ fontSize:18 }}>{DS_ICONS[ds.type]||"🗄️"}</span>
+      <div style={{ flex:1, minWidth:0 }}>
+        <div style={{ fontSize:13, fontWeight:700, color:C.text }}>{ds.name}</div>
+        <div style={{ fontSize:11, color:C.muted, marginTop:2 }}>{ds.type} · {ds.tables} tables{ds.host ? ` · ${ds.host.split(".")[0]}…` : ""}</div>
+      </div>
+      <div style={{ textAlign:"right", flexShrink:0 }}>
+        {ds.latency ? <div style={{ fontSize:11, color:ds.latency>200?C.yellow:C.green, fontWeight:600 }}>{ds.latency}ms</div> : <div style={{ fontSize:11, color:C.red }}>—</div>}
+        <div style={{ fontSize:10, color:C.muted }}>latency</div>
+      </div>
+      <div style={{ display:"flex", alignItems:"center", gap:5, flexShrink:0 }}>
+        <Dot status={ds.status} />
+        <span style={{ fontSize:10, color:statusCol, fontWeight:600, textTransform:"uppercase", minWidth:52 }}>{ds.status}</span>
+      </div>
+      <button
+        onClick={()=>onDrill&&onDrill("datasource",ds)}
+        style={{ background:`${C.accent}14`, border:`1px solid ${C.accent}40`, borderRadius:7, padding:"5px 13px", cursor:"pointer", fontSize:11, color:C.accentL, fontWeight:700, display:"flex", alignItems:"center", gap:5, flexShrink:0 }}
+      >
+        <Settings size={11}/> Configure
+      </button>
+    </div>
+  );
+}
+
+
+
+
+// ─── Datasource Drill Panel (extracted to avoid conditional hooks) ────────────
+function DatasourceDrillPanel({ ds, onClose, onNavigate, tab, setTab }) {
+  const T = useTheme();
+  const sc = {healthy:T.green,degraded:T.yellow,offline:T.red}[ds.status]||T.muted;
+  const relatedAlerts = ALERTS_RAW.filter(a=>a.source===ds.name);
+  const relatedRules  = INIT_RULES.filter(r=>r.source===ds.id||r.source===ds.name);
+
+  const [host,      setHost]      = useState(ds.host        || "");
+  const [port,      setPort]      = useState(ds.port        || "");
+  const [database,  setDatabase]  = useState(ds.database    || "");
+  const [schema,    setSchema]    = useState(ds.schema      || "");
+  const [user,      setUser]      = useState(ds.user        || "");
+  const [password,  setPassword]  = useState("");
+  const [sslMode,   setSslMode]   = useState(ds.sslMode     || "require");
+  const [syncSched, setSyncSched] = useState(ds.syncSchedule|| "0 * * * *");
+  const [desc,      setDesc]      = useState(ds.description || "");
+  const [showPass,  setShowPass]  = useState(false);
+  const [testing,   setTesting]   = useState(false);
+  const [testResult,setTestResult]= useState(null);
+  const [saved,     setSaved]     = useState(false);
+
+
+}
+
+// ─── Universal Drill Modal ────────────────────────────────────────────────────
+// drillTarget: { type: "alert"|"rule"|"agent"|"datasource"|"history"|"kpi", data: {...} }
+function DrillModal({ target, onClose, onNavigate }) {
+  const T = useTheme();
+  const [tab, setTab] = useState("overview");
+  const [running, setRunning] = useState(false);
+  const [runResult, setRunResult] = useState(null);
+  const [aiLoading, setAiLoading] = useState(false);
+  const [aiText, setAiText] = useState("");
+  const [resolved, setResolved] = useState(false);
+
+  // All hooks must be declared before any conditional returns
+  const type = target?.type;
+  const data = target?.data;
+
+  if (!target) return null;
+
+  const SAMPLE_TABLE_DATA = {
+    "tbl_amzn_campaign_report": [
+      { report_date:"2026-03-10", profile_id:"48291", campaign_id:"C-001", impressions:12840, clicks:342, spend:128.40 },
+      { report_date:"2026-03-10", profile_id:"48291", campaign_id:"C-002", impressions:9210,  clicks:187, spend:74.20 },
+      { report_date:"2026-03-10", profile_id:null,    campaign_id:"C-003", impressions:7650,  clicks:156, spend:62.10 },
+      { report_date:"2026-03-09", profile_id:"48293", campaign_id:"C-001", impressions:11200, clicks:298, spend:112.00 },
+      { report_date:"2026-03-09", profile_id:"48102", campaign_id:"C-004", impressions:8900,  clicks:201, spend:89.00 },
+    ],
+    "report": [
+      { id:"RPT-001", profile_id:"48291", report_date:"2026-03-10", status:"processed",    download_date:"2026-03-10", copy_status:"REPLICATED" },
+      { id:"RPT-002", profile_id:"48102", report_date:"2026-03-10", status:"failed",       download_date:null,         copy_status:"NOT_REPLICATED" },
+      { id:"RPT-003", profile_id:"48293", report_date:"2026-03-10", status:"pending",      download_date:null,         copy_status:"PENDING" },
+      { id:"RPT-004", profile_id:"48304", report_date:"2026-03-10", status:"processed",    download_date:"2026-03-10", copy_status:"REPLICATED" },
+      { id:"RPT-005", profile_id:"48512", report_date:"2026-03-09", status:"stuck",        download_date:"2026-03-09", copy_status:"STALE" },
+    ],
+    "tbl_amzn_keyword_report": [
+      { report_date:"2026-03-09", profile_id:"48291", keyword_id:"KW-991", keyword:"running shoes", impressions:4200, clicks:89 },
+      { report_date:"2026-03-09", profile_id:"48291", keyword_id:"KW-991", keyword:"running shoes", impressions:4200, clicks:89 },
+      { report_date:"2026-03-09", profile_id:"48102", keyword_id:"KW-114", keyword:"trail boots",   impressions:1800, clicks:42 },
+      { report_date:"2026-03-09", profile_id:"48102", keyword_id:"KW-114", keyword:"trail boots",   impressions:1800, clicks:42 },
+      { report_date:"2026-03-10", profile_id:"48293", keyword_id:"KW-220", keyword:"yoga mat",      impressions:3100, clicks:71 },
+    ],
+    "account_performance": [
+      { date:"2026-03-10", account_id:"ACC-001", total_spend:4820.10, roas:3.42, impressions:284000, clicks:8420 },
+      { date:"2026-03-10", account_id:"ACC-002", total_spend:1240.80, roas:2.91, impressions:92000,  clicks:2810 },
+      { date:"2026-03-09", account_id:"ACC-001", total_spend:7210.40, roas:3.81, impressions:410000, clicks:12100 },
+      { date:"2026-03-09", account_id:"ACC-002", total_spend:2180.60, roas:3.12, impressions:148000, clicks:4320 },
+    ],
+  };
+
+  const tableData = data.table && SAMPLE_TABLE_DATA[data.table] ? SAMPLE_TABLE_DATA[data.table] : null;
+  const statusColor = { open:T.red, triaged:T.yellow, resolved:T.green, pass:T.green, fail:T.red, pending:T.yellow, running:T.cyan, idle:T.muted, paused:T.orange, healthy:T.green, degraded:T.yellow, offline:T.red }[data.status||data.result||data.lastResult||""] || T.muted;
+
+  const runRule = async () => {
+    setRunning(true); setRunResult(null); setAiText("");
+    await new Promise(r=>setTimeout(r, 1400));
+    const fail = data.lastResult === "fail" || data.type === "freshness" || data.type === "unique";
+    const pass = !fail;
+    setRunResult({ pass, summary: pass ? `✓ All checks passed on ${data.table}` : `✗ Rule failed: ${data.name}. ${data.type==="freshness"?"Data is 8.3h old (threshold 6h).":data.type==="unique"?"1,842 duplicate rows found.":"Check threshold exceeded."}` });
+    if (!pass) fetchAIExplain();
+    setRunning(false);
+  };
+
+  const fetchAIExplain = async () => {
+    setAiLoading(true);
+    try {
+      const res = await fetch("https://api.anthropic.com/v1/messages", {
+        method:"POST", headers:{"Content-Type":"application/json"},
+        body: JSON.stringify({
+          model:"claude-sonnet-4-20250514", max_tokens:350,
+          system:"You are a data quality expert for Intentwise. Given a failed data rule, explain root cause and give a specific 2-step fix. Be concise and technical.",
+          messages:[{role:"user", content:`Rule failed: ${data.name} (${data.type}) on ${data.source} → ${data.table}. Give root cause + fix in 2-3 sentences.`}]
+        })
+      });
+      const d = await res.json();
+      setAiText(d.content?.find(b=>b.type==="text")?.text || "");
+    } catch(e) { setAiText(""); }
+    setAiLoading(false);
+  };
+
+  const overlay = { position:"fixed", inset:0, background:"rgba(0,0,0,0.72)", zIndex:1000, display:"flex", alignItems:"center", justifyContent:"center", padding:24 };
+  const panel   = { background:T.surface, border:`1px solid ${T.border2}`, borderRadius:14, width:"100%", maxWidth:820, maxHeight:"88vh", display:"flex", flexDirection:"column", overflow:"hidden", boxShadow:"0 24px 80px rgba(0,0,0,0.6)" };
+  const Btn = ({children, color, onClick, disabled, small}) => (
+    <button onClick={onClick} disabled={disabled} style={{ background:`${color}18`, border:`1px solid ${color}40`, borderRadius:7, padding:small?"5px 12px":"8px 18px", cursor:disabled?"not-allowed":"pointer", color, fontSize:small?10:12, fontWeight:700, display:"flex", alignItems:"center", gap:6, opacity:disabled?0.5:1, whiteSpace:"nowrap" }}>
+      {children}
+    </button>
+  );
+  const TabBtn = ({id, label, icon}) => (
+    <button onClick={()=>setTab(id)} style={{ padding:"7px 14px", borderRadius:7, border:`1px solid ${tab===id?T.accent+"50":"transparent"}`, background:tab===id?`${T.accent}15`:"transparent", color:tab===id?T.accentL:T.muted, fontSize:11, fontWeight:tab===id?700:500, cursor:"pointer", display:"flex", alignItems:"center", gap:6 }}>
+      {icon} {label}
+    </button>
+  );
+
+  // ── ALERT detail ──────────────────────────────────────────────────────────
+  if (type === "alert") {
+    const a = data;
+    const sc = {critical:T.red,high:T.orange,medium:T.yellow,low:T.cyan}[a.severity]||T.muted;
+    return (
+      <div style={overlay} onClick={onClose}>
+        <div style={panel} onClick={e=>e.stopPropagation()}>
+          {/* Header */}
+          <div style={{ padding:"18px 22px", borderBottom:`1px solid ${T.border}`, display:"flex", alignItems:"flex-start", gap:14 }}>
+            <div style={{ width:42, height:42, borderRadius:11, background:`${sc}20`, border:`1px solid ${sc}40`, display:"flex", alignItems:"center", justifyContent:"center", flexShrink:0 }}>
+              <AlertOctagon size={20} color={sc}/>
+            </div>
+            <div style={{ flex:1 }}>
+              <div style={{ fontSize:15, fontWeight:800, color:T.text, marginBottom:4 }}>{a.title}</div>
+              <div style={{ display:"flex", gap:8, flexWrap:"wrap" }}>
+                <span style={{ fontSize:10, color:sc, background:`${sc}15`, border:`1px solid ${sc}30`, borderRadius:12, padding:"2px 9px", fontWeight:700, textTransform:"uppercase" }}>{a.severity}</span>
+                <span style={{ fontSize:10, color:T.muted }}>{a.source}</span>
+                <code style={{ fontSize:10, color:T.cyan, background:`${T.cyan}10`, borderRadius:4, padding:"2px 7px" }}>{a.table}</code>
+                <span style={{ fontSize:10, color:T.muted }}>{a.rule}</span>
+                <span style={{ fontSize:10, color:T.muted }}>{a.ts}</span>
+              </div>
+            </div>
+            <div style={{ display:"flex", gap:8 }}>
+              {!resolved && <Btn color={T.green} onClick={()=>setResolved(true)}><Check size={12}/>Resolve</Btn>}
+              {resolved && <span style={{color:T.green,fontSize:11,fontWeight:700}}>✓ Resolved</span>}
+            </div>
+            <button onClick={onClose} style={{ background:"none", border:"none", cursor:"pointer", color:T.muted, padding:4 }}><X size={16}/></button>
+          </div>
+
+          {/* Tabs */}
+          <div style={{ display:"flex", gap:4, padding:"10px 22px", borderBottom:`1px solid ${T.border}` }}>
+            <TabBtn id="overview" label="Overview" icon="📋"/>
+            <TabBtn id="data"     label="Table Data" icon="🗄️"/>
+            <TabBtn id="ai"       label="AI Analysis" icon="🤖"/>
+            <TabBtn id="history"  label="Similar Alerts" icon="📜"/>
+          </div>
+
+          <div style={{ flex:1, overflowY:"auto", padding:"18px 22px" }}>
+            {tab==="overview" && (
+              <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:14 }}>
+                <div style={{ background:T.card, border:`1px solid ${T.border}`, borderRadius:10, padding:"14px" }}>
+                  <div style={{ fontSize:10, color:T.muted, fontWeight:700, marginBottom:8, letterSpacing:"0.08em" }}>DETAILS</div>
+                  {[["Status",a.status],["Source",a.source],["Table",a.table],["Rule",a.rule],["Detected",a.ts]].map(([k,v])=>(
+                    <div key={k} style={{ display:"flex", justifyContent:"space-between", padding:"5px 0", borderBottom:`1px solid ${T.border}`, fontSize:11 }}>
+                      <span style={{color:T.muted}}>{k}</span>
+                      <span style={{color:T.text, fontWeight:600}}>{v}</span>
+                    </div>
+                  ))}
+                </div>
+                <div style={{ background:`${sc}08`, border:`1px solid ${sc}25`, borderRadius:10, padding:"14px" }}>
+                  <div style={{ fontSize:10, color:sc, fontWeight:700, marginBottom:8, letterSpacing:"0.08em" }}>AI SUGGESTION</div>
+                  <div style={{ fontSize:12, color:T.text, lineHeight:1.7 }}>{a.aiSuggestion}</div>
+                  <div style={{ marginTop:12, display:"flex", gap:8 }}>
+                    {a.canAutoFix && <Btn color={T.green} small><Wrench size={11}/>Auto Fix</Btn>}
+                    <Btn color={T.accent} small onClick={()=>setTab("data")}><Eye size={11}/>View Data</Btn>
+                  </div>
+                </div>
+              </div>
+            )}
+            {tab==="data" && (
+              <div>
+                <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom:12 }}>
+                  <div style={{ fontSize:12, fontWeight:700, color:T.text }}>
+                    Sample rows from <code style={{color:T.cyan,fontSize:12}}>{a.table}</code>
+                  </div>
+                  <Btn color={T.accent} small onClick={()=>onNavigate&&onNavigate("sources")}><TableProperties size={11}/>Browse Full Schema</Btn>
+                </div>
+                {tableData ? (
+                  <div style={{ background:T.card, border:`1px solid ${T.border}`, borderRadius:8, overflow:"auto" }}>
+                    <div style={{ display:"grid", gridTemplateColumns:`repeat(${Object.keys(tableData[0]).length},minmax(120px,1fr))`, background:T.isDark?"#0A0C10":T.border, padding:"7px 14px", gap:12, minWidth:"max-content" }}>
+                      {Object.keys(tableData[0]).map(k=><div key={k} style={{fontSize:9,color:T.dim,fontWeight:700,textTransform:"uppercase",letterSpacing:"0.06em"}}>{k}</div>)}
+                    </div>
+                    {tableData.map((row,i)=>{
+                      const hasNull = Object.values(row).some(v=>v===null);
+                      const isDupe = i===1||i===3;
+                      return (
+                        <div key={i} style={{ display:"grid", gridTemplateColumns:`repeat(${Object.keys(row).length},minmax(120px,1fr))`, padding:"8px 14px", borderTop:`1px solid ${T.border}`, gap:12, background:hasNull?`${T.red}10`:isDupe?`${T.orange}08`:"transparent", minWidth:"max-content" }}>
+                          {Object.values(row).map((v,j)=>(
+                            <div key={j} style={{fontSize:11,color:v===null?T.red:isDupe&&j===0?T.orange:T.text,fontFamily:"'Consolas', 'Cascadia Code', 'Fira Code', 'Courier New', monospace"}}>
+                              {v===null?<span style={{fontWeight:700}}>NULL ⚠</span>:String(v)}
+                            </div>
+                          ))}
+                        </div>
+                      );
+                    })}
+                    <div style={{padding:"6px 14px",fontSize:10,color:T.muted,borderTop:`1px solid ${T.border}`}}>
+                      Showing 5 sample rows · <span style={{color:T.red}}>Red = NULL</span> · <span style={{color:T.orange}}>Orange = Duplicate</span>
+                    </div>
+                  </div>
+                ) : <div style={{color:T.muted,fontSize:12,padding:"20px 0",textAlign:"center"}}>No sample data available for this table.</div>}
+              </div>
+            )}
+            {tab==="ai" && (
+              <div>
+                <div style={{ background:`${T.purple}08`, border:`1px solid ${T.purple}25`, borderRadius:10, padding:"14px 16px", marginBottom:14 }}>
+                  <div style={{fontSize:10,color:T.purple,fontWeight:700,marginBottom:6,letterSpacing:"0.08em"}}>AI ROOT CAUSE ANALYSIS</div>
+                  <div style={{fontSize:12,color:T.text,lineHeight:1.8}}>{a.aiSuggestion}</div>
+                </div>
+                <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:10 }}>
+                  {[["Correlated Group","CG-001 — Redshift lag cascade"],["Pattern","Seen 2x in 30 days"],["Estimated Fix Time","15–30 min"],["Auto-Fix Available",a.canAutoFix?"Yes":"No"]].map(([k,v])=>(
+                    <div key={k} style={{background:T.card,border:`1px solid ${T.border}`,borderRadius:8,padding:"10px 14px"}}>
+                      <div style={{fontSize:10,color:T.muted,marginBottom:4}}>{k}</div>
+                      <div style={{fontSize:12,fontWeight:700,color:T.text}}>{v}</div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+            {tab==="history" && (
+              <div>
+                <div style={{fontSize:12,color:T.muted,marginBottom:12}}>Recent alerts on <code style={{color:T.cyan}}>{a.table}</code></div>
+                {RUN_HISTORY.filter(r=>r.table===a.table||r.name.toLowerCase().includes(a.table.split("_")[2]||"x")).slice(0,5).concat(RUN_HISTORY.slice(0,3)).slice(0,5).map(r=>(
+                  <div key={r.id} style={{display:"flex",alignItems:"center",gap:10,padding:"9px 12px",background:T.card,border:`1px solid ${T.border}`,borderRadius:8,marginBottom:6,cursor:"pointer"}} onClick={()=>onNavigate&&onNavigate("history")}>
+                    <span style={{fontSize:10,fontWeight:700,color:r.result==="fail"?T.red:r.result==="pass"?T.green:T.yellow,textTransform:"uppercase"}}>{r.result}</span>
+                    <span style={{fontSize:11,color:T.text,flex:1}}>{r.name}</span>
+                    <span style={{fontSize:10,color:T.muted,fontFamily:"'Consolas', 'Cascadia Code', 'Fira Code', 'Courier New', monospace"}}>{r.ts}</span>
+                    <ArrowRight size={12} color={T.dim}/>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  // ── RULE detail ───────────────────────────────────────────────────────────
+  if (type === "rule") {
+    const r = data;
+    const resultColor = {pass:T.green, fail:T.red, pending:T.yellow}[r.lastResult]||T.muted;
+    return (
+      <div style={overlay} onClick={onClose}>
+        <div style={panel} onClick={e=>e.stopPropagation()}>
+          <div style={{ padding:"18px 22px", borderBottom:`1px solid ${T.border}`, display:"flex", alignItems:"flex-start", gap:14 }}>
+            <div style={{ width:42, height:42, borderRadius:11, background:`${T.purple}20`, border:`1px solid ${T.purple}40`, display:"flex", alignItems:"center", justifyContent:"center", flexShrink:0, fontSize:20 }}>✓</div>
+            <div style={{ flex:1 }}>
+              <div style={{ fontSize:15, fontWeight:800, color:T.text, marginBottom:4 }}>{r.name}</div>
+              <div style={{ display:"flex", gap:8, flexWrap:"wrap" }}>
+                <code style={{ fontSize:10, color:T.cyan, background:`${T.cyan}10`, borderRadius:4, padding:"2px 7px" }}>{r.source}</code>
+                <code style={{ fontSize:10, color:T.purple, background:`${T.purple}10`, borderRadius:4, padding:"2px 7px" }}>{r.table}</code>
+                <span style={{ fontSize:10, color:T.muted }}>{r.type} · col: {r.column}</span>
+              </div>
+            </div>
+            <div style={{ display:"flex", gap:8 }}>
+              <Btn color={T.accent} onClick={runRule} disabled={running}>
+                {running ? <><RefreshCw size={12} style={{animation:"spin 1s linear infinite"}}/>Running…</> : <><Play size={12}/>Run Now</>}
+              </Btn>
+            </div>
+            <button onClick={onClose} style={{ background:"none", border:"none", cursor:"pointer", color:T.muted, padding:4 }}><X size={16}/></button>
+          </div>
+
+          <div style={{ display:"flex", gap:4, padding:"10px 22px", borderBottom:`1px solid ${T.border}` }}>
+            <TabBtn id="overview" label="Overview" icon="📋"/>
+            <TabBtn id="sql"      label="SQL Query" icon="💾"/>
+            <TabBtn id="data"     label="Sample Data" icon="🗄️"/>
+            <TabBtn id="history"  label="Run History" icon="📜"/>
+          </div>
+
+          <div style={{ flex:1, overflowY:"auto", padding:"18px 22px" }}>
+            {tab==="overview" && (
+              <div>
+                <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:12, marginBottom:14 }}>
+                  {[["Type",r.type],["Table",r.table],["Column",r.column],["Schedule",r.schedule],["Severity",r.severity],["Status",r.status],["Last Run",r.lastRun],["Last Result",r.lastResult]].map(([k,v])=>(
+                    <div key={k} style={{background:T.card,border:`1px solid ${T.border}`,borderRadius:8,padding:"10px 14px"}}>
+                      <div style={{fontSize:10,color:T.muted,marginBottom:4}}>{k}</div>
+                      <div style={{fontSize:12,fontWeight:700,color:k==="Last Result"?resultColor:T.text}}>{v}</div>
+                    </div>
+                  ))}
+                </div>
+                {/* Run result inline */}
+                {runResult && (
+                  <div style={{ background:runResult.pass?`${T.green}10`:`${T.red}10`, border:`1px solid ${runResult.pass?T.green:T.red}40`, borderRadius:10, padding:"14px 16px", marginBottom:12 }}>
+                    <div style={{ display:"flex", alignItems:"center", gap:8, marginBottom:8 }}>
+                      {runResult.pass?<CheckCircle size={16} color={T.green}/>:<XCircle size={16} color={T.red}/>}
+                      <span style={{ fontSize:13, fontWeight:800, color:runResult.pass?T.green:T.red }}>{runResult.pass?"PASSED":"FAILED"}</span>
+                    </div>
+                    <div style={{ fontSize:11, color:T.text }}>{runResult.summary}</div>
+                    {(aiLoading||aiText) && (
+                      <div style={{ marginTop:10, background:`${T.purple}10`, border:`1px solid ${T.purple}30`, borderRadius:8, padding:"10px 12px" }}>
+                        <div style={{ fontSize:9, color:T.purple, fontWeight:700, marginBottom:6, letterSpacing:"0.08em" }}>AI ROOT CAUSE</div>
+                        {aiLoading
+                          ? <div style={{display:"flex",gap:4}}>{[0,1,2].map(i=><span key={i} style={{width:6,height:6,borderRadius:"50%",background:T.purple,animation:`bounce 1.2s ${i*0.2}s infinite`,display:"inline-block"}}/>)}</div>
+                          : <div style={{fontSize:11,color:T.text,lineHeight:1.7}}>{aiText}</div>
+                        }
+                      </div>
+                    )}
+                  </div>
+                )}
+              </div>
+            )}
+            {tab==="sql" && (
+              <div>
+                <div style={{ background:T.isDark?"#0A0C10":"#F1F5F9", border:`1px solid ${T.border}`, borderRadius:8, padding:"16px 18px", fontFamily:"'Consolas', 'Cascadia Code', 'Fira Code', 'Courier New', monospace", fontSize:12, color:T.cyan, lineHeight:2, marginBottom:12 }}>
+                  <div style={{ color:T.dim, marginBottom:4, fontSize:10 }}>-- Generated validation query</div>
+                  {r.type==="not_null"   && `SELECT\n  COUNT(*) AS null_count,\n  COUNT(*) * 100.0 / COUNT(1) AS null_pct\nFROM ${r.table}\nWHERE ${r.column} IS NULL\n  AND report_date >= CURRENT_DATE - 1;`}
+                  {r.type==="row_count"  && `SELECT\n  report_date,\n  COUNT(*) AS row_count\nFROM ${r.table}\nWHERE report_date >= CURRENT_DATE - 7\nGROUP BY 1\nORDER BY 1 DESC;`}
+                  {r.type==="freshness"  && `SELECT\n  MAX(${r.column}) AS latest_update,\n  DATEDIFF('hour', MAX(${r.column}), GETDATE()) AS age_hours\nFROM ${r.table};`}
+                  {r.type==="unique"     && `SELECT\n  ${r.column}, COUNT(*) AS occurrences\nFROM ${r.table}\nWHERE report_date >= CURRENT_DATE - 1\nGROUP BY ${r.column}\nHAVING COUNT(*) > 1\nORDER BY occurrences DESC\nLIMIT 20;`}
+                  {r.type==="custom_sql" && `-- Custom assertion\nSELECT COUNT(*) AS violations\nFROM ${r.table}\nWHERE /* your condition here */;`}
+                  {!["not_null","row_count","freshness","unique","custom_sql"].includes(r.type) && `SELECT * FROM ${r.table} LIMIT 5;`}
+                </div>
+                <div style={{ display:"flex", gap:8 }}>
+                  <Btn color={T.accent} onClick={runRule} disabled={running}>
+                    {running?<><RefreshCw size={12} style={{animation:"spin 1s linear infinite"}}/>Running…</>:<><Play size={12}/>Run Query</>}
+                  </Btn>
+                  <Btn color={T.muted} small><Copy size={11}/>Copy SQL</Btn>
+                </div>
+              </div>
+            )}
+            {tab==="data" && (
+              <div>
+                {tableData ? (
+                  <div style={{ background:T.card, border:`1px solid ${T.border}`, borderRadius:8, overflow:"auto" }}>
+                    <div style={{ display:"grid", gridTemplateColumns:`repeat(${Object.keys(tableData[0]).length},minmax(110px,1fr))`, background:T.isDark?"#0A0C10":T.border, padding:"7px 14px", gap:10, minWidth:"max-content" }}>
+                      {Object.keys(tableData[0]).map(k=><div key={k} style={{fontSize:9,color:T.dim,fontWeight:700,textTransform:"uppercase"}}>{k}</div>)}
+                    </div>
+                    {tableData.map((row,i)=>{
+                      const hasNull=Object.values(row).some(v=>v===null);
+                      return (
+                        <div key={i} style={{ display:"grid", gridTemplateColumns:`repeat(${Object.keys(row).length},minmax(110px,1fr))`, padding:"8px 14px", borderTop:`1px solid ${T.border}`, gap:10, background:hasNull?`${T.red}12`:"transparent", minWidth:"max-content" }}>
+                          {Object.values(row).map((v,j)=>(
+                            <div key={j} style={{fontSize:11,color:v===null?T.red:T.text,fontFamily:"'Consolas', 'Cascadia Code', 'Fira Code', 'Courier New', monospace"}}>
+                              {v===null?<span style={{fontWeight:700}}>NULL ⚠</span>:String(v)}
+                            </div>
+                          ))}
+                        </div>
+                      );
+                    })}
+                  </div>
+                ) : <div style={{color:T.muted,fontSize:12,textAlign:"center",padding:"24px 0"}}>No sample data for this table.</div>}
+              </div>
+            )}
+            {tab==="history" && (
+              <div>
+                {RUN_HISTORY.filter(rh=>rh.name===r.name||rh.table===r.table).concat(RUN_HISTORY.filter(rh=>rh.type==="rule")).slice(0,6).map(rh=>(
+                  <div key={rh.id} style={{display:"flex",alignItems:"center",gap:10,padding:"10px 14px",background:T.card,border:`1px solid ${T.border}`,borderRadius:8,marginBottom:6}}>
+                    <span style={{fontSize:11,fontWeight:800,color:rh.result==="pass"?T.green:rh.result==="fail"?T.red:T.yellow,textTransform:"uppercase",width:48,flexShrink:0}}>{rh.result}</span>
+                    <div style={{flex:1}}>
+                      <div style={{fontSize:11,color:T.text}}>{rh.name}</div>
+                      <div style={{fontSize:10,color:T.muted,marginTop:2}}>{rh.detail}</div>
+                    </div>
+                    <span style={{fontSize:10,color:T.muted,fontFamily:"'Consolas', 'Cascadia Code', 'Fira Code', 'Courier New', monospace",flexShrink:0}}>{rh.ts} · {rh.duration}</span>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  // ── AGENT detail ──────────────────────────────────────────────────────────
+  if (type === "agent") {
+    const a = data;
+    const sc = {running:T.green,idle:T.muted,paused:T.orange}[a.status]||T.muted;
+    return (
+      <div style={overlay} onClick={onClose}>
+        <div style={panel} onClick={e=>e.stopPropagation()}>
+          <div style={{ padding:"18px 22px", borderBottom:`1px solid ${T.border}`, display:"flex", alignItems:"center", gap:14 }}>
+            <div style={{ width:42, height:42, borderRadius:11, background:`${sc}20`, display:"flex", alignItems:"center", justifyContent:"center", flexShrink:0 }}><Bot size={20} color={sc}/></div>
+            <div style={{ flex:1 }}>
+              <div style={{ fontSize:15, fontWeight:800, color:T.text }}>{a.name}</div>
+              <div style={{ fontSize:11, color:T.muted, marginTop:3 }}>Last run: {a.lastRun} · Next: {a.nextRun}</div>
+            </div>
+            <span style={{color:sc,fontSize:11,fontWeight:700,textTransform:"uppercase",background:`${sc}15`,border:`1px solid ${sc}30`,borderRadius:8,padding:"4px 12px"}}>{a.status}</span>
+            <button onClick={onClose} style={{ background:"none",border:"none",cursor:"pointer",color:T.muted,padding:4 }}><X size={16}/></button>
+          </div>
+          <div style={{ flex:1, overflowY:"auto", padding:"18px 22px" }}>
+            <div style={{ display:"grid", gridTemplateColumns:"repeat(3,1fr)", gap:12, marginBottom:18 }}>
+              {[["Runs Today",a.runsToday,T.accentL],["Issues Found",a.issuesFound,a.issuesFound>0?T.orange:T.green],["Auto Fixed",a.fixed,T.green]].map(([l,v,c])=>(
+                <div key={l} style={{background:T.card,border:`1px solid ${T.border}`,borderRadius:10,padding:"16px",textAlign:"center"}}>
+                  <div style={{fontSize:28,fontWeight:800,color:c}}>{v}</div>
+                  <div style={{fontSize:11,color:T.muted,marginTop:4}}>{l}</div>
+                </div>
+              ))}
+            </div>
+            <div style={{ background:T.card, border:`1px solid ${T.border}`, borderRadius:10, padding:"14px 16px" }}>
+              <div style={{fontSize:10,color:T.muted,fontWeight:700,marginBottom:10,letterSpacing:"0.08em"}}>RECENT RUNS</div>
+              {RUN_HISTORY.filter(rh=>rh.type==="agent"&&rh.name===a.name).concat(RUN_HISTORY.filter(rh=>rh.type==="agent")).slice(0,5).map(rh=>(
+                <div key={rh.id} style={{display:"flex",alignItems:"center",gap:10,padding:"8px 0",borderBottom:`1px solid ${T.border}`}}>
+                  <span style={{fontSize:10,fontWeight:700,color:rh.result==="pass"?T.green:T.yellow,width:44,flexShrink:0,textTransform:"uppercase"}}>{rh.result}</span>
+                  <div style={{flex:1}}>
+                    <div style={{fontSize:11,color:T.text}}>{rh.detail}</div>
+                  </div>
+                  <span style={{fontSize:10,color:T.muted,fontFamily:"'Consolas', 'Cascadia Code', 'Fira Code', 'Courier New', monospace"}}>{rh.ts}</span>
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  // ── DATASOURCE detail ─────────────────────────────────────────────────────
+  if (type === "datasource") {
+    return <DatasourceDrillPanel ds={data} onClose={onClose} onNavigate={onNavigate} tab={tab} setTab={setTab} />;
+  }
+
+  return null;
+}
+
+// ─── Main App ─────────────────────────────────────────────────────────────────
+export default function AIOpsMonitor() {
+  const [theme, setTheme] = useState("light");
+  const T = theme === "dark" ? DARK_THEME : LIGHT_THEME;
+  // Keep module-level C in sync for non-hook components
+  C = T;
+
+  const [aiPanel, setAiPanel]   = useState(null);
+  const [drill, setDrill]     = useState(null); // { type, data }
+  const [alertsState, setAlertsState] = useState(ALERTS_RAW.map(a=>({...a})));
+  const resolveAlert  = (id) => setAlertsState(p=>p.map(a=>a.id===id?{...a,status:"resolved"}:a));
+  const triageAlert   = (id) => setAlertsState(p=>p.map(a=>a.id===id?{...a,status:"triaged"}:a));
+  const autoFixAlert  = (id) => setAlertsState(p=>p.map(a=>a.id===id?{...a,status:"resolved",autoFixed:true}:a));
+  const [notifOpen, setNotifOpen] = useState(false);
+  const [paletteOpen, setPaletteOpen] = useState(false);
+  const openDrill = (type, data) => setDrill({type, data});
+  const handleNavigate = (tab, data) => { setActiveTab(tab); setDrill(null); };
+  // expose for non-hook components
+  useEffect(() => { window._drillFn = openDrill; return () => { delete window._drillFn; }; }, []);
+  const [sevFilter, setSevFilter] = useState("all");
+  const [search, setSearch] = useState("");
+  const [activeTab, setActiveTab] = useState("dashboard");
+  const [tick, setTick] = useState(0);
+
+  // Pulse the "last updated" timer
+  useEffect(() => {
+    const t = setInterval(() => setTick(p=>p+1), 30000);
+    return () => clearInterval(t);
+  }, []);
+
+  // Cmd+K / Ctrl+K shortcut
+  useEffect(() => {
+    const handler = (e) => {
+      if ((e.metaKey || e.ctrlKey) && e.key === "k") {
+        e.preventDefault();
+        setPaletteOpen(p=>!p);
+      }
+    };
+    window.addEventListener("keydown", handler);
+    return () => window.removeEventListener("keydown", handler);
+  }, []);
+
+  const alerts = alertsState.filter(a => {
+    if (sevFilter !== "all" && a.severity !== sevFilter) return false;
+    if (search && !a.title.toLowerCase().includes(search.toLowerCase()) && !a.table.toLowerCase().includes(search.toLowerCase())) return false;
+    return true;
+  });
+
+  const critCount  = alertsState.filter(a=>a.severity==="critical"&&a.status!=="resolved").length;
+  const openCount  = alertsState.filter(a=>a.status==="open").length;
+  const fixedCount = alertsState.filter(a=>a.status==="resolved").length;
+  const runningAgents = AGENTS.filter(a=>a.status==="running").length;
+
+  const TABS = [
+    { id:"qahealth",   label:"QA Process Health",   icon:Activity,        count:0,                                                          badge:"NEW" },
+    { id:"dashboard",  label:"Ops Command Center",   icon:LayoutDashboard, count:0 },
+    { id:"alerts",     label:"Detect & Triage",      icon:Bell,            count:openCount },
+    { id:"rootcause",  label:"Root Cause Analysis",  icon:BrainCircuit,    count:CORRELATED_GROUPS.length },
+    { id:"agents",     label:"QA Agents",            icon:Bot,             count:runningAgents },
+    { id:"workflows",  label:"Remediation Flows",    icon:GitBranch,       count:0 },
+    { id:"rules",      label:"Quality Rules",        icon:Shield,          count:INIT_RULES.filter(r=>r.lastResult==="fail").length },
+    { id:"testrules",  label:"Rule Validation",      icon:TestTube2,       count:0 },
+    { id:"gates",      label:"Human-in-the-Loop",    icon:Lock,            count:PENDING_APPROVALS.length },
+    { id:"history",    label:"Audit Trail",          icon:History,         count:0 },
+    { id:"sources",    label:"Data Sources",         icon:Database,        count:DATASOURCES.filter(d=>d.status!=="healthy").length },
+  ];
+
+  return (
+    <ThemeCtx.Provider value={T}>
+    <div style={{ minHeight:"100vh", background:T.bg, color:T.text, fontFamily:"'Calibri', 'Gill Sans', 'Trebuchet MS', 'Helvetica Neue', Arial, sans-serif", transition:"background 0.2s, color 0.2s" }}>
+      <style>{`
+        /* Calibri is a system font — no import needed */
+        * { box-sizing:border-box; margin:0; padding:0; }
+        html, body { font-family:'Calibri', 'Gill Sans', 'Trebuchet MS', 'Helvetica Neue', Arial, sans-serif; font-size:14px; background:${T.bg}; color:${T.text}; transition:background 0.2s, color 0.2s; }
+        h1,h2,h3,h4,h5,h6 { font-family:'Calibri', 'Gill Sans', 'Trebuchet MS', 'Helvetica Neue', Arial, sans-serif; font-weight:700; }
+        code, pre, .mono { font-family:'Consolas', 'Cascadia Code', 'Fira Code', 'Courier New', monospace; }
+        ::-webkit-scrollbar { width:5px; height:5px; }
+        ::-webkit-scrollbar-track { background:${T.surface}; }
+        ::-webkit-scrollbar-thumb { background:${T.border2}; border-radius:4px; }
+        ::-webkit-scrollbar-thumb:hover { background:${T.muted}; }
+        input, select, textarea { font-family:'Calibri', 'Gill Sans', 'Trebuchet MS', 'Helvetica Neue', Arial, sans-serif; }
+        input::placeholder { color:${T.dim}; }
+        select option { background:${T.card}; color:${T.text}; }
+        button { font-family:'Calibri', 'Gill Sans', 'Trebuchet MS', 'Helvetica Neue', Arial, sans-serif; }
+        .row-hover:hover { background:${T.accent}08 !important; transition:background 0.12s; }
+        .clickable-link { color:${T.accentL}; text-decoration:underline; text-decoration-color:${T.accentL}50; text-underline-offset:3px; cursor:pointer; }
+        .clickable-link:hover { color:${T.accent}; }
+        @keyframes ping { 0%,100%{transform:scale(1);opacity:0.4} 50%{transform:scale(1.8);opacity:0} }
+        @keyframes bounce { 0%,100%{transform:translateY(0)} 50%{transform:translateY(-4px)} }
+        @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.4} }
+        @keyframes spin { from{transform:rotate(0deg)} to{transform:rotate(360deg)} }
+        @keyframes fadein { from{opacity:0;transform:translateY(6px)} to{opacity:1;transform:translateY(0)} }
+      `}</style>
+
+      {/* ── Header ── */}
+      <header style={{ background:T.surface, borderBottom:`1px solid ${T.border}`, padding:"0 28px", display:"flex", alignItems:"center", justifyContent:"space-between", height:60, flexShrink:0 }}>
+        <div style={{ display:"flex", alignItems:"center", gap:14 }}>
+          <div style={{ display:"flex", alignItems:"center", gap:8 }}>
+            <div style={{ width:30, height:30, borderRadius:8, background:`${T.accent}25`, display:"flex", alignItems:"center", justifyContent:"center" }}>
+              <Shield size={15} color={T.accentL} />
+            </div>
+            <span style={{ fontSize:15, fontWeight:800, color:T.text, letterSpacing:"0.01em" }}>Intentwise</span>
+            <span style={{ fontSize:15, color:T.dim, margin:"0 2px" }}>·</span>
+            <span style={{ fontSize:14, color:T.muted, fontWeight:500 }}>Agentic QA Platform</span>
+          </div>
+          {critCount > 0 && (
+            <div style={{ display:"flex", alignItems:"center", gap:6, background:`${T.red}15`, border:`1px solid ${T.red}40`, borderRadius:20, padding:"3px 10px" }}>
+              <AlertCircle size={11} color={T.red} />
+              <span style={{ fontSize:11, color:T.red, fontWeight:700 }}>{critCount} critical</span>
+            </div>
+          )}
+        </div>
+        <div style={{ display:"flex", alignItems:"center", gap:12 }}>
+          <span style={{ fontSize:10, color:T.dim }}>Updated {tick === 0 ? "just now" : `${tick * 30}s ago`}</span>
+          <div style={{ display:"flex", alignItems:"center", gap:6 }}>
+            <Dot status="running" />
+            <span style={{ fontSize:11, color:T.green }}>{runningAgents} QA agents active</span>
+          </div>
+          <button onClick={()=>setPaletteOpen(true)} style={{ background:T.border, border:`1px solid ${T.border2}`, borderRadius:7, padding:"6px 14px", cursor:"pointer", display:"flex", alignItems:"center", gap:6, fontSize:11, color:T.muted }}>
+            <Search size={13}/> <span>Search</span> <kbd style={{ fontSize:9, background:T.isDark?"#1E2330":T.border, borderRadius:4, padding:"1px 5px", color:T.dim, fontFamily:"Consolas,monospace" }}>⌘K</kbd>
+          </button>
+          <button onClick={()=>setNotifOpen(true)} style={{ background:T.border, border:`1px solid ${T.border2}`, borderRadius:7, padding:"6px 14px", cursor:"pointer", display:"flex", alignItems:"center", gap:6, fontSize:11, color:T.muted }}>
+            <Bell size={13} /> Notifications
+          </button>
+          {/* ── Theme Toggle ── */}
+          <button
+            onClick={()=>setTheme(p=>p==="dark"?"light":"dark")}
+            style={{ background:T.border, border:`1px solid ${T.border2}`, borderRadius:7, padding:"6px 12px", cursor:"pointer", display:"flex", alignItems:"center", gap:6, fontSize:11, color:T.muted, transition:"all 0.2s" }}
+            title="Toggle light/dark theme"
+          >
+            {theme==="dark"
+              ? <><Sun size={14} color="#F59E0B"/><span style={{color:"#F59E0B",fontWeight:600}}>Light</span></>
+              : <><Moon size={14} color={T.accent}/><span style={{color:T.accent,fontWeight:600}}>Dark</span></>
+            }
+          </button>
+          <button style={{ background:T.border, border:`1px solid ${T.border2}`, borderRadius:7, padding:"6px", cursor:"pointer", color:T.muted }}>
+            <Settings size={14} />
+          </button>
+        </div>
+      </header>
+
+      <div style={{ display:"flex", height:"calc(100vh - 60px)", overflow:"hidden" }}>
+        {/* ── Sidebar ── */}
+        <aside style={{ width:220, background:T.surface, borderRight:`1px solid ${T.border}`, padding:"16px 12px", display:"flex", flexDirection:"column", gap:2, flexShrink:0, overflowY:"auto" }}>
+          {TABS.map(tab => {
+            const Icon = tab.icon;
+            const active = activeTab === tab.id;
+            return (
+              <button key={tab.id} onClick={()=>setActiveTab(tab.id)} style={{ display:"flex", alignItems:"center", justifyContent:"space-between", gap:9, padding:"9px 12px", borderRadius:8, border:`1px solid ${active?T.accent+"40":"transparent"}`, background: active?`${T.accent}12`:"transparent", cursor:"pointer", textAlign:"left", width:"100%", transition:"background 0.15s", position:"relative" }}>
+                <div style={{ display:"flex", alignItems:"center", gap:8 }}>
+                  <Icon size={14} color={active?T.accentL:T.muted} />
+                  <span style={{ fontSize:12, color:active?T.text:T.muted, fontWeight:active?700:400, letterSpacing:"0.01em" }}>{tab.label}</span>
+                </div>
+                <div style={{ display:"flex", alignItems:"center", gap:4 }}>
+                  {tab.badge && <span style={{ background:T.green, color:"white", borderRadius:4, padding:"1px 5px", fontSize:8, fontWeight:800, letterSpacing:"0.05em" }}>{tab.badge}</span>}
+                  {tab.count > 0 && <span style={{ background:active?T.accent:T.isDark?"#1E2330":T.border, color:active?"white":T.muted, borderRadius:10, padding:"2px 7px", fontSize:10, fontWeight:700, minWidth:18, textAlign:"center" }}>{tab.count}</span>}
+                </div>
+              </button>
+            );
+          })}
+
+          <div style={{ marginTop:"auto", paddingTop:16, borderTop:`1px solid ${T.border}` }}>
+            <div style={{ fontSize:9, color:T.dim, marginBottom:8, letterSpacing:"0.08em", fontWeight:700, paddingLeft:10 }}>QUICK LINKS</div>
+            {[
+              ["QE Test Suite",  GitBranch, "testrules", null],
+              ["Remediation Flows", Layers,  "workflows", null],
+              ["Quality Rules",  Settings,  "rules",     null],
+              ["Audit Trail",    History,   "history",   null],
+              ["Intentwise Docs", ExternalLink, null, "https://docs.intentwise.com"],
+            ].map(([label, Icon, tab, href])=>(
+              <button
+                key={label}
+                onClick={()=> tab ? setActiveTab(tab) : window.open(href,"_blank")}
+                style={{ display:"flex", alignItems:"center", gap:8, padding:"6px 10px", borderRadius:6, border:"none", background:"transparent", cursor:"pointer", width:"100%", color:T.muted, fontSize:10, transition:"background 0.12s, color 0.12s" }}
+                onMouseEnter={e=>{ e.currentTarget.style.background=T.accent+"12"; e.currentTarget.style.color=T.accentL; }}
+                onMouseLeave={e=>{ e.currentTarget.style.background="transparent"; e.currentTarget.style.color=T.muted; }}
+              >
+                <Icon size={11} />
+                <span style={{flex:1, textAlign:"left"}}>{label}</span>
+                {href
+                  ? <ExternalLink size={9} style={{flexShrink:0}} />
+                  : <ArrowRight size={9} style={{flexShrink:0}} />
+                }
+              </button>
+            ))}
+          </div>
+        </aside>
+
+        {/* ── Main ── */}
+        <main style={{ flex:1, overflowY:"auto", padding:"24px 28px", marginRight: aiPanel ? 420 : 0, transition:"margin 0.2s", background:T.bg }}>
+
+          {/* KPIs */}
+          <div style={{ display:"grid", gridTemplateColumns:"repeat(4,1fr)", gap:14, marginBottom:22 }}>
+            <KPI label="Detected Issues"   value={openCount}    sub={`${critCount} critical`}   trend={12}   icon={Bell}      color={openCount>4?T.red:T.orange}  spark={SPARKLINE.slice(-10)} onClick={()=>setActiveTab('alerts')} />
+            <KPI label="AI Auto-Remediated" value={fixedCount}   sub="no human touch"            trend={-8}   icon={Wrench}    color={T.green}    spark={SPARKLINE.slice(-10).map(v=>v*0.5)} />
+            <KPI label="QA Agents Active"   value={runningAgents}sub="autonomous coverage"       trend={0}    icon={Bot}       color={T.purple}   spark={[4,4,5,4,5,5,4,5,6,5]} onClick={()=>setActiveTab('agents')} />
+            <KPI label="Mean Time to Detect" value="4.2m"        sub="↓22% vs manual baseline"  trend={-22}  icon={Clock}     color={T.cyan}     spark={SPARKLINE.slice(-10).map(v=>100-v)} />
+          </div>
+
+          {/* ── QA Health Tab ── */}
+          {activeTab === "qahealth" && (
+            <div style={{ paddingBottom:24 }}>
+              <QAHealthTab />
+            </div>
+          )}
+
+          {/* ── Alerts Tab ── */}
+          {activeTab === "alerts" && (
+            <>
+              <Card style={{ marginBottom:16 }}>
+                <SectionHeader
+                  icon={Bell}
+                  title="Detected Quality Issues"
+                  subtitle={`${alerts.length} matching · AI-triaged by severity`}
+                  action={
+                    <div style={{ display:"flex", gap:8, alignItems:"center" }}>
+                      <div style={{ position:"relative" }}>
+                        <Search size={12} color={C.dim} style={{ position:"absolute", left:10, top:"50%", transform:"translateY(-50%)" }} />
+                        <input value={search} onChange={e=>setSearch(e.target.value)} placeholder="Search alerts…" style={{ background:C.bg, border:`1px solid ${C.border2}`, borderRadius:7, padding:"6px 10px 6px 28px", color:C.text, fontSize:11, width:180, outline:"none" }} />
+                      </div>
+                      <div style={{ display:"flex", gap:4 }}>
+                        {["all","critical","high","medium","low"].map(s=>(
+                          <button key={s} onClick={()=>setSevFilter(s)} style={{ background:sevFilter===s?`${SEVERITY[s]||C.accent}20`:C.bg, border:`1px solid ${sevFilter===s?SEVERITY[s]||C.accent:C.border2}`, borderRadius:6, padding:"5px 10px", cursor:"pointer", fontSize:10, color:sevFilter===s?SEVERITY[s]||C.accentL:C.muted, fontWeight:700, textTransform:"uppercase", letterSpacing:"0.05em" }}>
+                            {s}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  }
+                  action2={null}
+                />
+                <div style={{ borderTop:`1px solid ${C.border}`, borderRadius:"0 0 10px 10px", overflow:"hidden" }}>
+                  {alerts.length === 0 ? (
+                    <div style={{ padding:"32px", textAlign:"center", color:C.muted, fontSize:12 }}>No alerts match current filters.</div>
+                  ) : alerts.map(a => (
+                    <AlertRow key={a.id} alert={a} onAIClick={setAiPanel} selected={aiPanel?.id===a.id}
+                      onDrill={openDrill}
+                      onResolve={resolveAlert}
+                      onAutoFix={autoFixAlert}
+                      onTriage={triageAlert}
+                    />
+                  ))}
+                </div>
+              </Card>
+
+              {/* AI Insights strip */}
+              <Card style={{ padding:"14px 18px", background:`linear-gradient(135deg, ${C.card} 0%, #16103A 100%)`, border:`1px solid ${C.purple}30` }}>
+                <div style={{ display:"flex", alignItems:"center", gap:10, marginBottom:12 }}>
+                  <Sparkles size={14} color={C.purple} />
+                  <span style={{ fontSize:12, fontWeight:700, color:C.text }}>Autonomous Pattern Recognition</span>
+                  <span style={{ fontSize:10, color:C.muted }}>· last 24h</span>
+                </div>
+                <div style={{ display:"grid", gridTemplateColumns:"repeat(3,1fr)", gap:10 }}>
+                  {[
+                    { label:"Monday spike pattern", detail:"Stuck-pending alerts +3x every Monday 6-9 AM. Recommend pre-emptive retry job at 5:45 AM.", color:C.orange },
+                    { label:"Redshift replication lag", detail:"Copy jobs fail when Redshift latency >280ms. Current: 340ms. Suggest throttle check.", color:C.red },
+                    { label:"Schema drift velocity", detail:"2 new columns/week avg on snowflake-dw. Auto-schema sync rule recommended.", color:C.cyan },
+                  ].map(i=>(
+                    <div key={i.label} style={{ background:`${i.color}08`, border:`1px solid ${i.color}25`, borderRadius:8, padding:"10px 12px" }}>
+                      <div style={{ fontSize:11, fontWeight:700, color:i.color, marginBottom:5 }}>{i.label}</div>
+                      <div style={{ fontSize:11, color:C.muted, lineHeight:1.6 }}>{i.detail}</div>
+                    </div>
+                  ))}
+                </div>
+              </Card>
+            </>
+          )}
+
+          {/* ── Agents Tab ── */}
+          {activeTab === "agents" && (
+            <AgentFleetTab onDrill={openDrill} />
+          )}
+
+          {/* ── Sources Tab ── */}
+          {activeTab === "sources" && (
+            <div>
+              <SectionHeader icon={Database} title="Data Sources" subtitle="Pipeline coverage & connection health" />
+              <Card>
+                {DATASOURCES.map(ds=><DSRow key={ds.id} ds={ds} onDrill={openDrill}/>)}
+              </Card>
+              <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:14, marginTop:14 }}>
+                <Card style={{ padding:"16px 18px" }}>
+                  <SectionHeader icon={Activity} title="Continuous Schema Monitoring" subtitle="Next scan: 12:00 PM" />
+                  {DATASOURCES.filter(d=>d.status==="healthy").slice(0,3).map(d=>(
+                    <div key={d.id} style={{ display:"flex", alignItems:"center", gap:10, padding:"8px 0", borderBottom:`1px solid ${C.border}` }}>
+                      <span>{DS_ICONS[d.type]}</span>
+                      <div style={{ flex:1 }}>
+                        <div style={{ fontSize:11, color:C.text }}>{d.name}</div>
+                        <div style={{ fontSize:10, color:C.muted }}>{d.tables} tables to scan</div>
+                      </div>
+                      <span style={{ fontSize:10, color:C.muted }}>Scheduled</span>
+                    </div>
+                  ))}
+                </Card>
+                <Card style={{ padding:"16px 18px" }}>
+                  <SectionHeader icon={Shield} title="AI-Generated Quality Rules" subtitle="Self-evolving rule corpus" />
+                  {["NULL check on report.profile_id", "Row count ≥ 100 for campaign_report", "Freshness < 6h for account_performance"].map(r=>(
+                    <div key={r} style={{ display:"flex", alignItems:"center", gap:8, padding:"8px 0", borderBottom:`1px solid ${C.border}` }}>
+                      <Sparkles size={11} color={C.purple} />
+                      <span style={{ fontSize:11, color:C.text, flex:1 }}>{r}</span>
+                      <span style={{ fontSize:10, color:C.green }}>Active</span>
+                    </div>
+                  ))}
+                </Card>
+              </div>
+              <StagingPanel />
+            </div>
+          )}
+
+          {/* ── Dashboard Tab ── */}
+          {activeTab === "dashboard" && (
+            <div style={{ paddingBottom:24 }}>
+              <CommandCenterTab />
+            </div>
+          )}
+
+          {/* ── Root Cause Tab ── */}
+          {activeTab === "rootcause" && (
+            <div style={{ paddingBottom:24 }}>
+              <RootCauseTab />
+            </div>
+          )}
+
+          {/* ── Test Runner Tab ── */}
+          {activeTab === "testrules" && (
+            <div style={{ paddingBottom:24 }}>
+              <RuleTestRunnerTab />
+            </div>
+          )}
+
+          {/* ── Run History Tab ── */}
+          {activeTab === "history" && (
+            <div style={{ paddingBottom:24 }}>
+              <RunHistoryTab />
+            </div>
+          )}
+
+          {/* ── Workflows Tab ── */}
+          {activeTab === "workflows" && (
+            <div style={{ paddingBottom:24 }}>
+              <WorkflowBuilderTab />
+            </div>
+          )}
+
+          {/* ── Rules Tab ── */}
+          {activeTab === "rules" && (
+            <div style={{ paddingBottom:24 }}>
+              <ValidationRulesTab />
+            </div>
+          )}
+
+          {/* ── Gates Tab ── */}
+          {activeTab === "gates" && (
+            <div style={{ paddingBottom:24 }}>
+              <ApprovalGatesTab />
+            </div>
+          )}
+        </main>
+      </div>
+
+      {/* AI Chat Side Panel */}
+      {aiPanel && <AIChatPanel alert={aiPanel} onClose={()=>setAiPanel(null)} />}
+      {/* Drill-Down Modal */}
+      {drill && <DrillModal target={drill} onClose={()=>setDrill(null)} onNavigate={handleNavigate} />}
+      {notifOpen  && <NotificationCenter onClose={()=>setNotifOpen(false)} />}
+      {paletteOpen && <CommandPalette onClose={()=>setPaletteOpen(false)} onNavigate={(tab)=>{ setActiveTab(tab); setPaletteOpen(false); }} />}
+    </div>
+    </ThemeCtx.Provider>
+  );
+}

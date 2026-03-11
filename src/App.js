@@ -5395,9 +5395,31 @@ export default function AIOpsMonitor() {
   const [aiPanel, setAiPanel]   = useState(null);
   const [drill, setDrill]     = useState(null); // { type, data }
   const [alertsState, setAlertsState] = useState(ALERTS_RAW.map(a=>({...a})));
+  const [alertsLoading, setAlertsLoading] = useState(false);
+  const [lastScan, setLastScan] = useState(null);
   const resolveAlert  = (id) => setAlertsState(p=>p.map(a=>a.id===id?{...a,status:"resolved"}:a));
   const triageAlert   = (id) => setAlertsState(p=>p.map(a=>a.id===id?{...a,status:"triaged"}:a));
   const autoFixAlert  = (id) => setAlertsState(p=>p.map(a=>a.id===id?{...a,status:"resolved",autoFixed:true}:a));
+
+  const runAgentScan = async () => {
+    setAlertsLoading(true);
+    try {
+      const res = await fetch("https://intentwise-backend-production.up.railway.app/api/alerts/detect");
+      const data = await res.json();
+      if (Array.isArray(data) && data.length > 0) {
+        setAlertsState(prev => {
+          const existingIds = new Set(prev.map(a=>a.id));
+          const newAlerts = data.filter(a=>!existingIds.has(a.id));
+          return [...newAlerts, ...prev];
+        });
+      }
+      setLastScan(new Date().toLocaleTimeString("en-IN",{timeZone:"Asia/Kolkata",hour:"2-digit",minute:"2-digit"}));
+    } catch(e) { console.error("Scan failed:", e); }
+    setAlertsLoading(false);
+  };
+
+  // Auto-scan on first load
+  useEffect(() => { runAgentScan(); }, []);
   const [notifOpen, setNotifOpen] = useState(false);
   const [paletteOpen, setPaletteOpen] = useState(false);
   const openDrill = (type, data) => setDrill({type, data});
@@ -5599,9 +5621,12 @@ export default function AIOpsMonitor() {
                 <SectionHeader
                   icon={Bell}
                   title="Detected Quality Issues"
-                  subtitle={`${alerts.length} matching · AI-triaged by severity`}
+                  subtitle={`${alerts.length} matching · AI-triaged by severity${lastScan ? ` · last scan ${lastScan}` : ""}`}
                   action={
                     <div style={{ display:"flex", gap:8, alignItems:"center" }}>
+                      <button onClick={runAgentScan} disabled={alertsLoading} style={{ background:`${C.green}15`, border:`1px solid ${C.green}40`, borderRadius:7, padding:"6px 14px", cursor:"pointer", fontSize:11, color:C.green, fontWeight:700, display:"flex", alignItems:"center", gap:6 }}>
+                        {alertsLoading ? <><RefreshCw size={11} style={{animation:"spin 1s linear infinite"}}/> Scanning…</> : <><Zap size={11}/> Run Agent Scan</>}
+                      </button>
                       <div style={{ position:"relative" }}>
                         <Search size={12} color={C.dim} style={{ position:"absolute", left:10, top:"50%", transform:"translateY(-50%)" }} />
                         <input value={search} onChange={e=>setSearch(e.target.value)} placeholder="Search alerts…" style={{ background:C.bg, border:`1px solid ${C.border2}`, borderRadius:7, padding:"6px 10px 6px 28px", color:C.text, fontSize:11, width:180, outline:"none" }} />

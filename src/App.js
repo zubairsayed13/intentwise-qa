@@ -5188,7 +5188,7 @@ function DrillModal({ target, onClose, onNavigate }) {
 // ─── DB Explorer Tab ──────────────────────────────────────────────────────────
 const API_BASE = "https://intentwise-backend-production.up.railway.app";
 
-function DBExplorerTab({ kpis, kpisLoading, alertsState, setActiveTab: setActiveTabProp }) {
+function DBExplorerTab({ kpis, kpisLoading, alertsState, setActiveTab: setActiveTabProp, accounts, accountId, setAccountId, liveRules, rulesLoading, agentScanResult, agentScanLoading, onAgentScan, trend, topAsins, lastScan, dataMode }) {
   const T = useTheme();
   const [schemas,      setSchemas]      = useState([]);
   const [loading,      setLoading]      = useState(true);
@@ -5200,7 +5200,13 @@ function DBExplorerTab({ kpis, kpisLoading, alertsState, setActiveTab: setActive
   const [queryResult,  setQueryResult]  = useState(null);
   const [queryLoading, setQueryLoading] = useState(false);
   const [queryError,   setQueryError]   = useState(null);
-  const [view,         setView]         = useState("explorer"); // explorer | query
+  const [view,         setView]         = useState("explorer"); // explorer | quer
+
+  // Derived counts from real alertsState prop (falls back to 0 if not yet loaded)
+  const critCount     = alertsState ? alertsState.filter(a=>a.severity==="critical"&&a.status!=="resolved").length : 0;
+  const openCount     = alertsState ? alertsState.filter(a=>a.status==="open").length : 0;
+  const fixedCount    = alertsState ? alertsState.filter(a=>a.status==="resolved").length : 0;
+  const runningAgents = AGENTS.filter(a=>a.status==="running").length;y
 
   useEffect(() => {
     fetch(API_BASE + "/api/tables")
@@ -5439,6 +5445,7 @@ function DBExplorerTab({ kpis, kpisLoading, alertsState, setActiveTab: setActive
 // ─── Main App ─────────────────────────────────────────────────────────────────
 export default function AIOpsMonitor() {
   const [theme, setTheme] = useState("light");
+  const [dataMode, setDataMode] = useState("demo"); // "demo" | "prod"
   const T = theme === "dark" ? DARK_THEME : LIGHT_THEME;
   // Keep module-level C in sync for non-hook components
   C = T;
@@ -5569,6 +5576,9 @@ export default function AIOpsMonitor() {
   }, []);
 
   const alerts = alertsState.filter(a => {
+    // In demo mode only show demo alerts (A0xx), in prod only show real (AGT-xx) + keep resolved
+    if (dataMode === "demo" && a.id?.startsWith("AGT-")) return false;
+    if (dataMode === "prod" && !a.id?.startsWith("AGT-") && a.status !== "resolved") return false;
     if (sevFilter !== "all" && a.severity !== sevFilter) return false;
     if (search && !a.title.toLowerCase().includes(search.toLowerCase()) && !a.table.toLowerCase().includes(search.toLowerCase())) return false;
     return true;
@@ -5648,6 +5658,25 @@ export default function AIOpsMonitor() {
           <button onClick={()=>setPaletteOpen(true)} style={{ background:T.border, border:`1px solid ${T.border2}`, borderRadius:7, padding:"6px 14px", cursor:"pointer", display:"flex", alignItems:"center", gap:6, fontSize:11, color:T.muted }}>
             <Search size={13}/> <span>Search</span> <kbd style={{ fontSize:9, background:T.isDark?"#1E2330":T.border, borderRadius:4, padding:"1px 5px", color:T.dim, fontFamily:"Consolas,monospace" }}>⌘K</kbd>
           </button>
+          {/* Data Mode Toggle */}
+          <div style={{ display:"flex", alignItems:"center", gap:1, background:T.border, borderRadius:8, padding:2 }}>
+            <button
+              onClick={()=>setDataMode("demo")}
+              style={{ padding:"4px 10px", borderRadius:6, border:"none", cursor:"pointer", fontSize:10, fontWeight:700, letterSpacing:"0.03em",
+                background: dataMode==="demo" ? T.card : "transparent",
+                color: dataMode==="demo" ? T.muted : T.dim,
+                boxShadow: dataMode==="demo" ? "0 1px 3px rgba(0,0,0,0.1)" : "none",
+                transition:"all 0.15s" }}
+            >DEMO</button>
+            <button
+              onClick={()=>setDataMode("prod")}
+              style={{ padding:"4px 10px", borderRadius:6, border:"none", cursor:"pointer", fontSize:10, fontWeight:700, letterSpacing:"0.03em",
+                background: dataMode==="prod" ? T.green : "transparent",
+                color: dataMode==="prod" ? "white" : T.dim,
+                boxShadow: dataMode==="prod" ? "0 1px 3px rgba(0,0,0,0.15)" : "none",
+                transition:"all 0.15s" }}
+            >LIVE</button>
+          </div>
           {/* Account Selector */}
           <div style={{ display:"flex", alignItems:"center", gap:6 }}>
             <Users size={13} color={T.muted}/>
@@ -5734,30 +5763,43 @@ export default function AIOpsMonitor() {
         {/* ── Main ── */}
         <main style={{ flex:1, overflowY:"auto", padding:"24px 28px", marginRight: aiPanel ? 420 : 0, transition:"margin 0.2s", background:T.bg }}>
 
-          {/* KPIs — real data from Redshift when available */}
+          {/* KPIs */}
+          {dataMode === "prod" && kpis && (
+            <div style={{ display:"flex", alignItems:"center", gap:6, marginBottom:10, padding:"6px 12px", background:`${T.green}10`, border:`1px solid ${T.green}30`, borderRadius:8 }}>
+              <span style={{ width:6, height:6, borderRadius:"50%", background:T.green, display:"inline-block" }}/>
+              <span style={{ fontSize:11, color:T.green, fontWeight:600 }}>Live Redshift data</span>
+              <span style={{ fontSize:10, color:T.muted, marginLeft:"auto" }}>account: {accountId === "all" ? "all accounts" : accountId}</span>
+            </div>
+          )}
+          {dataMode === "demo" && (
+            <div style={{ display:"flex", alignItems:"center", gap:6, marginBottom:10, padding:"6px 12px", background:`${T.muted}10`, border:`1px solid ${T.muted}20`, borderRadius:8 }}>
+              <span style={{ width:6, height:6, borderRadius:"50%", background:T.muted, display:"inline-block" }}/>
+              <span style={{ fontSize:11, color:T.muted, fontWeight:600 }}>Demo mode — switch to LIVE to see real data</span>
+            </div>
+          )}
           <div style={{ display:"grid", gridTemplateColumns:"repeat(4,1fr)", gap:14, marginBottom:22 }}>
             <KPI label="Detected Issues"
-                 value={kpis ? alertsState.filter(a=>a.status==="open").length : openCount}
-                 sub={kpis ? `${alertsState.filter(a=>a.severity==="critical"&&a.status!=="resolved").length} critical` : `${critCount} critical`}
+                 value={dataMode==="prod" && kpis ? alertsState.filter(a=>a.status==="open").length : openCount}
+                 sub={dataMode==="prod" && kpis ? `${alertsState.filter(a=>a.severity==="critical"&&a.status!=="resolved").length} critical` : `${critCount} critical`}
                  trend={12} icon={Bell}
                  color={(kpis ? alertsState.filter(a=>a.status==="open").length : openCount)>4?T.red:T.orange}
-                 spark={SPARKLINE.slice(-10)} onClick={()=>setActiveTabProp && setActiveTabProp('alerts')}
+                 spark={SPARKLINE.slice(-10)} onClick={()=>setActiveTab && setActiveTab('alerts')}
                  badge={kpis?"LIVE":null} />
             <KPI label="Total Revenue"
-                 value={kpis ? `$${(kpis.sales.total_sales/1000).toFixed(0)}k` : fixedCount}
+                 value={dataMode==="prod" && kpis ? `$${(kpis.sales.total_sales/1000).toFixed(0)}k` : fixedCount}
                  sub={kpis ? `${kpis.sales.units.toLocaleString()} units ordered` : "no human touch"}
                  trend={-8} icon={kpis?TrendingUp:Wrench}
                  color={T.green} spark={SPARKLINE.slice(-10).map(v=>v*0.5)}
                  badge={kpis?"LIVE":null} />
             <KPI label={kpis?"Pending Orders":"QA Agents Active"}
-                 value={kpis ? kpis.orders.pending : runningAgents}
+                 value={dataMode==="prod" && kpis ? kpis.orders.pending : runningAgents}
                  sub={kpis ? `${kpis.orders.canceled} canceled` : "autonomous coverage"}
                  trend={0} icon={kpis?Clock:Bot}
                  color={kpis&&kpis.orders.pending>100?T.red:T.purple}
-                 spark={[4,4,5,4,5,5,4,5,6,5]} onClick={()=>setActiveTabProp && setActiveTabProp('agents')}
+                 spark={[4,4,5,4,5,5,4,5,6,5]} onClick={()=>setActiveTab && setActiveTab('agents')}
                  badge={kpis?"LIVE":null} />
             <KPI label={kpis?"Buy Box %":"Mean Time to Detect"}
-                 value={kpis ? `${(kpis.sales.buy_box_pct*100).toFixed(1)}%` : "4.2m"}
+                 value={dataMode==="prod" && kpis ? `${(kpis.sales.buy_box_pct*100).toFixed(1)}%` : "4.2m"}
                  sub={kpis ? `${kpis.inventory.out_of_stock} SKUs out of stock` : "↓22% vs manual baseline"}
                  trend={-22} icon={kpis?BarChart3:Clock}
                  color={T.cyan} spark={SPARKLINE.slice(-10).map(v=>100-v)}
@@ -5838,7 +5880,7 @@ export default function AIOpsMonitor() {
 
           {/* ── Agents Tab ── */}
           {activeTab === "agents" && (
-            <AgentFleetTab onDrill={openDrill} />
+            <AgentFleetTab onDrill={openDrill} agentScanResult={dataMode==="prod"?agentScanResult:null} agentScanLoading={agentScanLoading} onAgentScan={runFullAgentScan} dataMode={dataMode} />
           )}
 
           {/* ── Sources Tab ── */}
@@ -5879,13 +5921,21 @@ export default function AIOpsMonitor() {
 
           {/* ── DB Explorer Tab ── */}
           {activeTab === "dbexplorer" && (
-            <DBExplorerTab kpis={kpis} kpisLoading={kpisLoading} alertsState={alertsState} setActiveTab={setActiveTab} />
+            <DBExplorerTab
+              kpis={kpis} kpisLoading={kpisLoading}
+              alertsState={alertsState} setActiveTab={setActiveTab}
+              accounts={accounts} accountId={accountId} setAccountId={setAccountId}
+              liveRules={liveRules} rulesLoading={rulesLoading}
+              agentScanResult={agentScanResult} agentScanLoading={agentScanLoading} runFullAgentScan={runFullAgentScan}
+              trend={trend} topAsins={topAsins} lastScan={lastScan}
+              dataMode={dataMode}
+            />
           )}
 
           {/* ── Dashboard Tab ── */}
           {activeTab === "dashboard" && (
             <div style={{ paddingBottom:24 }}>
-              <CommandCenterTab />
+              <CommandCenterTab onNavigate={setActiveTab} kpis={dataMode==="prod"?kpis:null} kpisLoading={kpisLoading} trend={trend} topAsins={topAsins} accountId={accountId} agentScanResult={dataMode==="prod"?agentScanResult:null} agentScanLoading={agentScanLoading} runFullAgentScan={runFullAgentScan} dataMode={dataMode} />
             </div>
           )}
 
@@ -5920,7 +5970,7 @@ export default function AIOpsMonitor() {
           {/* ── Rules Tab ── */}
           {activeTab === "rules" && (
             <div style={{ paddingBottom:24 }}>
-              <ValidationRulesTab />
+              <ValidationRulesTab liveRules={dataMode==="prod"?liveRules:[]} rulesLoading={rulesLoading} />
             </div>
           )}
 

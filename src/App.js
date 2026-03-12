@@ -4707,7 +4707,7 @@ function AgentCard({ agent, onDrill }) {
 }
 
 // ─── KPI Card ─────────────────────────────────────────────────────────────────
-function KPI({ label, value, sub, trend, icon: Icon, color, spark, onClick }) {
+function KPI({ label, value, sub, trend, icon: Icon, color, spark, onClick, badge }) {
   const up = trend > 0, down = trend < 0;
   return (
     <Card style={{ padding:"16px 18px", cursor:onClick?"pointer":"default" }} onClick={onClick}>
@@ -5188,7 +5188,7 @@ function DrillModal({ target, onClose, onNavigate }) {
 // ─── DB Explorer Tab ──────────────────────────────────────────────────────────
 const API_BASE = "https://intentwise-backend-production.up.railway.app";
 
-function DBExplorerTab() {
+function DBExplorerTab({ kpis, kpisLoading, alertsState, setActiveTab: setActiveTabProp }) {
   const T = useTheme();
   const [schemas,      setSchemas]      = useState([]);
   const [loading,      setLoading]      = useState(true);
@@ -5342,8 +5342,8 @@ function DBExplorerTab() {
                 {preview.data.columns && (
                   <div style={{ display:"flex", gap:6, padding:"8px 18px", overflowX:"auto", borderBottom:`1px solid ${T.border}`, flexShrink:0 }}>
                     {preview.data.columns.map(c => (
-                      <div key={c.name} style={{ background:T.isDark?"#0A0C10":T.bg, border:`1px solid ${T.border2}`, borderRadius:6, padding:"3px 10px", whiteSpace:"nowrap" }}>
-                        <div style={{ fontSize:10, fontWeight:700, color:T.text }}>{c.name}</div>
+                      <div key={c.column_name} style={{ background:T.isDark?"#0A0C10":T.bg, border:`1px solid ${T.border2}`, borderRadius:6, padding:"3px 10px", whiteSpace:"nowrap" }}>
+                        <div style={{ fontSize:10, fontWeight:700, color:T.text }}>{c.column_name}</div>
                         <div style={{ fontSize:9, color:T.dim }}>{c.type}</div>
                       </div>
                     ))}
@@ -5356,7 +5356,7 @@ function DBExplorerTab() {
                       <thead>
                         <tr style={{ background:T.isDark?"#0A0C10":T.bg, position:"sticky", top:0 }}>
                           {preview.data.columns.map(c => (
-                            <th key={c.name} style={{ padding:"8px 12px", textAlign:"left", color:T.muted, fontWeight:700, fontSize:10, textTransform:"uppercase", letterSpacing:"0.04em", borderBottom:`1px solid ${T.border}`, whiteSpace:"nowrap" }}>{c.name}</th>
+                            <th key={c.column_name} style={{ padding:"8px 12px", textAlign:"left", color:T.muted, fontWeight:700, fontSize:10, textTransform:"uppercase", letterSpacing:"0.04em", borderBottom:`1px solid ${T.border}`, whiteSpace:"nowrap" }}>{c.column_name}</th>
                           ))}
                         </tr>
                       </thead>
@@ -5364,8 +5364,8 @@ function DBExplorerTab() {
                         {preview.data.rows.map((row, i) => (
                           <tr key={i} style={{ borderBottom:`1px solid ${T.border}`, background:i%2===0?"transparent":(T.isDark?"#0A0C1040":"#F8FAFC") }}>
                             {preview.data.columns.map(c => (
-                              <td key={c.name} style={{ padding:"7px 12px", color:row[c.name]===null?T.dim:T.text, fontFamily:typeof row[c.name]==="number"?"Consolas,monospace":"inherit", whiteSpace:"nowrap", maxWidth:200, overflow:"hidden", textOverflow:"ellipsis" }}>
-                                {row[c.name]===null ? <span style={{color:T.dim,fontStyle:"italic"}}>null</span> : String(row[c.name])}
+                              <td key={c.column_name} style={{ padding:"7px 12px", color:row[c.column_name]===null?T.dim:T.text, fontFamily:typeof row[c.column_name]==="number"?"Consolas,monospace":"inherit", whiteSpace:"nowrap", maxWidth:200, overflow:"hidden", textOverflow:"ellipsis" }}>
+                                {row[c.column_name]===null ? <span style={{color:T.dim,fontStyle:"italic"}}>null</span> : String(row[c.column_name])}
                               </td>
                             ))}
                           </tr>
@@ -5734,12 +5734,34 @@ export default function AIOpsMonitor() {
         {/* ── Main ── */}
         <main style={{ flex:1, overflowY:"auto", padding:"24px 28px", marginRight: aiPanel ? 420 : 0, transition:"margin 0.2s", background:T.bg }}>
 
-          {/* KPIs */}
+          {/* KPIs — real data from Redshift when available */}
           <div style={{ display:"grid", gridTemplateColumns:"repeat(4,1fr)", gap:14, marginBottom:22 }}>
-            <KPI label="Detected Issues"   value={openCount}    sub={`${critCount} critical`}   trend={12}   icon={Bell}      color={openCount>4?T.red:T.orange}  spark={SPARKLINE.slice(-10)} onClick={()=>setActiveTab('alerts')} />
-            <KPI label="AI Auto-Remediated" value={fixedCount}   sub="no human touch"            trend={-8}   icon={Wrench}    color={T.green}    spark={SPARKLINE.slice(-10).map(v=>v*0.5)} />
-            <KPI label="QA Agents Active"   value={runningAgents}sub="autonomous coverage"       trend={0}    icon={Bot}       color={T.purple}   spark={[4,4,5,4,5,5,4,5,6,5]} onClick={()=>setActiveTab('agents')} />
-            <KPI label="Mean Time to Detect" value="4.2m"        sub="↓22% vs manual baseline"  trend={-22}  icon={Clock}     color={T.cyan}     spark={SPARKLINE.slice(-10).map(v=>100-v)} />
+            <KPI label="Detected Issues"
+                 value={kpis ? alertsState.filter(a=>a.status==="open").length : openCount}
+                 sub={kpis ? `${alertsState.filter(a=>a.severity==="critical"&&a.status!=="resolved").length} critical` : `${critCount} critical`}
+                 trend={12} icon={Bell}
+                 color={(kpis ? alertsState.filter(a=>a.status==="open").length : openCount)>4?T.red:T.orange}
+                 spark={SPARKLINE.slice(-10)} onClick={()=>setActiveTabProp && setActiveTabProp('alerts')}
+                 badge={kpis?"LIVE":null} />
+            <KPI label="Total Revenue"
+                 value={kpis ? `$${(kpis.sales.total_sales/1000).toFixed(0)}k` : fixedCount}
+                 sub={kpis ? `${kpis.sales.units.toLocaleString()} units ordered` : "no human touch"}
+                 trend={-8} icon={kpis?TrendingUp:Wrench}
+                 color={T.green} spark={SPARKLINE.slice(-10).map(v=>v*0.5)}
+                 badge={kpis?"LIVE":null} />
+            <KPI label={kpis?"Pending Orders":"QA Agents Active"}
+                 value={kpis ? kpis.orders.pending : runningAgents}
+                 sub={kpis ? `${kpis.orders.canceled} canceled` : "autonomous coverage"}
+                 trend={0} icon={kpis?Clock:Bot}
+                 color={kpis&&kpis.orders.pending>100?T.red:T.purple}
+                 spark={[4,4,5,4,5,5,4,5,6,5]} onClick={()=>setActiveTabProp && setActiveTabProp('agents')}
+                 badge={kpis?"LIVE":null} />
+            <KPI label={kpis?"Buy Box %":"Mean Time to Detect"}
+                 value={kpis ? `${(kpis.sales.buy_box_pct*100).toFixed(1)}%` : "4.2m"}
+                 sub={kpis ? `${kpis.inventory.out_of_stock} SKUs out of stock` : "↓22% vs manual baseline"}
+                 trend={-22} icon={kpis?BarChart3:Clock}
+                 color={T.cyan} spark={SPARKLINE.slice(-10).map(v=>100-v)}
+                 badge={kpis?"LIVE":null} />
           </div>
 
           {/* ── QA Health Tab ── */}
@@ -5857,7 +5879,7 @@ export default function AIOpsMonitor() {
 
           {/* ── DB Explorer Tab ── */}
           {activeTab === "dbexplorer" && (
-            <DBExplorerTab />
+            <DBExplorerTab kpis={kpis} kpisLoading={kpisLoading} alertsState={alertsState} setActiveTab={setActiveTab} />
           )}
 
           {/* ── Dashboard Tab ── */}

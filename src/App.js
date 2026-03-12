@@ -7,7 +7,7 @@ import {
   Mail, Cpu, GitBranch, Layers, ArrowUpRight, ArrowDownRight, Minus,
   Play, Pause, MessageSquare, Sparkles, Bot, Wrench, X, Check,
   MoreVertical, ExternalLink, Info, ChevronUp, AlertCircle,
-  Plus, Trash2, ToggleLeft, ToggleRight, Copy, Send, Lock,
+  Plus, Trash2, ToggleLeft, ToggleRight, Copy, Send, Lock, Users,
   Hash, Type, Calendar, BarChart2, List, FlaskConical, Wand2,
   CheckSquare, Tag, GitMerge, Radio, AtSign, Webhook,
   MoveVertical, GripVertical, ArrowDown, Repeat, Split,
@@ -2305,8 +2305,17 @@ const ThemeCtx = React.createContext(DARK_THEME);
 const useTheme = () => React.useContext(ThemeCtx);
 
 // ─── Command Center Tab ───────────────────────────────────────────────────────
-function CommandCenterTab({ onNavigate }) {
+function CommandCenterTab({ onNavigate, kpis, kpisLoading, trend, topAsins, accountId, agentScanResult, agentScanLoading, onAgentScan }) {
   const T = useTheme();
+  const C = T;
+  const liveKpiTiles = kpis ? [
+    { label:"Total Orders",     value: kpis.orders.total.toLocaleString(),                                                    sub:`${kpis.orders.shipped} shipped`,     color:C.accent  },
+    { label:"Revenue",          value:`$${kpis.sales.total_sales.toLocaleString(undefined,{maximumFractionDigits:0})}`,       sub:`${kpis.sales.units.toLocaleString()} units`, color:C.green },
+    { label:"Pending Orders",   value: kpis.orders.pending.toLocaleString(),                                                  sub:`${kpis.orders.canceled} canceled`,   color: kpis.orders.pending>50 ? C.red : C.yellow },
+    { label:"Buy Box %",        value:`${(kpis.sales.buy_box_pct*100).toFixed(1)}%`,                                          sub:"avg across ASINs",                   color:C.cyan    },
+    { label:"Inventory Alerts", value: kpis.inventory.alerts.toLocaleString(),                                                sub:`${kpis.inventory.out_of_stock} OOS`, color: kpis.inventory.alerts>0 ? C.orange : C.green },
+    { label:"Sessions",         value: kpis.sales.sessions.toLocaleString(),                                                  sub:"today",                              color:C.purple  },
+  ] : null;
   const critCount  = ALERTS_RAW.filter(a=>a.severity==="critical"&&a.status!=="resolved").length;
   const openCount  = ALERTS_RAW.filter(a=>a.status==="open").length;
   const runningAg  = AGENTS.filter(a=>a.status==="running").length;
@@ -2367,11 +2376,11 @@ function CommandCenterTab({ onNavigate }) {
 
       {/* ── 6-metric grid (clickable → tab) ── */}
       <div style={{ display:"grid", gridTemplateColumns:"repeat(3,1fr)", gap:14, marginBottom:20 }}>
-        {metricGrid.map(m=>(
-          <div key={m.label} onClick={()=>onNavigate&&onNavigate(m.tab)} style={{ background:T.card, border:`1px solid ${T.border}`, borderRadius:12, padding:"18px 20px", display:"flex", alignItems:"center", gap:14, cursor:"pointer", transition:"border-color 0.15s" }} className="row-hover">
-            <div style={{ fontSize:30 }}>{m.icon}</div>
+        {(liveKpiTiles || metricGrid).map(m=>(
+          <div key={m.label} onClick={()=>!liveKpiTiles && onNavigate&&onNavigate(m.tab)} style={{ background:T.card, border:`1px solid ${m.color}30`, borderRadius:12, padding:"18px 20px", display:"flex", alignItems:"center", gap:14, cursor: liveKpiTiles?"default":"pointer", transition:"border-color 0.15s", borderLeft:`3px solid ${m.color}` }} className="row-hover">
+            <div style={{ fontSize:30 }}>{m.icon||"📊"}</div>
             <div style={{ flex:1 }}>
-              <div style={{ fontSize:32, fontWeight:900, color:m.color, lineHeight:1 }}>{m.value}</div>
+              <div style={{ fontSize:32, fontWeight:900, color:m.color, lineHeight:1 }}>{kpisLoading ? "…" : m.value}</div>
               <div style={{ fontSize:12, fontWeight:700, color:T.text, marginTop:5 }}>{m.label}</div>
               <div style={{ fontSize:10, color:T.muted, marginTop:2 }}>{m.sub}</div>
             </div>
@@ -5397,6 +5406,73 @@ export default function AIOpsMonitor() {
   const [alertsState, setAlertsState] = useState(ALERTS_RAW.map(a=>({...a})));
   const [alertsLoading, setAlertsLoading] = useState(false);
   const [lastScan, setLastScan] = useState(null);
+
+  // ── Real data state ──────────────────────────────────────────────────────
+  const [accounts,    setAccounts]    = useState([]);
+  const [accountId,   setAccountId]   = useState("all");
+  const [kpis,        setKpis]        = useState(null);
+  const [kpisLoading, setKpisLoading] = useState(false);
+  const [trend,       setTrend]       = useState([]);
+  const [topAsins,    setTopAsins]    = useState([]);
+  const [inventory,   setInventory]   = useState([]);
+  const [liveRules,   setLiveRules]   = useState([]);
+  const [rulesLoading,setRulesLoading]= useState(false);
+  const [agentScanResult, setAgentScanResult] = useState(null);
+  const [agentScanLoading, setAgentScanLoading] = useState(false);
+
+  // Load accounts on mount
+  useEffect(() => {
+    fetch("https://intentwise-backend-production.up.railway.app/api/accounts")
+      .then(r=>r.json())
+      .then(data=>{ if(Array.isArray(data)) setAccounts(data); })
+      .catch(()=>{});
+  }, []);
+
+  // Load KPIs + trend + top ASINs when account changes
+  useEffect(() => {
+    setKpisLoading(true);
+    const qs = accountId==="all" ? "" : `?account_id=${accountId}`;
+    Promise.all([
+      fetch(`https://intentwise-backend-production.up.railway.app/api/kpis${qs}`).then(r=>r.json()),
+      fetch(`https://intentwise-backend-production.up.railway.app/api/trend${qs}`).then(r=>r.json()),
+      fetch(`https://intentwise-backend-production.up.railway.app/api/top-asins${qs}`).then(r=>r.json()),
+      fetch(`https://intentwise-backend-production.up.railway.app/api/inventory${qs}`).then(r=>r.json()),
+    ]).then(([k,t,a,i]) => {
+      if(!k.error) setKpis(k);
+      if(Array.isArray(t)) setTrend(t);
+      if(Array.isArray(a)) setTopAsins(a);
+      if(Array.isArray(i)) setInventory(i);
+      setKpisLoading(false);
+    }).catch(()=>setKpisLoading(false));
+  }, [accountId]);
+
+  // Load rules when account changes
+  useEffect(() => {
+    setRulesLoading(true);
+    const qs = accountId==="all" ? "" : `?account_id=${accountId}`;
+    fetch(`https://intentwise-backend-production.up.railway.app/api/rules${qs}`)
+      .then(r=>r.json())
+      .then(data=>{ if(Array.isArray(data)) setLiveRules(data); setRulesLoading(false); })
+      .catch(()=>setRulesLoading(false));
+  }, [accountId]);
+
+  const runFullAgentScan = async () => {
+    setAgentScanLoading(true);
+    try {
+      const qs = accountId==="all" ? "" : `?account_id=${accountId}`;
+      const res = await fetch(`https://intentwise-backend-production.up.railway.app/api/agents/full-scan${qs}`, {method:"POST"});
+      const data = await res.json();
+      setAgentScanResult(data);
+      if(data.alerts && Array.isArray(data.alerts) && data.alerts.length>0) {
+        setAlertsState(prev => {
+          const existingIds = new Set(prev.map(a=>a.id));
+          const newAlerts = data.alerts.filter(a=>!existingIds.has(a.id));
+          return [...newAlerts, ...prev];
+        });
+      }
+    } catch(e) { console.error(e); }
+    setAgentScanLoading(false);
+  };
   const resolveAlert  = (id) => setAlertsState(p=>p.map(a=>a.id===id?{...a,status:"resolved"}:a));
   const triageAlert   = (id) => setAlertsState(p=>p.map(a=>a.id===id?{...a,status:"triaged"}:a));
   const autoFixAlert  = (id) => setAlertsState(p=>p.map(a=>a.id===id?{...a,status:"resolved",autoFixed:true}:a));
@@ -5529,6 +5605,22 @@ export default function AIOpsMonitor() {
           <button onClick={()=>setPaletteOpen(true)} style={{ background:T.border, border:`1px solid ${T.border2}`, borderRadius:7, padding:"6px 14px", cursor:"pointer", display:"flex", alignItems:"center", gap:6, fontSize:11, color:T.muted }}>
             <Search size={13}/> <span>Search</span> <kbd style={{ fontSize:9, background:T.isDark?"#1E2330":T.border, borderRadius:4, padding:"1px 5px", color:T.dim, fontFamily:"Consolas,monospace" }}>⌘K</kbd>
           </button>
+          {/* Account Selector */}
+          <div style={{ display:"flex", alignItems:"center", gap:6 }}>
+            <Users size={13} color={T.muted}/>
+            <select
+              value={accountId}
+              onChange={e=>setAccountId(e.target.value)}
+              style={{ background:T.card, border:`1px solid ${T.border2}`, borderRadius:7, padding:"5px 10px", color:T.text, fontSize:11, outline:"none", cursor:"pointer", fontFamily:"Calibri,sans-serif" }}
+            >
+              <option value="all">All Accounts</option>
+              {accounts.map(a=>(
+                <option key={a.account_id} value={String(a.account_id)}>
+                  {a.seller_id || `Account ${a.account_id}`}
+                </option>
+              ))}
+            </select>
+          </div>
           <button onClick={()=>setNotifOpen(true)} style={{ background:T.border, border:`1px solid ${T.border2}`, borderRadius:7, padding:"6px 14px", cursor:"pointer", display:"flex", alignItems:"center", gap:6, fontSize:11, color:T.muted }}>
             <Bell size={13} /> Notifications
           </button>

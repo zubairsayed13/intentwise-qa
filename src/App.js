@@ -420,6 +420,13 @@ const PENDING_APPROVALS = [
 ];
 
 // ─── Tiny Sparkline ────────────────────────────────────────────────────────────
+const DataBadge = ({ live }) => {
+  const T = React.useContext(ThemeCtx);
+  return live
+    ? <span style={{ fontSize:9, fontWeight:800, letterSpacing:"0.5px", padding:"2px 6px", borderRadius:4, background:`${T.green}20`, color:T.green, border:`1px solid ${T.green}40`, marginLeft:4 }}>LIVE</span>
+    : <span style={{ fontSize:9, fontWeight:800, letterSpacing:"0.5px", padding:"2px 6px", borderRadius:4, background:"#94A3B815", color:"#94A3B8", border:"1px solid #94A3B830", marginLeft:4 }}>DEMO</span>;
+};
+
 function Spark({ data, color = C.accent, h = 32, w = 80 }) {
   const max = Math.max(...data), min = Math.min(...data);
   const pts = data.map((v, i) => {
@@ -1596,8 +1603,11 @@ Always start with trigger, always end with end. Use 5–12 nodes. Make them spec
 
 
 // ─── Validation Rules Tab ─────────────────────────────────────────────────────
-function ValidationRulesTab() {
+function ValidationRulesTab({ liveRules, rulesLoading }) {
   const [rules, setRules]           = useState(INIT_RULES);
+  useEffect(() => {
+    if (liveRules && liveRules.length > 0) setRules(liveRules);
+  }, [liveRules]);
   const [view, setView]             = useState("list");   // list | builder | nlp | scan
   const [nlpInput, setNlpInput]     = useState("");
   const [nlpLoading, setNlpLoading] = useState(false);
@@ -2302,13 +2312,6 @@ function ApprovalGatesTab() {
 
 // ─── Theme Context ────────────────────────────────────────────────────────────
 const ThemeCtx = React.createContext(DARK_THEME);
-
-const DataBadge = ({ live }) => {
-  const T = React.useContext(ThemeCtx);
-  return live
-    ? <span style={{ fontSize:9, fontWeight:800, letterSpacing:"0.5px", padding:"2px 6px", borderRadius:4, background:`${T.green}20`, color:T.green, border:`1px solid ${T.green}40`, marginLeft:4 }}>LIVE</span>
-    : <span style={{ fontSize:9, fontWeight:800, letterSpacing:"0.5px", padding:"2px 6px", borderRadius:4, background:"#94A3B815", color:"#94A3B8", border:"1px solid #94A3B830", marginLeft:4 }}>DEMO</span>;
-};
 const useTheme = () => React.useContext(ThemeCtx);
 
 // ─── Command Center Tab ───────────────────────────────────────────────────────
@@ -5519,7 +5522,8 @@ export default function AIOpsMonitor() {
   const runAgentScan = async () => {
     setAlertsLoading(true);
     try {
-      const res = await fetch("https://intentwise-backend-production.up.railway.app/api/alerts/detect");
+      const qs = accountId === "all" ? "" : `?account_id=${accountId}`;
+      const res = await fetch(`https://intentwise-backend-production.up.railway.app/api/alerts/detect${qs}`);
       const data = await res.json();
       if (Array.isArray(data) && data.length > 0) {
         setAlertsState(prev => {
@@ -5533,7 +5537,7 @@ export default function AIOpsMonitor() {
     setAlertsLoading(false);
   };
 
-  // Auto-scan on first load
+  // Auto-scan alerts on load; full AI scan is manual (slow)
   useEffect(() => { runAgentScan(); }, []);
   const [notifOpen, setNotifOpen] = useState(false);
   const [paletteOpen, setPaletteOpen] = useState(false);
@@ -5917,3 +5921,4 @@ export default function AIOpsMonitor() {
     </ThemeCtx.Provider>
   );
 }
+

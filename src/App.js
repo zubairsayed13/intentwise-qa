@@ -802,7 +802,7 @@ function StagingPanel() {
                     {selectedRules.includes(r.id) && <Check size={9} color="white"/>}
                   </div>
                   <div style={{ flex:1 }}>
-                    <div style={{ fontSize:11, fontWeight:600, color:T.text }}>{r.name}</div>
+                    <div style={{ fontSize:11, fontWeight:600, color:T.text }}>{r.name}<DataBadge live={r.source==="mws"} /></div>
                     <code style={{ fontSize:9, color:T.dim, fontFamily:"Consolas,monospace" }}>{r.id}</code>
                   </div>
                 </div>
@@ -2302,6 +2302,13 @@ function ApprovalGatesTab() {
 
 // ─── Theme Context ────────────────────────────────────────────────────────────
 const ThemeCtx = React.createContext(DARK_THEME);
+
+const DataBadge = ({ live }) => {
+  const T = React.useContext(ThemeCtx);
+  return live
+    ? <span style={{ fontSize:9, fontWeight:800, letterSpacing:"0.5px", padding:"2px 6px", borderRadius:4, background:`${T.green}20`, color:T.green, border:`1px solid ${T.green}40`, marginLeft:4 }}>LIVE</span>
+    : <span style={{ fontSize:9, fontWeight:800, letterSpacing:"0.5px", padding:"2px 6px", borderRadius:4, background:"#94A3B815", color:"#94A3B8", border:"1px solid #94A3B830", marginLeft:4 }}>DEMO</span>;
+};
 const useTheme = () => React.useContext(ThemeCtx);
 
 // ─── Command Center Tab ───────────────────────────────────────────────────────
@@ -3082,7 +3089,7 @@ function AlertRow({ alert, onAIClick, onDrill, onResolve, onAutoFix, onTriage, s
         <Dot status={alert.severity} />
         <div style={{ width:62, flexShrink:0 }}><SevBadge sev={alert.severity} /></div>
         <div style={{ flex:1, minWidth:0 }}>
-          <div onClick={e=>{e.stopPropagation();onDrill&&onDrill("alert",alert);}} style={{ fontSize:13, fontWeight:600, color:C.accentL, whiteSpace:"nowrap", overflow:"hidden", textOverflow:"ellipsis", cursor:"pointer", textDecoration:"underline", textDecorationColor:`${C.accentL}50`, textUnderlineOffset:3 }}>{alert.title}</div>
+          <div onClick={e=>{e.stopPropagation();onDrill&&onDrill("alert",alert);}} style={{ fontSize:13, fontWeight:600, color:C.accentL, whiteSpace:"nowrap", overflow:"hidden", textOverflow:"ellipsis", cursor:"pointer", textDecoration:"underline", textDecorationColor:`${C.accentL}50`, textUnderlineOffset:3 }}>{alert.title}<DataBadge live={alert.id?.startsWith("AGT-")} /></div>
           <div style={{ fontSize:11, color:C.muted, marginTop:3 }}>{alert.source} · <code style={{color:C.dim,fontSize:11,fontFamily:'Consolas,monospace'}}>{alert.table}</code> · {alert.rule}</div>
         </div>
         <div style={{ fontSize:11, color:C.muted, flexShrink:0, width:72, textAlign:"right" }}>{alert.ts}</div>
@@ -3329,7 +3336,7 @@ function CreateAgentModal({ prefill, agents, onClose, onCreate }) {
 }
 
 // ─── Agent Fleet Tab ──────────────────────────────────────────────────────────
-function AgentFleetTab({ onDrill }) {
+function AgentFleetTab({ onDrill, agentScanResult, agentScanLoading, onAgentScan }) {
   const T = useTheme();
   const [agents, setAgents] = useState(AGENTS.map(a=>({...a})));
   const [selected, setSelected] = useState(null); // agent id
@@ -3420,6 +3427,38 @@ function AgentFleetTab({ onDrill }) {
 
   return (
     <div>
+      {/* ── Live Agent Scan Panel ── */}
+      <div style={{ background:T.card, border:`1px solid ${T.border}`, borderRadius:12, padding:16, marginBottom:16, display:"flex", flexDirection:"column", gap:10 }}>
+        <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between" }}>
+          <div style={{ display:"flex", alignItems:"center", gap:8 }}>
+            <Zap size={14} color={T.green}/>
+            <span style={{ fontWeight:700, fontSize:13, color:T.text }}>Live Agent Scan</span>
+            <DataBadge live={!!agentScanResult} />
+          </div>
+          <button onClick={onAgentScan} disabled={agentScanLoading}
+            style={{ background:`${T.green}15`, border:`1px solid ${T.green}40`, borderRadius:7, padding:"5px 14px", cursor:"pointer", fontSize:11, color:T.green, fontWeight:700, display:"flex", alignItems:"center", gap:5 }}>
+            {agentScanLoading ? <><RefreshCw size={10} style={{animation:"spin 1s linear infinite"}}/> Scanning…</> : <><Zap size={10}/> Run Scan</>}
+          </button>
+        </div>
+        {agentScanResult?.analysis
+          ? <div style={{ display:"flex", gap:12, alignItems:"flex-start" }}>
+              <div style={{ background:`${T.accent}15`, border:`1px solid ${T.accent}30`, borderRadius:8, padding:"8px 14px", textAlign:"center", minWidth:70 }}>
+                <div style={{ fontSize:26, fontWeight:900, color:T.accent }}>{agentScanResult.analysis.quality_score ?? "—"}</div>
+                <div style={{ fontSize:9, color:T.muted, fontWeight:700, letterSpacing:"0.5px" }}>QUALITY SCORE</div>
+              </div>
+              <div style={{ flex:1 }}>
+                <div style={{ fontSize:12, color:T.text, lineHeight:1.7, marginBottom:6 }}>{agentScanResult.analysis.summary}</div>
+                {agentScanResult.analysis.recommendations?.map((rec,i)=>(
+                  <span key={i} style={{ display:"inline-block", fontSize:10, background:`${T.yellow}15`, color:T.yellow, border:`1px solid ${T.yellow}30`, borderRadius:5, padding:"2px 8px", marginRight:5, marginBottom:4 }}>{rec}</span>
+                ))}
+              </div>
+            </div>
+          : <div style={{ fontSize:12, color:T.muted }}>
+              {agentScanLoading ? "Scanning your mws tables…" : "Run a scan to get AI-powered data quality analysis across all mws tables."}
+            </div>
+        }
+      </div>
+
       {createModal !== null && (
         <CreateAgentModal
           prefill={createModal}

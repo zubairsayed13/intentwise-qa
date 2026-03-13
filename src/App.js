@@ -1661,7 +1661,7 @@ function ValidationRulesTab({ liveRules, rulesLoading, addAuditEvent }) {
     // 1. Fetch real mws tables
     const tablesRes  = await fetch(`${API_BASE}/api/tables`);
     const tablesData = await tablesRes.json();
-    const mwsTables  = (tablesData || []).filter(t => t.schema === "mws").map(t => t.name);
+    const mwsTables  = (tablesData || []).filter(t => (t.schema || t.table_schema) === "mws").map(t => t.name);
     if (!mwsTables.length) return;
 
     const tableHash = mwsTables.slice().sort().join(",");
@@ -1790,7 +1790,7 @@ Respond ONLY with valid JSON (no markdown): {"name":"string","type":"string","so
       // 1. Fetch real schema from backend
       const tablesRes = await fetch("https://intentwise-backend-production.up.railway.app/api/tables");
       const tablesData = await tablesRes.json();
-      const mwsTables = (tablesData || []).filter(t => t.schema === "mws").map(t => t.name);
+      const mwsTables = (tablesData || []).filter(t => (t.schema || t.table_schema) === "mws").map(t => t.name || t.table_name);
 
       // 2. Ask Claude to suggest test cases based on actual mws schema
       const res = await fetch(`${API_BASE}/api/ai/chat`, {
@@ -2616,7 +2616,7 @@ function CommandCenterTab({ onNavigate, kpis, kpisLoading, trend, topAsins, acco
     { label:"Sessions (30d)",      value: kpis.sales.sessions.toLocaleString(),                                                 sub:"mws.sales_and_traffic_by_date",                                    color:C.purple  },
     { label:"Refund Rate",         value: kpis.sales.refund_rate != null ? `${(kpis.sales.refund_rate*100).toFixed(1)}%` : "—", sub:"mws.sales_and_traffic_by_date",                                    color: (kpis.sales.refund_rate||0)>0.05 ? C.red : C.green },
   ] : null;
-    const liveAlerts = (alertsState && alertsState.length > 0) ? alertsState : ALERTS_RAW;
+    const liveAlerts = alertsState || [];
   const critCount  = liveAlerts.filter(a=>a.severity==="critical"&&a.status!=="resolved").length;
   const openCount  = liveAlerts.filter(a=>a.status==="open").length;
   const runningAg  = AGENTS.filter(a=>a.status==="running").length;
@@ -2726,7 +2726,7 @@ function CommandCenterTab({ onNavigate, kpis, kpisLoading, trend, topAsins, acco
             <span style={{ display:"flex", alignItems:"center", gap:8 }}><Bell size={13} color={T.red}/> Top Detected Issues</span>
             <button onClick={()=>onNavigate&&onNavigate("alerts")} style={{ background:"none", border:"none", cursor:"pointer", fontSize:10, color:T.accentL, fontWeight:600, display:"flex", alignItems:"center", gap:4 }}>All <ArrowRight size={10}/></button>
           </div>
-          {ALERTS_RAW.filter(a=>a.status==="open").slice(0,5).map(a=>{
+          {liveAlerts.filter(a=>a.status==="open").slice(0,5).map(a=>{
             const sc={critical:T.red,high:T.orange,medium:T.yellow,low:T.cyan}[a.severity]||T.muted;
             return(
               <div key={a.id} className="row-hover" onClick={()=>window._drillFn&&window._drillFn("alert",a)} style={{ display:"flex", alignItems:"center", gap:8, padding:"7px 6px", borderRadius:6, cursor:"pointer" }}>
@@ -3109,7 +3109,7 @@ function RuleTestRunnerTab() {
 }
 
 // ─── AI Root Cause Tab ────────────────────────────────────────────────────────
-function RootCauseTab() {
+function RootCauseTab({ alertsState }) {
   const T = useTheme();
   const [loading, setLoading] = useState(false);
   const [groups, setGroups] = useState(CORRELATED_GROUPS);
@@ -3164,7 +3164,7 @@ Pattern: ${group.pattern}`}]
 
       {/* Ungrouped alerts reminder */}
       <div style={{ display:"flex", gap:8, marginBottom:16, flexWrap:"wrap" }}>
-        {ALERTS_RAW.filter(a=>!CORRELATED_GROUPS.flatMap(g=>g.alerts).includes(a.id)).map(a=>(
+        {(alertsState||[]).filter(a=>!CORRELATED_GROUPS.flatMap(g=>g.alerts).includes(a.id)).map(a=>(
           <div key={a.id} style={{ display:"flex", alignItems:"center", gap:6, padding:"4px 10px", background:T.card, border:`1px solid ${T.border}`, borderRadius:20 }}>
             <div style={{ width:6, height:6, borderRadius:"50%", background:{critical:T.red,high:T.orange,medium:T.yellow,low:T.cyan}[a.severity]||T.muted }}/>
             <span style={{ fontSize:10, color:T.muted }}>{a.id}</span>
@@ -3187,7 +3187,7 @@ Pattern: ${group.pattern}`}]
               </div>
               <div style={{ display:"flex", gap:6, flexWrap:"wrap", marginBottom:6 }}>
                 {g.alerts.map(id=>{
-                  const a=ALERTS_RAW.find(x=>x.id===id);
+                  const a=(alertsState||[]).find(x=>x.id===id);
                   const sc={critical:T.red,high:T.orange,medium:T.yellow}[a?.severity]||T.muted;
                   return <span key={id} style={{ fontSize:10, color:sc, background:`${sc}15`, border:`1px solid ${sc}30`, borderRadius:6, padding:"1px 8px", fontWeight:600 }}>{id}</span>;
                 })}
@@ -4381,7 +4381,7 @@ function QAHealthTab() {
 
 
 // ─── Notification Center ──────────────────────────────────────────────────────
-function NotificationCenter({ onClose }) {
+function NotificationCenter({ onClose, alertsState }) {
   const T = useTheme();
   const [tab, setTab]         = useState("channels");  // channels | templates | history
   const [channels, setChannels] = useState(NOTIF_CHANNELS.map(c=>({...c})));
@@ -4389,7 +4389,8 @@ function NotificationCenter({ onClose }) {
   const [templates, setTemplates] = useState({...NOTIF_TEMPLATES});
   const [testSent, setTestSent]   = useState(null);
   const [slackWebhook, setSlackWebhook] = useState("");
-  const [slackTestAlert, setSlackTestAlert] = useState(ALERTS_RAW[0]?.id || "");
+  const [slackTestAlert, setSlackTestAlert] = useState("");
+  const alertsList = alertsState?.length > 0 ? alertsState : ALERTS_RAW;
   const [slackResult, setSlackResult] = useState(null); // null | {ok,msg}
   const [slackSending, setSlackSending] = useState(false);
 
@@ -4411,7 +4412,7 @@ function NotificationCenter({ onClose }) {
       setSlackResult({ ok:false, msg:"Invalid webhook URL. Must start with https://hooks.slack.com/" });
       return;
     }
-    const alert = ALERTS_RAW.find(a=>a.id===slackTestAlert) || ALERTS_RAW[0];
+    const alert = alertsList.find(a=>a.id===slackTestAlert) || alertsList[0];
     setSlackSending(true);
     setSlackResult(null);
     const sevEmoji = {critical:"🔴",high:"🟠",medium:"🟡",low:"🔵"}[alert.severity]||"⚪";
@@ -4516,7 +4517,7 @@ function NotificationCenter({ onClose }) {
                 <div style={{ marginBottom:12 }}>
                   <div style={{ fontSize:10, color:T.muted, fontWeight:700, marginBottom:5, textTransform:"uppercase", letterSpacing:"0.04em" }}>Test Alert</div>
                   <select value={slackTestAlert} onChange={e=>setSlackTestAlert(e.target.value)} style={{ width:"100%", background:T.isDark?"#0A0C10":T.bg, border:`1px solid ${T.border2}`, borderRadius:7, padding:"8px 12px", color:T.text, fontSize:12, outline:"none" }}>
-                    {ALERTS_RAW.map(a=>(
+                    {alertsList.map(a=>(
                       <option key={a.id} value={a.id}>[{a.severity.toUpperCase()}] {a.title}</option>
                     ))}
                   </select>
@@ -4524,7 +4525,7 @@ function NotificationCenter({ onClose }) {
 
                 {/* Preview */}
                 {slackTestAlert && (() => {
-                  const a = ALERTS_RAW.find(x=>x.id===slackTestAlert);
+                  const a = alertsList.find(x=>x.id===slackTestAlert);
                   if (!a) return null;
                   const sevEmoji = {critical:"🔴",high:"🟠",medium:"🟡",low:"🔵"}[a.severity]||"⚪";
                   return (
@@ -4660,7 +4661,7 @@ function NotificationCenter({ onClose }) {
 
 
 // ─── Command Palette (Cmd+K) ──────────────────────────────────────────────────
-function CommandPalette({ onClose, onNavigate }) {
+function CommandPalette({ onClose, onNavigate, alertsState }) {
   const T = useTheme();
   const [q, setQ]       = useState("");
   const [sel, setSel]   = useState(0);
@@ -4681,7 +4682,7 @@ function CommandPalette({ onClose, onNavigate }) {
     { type:"nav",   icon:"📋", label:"Audit Trail",          hint:"Tab",  action:"tab:history"    },
     { type:"nav",   icon:"🗄️", label:"Data Sources",         hint:"Tab",  action:"tab:sources"    },
     // Alerts
-    ...ALERTS_RAW.map(a=>({ type:"alert", icon:{critical:"🔴",high:"🟠",medium:"🟡",low:"🔵"}[a.severity]||"⚪", label:a.title, hint:a.severity, action:"drill:alert:"+a.id, data:a })),
+    ...(alertsState||[]).map(a=>({ type:"alert", icon:{critical:"🔴",high:"🟠",medium:"🟡",low:"🔵"}[a.severity]||"⚪", label:a.title, hint:a.severity, action:"drill:alert:"+a.id, data:a })),
     // Agents
     ...AGENTS.map(a=>({ type:"agent", icon:a.icon, label:a.name, hint:a.status, action:"drill:agent:"+a.id, data:a })),
     // Rules
@@ -4708,7 +4709,7 @@ function CommandPalette({ onClose, onNavigate }) {
     if(item.action.startsWith("tab:")) {
       onNavigate(item.action.replace("tab:",""));
     } else if(item.action.startsWith("drill:alert:")) {
-      const a = ALERTS_RAW.find(x=>x.id===item.action.replace("drill:alert:",""));
+      const a = (alertsState||[]).find(x=>x.id===item.action.replace("drill:alert:",""));
       if(a && window._drillFn) window._drillFn("alert",a);
     } else if(item.action.startsWith("drill:agent:")) {
       const a = AGENTS.find(x=>x.id===item.action.replace("drill:agent:",""));
@@ -5203,10 +5204,10 @@ function DSRow({ ds, onDrill }) {
 
 
 // ─── Datasource Drill Panel (extracted to avoid conditional hooks) ────────────
-function DatasourceDrillPanel({ ds, onClose, onNavigate, tab, setTab }) {
+function DatasourceDrillPanel({ ds, onClose, onNavigate, tab, setTab, alertsState }) {
   const T = useTheme();
   const sc = {healthy:T.green,degraded:T.yellow,offline:T.red}[ds.status]||T.muted;
-  const relatedAlerts = ALERTS_RAW.filter(a=>a.source===ds.name);
+  const relatedAlerts = (alertsState||[]).filter(a=>a.source===ds.name);
   const relatedRules  = INIT_RULES.filter(r=>r.source===ds.id||r.source===ds.name);
 
   const [host,      setHost]      = useState(ds.host        || "");
@@ -5228,7 +5229,7 @@ function DatasourceDrillPanel({ ds, onClose, onNavigate, tab, setTab }) {
 
 // ─── Universal Drill Modal ────────────────────────────────────────────────────
 // drillTarget: { type: "alert"|"rule"|"agent"|"datasource"|"history"|"kpi", data: {...} }
-function DrillModal({ target, onClose, onNavigate }) {
+function DrillModal({ target, onClose, onNavigate, alertsState }) {
   const T = useTheme();
   const [tab, setTab] = useState("overview");
   const [running, setRunning] = useState(false);
@@ -5236,6 +5237,26 @@ function DrillModal({ target, onClose, onNavigate }) {
   const [aiLoading, setAiLoading] = useState(false);
   const [aiText, setAiText] = useState("");
   const [resolved, setResolved] = useState(false);
+  const [liveData,    setLiveData]    = useState(null);
+  const [liveLoading, setLiveLoading] = useState(false);
+  const [liveError,   setLiveError]   = useState(null);
+
+  // Fetch live preview when "data" tab is opened
+  React.useEffect(() => {
+    if (tab !== "data") return;
+    const tbl = target?.data?.table;
+    if (!tbl) return;
+    // parse "schema.table" or just "table"
+    const parts = tbl.split(".");
+    const schema = parts.length > 1 ? parts[0] : "mws";
+    const table  = parts.length > 1 ? parts[1] : parts[0];
+    setLiveData(null); setLiveError(null); setLiveLoading(true);
+    fetch(`${API_BASE}/api/preview?schema=${encodeURIComponent(schema)}&table=${encodeURIComponent(table)}&limit=10`)
+      .then(r => r.json())
+      .then(d => { if (d.error) setLiveError(d.error); else setLiveData(d.rows || d); })
+      .catch(e => setLiveError(e.message))
+      .finally(() => setLiveLoading(false));
+  }, [tab, target?.data?.table]);
 
   // All hooks must be declared before any conditional returns
   const type = target?.type;
@@ -5243,37 +5264,9 @@ function DrillModal({ target, onClose, onNavigate }) {
 
   if (!target) return null;
 
-  const SAMPLE_TABLE_DATA = {
-    "tbl_amzn_campaign_report": [
-      { report_date:"2026-03-10", profile_id:"48291", campaign_id:"C-001", impressions:12840, clicks:342, spend:128.40 },
-      { report_date:"2026-03-10", profile_id:"48291", campaign_id:"C-002", impressions:9210,  clicks:187, spend:74.20 },
-      { report_date:"2026-03-10", profile_id:null,    campaign_id:"C-003", impressions:7650,  clicks:156, spend:62.10 },
-      { report_date:"2026-03-09", profile_id:"48293", campaign_id:"C-001", impressions:11200, clicks:298, spend:112.00 },
-      { report_date:"2026-03-09", profile_id:"48102", campaign_id:"C-004", impressions:8900,  clicks:201, spend:89.00 },
-    ],
-    "report": [
-      { id:"RPT-001", profile_id:"48291", report_date:"2026-03-10", status:"processed",    download_date:"2026-03-10", copy_status:"REPLICATED" },
-      { id:"RPT-002", profile_id:"48102", report_date:"2026-03-10", status:"failed",       download_date:null,         copy_status:"NOT_REPLICATED" },
-      { id:"RPT-003", profile_id:"48293", report_date:"2026-03-10", status:"pending",      download_date:null,         copy_status:"PENDING" },
-      { id:"RPT-004", profile_id:"48304", report_date:"2026-03-10", status:"processed",    download_date:"2026-03-10", copy_status:"REPLICATED" },
-      { id:"RPT-005", profile_id:"48512", report_date:"2026-03-09", status:"stuck",        download_date:"2026-03-09", copy_status:"STALE" },
-    ],
-    "tbl_amzn_keyword_report": [
-      { report_date:"2026-03-09", profile_id:"48291", keyword_id:"KW-991", keyword:"running shoes", impressions:4200, clicks:89 },
-      { report_date:"2026-03-09", profile_id:"48291", keyword_id:"KW-991", keyword:"running shoes", impressions:4200, clicks:89 },
-      { report_date:"2026-03-09", profile_id:"48102", keyword_id:"KW-114", keyword:"trail boots",   impressions:1800, clicks:42 },
-      { report_date:"2026-03-09", profile_id:"48102", keyword_id:"KW-114", keyword:"trail boots",   impressions:1800, clicks:42 },
-      { report_date:"2026-03-10", profile_id:"48293", keyword_id:"KW-220", keyword:"yoga mat",      impressions:3100, clicks:71 },
-    ],
-    "account_performance": [
-      { date:"2026-03-10", account_id:"ACC-001", total_spend:4820.10, roas:3.42, impressions:284000, clicks:8420 },
-      { date:"2026-03-10", account_id:"ACC-002", total_spend:1240.80, roas:2.91, impressions:92000,  clicks:2810 },
-      { date:"2026-03-09", account_id:"ACC-001", total_spend:7210.40, roas:3.81, impressions:410000, clicks:12100 },
-      { date:"2026-03-09", account_id:"ACC-002", total_spend:2180.60, roas:3.12, impressions:148000, clicks:4320 },
-    ],
-  };
 
-  const tableData = data.table && SAMPLE_TABLE_DATA[data.table] ? SAMPLE_TABLE_DATA[data.table] : null;
+
+  const tableData = liveData;
   const statusColor = { open:T.red, triaged:T.yellow, resolved:T.green, pass:T.green, fail:T.red, pending:T.yellow, running:T.cyan, idle:T.muted, paused:T.orange, healthy:T.green, degraded:T.yellow, offline:T.red }[data.status||data.result||data.lastResult||""] || T.muted;
 
   const runRule = async () => {
@@ -5382,7 +5375,7 @@ function DrillModal({ target, onClose, onNavigate }) {
                   </div>
                   <Btn color={T.accent} small onClick={()=>onNavigate&&onNavigate("sources")}><TableProperties size={11}/>Browse Full Schema</Btn>
                 </div>
-                {tableData ? (
+                {tableData && tableData.length > 0 ? (
                   <div style={{ background:T.card, border:`1px solid ${T.border}`, borderRadius:8, overflow:"auto" }}>
                     <div style={{ display:"grid", gridTemplateColumns:`repeat(${Object.keys(tableData[0]).length},minmax(120px,1fr))`, background:T.isDark?"#0A0C10":T.border, padding:"7px 14px", gap:12, minWidth:"max-content" }}>
                       {Object.keys(tableData[0]).map(k=><div key={k} style={{fontSize:9,color:T.dim,fontWeight:700,textTransform:"uppercase",letterSpacing:"0.06em"}}>{k}</div>)}
@@ -5404,7 +5397,13 @@ function DrillModal({ target, onClose, onNavigate }) {
                       Showing 5 sample rows · <span style={{color:T.red}}>Red = NULL</span> · <span style={{color:T.orange}}>Orange = Duplicate</span>
                     </div>
                   </div>
-                ) : <div style={{color:T.muted,fontSize:12,padding:"20px 0",textAlign:"center"}}>No sample data available for this table.</div>}
+                ) : liveLoading ? (
+                  <div style={{color:T.muted,fontSize:12,padding:"24px 0",textAlign:"center"}}>⏳ Loading live data…</div>
+                ) : liveError ? (
+                  <div style={{color:T.red,fontSize:12,padding:"20px 0",textAlign:"center"}}>⚠ {liveError}</div>
+                ) : (
+                  <div style={{color:T.muted,fontSize:12,padding:"20px 0",textAlign:"center"}}>No rows returned for this table.</div>
+                )}
               </div>
             )}
             {tab==="ai" && (
@@ -5527,7 +5526,7 @@ function DrillModal({ target, onClose, onNavigate }) {
             )}
             {tab==="data" && (
               <div>
-                {tableData ? (
+                {tableData && tableData.length > 0 ? (
                   <div style={{ background:T.card, border:`1px solid ${T.border}`, borderRadius:8, overflow:"auto" }}>
                     <div style={{ display:"grid", gridTemplateColumns:`repeat(${Object.keys(tableData[0]).length},minmax(110px,1fr))`, background:T.isDark?"#0A0C10":T.border, padding:"7px 14px", gap:10, minWidth:"max-content" }}>
                       {Object.keys(tableData[0]).map(k=><div key={k} style={{fontSize:9,color:T.dim,fontWeight:700,textTransform:"uppercase"}}>{k}</div>)}
@@ -5613,7 +5612,7 @@ function DrillModal({ target, onClose, onNavigate }) {
 
   // ── DATASOURCE detail ─────────────────────────────────────────────────────
   if (type === "datasource") {
-    return <DatasourceDrillPanel ds={data} onClose={onClose} onNavigate={onNavigate} tab={tab} setTab={setTab} />;
+    return <DatasourceDrillPanel ds={data} onClose={onClose} onNavigate={onNavigate} tab={tab} setTab={setTab} alertsState={alertsState} />;
   }
 
   return null;
@@ -5652,7 +5651,7 @@ function DBExplorerTab({ kpis, kpisLoading, alertsState, setActiveTab: setActive
         if (data.error) { setError(data.error); }
         else {
           setSchemas(data);
-          if (data.length > 0) setExpandedSchemas({ [data[0].schema]: true });
+          if (data.length > 0) setExpandedSchemas({ [data[0].table_schema || data[0].schema]: true });
         }
         setLoading(false);
       })
@@ -5693,8 +5692,11 @@ function DBExplorerTab({ kpis, kpisLoading, alertsState, setActiveTab: setActive
   };
 
   const grouped = schemas.reduce((acc, t) => {
-    if (!acc[t.schema]) acc[t.schema] = [];
-    acc[t.schema].push(t.name);
+    const s = t.schema || t.table_schema;
+    const n = t.name  || t.table_name;
+    if (!s || !n) return acc;
+    if (!acc[s]) acc[s] = [];
+    acc[s].push(n);
     return acc;
   }, {});
 
@@ -5909,8 +5911,7 @@ function DetectTriageRootCause({ alertsState, sevFilter, setSevFilter, search, s
   const T = useTheme();
   const [sub, setSub] = useState("triage");
 
-  const liveAlerts = (alertsState?.length > 0 ? alertsState : ALERTS_RAW)
-    .filter(a => dataMode === "prod" ? a.id?.startsWith("AGT-") : !a.id?.startsWith("AGT-"));
+  const liveAlerts = (alertsState || []).filter(a => dataMode === "prod" ? a.id?.startsWith("AGT-") : !a.id?.startsWith("AGT-"));
 
   const filtered = liveAlerts.filter(a =>
     (sevFilter === "all" || a.severity === sevFilter) &&
@@ -6456,7 +6457,7 @@ const agents = [
   { id:"AGT-SKU",  table:"mws.sales_and_traffic_by_sku", label:"Sales by SKU Agent",    icon:"🏷️", desc:"Cross-checks SKU sales vs ASIN sales, detects orphaned SKUs, revenue outliers." },
 ];
 
-function AIAgentsTab({ agentStates, setAgentStates, setAlertsState, accountId, addAuditEvent }) {
+function AIAgentsTab({ agentStates, setAgentStates, setAlertsState, accountId, addAuditEvent, alertsState }) {
   const C = React.useContext(ThemeCtx);
   const [running,        setRunning]        = React.useState({});
   const [expanded,       setExpanded]       = React.useState(null);
@@ -6492,15 +6493,19 @@ function AIAgentsTab({ agentStates, setAgentStates, setAlertsState, accountId, a
       .then(r => r.json())
       .then(data => {
         const tables = Array.isArray(data) ? data : [];
-        const built = tables.map((t, i) => ({
-          id:    `AGT-${t.schema.toUpperCase().slice(0,3)}-${i}`,
-          table: `${t.schema}.${t.name}`,
-          schema: t.schema,
-          name:   t.name,
-          label:  tableLabel(t.name),
-          icon:   tableIcon(t.name),
-          desc:   `AI agent that scans ${t.schema}.${t.name} and infers anomalies from column values and data patterns.`,
-        }));
+        const built = tables.map((t, i) => {
+          const sc = t.schema || t.table_schema || "mws";
+          const nm = t.name   || t.table_name   || `table_${i}`;
+          return {
+            id:    `AGT-${sc.toUpperCase().slice(0,3)}-${i}`,
+            table: `${sc}.${nm}`,
+            schema: sc,
+            name:   nm,
+            label:  tableLabel(nm),
+            icon:   tableIcon(nm),
+            desc:   `AI agent that scans ${sc}.${nm} and infers anomalies from column values and data patterns.`,
+          };
+        });
         setAgents(built);
         // Seed agentStates for any new agents
         setAgentStates(prev => {
@@ -6792,7 +6797,7 @@ export default function AIOpsMonitor() {
 
   const [aiPanel, setAiPanel]   = useState(null);
   const [drill, setDrill]     = useState(null); // { type, data }
-  const [alertsState, setAlertsState] = useState(ALERTS_RAW.map(a=>({...a})));
+  const [alertsState, setAlertsState] = useState([]); // live: populated by /api/alerts/detect; demo: ALERTS_RAW
   const [alertsLoading, setAlertsLoading] = useState(false);
   const [lastScan, setLastScan] = useState(null);
 
@@ -6962,11 +6967,10 @@ export default function AIOpsMonitor() {
   }, []);
 
   const alerts = (alertsState||[]).filter(a => {
-    // In demo mode only show demo alerts (A0xx), in prod only show real (AGT-xx) + keep resolved
+    // Demo mode: show ALERTS_RAW (A0xx); Live mode: show all alertsState
     if (dataMode === "demo" && a.id?.startsWith("AGT-")) return false;
-    if (dataMode === "prod" && !a.id?.startsWith("AGT-") && a.status !== "resolved") return false;
     if (sevFilter !== "all" && a.severity !== sevFilter) return false;
-    if (search && !a.title.toLowerCase().includes(search.toLowerCase()) && !a.table.toLowerCase().includes(search.toLowerCase())) return false;
+    if (search && !a.title?.toLowerCase().includes(search.toLowerCase()) && !a.table?.toLowerCase().includes(search.toLowerCase())) return false;
     return true;
   });
 
@@ -7042,7 +7046,7 @@ export default function AIOpsMonitor() {
           {/* Data Mode Toggle */}
           <div style={{ display:"flex", alignItems:"center", gap:1, background:T.border, borderRadius:8, padding:2 }}>
             <button
-              onClick={()=>setDataMode("demo")}
+              onClick={()=>{ setDataMode("demo"); setAlertsState(ALERTS_RAW.map(a=>({...a}))); }}
               style={{ padding:"4px 10px", borderRadius:6, border:"none", cursor:"pointer", fontSize:10, fontWeight:700, letterSpacing:"0.03em",
                 background: dataMode==="demo" ? T.card : "transparent",
                 color: dataMode==="demo" ? T.muted : T.dim,
@@ -7050,7 +7054,7 @@ export default function AIOpsMonitor() {
                 transition:"all 0.15s" }}
             >DEMO</button>
             <button
-              onClick={()=>setDataMode("prod")}
+              onClick={()=>{ setDataMode("prod"); setAlertsState([]); }}
               style={{ padding:"4px 10px", borderRadius:6, border:"none", cursor:"pointer", fontSize:10, fontWeight:700, letterSpacing:"0.03em",
                 background: dataMode==="prod" ? T.green : "transparent",
                 color: dataMode==="prod" ? "white" : T.dim,
@@ -7195,7 +7199,7 @@ export default function AIOpsMonitor() {
                 addAuditEvent={addAuditEvent}
               />
               <div style={{ marginTop:20 }}>
-                <RootCauseTab />
+                <RootCauseTab alertsState={alertsState} />
               </div>
             </>
           )}
@@ -7294,6 +7298,7 @@ export default function AIOpsMonitor() {
                 setAgentStates={setAgentStates}
                 setAlertsState={setAlertsState}
                 accountId={accountId}
+                alertsState={alertsState}
                 addAuditEvent={addAuditEvent}
               />
             </div>
@@ -7329,11 +7334,10 @@ export default function AIOpsMonitor() {
       {/* AI Chat Side Panel */}
       {aiPanel && <AIChatPanel alert={aiPanel} onClose={()=>setAiPanel(null)} />}
       {/* Drill-Down Modal */}
-      {drill && <DrillModal target={drill} onClose={()=>setDrill(null)} onNavigate={handleNavigate} />}
-      {notifOpen  && <NotificationCenter onClose={()=>setNotifOpen(false)} />}
-      {paletteOpen && <CommandPalette onClose={()=>setPaletteOpen(false)} onNavigate={(tab)=>{ setActiveTab(tab); setPaletteOpen(false); }} />}
+      {drill && <DrillModal target={drill} onClose={()=>setDrill(null)} onNavigate={handleNavigate} alertsState={alertsState} />}
+      {notifOpen  && <NotificationCenter onClose={()=>setNotifOpen(false)} alertsState={alertsState} />}
+      {paletteOpen && <CommandPalette onClose={()=>setPaletteOpen(false)} onNavigate={(tab)=>{ setActiveTab(tab); setPaletteOpen(false); }} alertsState={alertsState} />}
     </div>
     </ThemeCtx.Provider>
   );
 }
-

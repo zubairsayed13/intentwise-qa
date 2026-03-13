@@ -1646,54 +1646,96 @@ function SchedModal({ rule, T, CRON_PRESETS, setRules, onClose }) {
   );
 }
 
-function ValidationRulesTab({ liveRules, rulesLoading }) {
+function ValidationRulesTab({ liveRules, rulesLoading, addAuditEvent }) {
   const [rules, setRules]           = useState(INIT_RULES);
+  const [view,  setView]            = useState("list"); // list | builder | nlp | scan
   useEffect(() => {
     if (liveRules && liveRules.length > 0) setRules(liveRules);
   }, [liveRules]);
 
-  // Auto-generate rules from mws schema on mount
-  useEffect(() => {
-    const autoGenerate = async () => {
+  // ─── Shared rule-generation function ────────────────────────────────────────
+  const generateRules = async (forceFresh = false) => {
+    const CACHE_KEY = "iw_qa_rules_cache";
+    const CACHE_TTL = 24 * 60 * 60 * 1000; // 24h
+
+    // 1. Fetch real mws tables
+    const tablesRes  = await fetch(`${API_BASE}/api/tables`);
+    const tablesData = await tablesRes.json();
+    const mwsTables  = (tablesData || []).filter(t => t.schema === "mws").map(t => t.name);
+    if (!mwsTables.length) return;
+
+    const tableHash = mwsTables.slice().sort().join(",");
+
+    // 2. Check cache (skip on forceFresh)
+    if (!forceFresh) {
       try {
-        // 1. Fetch real mws tables
-        const tablesRes = await fetch(`${API_BASE}/api/tables`);
-        const tablesData = await tablesRes.json();
-        const mwsTables = (tablesData || []).filter(t => t.schema === "mws").map(t => t.name);
-        if (!mwsTables.length) return;
-
-        // 2. Ask AI to generate rules
-        const res = await fetch(`${API_BASE}/api/ai/chat`, {
-          method:"POST", headers:{"Content-Type":"application/json"},
-          body: JSON.stringify({
-            max_tokens: 2000,
-            system: `You are a data quality AI for Intentwise. Redshift schema: mws. Tables: ${mwsTables.join(", ")}. Key columns — orders: amazon_order_id, asin, order_status, item_price, quantity, purchase_date, account_id. inventory: asin, available, total_units, days_of_supply, alert, account_id. sales_and_traffic_by_date: sale_date, ordered_product_sales_amt, units_ordered, buy_box_percentage, refund_rate, account_id. sales_and_traffic_by_asin: child_asin, units_ordered, traffic_by_asin_buy_box_prcntg, account_id. inventory_restock: asin, quantity, account_id. sales_and_traffic_by_sku: sku, units_ordered, ordered_product_sales_amt, account_id. Generate 8-10 high-value data quality rules. Respond ONLY with a valid JSON array, no markdown, no explanation: [{"id":"MWS-A01","name":"short rule name","type":"unique|not_null|range|freshness|row_count","source":"redshift-staging","table":"mws.TABLE","column":"col","severity":"critical|high|medium|low","status":"active","lastRun":"—","lastResult":"pending","aiGen":true,"schedule":"0 * * * *","sql":"exact runnable SQL that returns 0 rows if passing or failing rows if not"}]`,
-            messages:[{ role:"user", content:"Generate data quality rules for all mws tables." }]
-          })
-        });
-        const d = await res.json();
-        const raw = d.content?.find(b => b.type === "text")?.text || "[]";
-        const clean = raw.replace(/```json|```/g, "").trim();
-        const generated = JSON.parse(clean);
-        if (!Array.isArray(generated) || !generated.length) return;
-
-        // 3. Merge — skip any rule whose table+column+type already exists
-        setRules(prev => {
-          const existing = new Set(prev.map(r => `${r.table}|${r.column}|${r.type}`));
-          const novel = generated
-            .filter(r => r.sql && !existing.has(`${r.table}|${r.column}|${r.type}`))
-            .map((r, i) => ({
-              ...r,
-              id: `MWS-A${String(i+1).padStart(2,"0")}`,
-              lastRun: "—", lastResult: "pending", aiGen: true,
-            }));
-          return novel.length ? [...prev, ...novel] : prev;
-        });
+        const cached = JSON.parse(localStorage.getItem(CACHE_KEY) || "null");
+        if (
+          cached &&
+          cached.tableHash === tableHash &&
+          cached.generatedAt &&
+          Date.now() - cached.generatedAt < CACHE_TTL &&
+          Array.isArray(cached.rules) && cached.rules.length > 0
+        ) {
+          // Merge cached AI rules — skip any whose table+column+type already exists
+          setRules(prev => {
+            const existing = new Set(prev.map(r => `${r.table}|${r.column}|${r.type}`));
+            const novel = cached.rules.filter(r => !existing.has(`${r.table}|${r.column}|${r.type}`));
+            return novel.length ? [...prev, ...novel] : prev;
+          });
+          const ageMin = Math.round((Date.now() - cached.generatedAt) / 60000);
+          const ageStr = ageMin < 60 ? `${ageMin}m ago` : `${Math.round(ageMin/60)}h ago`;
+          setCacheStatus({ generatedAt: cached.generatedAt, fromCache: true, ageStr });
+          return;
+        }
       } catch(_) {}
-    };
-    autoGenerate();
-  }, []); // run once on mount
-  const [view, setView]             = useState("list");   // list | builder | nlp | scan
+    }
+
+    // 3. Call AI to generate fresh rules
+    setCacheStatus(null);
+    const res = await fetch(`${API_BASE}/api/ai/chat`, {
+      method:"POST", headers:{"Content-Type":"application/json"},
+      body: JSON.stringify({
+        max_tokens: 2000,
+        system: `You are a data quality AI for Intentwise. Redshift schema: mws. Tables: ${mwsTables.join(", ")}. Key columns — orders: amazon_order_id, asin, order_status, item_price, quantity, purchase_date, account_id. inventory: asin, available, total_units, days_of_supply, alert, account_id. sales_and_traffic_by_date: sale_date, ordered_product_sales_amt, units_ordered, buy_box_percentage, refund_rate, account_id. sales_and_traffic_by_asin: child_asin, units_ordered, traffic_by_asin_buy_box_prcntg, account_id. inventory_restock: asin, quantity, account_id. sales_and_traffic_by_sku: sku, units_ordered, ordered_product_sales_amt, account_id. Generate 8-10 high-value data quality rules. Respond ONLY with a valid JSON array, no markdown, no explanation: [{"id":"MWS-A01","name":"short rule name","type":"unique|not_null|range|freshness|row_count","source":"redshift-staging","table":"mws.TABLE","column":"col","severity":"critical|high|medium|low","status":"active","lastRun":"—","lastResult":"pending","aiGen":true,"schedule":"0 * * * *","sql":"exact runnable SQL that returns failing rows if check fails"}]`,
+        messages:[{ role:"user", content:"Generate data quality rules for all mws tables." }]
+      })
+    });
+    const d       = await res.json();
+    const raw     = d.content?.find(b => b.type === "text")?.text || "[]";
+    const clean   = raw.replace(/```json|```/g, "").trim();
+    const generated = JSON.parse(clean);
+    if (!Array.isArray(generated) || !generated.length) return;
+
+    const stamped = generated
+      .filter(r => r.sql)
+      .map((r, i) => ({ ...r, id:`MWS-A${String(i+1).padStart(2,"0")}`, lastRun:"—", lastResult:"pending", aiGen:true }));
+
+    // 4. Merge into rules state
+    setRules(prev => {
+      const existing = new Set(prev.map(r => `${r.table}|${r.column}|${r.type}`));
+      const novel = stamped.filter(r => !existing.has(`${r.table}|${r.column}|${r.type}`));
+      return novel.length ? [...prev, ...novel] : prev;
+    });
+
+    // 5. Write to localStorage cache
+    try {
+      localStorage.setItem(CACHE_KEY, JSON.stringify({
+        rules: stamped,
+        tableHash,
+        generatedAt: Date.now(),
+      }));
+    } catch(_) {}
+
+    setCacheStatus({ generatedAt: Date.now(), fromCache: false, ageStr: "just now" });
+  };
+
+  // Auto-generate rules on mount — uses cache if valid
+  useEffect(() => {
+    generateRules(false).catch(() => {});
+  }, []);
+
+  // builder | nlp | scan
   const [nlpInput, setNlpInput]     = useState("");
   const [nlpLoading, setNlpLoading] = useState(false);
   const [nlpResult, setNlpResult]   = useState(null);
@@ -1788,7 +1830,8 @@ Respond ONLY with valid JSON (no markdown): {"name":"string","type":"string","so
 
   const [runningRules,  setRunningRules]  = useState({});
   const [expandedRule,  setExpandedRule]  = useState(null);
-  const [scheduleEdit,  setScheduleEdit]  = useState(null); // rule id being edited
+  const [scheduleEdit,  setScheduleEdit]  = useState(null);
+  const [cacheStatus,   setCacheStatus]   = useState(null); // { generatedAt, fromCache } // rule id being edited
   const CRON_PRESETS = [
     { label:"Every 15 min",  value:"*/15 * * * *" },
     { label:"Every hour",    value:"0 * * * *" },
@@ -1812,8 +1855,28 @@ Respond ONLY with valid JSON (no markdown): {"name":"string","type":"string","so
         ? {...r, lastResult: passed?"pass":"fail", lastRun: new Date().toLocaleTimeString()}
         : r
       ));
+      if (addAuditEvent) addAuditEvent({
+        type:     "rule",
+        name:     rule.name,
+        table:    rule.table || "—",
+        source:   rule.source || "redshift-staging",
+        result:   passed ? "pass" : "fail",
+        detail:   passed
+          ? `Rule passed. No violations found.`
+          : `Rule failed. ${count} violation(s) found.`,
+        duration: "—",
+      });
     } catch(e) {
       setRunningRules(p => ({...p, [rule.id]:"error"}));
+      if (addAuditEvent) addAuditEvent({
+        type:   "rule",
+        name:   rule.name,
+        table:  rule.table || "—",
+        source: rule.source || "redshift-staging",
+        result: "fail",
+        detail: `Rule error: ${e.message}`,
+        duration: "—",
+      });
     }
   };
 
@@ -1850,32 +1913,22 @@ Respond ONLY with valid JSON (no markdown): {"name":"string","type":"string","so
           <button
             onClick={async () => {
               try {
-                const tablesRes = await fetch(`${API_BASE}/api/tables`);
-                const tablesData = await tablesRes.json();
-                const mwsTables = (tablesData||[]).filter(t=>t.schema==="mws").map(t=>t.name);
-                const res = await fetch(`${API_BASE}/api/ai/chat`, {
-                  method:"POST", headers:{"Content-Type":"application/json"},
-                  body: JSON.stringify({ max_tokens:2000,
-                    system:`You are a data quality AI for Intentwise. Redshift schema: mws. Tables: ${mwsTables.join(", ")}. Key columns — orders: amazon_order_id, asin, order_status, item_price, quantity, purchase_date, account_id. inventory: asin, available, total_units, days_of_supply, alert, account_id. sales_and_traffic_by_date: sale_date, ordered_product_sales_amt, units_ordered, buy_box_percentage, refund_rate, account_id. sales_and_traffic_by_asin: child_asin, units_ordered, traffic_by_asin_buy_box_prcntg, account_id. inventory_restock: asin, quantity, account_id. sales_and_traffic_by_sku: sku, units_ordered, account_id. Generate 8-10 high-value data quality rules. Respond ONLY with a valid JSON array, no markdown: [{"id":"MWS-A01","name":"short rule name","type":"unique|not_null|range|freshness|row_count","source":"redshift-staging","table":"mws.TABLE","column":"col","severity":"critical|high|medium|low","status":"active","lastRun":"—","lastResult":"pending","aiGen":true,"schedule":"0 * * * *","sql":"exact runnable SQL"}]`,
-                    messages:[{ role:"user", content:"Generate fresh data quality rules for all mws tables." }]
-                  })
-                });
-                const d = await res.json();
-                const raw = d.content?.find(b=>b.type==="text")?.text||"[]";
-                const generated = JSON.parse(raw.replace(/```json|```/g,"").trim());
-                if (!Array.isArray(generated)||!generated.length) return;
-                setRules(prev => {
-                  const existing = new Set(prev.map(r=>`${r.table}|${r.column}|${r.type}`));
-                  const novel = generated.filter(r=>r.sql&&!existing.has(`${r.table}|${r.column}|${r.type}`))
-                    .map((r,i)=>({...r, id:`MWS-A${String(i+1).padStart(2,"0")}`, lastRun:"—", lastResult:"pending", aiGen:true}));
-                  return novel.length?[...prev,...novel]:prev;
-                });
+                // Remove AI rules first so regeneration replaces rather than appends
+                setRules(prev => prev.filter(r => !r.aiGen));
+                await generateRules(true);
               } catch(_) {}
             }}
             style={{ background:`${C.purple}12`, border:`1px solid ${C.purple}30`, borderRadius:7, padding:"6px 12px", cursor:"pointer", fontSize:11, color:C.purple, fontWeight:700, display:"flex", alignItems:"center", gap:5 }}
           >
             <Sparkles size={11} color={C.purple}/> Regenerate Rules
           </button>
+          {cacheStatus && (
+            <span style={{ fontSize:10, color: cacheStatus.fromCache ? C.muted : C.green, display:"flex", alignItems:"center", gap:4 }}>
+              {cacheStatus.fromCache
+                ? `💾 Cached · ${cacheStatus.ageStr}`
+                : `✨ Generated ${cacheStatus.ageStr}`}
+            </span>
+          )}
         </div>
         <div style={{ display:"flex", gap:6 }}>
           {["all","active","paused"].map(s=>(
@@ -2776,34 +2829,41 @@ function CommandCenterTab({ onNavigate, kpis, kpisLoading, trend, topAsins, acco
 }
 
 // ─── Run History Tab ──────────────────────────────────────────────────────────
-function RunHistoryTab() {
+function RunHistoryTab({ auditLog }) {
   const T = useTheme();
-  const [filter, setFilter] = useState("all");
-  const [search, setSearch] = useState("");
+  const [filter,   setFilter]   = useState("all");
+  const [search,   setSearch]   = useState("");
   const [expanded, setExpanded] = useState(null);
 
-  const rows = RUN_HISTORY.filter(r=>{
-    if(filter!=="all" && r.type!==filter) return false;
-    if(search && !r.name.toLowerCase().includes(search.toLowerCase()) && !r.table.toLowerCase().includes(search.toLowerCase())) return false;
+  const log = auditLog || [];
+
+  const rows = log.filter(r => {
+    if (filter !== "all" && r.type !== filter) return false;
+    if (search) {
+      const q = search.toLowerCase();
+      if (!r.name?.toLowerCase().includes(q) && !(r.table||"").toLowerCase().includes(q)) return false;
+    }
     return true;
   });
 
-  const typeColor={rule:T.purple,agent:T.green,workflow:T.accent,gate:T.yellow};
-  const typeIcon ={rule:"✓",agent:"🤖",workflow:"⚡",gate:"🔒"};
-  const resultColor={pass:T.green,fail:T.red,pending:T.yellow};
+  const typeColor = { rule:T.purple, agent:T.green, workflow:T.accent, gate:T.yellow, alert:T.orange };
+  const typeIcon  = { rule:"✓", agent:"🤖", workflow:"⚡", gate:"🔒", alert:"🚨" };
+  const resultColor = { pass:T.green, fail:T.red, pending:T.yellow, error:T.orange };
 
-  const stats=[
-    ["Total Runs", RUN_HISTORY.length, T.text],
-    ["Passed",     RUN_HISTORY.filter(r=>r.result==="pass").length,    T.green],
-    ["Failed",     RUN_HISTORY.filter(r=>r.result==="fail").length,    T.red],
-    ["Pending",    RUN_HISTORY.filter(r=>r.result==="pending").length, T.yellow],
+  const stats = [
+    ["Total Events", log.length,                                            T.text],
+    ["Passed",       log.filter(r => r.result==="pass").length,    T.green],
+    ["Failed",       log.filter(r => r.result==="fail").length,    T.red],
+    ["Pending",      log.filter(r => r.result==="pending").length, T.yellow],
   ];
 
-  return(
+  const COLS = "64px 96px minmax(200px,1fr) 130px 100px 70px 76px 24px";
+
+  return (
     <div>
-      {/* Stats row */}
+      {/* Stats */}
       <div style={{ display:"grid", gridTemplateColumns:"repeat(4,1fr)", gap:12, marginBottom:18 }}>
-        {stats.map(([l,v,c])=>(
+        {stats.map(([l,v,c]) => (
           <div key={l} style={{ background:T.card, border:`1px solid ${T.border}`, borderRadius:10, padding:"14px 18px" }}>
             <div style={{ fontSize:26, fontWeight:800, color:c }}>{v}</div>
             <div style={{ fontSize:11, color:T.muted, marginTop:4 }}>{l}</div>
@@ -2812,47 +2872,77 @@ function RunHistoryTab() {
       </div>
 
       {/* Filter bar */}
-      <div style={{ display:"flex", gap:8, marginBottom:14, alignItems:"center" }}>
+      <div style={{ display:"flex", gap:8, marginBottom:14, alignItems:"center", flexWrap:"wrap" }}>
         <div style={{ position:"relative", flex:1, maxWidth:260 }}>
           <Search size={12} color={T.dim} style={{ position:"absolute", left:10, top:"50%", transform:"translateY(-50%)" }}/>
-          <input value={search} onChange={e=>setSearch(e.target.value)} placeholder="Search runs…" style={{ width:"100%", background:T.bg, border:`1px solid ${T.border2}`, borderRadius:7, padding:"7px 10px 7px 28px", color:T.text, fontSize:11, outline:"none" }}/>
+          <input value={search} onChange={e=>setSearch(e.target.value)} placeholder="Search events…"
+            style={{ width:"100%", background:T.bg, border:`1px solid ${T.border2}`, borderRadius:7, padding:"7px 10px 7px 28px", color:T.text, fontSize:11, outline:"none" }}/>
         </div>
-        {["all","rule","agent","workflow","gate"].map(f=>(
-          <button key={f} onClick={()=>setFilter(f)} style={{ padding:"6px 12px", borderRadius:6, border:`1px solid ${filter===f?(typeColor[f]||T.accent)+"60":T.border2}`, background:filter===f?`${typeColor[f]||T.accent}15`:T.bg, color:filter===f?typeColor[f]||T.accentL:T.muted, fontSize:10, fontWeight:700, textTransform:"uppercase", cursor:"pointer" }}>
-            {f==="all"?"All":f}
+        {["all","rule","agent","alert","workflow","gate"].map(f => (
+          <button key={f} onClick={() => setFilter(f)}
+            style={{ padding:"6px 12px", borderRadius:6, cursor:"pointer", fontSize:10, fontWeight:700, textTransform:"uppercase",
+              border:`1px solid ${filter===f ? (typeColor[f]||T.accent)+"60" : T.border2}`,
+              background: filter===f ? `${typeColor[f]||T.accent}15` : T.bg,
+              color: filter===f ? typeColor[f]||T.accentL : T.muted }}>
+            {f==="all" ? "All" : f}
           </button>
         ))}
+        {log.length > 0 && (
+          <span style={{ fontSize:10, color:T.muted, marginLeft:"auto" }}>{rows.length} of {log.length} events</span>
+        )}
       </div>
 
       {/* Table */}
       <div style={{ background:T.card, border:`1px solid ${T.border}`, borderRadius:10, overflow:"hidden" }}>
-        <div style={{ display:"grid", gridTemplateColumns:"72px 90px minmax(200px,1fr) 130px 110px 80px 80px 28px", gap:12, padding:"10px 18px", background:T.isDark?"#0A0C10":T.border, borderBottom:`1px solid ${T.border}` }}>
-          {["ID","Type","Name / Table","Source","Timestamp","Duration","Result",""].map(h=>(
+        <div style={{ display:"grid", gridTemplateColumns:COLS, gap:12, padding:"10px 18px",
+          background:T.isDark?"#0A0C10":T.border, borderBottom:`1px solid ${T.border}` }}>
+          {["ID","Type","Name / Table","Source","Time","Dur","Result",""].map(h => (
             <div key={h} style={{ fontSize:10, color:T.dim, fontWeight:700, letterSpacing:"0.06em", textTransform:"uppercase", whiteSpace:"nowrap" }}>{h}</div>
           ))}
         </div>
-        {rows.map(r=>(
+
+        {rows.length === 0 && (
+          <div style={{ padding:"40px 18px", textAlign:"center", color:T.muted, fontSize:12 }}>
+            {log.length === 0
+              ? "No events yet — run an agent scan, quality rule, or triage an alert to see events here."
+              : "No events match the current filter."}
+          </div>
+        )}
+
+        {rows.map(r => (
           <div key={r.id}>
-            <div onClick={()=>setExpanded(expanded===r.id?null:r.id)} className="row-hover" style={{ display:"grid", gridTemplateColumns:"72px 90px minmax(200px,1fr) 130px 110px 80px 80px 28px", gap:12, padding:"11px 18px", borderBottom:`1px solid ${T.border}`, cursor:"pointer", background:expanded===r.id?`${T.accent}08`:"transparent" }}>
-              <div style={{ fontSize:10, color:T.muted, fontFamily:"'Consolas', 'Cascadia Code', 'Fira Code', 'Courier New', monospace" }}>{r.id}</div>
+            <div onClick={() => setExpanded(expanded===r.id ? null : r.id)} className="row-hover"
+              style={{ display:"grid", gridTemplateColumns:COLS, gap:12, padding:"11px 18px",
+                borderBottom:`1px solid ${T.border}`, cursor:"pointer",
+                background: expanded===r.id ? `${T.accent}08` : "transparent" }}>
+              <div style={{ fontSize:10, color:T.muted, fontFamily:"monospace", overflow:"hidden", textOverflow:"ellipsis" }}>{r.id}</div>
               <div style={{ display:"flex", alignItems:"center", gap:5 }}>
-                <span style={{ fontSize:11 }}>{typeIcon[r.type]}</span>
-                <span style={{ fontSize:9, color:typeColor[r.type]||T.muted, background:`${typeColor[r.type]||T.muted}15`, border:`1px solid ${typeColor[r.type]||T.muted}30`, borderRadius:4, padding:"1px 5px", fontWeight:700, textTransform:"uppercase" }}>{r.type}</span>
+                <span style={{ fontSize:11 }}>{typeIcon[r.type] || "•"}</span>
+                <span style={{ fontSize:9, color:typeColor[r.type]||T.muted,
+                  background:`${typeColor[r.type]||T.muted}15`,
+                  border:`1px solid ${typeColor[r.type]||T.muted}30`,
+                  borderRadius:4, padding:"1px 5px", fontWeight:700, textTransform:"uppercase" }}>
+                  {r.type}
+                </span>
               </div>
               <div>
                 <div style={{ fontSize:11, fontWeight:600, color:T.text, whiteSpace:"nowrap", overflow:"hidden", textOverflow:"ellipsis" }}>{r.name}</div>
-                {r.table!=="—"&&<div style={{ fontSize:9, color:T.muted, fontFamily:"'Consolas', 'Cascadia Code', 'Fira Code', 'Courier New', monospace" }}>{r.table}</div>}
+                {r.table && r.table!=="—" && (
+                  <div style={{ fontSize:9, color:T.muted, fontFamily:"monospace" }}>{r.table}</div>
+                )}
               </div>
-              <div style={{ fontSize:10, color:T.muted }}>{r.source}</div>
-              <div style={{ fontSize:10, color:T.muted }}>{r.ts}</div>
-              <div style={{ fontSize:10, color:T.muted, fontFamily:"'Consolas', 'Cascadia Code', 'Fira Code', 'Courier New', monospace" }}>{r.duration}</div>
-              <div style={{ fontSize:11, fontWeight:700, color:resultColor[r.result]||T.muted, textTransform:"uppercase" }}>{r.result}</div>
-              <div style={{ color:T.dim }}>{expanded===r.id?<ChevronUp size={13}/>:<ChevronDown size={13}/>}</div>
+              <div style={{ fontSize:10, color:T.muted, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{r.source || "—"}</div>
+              <div style={{ fontSize:10, color:T.muted }}>{r.ts || "—"}</div>
+              <div style={{ fontSize:10, color:T.muted, fontFamily:"monospace" }}>{r.duration || "—"}</div>
+              <div style={{ fontSize:11, fontWeight:700, color:resultColor[r.result]||T.muted, textTransform:"uppercase" }}>{r.result || "—"}</div>
+              <div style={{ color:T.dim }}>
+                {expanded===r.id ? <ChevronUp size={13}/> : <ChevronDown size={13}/>}
+              </div>
             </div>
-            {expanded===r.id&&(
-              <div style={{ padding:"12px 18px 16px 92px", background:T.isDark?`${T.border}30`:`${T.border}60`, borderBottom:`1px solid ${T.border}` }}>
-                <div style={{ fontSize:10, color:T.muted, marginBottom:6, fontWeight:700, letterSpacing:"0.05em", textTransform:"uppercase" }}>Execution Detail</div>
-                <div style={{ fontSize:12, color:T.text, lineHeight:1.8 }}>{r.detail}</div>
+            {expanded===r.id && (
+              <div style={{ padding:"12px 18px 16px 88px", background:T.isDark?`${T.border}30`:`${T.border}60`, borderBottom:`1px solid ${T.border}` }}>
+                <div style={{ fontSize:10, color:T.muted, marginBottom:6, fontWeight:700, letterSpacing:"0.05em", textTransform:"uppercase" }}>Event Detail</div>
+                <div style={{ fontSize:12, color:T.text, lineHeight:1.8 }}>{r.detail || "No detail available."}</div>
               </div>
             )}
           </div>
@@ -2861,6 +2951,7 @@ function RunHistoryTab() {
     </div>
   );
 }
+
 
 // ─── Rule Test Runner Tab ─────────────────────────────────────────────────────
 function RuleTestRunnerTab() {
@@ -3419,12 +3510,44 @@ function AlertRow({ alert, onAIClick, onDrill, onResolve, onAutoFix, onTriage, s
 
       {expanded && (
         <div style={{ padding:"0 16px 14px 40px", display:"flex", gap:12 }}>
-          <div style={{ flex:1, background:`${C.border}40`, borderRadius:8, padding:"10px 14px", borderLeft:`3px solid ${SEVERITY[alert.severity]}` }}>
-            <div style={{ fontSize:10, color:C.muted, marginBottom:6, fontWeight:700, letterSpacing:"0.08em" }}>AI SUGGESTION</div>
-            <div style={{ fontSize:12, color:C.text, lineHeight:1.7 }}>{alert.aiSuggestion}</div>
-            {alert.autoFixed && (
-              <div style={{ marginTop:8, fontSize:11, color:C.green, fontWeight:700, display:"flex", alignItems:"center", gap:5 }}>
-                <Check size={12}/> Auto-fixed by AI · no manual action required
+          <div style={{ flex:1, borderRadius:8, display:"flex", flexDirection:"column", gap:8 }}>
+            {/* Detail / description */}
+            {(alert.detail || alert.aiSuggestion) && (
+              <div style={{ background:`${C.border}40`, borderRadius:8, padding:"10px 14px", borderLeft:`3px solid ${SEVERITY[alert.severity]}` }}>
+                <div style={{ fontSize:10, color:C.muted, marginBottom:5, fontWeight:700, letterSpacing:"0.08em" }}>
+                  {alert.aiGenerated ? "AGENT FINDING" : "AI SUGGESTION"}
+                </div>
+                <div style={{ fontSize:12, color:C.text, lineHeight:1.7 }}>{alert.detail || alert.aiSuggestion}</div>
+                {alert.autoFixed && (
+                  <div style={{ marginTop:8, fontSize:11, color:C.green, fontWeight:700, display:"flex", alignItems:"center", gap:5 }}>
+                    <Check size={12}/> Auto-fixed by AI · no manual action required
+                  </div>
+                )}
+              </div>
+            )}
+            {/* Agent metadata row */}
+            {alert.aiGenerated && (
+              <div style={{ display:"flex", gap:8, flexWrap:"wrap" }}>
+                {alert.table && (
+                  <div style={{ fontSize:11, background:`${C.accent}10`, border:`1px solid ${C.accent}25`, borderRadius:6, padding:"3px 10px", color:C.accentL, fontFamily:"monospace" }}>
+                    📋 {alert.table}
+                  </div>
+                )}
+                {alert.affected_rows != null && (
+                  <div style={{ fontSize:11, background:`${C.red}10`, border:`1px solid ${C.red}25`, borderRadius:6, padding:"3px 10px", color:C.red }}>
+                    ⚠ {alert.affected_rows} affected row{alert.affected_rows !== 1 ? "s" : ""}
+                  </div>
+                )}
+                {alert.source && (
+                  <div style={{ fontSize:11, background:`${C.purple}10`, border:`1px solid ${C.purple}25`, borderRadius:6, padding:"3px 10px", color:C.purple }}>
+                    🤖 {alert.source}
+                  </div>
+                )}
+                {alert.ts && (
+                  <div style={{ fontSize:11, color:C.muted, padding:"3px 0" }}>
+                    🕐 {new Date(alert.ts).toLocaleString()}
+                  </div>
+                )}
               </div>
             )}
           </div>
@@ -5500,25 +5623,27 @@ function DrillModal({ target, onClose, onNavigate }) {
 // ─── DB Explorer Tab ──────────────────────────────────────────────────────────
 const API_BASE = "https://intentwise-backend-production.up.railway.app";
 
-function DBExplorerTab({ kpis, kpisLoading, alertsState, setActiveTab: setActiveTabProp, accounts, accountId, setAccountId, liveRules, rulesLoading, agentScanResult, agentScanLoading, onAgentScan, trend, topAsins, lastScan, dataMode }) {
+function DBExplorerTab({ kpis, kpisLoading, alertsState, setActiveTab: setActiveTabProp, accounts, accountId, setAccountId, liveRules, rulesLoading, agentScanResult, agentScanLoading, onAgentScan, trend, topAsins, dataMode }) {
   const T = useTheme();
-  const [schemas,      setSchemas]      = useState([]);
-  const [loading,      setLoading]      = useState(true);
-  const [error,        setError]        = useState(null);
-  const [expandedSchemas, setExpandedSchemas] = useState({});
-  const [preview,      setPreview]      = useState(null);  // {schema, table, data}
-  const [previewLoading, setPreviewLoading] = useState(false);
-  const [sql,          setSql]          = useState("");
-  const [queryResult,  setQueryResult]  = useState(null);
-  const [queryLoading, setQueryLoading] = useState(false);
-  const [queryError,   setQueryError]   = useState(null);
-  const [view,         setView]         = useState("explorer"); // explorer | quer
-
-  // Derived counts from real alertsState prop (falls back to 0 if not yet loaded)
-  const critCount     = alertsState ? alertsState.filter(a=>a.severity==="critical"&&a.status!=="resolved").length : 0;
-  const openCount     = alertsState ? alertsState.filter(a=>a.status==="open").length : 0;
-  const fixedCount    = alertsState ? alertsState.filter(a=>a.status==="resolved").length : 0;
-  const runningAgents = AGENTS.filter(a=>a.status==="running").length;
+  const [schemas,           setSchemas]           = useState([]);
+  const [loading,           setLoading]           = useState(true);
+  const [error,             setError]             = useState(null);
+  const [expandedSchemas,   setExpandedSchemas]   = useState({});
+  const [preview,           setPreview]           = useState(null);
+  const [previewLoading,    setPreviewLoading]    = useState(false);
+  const [sql,               setSql]               = useState("");
+  const [queryResult,       setQueryResult]       = useState(null);
+  const [queryLoading,      setQueryLoading]      = useState(false);
+  const [queryError,        setQueryError]        = useState(null);
+  const [view,              setView]              = useState("explorer");
+  const [savedQueries,      setSavedQueries]      = useState([
+    { id:"sq-1", name:"Orders last 7 days",  sql:"SELECT amazon_order_id, asin, order_status, item_price, purchase_date\nFROM mws.orders\nWHERE purchase_date >= CURRENT_DATE - 7\nORDER BY purchase_date DESC\nLIMIT 100" },
+    { id:"sq-2", name:"Low inventory ASINs", sql:"SELECT asin, product_name, available, days_of_supply\nFROM mws.inventory\nWHERE available < 10\nORDER BY available ASC" },
+    { id:"sq-3", name:"Buy box < 50%",       sql:"SELECT child_asin, traffic_by_asin_buy_box_prcntg, units_ordered\nFROM mws.sales_and_traffic_by_asin\nWHERE traffic_by_asin_buy_box_prcntg < 0.5\nORDER BY traffic_by_asin_buy_box_prcntg ASC\nLIMIT 50" },
+  ]);
+  const [saveModalOpen,     setSaveModalOpen]     = useState(false);
+  const [saveName,          setSaveName]          = useState("");
+  const [showSavedDropdown, setShowSavedDropdown] = useState(false);
 
   useEffect(() => {
     fetch(API_BASE + "/api/tables")
@@ -5527,7 +5652,6 @@ function DBExplorerTab({ kpis, kpisLoading, alertsState, setActiveTab: setActive
         if (data.error) { setError(data.error); }
         else {
           setSchemas(data);
-          // auto-expand first schema
           if (data.length > 0) setExpandedSchemas({ [data[0].schema]: true });
         }
         setLoading(false);
@@ -5535,8 +5659,7 @@ function DBExplorerTab({ kpis, kpisLoading, alertsState, setActiveTab: setActive
       .catch(e => { setError(e.message); setLoading(false); });
   }, []);
 
-  const toggleSchema = (s) =>
-    setExpandedSchemas(p => ({ ...p, [s]: !p[s] }));
+  const toggleSchema = (s) => setExpandedSchemas(p => ({ ...p, [s]: !p[s] }));
 
   const loadPreview = async (schema, table) => {
     setPreview({ schema, table, data: null });
@@ -5559,137 +5682,111 @@ function DBExplorerTab({ kpis, kpisLoading, alertsState, setActiveTab: setActive
       const data = await res.json();
       if (data.error) setQueryError(data.error);
       else setQueryResult(data);
-    } catch(e) {
-      setQueryError(e.message);
-    }
+    } catch(e) { setQueryError(e.message); }
     setQueryLoading(false);
   };
 
-  const totalTables = schemas.reduce((a, s) => a + s.tables.length, 0);
+  const confirmSave = () => {
+    if (!saveName.trim()) return;
+    setSavedQueries(p => [...p, { id:`sq-${Date.now()}`, name:saveName.trim(), sql }]);
+    setSaveModalOpen(false);
+  };
+
+  const grouped = schemas.reduce((acc, t) => {
+    if (!acc[t.schema]) acc[t.schema] = [];
+    acc[t.schema].push(t.name);
+    return acc;
+  }, {});
 
   return (
-    <div style={{ height:"calc(100vh - 120px)", display:"flex", flexDirection:"column", gap:0 }}>
+    <div style={{ height:"calc(100vh - 120px)", display:"flex", flexDirection:"column", gap:0, position:"relative" }}>
 
-      {/* Header */}
-      <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom:14 }}>
-        <div>
-          <div style={{ fontSize:16, fontWeight:800, color:T.text, display:"flex", alignItems:"center", gap:8 }}>
-            <Database size={16} color={T.cyan}/> Database Explorer
-            <span style={{ fontSize:11, color:T.muted, fontWeight:400 }}>· Redshift · {schemas.length} schemas · {totalTables} tables</span>
-          </div>
-          <div style={{ fontSize:11, color:T.muted, marginTop:3 }}>{API_BASE}</div>
-        </div>
-        <div style={{ display:"flex", gap:6 }}>
-          {["explorer","query"].map(v => (
-            <button key={v} onClick={()=>setView(v)} style={{ padding:"7px 16px", borderRadius:7, border:`1px solid ${v===view?T.accent+"50":"transparent"}`, background:v===view?`${T.accent}15`:"transparent", color:v===view?T.accentL:T.muted, fontSize:12, fontWeight:v===view?700:400, cursor:"pointer" }}>
-              {v==="explorer" ? "🗂 Explorer" : "⚡ SQL Query"}
-            </button>
-          ))}
+      <div style={{ display:"flex", gap:8, alignItems:"center", padding:"10px 0 12px", flexWrap:"wrap" }}>
+        {["explorer","query"].map(v => (
+          <button key={v} onClick={() => setView(v)}
+            style={{ fontSize:11, fontWeight:700, padding:"5px 14px", borderRadius:7, cursor:"pointer",
+              border:`1px solid ${view===v ? T.accent : T.border2}`,
+              background: view===v ? `${T.accent}18` : "none",
+              color: view===v ? T.accentL : T.muted }}>
+            {v === "explorer" ? "Schema Explorer" : "Query Editor"}
+          </button>
+        ))}
+        <div style={{ marginLeft:"auto", display:"flex", alignItems:"center", gap:6 }}>
+          <span style={{ fontSize:11, background:`${T.green}18`, border:`1px solid ${T.green}30`, color:T.green, borderRadius:6, padding:"3px 10px", fontWeight:700 }}>LIVE</span>
+          <span style={{ fontSize:11, color:T.muted }}>redshift-staging</span>
         </div>
       </div>
 
-      {/* Explorer view */}
       {view === "explorer" && (
-        <div style={{ display:"grid", gridTemplateColumns:"240px 1fr", gap:14, flex:1, minHeight:0 }}>
-
-          {/* Left: schema/table tree */}
-          <div style={{ background:T.card, border:`1px solid ${T.border}`, borderRadius:10, overflow:"auto" }}>
-            {loading && <div style={{ padding:20, color:T.muted, fontSize:12 }}>Loading tables…</div>}
-            {error   && <div style={{ padding:20, color:T.red,  fontSize:12 }}>Error: {error}</div>}
-            {schemas.map(s => (
-              <div key={s.schema}>
-                <div
-                  onClick={()=>toggleSchema(s.schema)}
-                  style={{ display:"flex", alignItems:"center", gap:8, padding:"10px 14px", cursor:"pointer", borderBottom:`1px solid ${T.border}`, background:expandedSchemas[s.schema]?`${T.accent}08`:"transparent" }}
-                  className="row-hover"
-                >
-                  <span style={{ fontSize:12 }}>{expandedSchemas[s.schema] ? "📂" : "📁"}</span>
-                  <span style={{ fontSize:12, fontWeight:700, color:T.text, flex:1 }}>{s.schema}</span>
-                  <span style={{ fontSize:10, color:T.muted, background:T.border, borderRadius:10, padding:"1px 7px" }}>{s.tables.length}</span>
+        <div style={{ display:"flex", gap:12, flex:1, minHeight:0 }}>
+          <div style={{ width:240, background:T.card, border:`1px solid ${T.border}`, borderRadius:10, overflow:"auto", flexShrink:0 }}>
+            <div style={{ padding:"10px 14px", borderBottom:`1px solid ${T.border}`, fontSize:10, color:T.muted, fontWeight:700, letterSpacing:"0.07em" }}>TABLES</div>
+            {loading && <div style={{ padding:16, fontSize:12, color:T.muted }}>Loading…</div>}
+            {error   && <div style={{ padding:16, fontSize:12, color:T.red }}>{error}</div>}
+            {Object.entries(grouped).map(([schema, tables]) => (
+              <div key={schema}>
+                <div onClick={() => toggleSchema(schema)}
+                  style={{ display:"flex", alignItems:"center", gap:7, padding:"8px 14px", cursor:"pointer",
+                    background: expandedSchemas[schema] ? `${T.accent}08` : "none",
+                    borderBottom:`1px solid ${T.border}` }}>
+                  <span style={{ fontSize:10, color:T.muted }}>{expandedSchemas[schema] ? "▾" : "▸"}</span>
+                  <span style={{ fontSize:12, fontWeight:700, color:T.accent, fontFamily:"monospace" }}>{schema}</span>
+                  <span style={{ fontSize:10, color:T.muted, marginLeft:"auto" }}>{tables.length}</span>
                 </div>
-                {expandedSchemas[s.schema] && s.tables.map(t => (
-                  <div
-                    key={t.name}
-                    onClick={()=>loadPreview(s.schema, t.name)}
-                    className="row-hover"
-                    style={{ display:"flex", alignItems:"center", gap:8, padding:"8px 14px 8px 28px", cursor:"pointer", borderBottom:`1px solid ${T.border}`, background:preview?.schema===s.schema&&preview?.table===t.name?`${T.cyan}12`:"transparent" }}
-                  >
-                    <span style={{ fontSize:11 }}>🗃</span>
-                    <div style={{ flex:1, minWidth:0 }}>
-                      <div style={{ fontSize:11, color:preview?.schema===s.schema&&preview?.table===t.name?T.cyan:T.text, fontWeight:preview?.schema===s.schema&&preview?.table===t.name?700:400, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{t.name}</div>
-                      <div style={{ fontSize:9, color:T.dim }}>{t.column_count} cols</div>
-                    </div>
+                {expandedSchemas[schema] && tables.map(t => (
+                  <div key={t} onClick={() => loadPreview(schema, t)}
+                    style={{ padding:"6px 14px 6px 28px", cursor:"pointer", fontSize:11, fontFamily:"monospace",
+                      color: preview?.table===t ? T.accentL : T.text,
+                      background: preview?.table===t ? `${T.accent}12` : "none",
+                      borderBottom:`1px solid ${T.border}20` }}>
+                    {t}
                   </div>
                 ))}
               </div>
             ))}
           </div>
 
-          {/* Right: preview panel */}
-          <div style={{ background:T.card, border:`1px solid ${T.border}`, borderRadius:10, overflow:"hidden", display:"flex", flexDirection:"column" }}>
+          <div style={{ flex:1, background:T.card, border:`1px solid ${T.border}`, borderRadius:10, overflow:"auto" }}>
             {!preview && (
-              <div style={{ flex:1, display:"flex", alignItems:"center", justifyContent:"center", flexDirection:"column", gap:10, color:T.muted }}>
-                <Database size={32} color={T.border2}/>
-                <div style={{ fontSize:13 }}>Click any table to preview its data</div>
+              <div style={{ display:"flex", alignItems:"center", justifyContent:"center", height:"100%", color:T.muted, fontSize:12 }}>
+                Select a table to preview data
               </div>
             )}
-            {previewLoading && (
-              <div style={{ flex:1, display:"flex", alignItems:"center", justifyContent:"center", gap:10, color:T.muted }}>
-                <RefreshCw size={16} color={T.accent} style={{animation:"spin 1s linear infinite"}}/>
-                <span style={{ fontSize:13 }}>Loading preview…</span>
-              </div>
-            )}
-            {preview && !previewLoading && preview.data && (
-              <div style={{ display:"flex", flexDirection:"column", height:"100%" }}>
-                {/* Table header */}
-                <div style={{ padding:"12px 18px", borderBottom:`1px solid ${T.border}`, display:"flex", alignItems:"center", gap:10, flexShrink:0 }}>
-                  <code style={{ fontSize:13, fontWeight:800, color:T.cyan, fontFamily:"Consolas,monospace" }}>{preview.schema}.{preview.table}</code>
-                  {preview.data.total_rows !== undefined && (
-                    <span style={{ fontSize:11, color:T.muted }}>{preview.data.total_rows?.toLocaleString()} total rows · showing first 50</span>
-                  )}
-                  {preview.data.error && <span style={{ fontSize:11, color:T.red }}>{preview.data.error}</span>}
-                  <button
-                    style={{ marginLeft:"auto", background:`${T.accent}15`, border:`1px solid ${T.accent}40`, borderRadius:7, padding:"5px 12px", cursor:"pointer", fontSize:11, color:T.accentL, fontWeight:700 }}
-                    onClick={()=>{ setSql(`SELECT * FROM "${preview.schema}"."${preview.table}" LIMIT 100`); setView("query"); }}
-                  >
-                    ⚡ Open in SQL
+            {preview && (
+              <div>
+                <div style={{ padding:"10px 16px", borderBottom:`1px solid ${T.border}`, display:"flex", alignItems:"center", gap:10 }}>
+                  <span style={{ fontSize:12, fontWeight:700, color:T.text, fontFamily:"monospace" }}>{preview.schema}.{preview.table}</span>
+                  <button onClick={() => { setSql(`SELECT *\nFROM ${preview.schema}.${preview.table}\nLIMIT 100`); setView("query"); }}
+                    style={{ fontSize:10, background:`${T.accent}15`, border:`1px solid ${T.accent}30`, borderRadius:5, padding:"2px 9px", cursor:"pointer", color:T.accentL, fontWeight:700, marginLeft:"auto" }}>
+                    Open in Query Editor →
                   </button>
                 </div>
-                {/* Columns strip */}
-                {preview.data.columns && (
-                  <div style={{ display:"flex", gap:6, padding:"8px 18px", overflowX:"auto", borderBottom:`1px solid ${T.border}`, flexShrink:0 }}>
-                    {preview.data.columns.map(c => (
-                      <div key={c.column_name} style={{ background:T.isDark?"#0A0C10":T.bg, border:`1px solid ${T.border2}`, borderRadius:6, padding:"3px 10px", whiteSpace:"nowrap" }}>
-                        <div style={{ fontSize:10, fontWeight:700, color:T.text }}>{c.column_name}</div>
-                        <div style={{ fontSize:9, color:T.dim }}>{c.type}</div>
-                      </div>
-                    ))}
-                  </div>
-                )}
-                {/* Data table */}
-                {preview.data.rows && preview.data.rows.length > 0 && (
-                  <div style={{ flex:1, overflow:"auto" }}>
-                    <table style={{ width:"100%", borderCollapse:"collapse", fontSize:11 }}>
-                      <thead>
-                        <tr style={{ background:T.isDark?"#0A0C10":T.bg, position:"sticky", top:0 }}>
-                          {preview.data.columns.map(c => (
-                            <th key={c.column_name} style={{ padding:"8px 12px", textAlign:"left", color:T.muted, fontWeight:700, fontSize:10, textTransform:"uppercase", letterSpacing:"0.04em", borderBottom:`1px solid ${T.border}`, whiteSpace:"nowrap" }}>{c.column_name}</th>
-                          ))}
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {preview.data.rows.map((row, i) => (
-                          <tr key={i} style={{ borderBottom:`1px solid ${T.border}`, background:i%2===0?"transparent":(T.isDark?"#0A0C1040":"#F8FAFC") }}>
-                            {preview.data.columns.map(c => (
-                              <td key={c.column_name} style={{ padding:"7px 12px", color:row[c.column_name]===null?T.dim:T.text, fontFamily:typeof row[c.column_name]==="number"?"Consolas,monospace":"inherit", whiteSpace:"nowrap", maxWidth:200, overflow:"hidden", textOverflow:"ellipsis" }}>
-                                {row[c.column_name]===null ? <span style={{color:T.dim,fontStyle:"italic"}}>null</span> : String(row[c.column_name])}
-                              </td>
-                            ))}
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  </div>
+                {previewLoading && <div style={{ padding:16, fontSize:12, color:T.muted }}>Loading preview…</div>}
+                {preview.data && !previewLoading && (
+                  preview.data.error
+                    ? <div style={{ padding:16, fontSize:12, color:T.red }}>{preview.data.error}</div>
+                    : preview.data.rows && preview.data.rows.length > 0
+                      ? (
+                        <div style={{ overflowX:"auto" }}>
+                          <table style={{ width:"100%", borderCollapse:"collapse", fontSize:11 }}>
+                            <thead>
+                              <tr>{Object.keys(preview.data.rows[0]).map(col => (
+                                <th key={col} style={{ textAlign:"left", padding:"7px 12px", color:T.muted, borderBottom:`1px solid ${T.border}`, fontWeight:700, whiteSpace:"nowrap", background:T.isDark?"#0A0C10":T.border, fontSize:10 }}>{col}</th>
+                              ))}</tr>
+                            </thead>
+                            <tbody>{preview.data.rows.map((row, ri) => (
+                              <tr key={ri} style={{ borderBottom:`1px solid ${T.border}20` }}>
+                                {Object.values(row).map((v, j) => (
+                                  <td key={j} style={{ padding:"6px 12px", color:T.text, whiteSpace:"nowrap", maxWidth:200, overflow:"hidden", textOverflow:"ellipsis" }}>
+                                    {v == null ? <span style={{ color:T.muted }}>NULL</span> : String(v)}
+                                  </td>
+                                ))}
+                              </tr>
+                            ))}</tbody>
+                          </table>
+                        </div>
+                      )
+                      : <div style={{ padding:16, fontSize:12, color:T.muted }}>No rows returned.</div>
                 )}
               </div>
             )}
@@ -5697,63 +5794,115 @@ function DBExplorerTab({ kpis, kpisLoading, alertsState, setActiveTab: setActive
         </div>
       )}
 
-      {/* SQL Query view */}
       {view === "query" && (
-        <div style={{ display:"flex", flexDirection:"column", gap:12, flex:1, minHeight:0 }}>
-          <div style={{ background:T.card, border:`1px solid ${T.border}`, borderRadius:10, padding:14 }}>
-            <div style={{ fontSize:11, fontWeight:700, color:T.muted, marginBottom:8, textTransform:"uppercase", letterSpacing:"0.04em" }}>SQL Query</div>
-            <textarea
-              value={sql}
-              onChange={e=>setSql(e.target.value)}
-              placeholder={`SELECT * FROM "schema"."table" LIMIT 100`}
-              rows={5}
-              style={{ width:"100%", background:T.isDark?"#0A0C10":T.bg, border:`1px solid ${T.border2}`, borderRadius:8, padding:"10px 14px", color:T.text, fontSize:12, fontFamily:"Consolas,monospace", outline:"none", resize:"vertical", lineHeight:1.6 }}
+        <div style={{ display:"flex", flexDirection:"column", gap:10, flex:1, minHeight:0 }}>
+          <div style={{ background:T.card, border:`1px solid ${T.border}`, borderRadius:10, overflow:"hidden" }}>
+            <div style={{ padding:"8px 14px", borderBottom:`1px solid ${T.border}`, fontSize:10, color:T.muted, fontWeight:700, letterSpacing:"0.07em" }}>SQL QUERY — Ctrl+Enter to run</div>
+            <textarea value={sql} onChange={e => setSql(e.target.value)}
+              onKeyDown={e => { if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) runQuery(); }}
+              placeholder="SELECT * FROM mws.orders LIMIT 100"
+              rows={6}
+              style={{ width:"100%", background:T.isDark?"#0A0C10":T.bg, border:"none", padding:"12px 14px", color:T.text, fontSize:12, fontFamily:"Consolas,monospace", outline:"none", resize:"vertical", boxSizing:"border-box" }}
             />
-            <div style={{ display:"flex", gap:8, marginTop:10, alignItems:"center" }}>
-              <button
-                onClick={runQuery}
-                disabled={queryLoading||!sql.trim()}
-                style={{ background:T.accent, border:"none", borderRadius:8, padding:"9px 22px", cursor:"pointer", color:"white", fontSize:12, fontWeight:700, display:"flex", alignItems:"center", gap:7, opacity:queryLoading?0.7:1 }}
-              >
-                {queryLoading ? <><RefreshCw size={13} style={{animation:"spin 1s linear infinite"}}/>Running…</> : <>⚡ Run Query</>}
+            <div style={{ padding:"8px 14px", borderTop:`1px solid ${T.border}`, display:"flex", gap:8, alignItems:"center", flexWrap:"wrap" }}>
+              <button onClick={runQuery} disabled={queryLoading || !sql.trim()}
+                style={{ background:T.accent, border:"none", borderRadius:8, padding:"7px 18px", cursor:"pointer", color:"white", fontSize:12, fontWeight:700, display:"flex", alignItems:"center", gap:6, opacity: (queryLoading || !sql.trim()) ? 0.6 : 1 }}>
+                {queryLoading
+                  ? <><RefreshCw size={12} style={{ animation:"spin 1s linear infinite" }}/> Running…</>
+                  : <>⚡ Run</>}
               </button>
-              {queryResult && <span style={{ fontSize:11, color:T.green }}>✓ {queryResult.count} rows returned</span>}
-              {queryError  && <span style={{ fontSize:11, color:T.red   }}>✗ {queryError}</span>}
+              <button onClick={() => { if (sql.trim()) { setSaveName(""); setSaveModalOpen(true); } }}
+                style={{ background:"none", border:`1px solid ${T.border2}`, borderRadius:8, padding:"7px 12px", cursor:"pointer", color:T.muted, fontSize:11, fontWeight:600 }}>
+                💾 Save
+              </button>
+              <div style={{ position:"relative" }}>
+                <button onClick={() => setShowSavedDropdown(p => !p)}
+                  style={{ background:"none", border:`1px solid ${T.border2}`, borderRadius:8, padding:"7px 12px", cursor:"pointer", color:T.muted, fontSize:11, fontWeight:600 }}>
+                  📂 Saved ({savedQueries.length}) ▾
+                </button>
+                {showSavedDropdown && (
+                  <div style={{ position:"absolute", top:"110%", left:0, minWidth:220, background:T.card, border:`1px solid ${T.border2}`, borderRadius:10, boxShadow:"0 8px 32px rgba(0,0,0,0.2)", zIndex:200, overflow:"hidden" }}>
+                    {savedQueries.length === 0
+                      ? <div style={{ padding:"12px 14px", fontSize:11, color:T.muted }}>No saved queries yet.</div>
+                      : savedQueries.map(q => (
+                        <div key={q.id}
+                          style={{ display:"flex", alignItems:"center", justifyContent:"space-between", padding:"9px 14px", borderBottom:`1px solid ${T.border}`, cursor:"pointer" }}
+                          onClick={() => { setSql(q.sql); setShowSavedDropdown(false); }}>
+                          <span style={{ fontSize:11, color:T.text, fontWeight:600 }}>{q.name}</span>
+                          <button onClick={e => { e.stopPropagation(); setSavedQueries(p => p.filter(x => x.id !== q.id)); }}
+                            style={{ background:"none", border:"none", cursor:"pointer", color:T.muted, fontSize:12, padding:"0 4px" }}>✕</button>
+                        </div>
+                      ))
+                    }
+                  </div>
+                )}
+              </div>
+              {queryResult && <span style={{ fontSize:11, color:T.green }}>✓ {queryResult.count} rows</span>}
+              {queryError  && <span style={{ fontSize:11, color:T.red }}>✗ {queryError}</span>}
             </div>
           </div>
 
-          {queryResult && queryResult.columns && (
+          {queryResult && queryResult.rows && (
             <div style={{ flex:1, background:T.card, border:`1px solid ${T.border}`, borderRadius:10, overflow:"auto" }}>
-              <table style={{ width:"100%", borderCollapse:"collapse", fontSize:11 }}>
-                <thead>
-                  <tr style={{ background:T.isDark?"#0A0C10":T.bg, position:"sticky", top:0 }}>
-                    {queryResult.columns.map(c => (
-                      <th key={c} style={{ padding:"8px 12px", textAlign:"left", color:T.muted, fontWeight:700, fontSize:10, textTransform:"uppercase", borderBottom:`1px solid ${T.border}`, whiteSpace:"nowrap" }}>{c}</th>
-                    ))}
-                  </tr>
-                </thead>
-                <tbody>
-                  {queryResult.rows.map((row, i) => (
-                    <tr key={i} style={{ borderBottom:`1px solid ${T.border}`, background:i%2===0?"transparent":(T.isDark?"#0A0C1040":"#F8FAFC") }}>
-                      {queryResult.columns.map(c => (
-                        <td key={c} style={{ padding:"7px 12px", color:row[c]===null?T.dim:T.text, fontFamily:typeof row[c]==="number"?"Consolas,monospace":"inherit", whiteSpace:"nowrap", maxWidth:220, overflow:"hidden", textOverflow:"ellipsis" }}>
-                          {row[c]===null ? <span style={{color:T.dim,fontStyle:"italic"}}>null</span> : String(row[c])}
-                        </td>
-                      ))}
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
+              <div style={{ padding:"8px 14px", borderBottom:`1px solid ${T.border}`, fontSize:10, color:T.muted, fontWeight:700, letterSpacing:"0.07em" }}>
+                RESULTS — {queryResult.count} rows
+              </div>
+              {queryResult.rows.length > 0
+                ? (
+                  <div style={{ overflowX:"auto" }}>
+                    <table style={{ width:"100%", borderCollapse:"collapse", fontSize:11 }}>
+                      <thead>
+                        <tr>{Object.keys(queryResult.rows[0]).map(col => (
+                          <th key={col} style={{ textAlign:"left", padding:"7px 12px", color:T.muted, borderBottom:`1px solid ${T.border}`, fontWeight:700, background:T.isDark?"#0A0C10":T.border, whiteSpace:"nowrap", fontSize:10 }}>{col}</th>
+                        ))}</tr>
+                      </thead>
+                      <tbody>{queryResult.rows.map((row, ri) => (
+                        <tr key={ri} style={{ borderBottom:`1px solid ${T.border}20` }}>
+                          {Object.values(row).map((v, j) => (
+                            <td key={j} style={{ padding:"6px 12px", color:T.text, whiteSpace:"nowrap", maxWidth:240, overflow:"hidden", textOverflow:"ellipsis" }}>
+                              {v == null ? <span style={{ color:T.muted }}>NULL</span> : String(v)}
+                            </td>
+                          ))}
+                        </tr>
+                      ))}</tbody>
+                    </table>
+                  </div>
+                )
+                : <div style={{ padding:16, fontSize:12, color:T.muted }}>Query returned 0 rows.</div>
+              }
             </div>
           )}
         </div>
       )}
 
+      {saveModalOpen && (
+        <div style={{ position:"fixed", inset:0, background:"rgba(0,0,0,0.5)", zIndex:300, display:"flex", alignItems:"center", justifyContent:"center" }}>
+          <div style={{ background:T.card, border:`1px solid ${T.border2}`, borderRadius:14, padding:"24px", width:340 }}>
+            <div style={{ fontSize:14, fontWeight:700, color:T.text, marginBottom:14 }}>Save Query</div>
+            <input autoFocus value={saveName} onChange={e => setSaveName(e.target.value)}
+              onKeyDown={e => { if (e.key === "Enter") confirmSave(); }}
+              placeholder="Query name…"
+              style={{ width:"100%", background:T.bg, border:`1px solid ${T.border2}`, borderRadius:8, padding:"9px 12px", color:T.text, fontSize:12, outline:"none", boxSizing:"border-box", marginBottom:12 }}
+            />
+            <div style={{ fontSize:11, color:T.muted, fontFamily:"monospace", background:T.isDark?"#0A0C10":T.border, borderRadius:6, padding:"8px 10px", marginBottom:14, whiteSpace:"pre-wrap", maxHeight:80, overflow:"auto" }}>
+              {sql.slice(0, 200)}{sql.length > 200 ? "…" : ""}
+            </div>
+            <div style={{ display:"flex", gap:8, justifyContent:"flex-end" }}>
+              <button onClick={() => setSaveModalOpen(false)}
+                style={{ background:"none", border:`1px solid ${T.border2}`, borderRadius:7, padding:"7px 16px", cursor:"pointer", color:T.muted, fontSize:12 }}>
+                Cancel
+              </button>
+              <button onClick={confirmSave}
+                style={{ background:T.accent, border:"none", borderRadius:7, padding:"7px 16px", cursor:"pointer", color:"white", fontSize:12, fontWeight:700 }}>
+                Save
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
-
-// ─── Main App ─────────────────────────────────────────────────────────────────
 
 function DetectTriageRootCause({ alertsState, sevFilter, setSevFilter, search, setSearch,
   resolveAlert, triageAlert, autoFixAlert, openDrill, setAiPanel, aiPanel, dataMode }) {
@@ -5829,7 +5978,7 @@ function DetectTriageRootCause({ alertsState, sevFilter, setSevFilter, search, s
   );
 }
 
-function RulesAndValidationWrapper({ liveRules, rulesLoading }) {
+function RulesAndValidationWrapper({ liveRules, rulesLoading, addAuditEvent }) {
   const T = useTheme();
   const C = T;
   const [view, setView] = React.useState("rules");
@@ -5851,7 +6000,7 @@ function RulesAndValidationWrapper({ liveRules, rulesLoading }) {
           </button>
         ))}
       </div>
-      {view === "rules"      && <ValidationRulesTab liveRules={liveRules} rulesLoading={rulesLoading} />}
+      {view === "rules"      && <ValidationRulesTab liveRules={liveRules} rulesLoading={rulesLoading} addAuditEvent={addAuditEvent} />}
       {view === "validation" && <RuleTestRunnerTab />}
     </div>
   );
@@ -5903,6 +6052,7 @@ function DataflowsTab() {
   const [schedPane, setSchedPane]       = useState(false);
   const [newFlow, setNewFlow]           = useState(false);
   const [newName, setNewName]           = useState("");
+  const [newDesc, setNewDesc]           = useState("");
   const chatEndRef = useRef(null);
 
   const flow = flows.find(f => f.id === selected) || flows[0];
@@ -5988,10 +6138,10 @@ function DataflowsTab() {
     if (!newName.trim()) return;
     const nf = { id:`df-${Date.now()}`, name:newName.trim(), status:"active",
       query:`SELECT *\nFROM mws.orders\nLIMIT 10`, schedule:"0 6 * * *",
-      lastRun:"Never", lastResult:"pending", lastRows:0, alertOn:"error", description:"" };
+      lastRun:"Never", lastResult:"pending", lastRows:0, alertOn:"error", description:newDesc.trim() };
     setFlows(p => [...p, nf]);
     setSelected(nf.id);
-    setNewName(""); setNewFlow(false);
+    setNewName(""); setNewDesc(""); setNewFlow(false);
   };
 
   const result = runState[flow?.id];
@@ -6007,36 +6157,51 @@ function DataflowsTab() {
           <button onClick={()=>setNewFlow(true)} style={{ background:`${T.accent}15`, border:`1px solid ${T.accent}30`, borderRadius:5, padding:"2px 7px", cursor:"pointer", color:T.accent, fontSize:11, fontWeight:700 }}>+ New</button>
         </div>
         {newFlow && (
-          <div style={{ padding:"8px 10px", borderBottom:`1px solid ${T.border}`, display:"flex", gap:4 }}>
-            <input autoFocus value={newName} onChange={e=>setNewName(e.target.value)}
-              onKeyDown={e=>e.key==="Enter"&&createFlow()}
-              placeholder="Flow name…" style={{ flex:1, background:T.bg, border:`1px solid ${T.accent}`, borderRadius:5, padding:"4px 7px", color:T.text, fontSize:11, outline:"none" }} />
-            <button onClick={createFlow} style={{ background:T.accent, border:"none", borderRadius:5, padding:"4px 8px", cursor:"pointer", color:"white", fontSize:10, fontWeight:700 }}>✓</button>
+          <div style={{ padding:"8px 10px", borderBottom:`1px solid ${T.border}`, display:"flex", flexDirection:"column", gap:5 }}>
+            <div style={{ display:"flex", gap:4 }}>
+              <input autoFocus value={newName} onChange={e=>setNewName(e.target.value)}
+                onKeyDown={e=>e.key==="Enter"&&createFlow()}
+                placeholder="Flow name…" style={{ flex:1, background:T.bg, border:`1px solid ${T.accent}`, borderRadius:5, padding:"4px 7px", color:T.text, fontSize:11, outline:"none" }} />
+              <button onClick={createFlow} style={{ background:T.accent, border:"none", borderRadius:5, padding:"4px 8px", cursor:"pointer", color:"white", fontSize:10, fontWeight:700 }}>✓</button>
             <button onClick={()=>setNewFlow(false)} style={{ background:"none", border:`1px solid ${T.border2}`, borderRadius:5, padding:"4px 6px", cursor:"pointer", color:T.muted, fontSize:10 }}>✕</button>
+            </div>
+            <input value={newDesc} onChange={e=>setNewDesc(e.target.value)}
+              placeholder="Description (optional)…"
+              style={{ width:"100%", background:T.bg, border:`1px solid ${T.border2}`, borderRadius:5, padding:"4px 7px", color:T.muted, fontSize:10, outline:"none", boxSizing:"border-box" }} />
           </div>
         )}
         <div style={{ flex:1, overflowY:"auto" }}>
           {flows.map(f => (
-            <div key={f.id} onClick={()=>setSelected(f.id)}
-              style={{ padding:"10px 14px", cursor:"pointer", borderBottom:`1px solid ${T.border}`,
-                background: selected===f.id ? `${T.accent}12` : "transparent",
-                borderLeft: selected===f.id ? `3px solid ${T.accent}` : "3px solid transparent" }}>
-              <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom:3 }}>
-                <span style={{ fontSize:12, fontWeight:600, color:selected===f.id?T.accent:T.text, whiteSpace:"nowrap", overflow:"hidden", textOverflow:"ellipsis", maxWidth:130 }}>{f.name}</span>
-                <span style={{ width:6, height:6, borderRadius:"50%", background:STATUS_COLOR[f.status]||T.muted, flexShrink:0 }} />
+            <div key={f.id}>
+              <div onClick={()=>setSelected(f.id)}
+                style={{ padding:"10px 14px", cursor:"pointer", borderBottom:`1px solid ${T.border}`,
+                  background: selected===f.id ? `${T.accent}12` : "transparent",
+                  borderLeft: selected===f.id ? `3px solid ${T.accent}` : "3px solid transparent" }}>
+                <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom:3 }}>
+                  <span style={{ fontSize:12, fontWeight:600, color:selected===f.id?T.accent:T.text, whiteSpace:"nowrap", overflow:"hidden", textOverflow:"ellipsis", maxWidth:130 }}>{f.name}</span>
+                  <span style={{ width:6, height:6, borderRadius:"50%", background:STATUS_COLOR[f.status]||T.muted, flexShrink:0 }} />
+                </div>
+                <div style={{ fontSize:10, color:T.muted }}>
+                  {runState[f.id]==="running" ? "⏳ running…" :
+                   runState[f.id] && typeof runState[f.id]==="object" ? `✓ ${runState[f.id].rows.length} rows · ${runState[f.id].ts}` :
+                   f.lastRun}
+                </div>
+                <div style={{ marginTop:4, display:"flex", gap:4 }}>
+                  <span style={{ fontSize:9, padding:"1px 5px", borderRadius:3,
+                    background: f.lastResult==="pass"?`${T.green}18`:f.lastResult==="fail"?`${T.red}18`:`${T.muted}18`,
+                    color: f.lastResult==="pass"?T.green:f.lastResult==="fail"?T.red:T.muted }}>
+                    {f.lastResult}
+                  </span>
+                </div>
               </div>
-              <div style={{ fontSize:10, color:T.muted }}>
-                {runState[f.id]==="running" ? "⏳ running…" :
-                 runState[f.id] && typeof runState[f.id]==="object" ? `✓ ${runState[f.id].rows.length} rows · ${runState[f.id].ts}` :
-                 f.lastRun}
-              </div>
-              <div style={{ marginTop:4, display:"flex", gap:4 }}>
-                <span style={{ fontSize:9, padding:"1px 5px", borderRadius:3,
-                  background: f.lastResult==="pass"?`${T.green}18`:f.lastResult==="fail"?`${T.red}18`:`${T.muted}18`,
-                  color: f.lastResult==="pass"?T.green:f.lastResult==="fail"?T.red:T.muted }}>
-                  {f.lastResult}
-                </span>
-              </div>
+              {selected === f.id && flows.length > 1 && (
+                <div style={{ display:"flex", justifyContent:"flex-end", padding:"4px 10px", borderBottom:`1px solid ${T.border}` }}>
+                  <button onClick={e=>{ e.stopPropagation(); const remaining=flows.filter(x=>x.id!==f.id); setFlows(remaining); setSelected(remaining[0].id); }}
+                    style={{ fontSize:9, background:"none", border:`1px solid ${T.red}30`, borderRadius:4, padding:"2px 7px", cursor:"pointer", color:T.red }}>
+                    Delete
+                  </button>
+                </div>
+              )}
             </div>
           ))}
         </div>
@@ -6047,7 +6212,10 @@ function DataflowsTab() {
         {/* toolbar */}
         <div style={{ padding:"10px 16px", borderBottom:`1px solid ${T.border2}`, display:"flex", alignItems:"center", gap:8 }}>
           <Workflow size={14} color={T.accent} />
-          <span style={{ fontSize:13, fontWeight:700, color:T.text, flex:1 }}>{flow.name}</span>
+          <div style={{ flex:1 }}>
+            <div style={{ fontSize:13, fontWeight:700, color:T.text }}>{flow.name}</div>
+            {flow.description && <div style={{ fontSize:10, color:T.muted, marginTop:1 }}>{flow.description}</div>}
+          </div>
           <span style={{ fontSize:10, color:T.muted, background:T.border, borderRadius:4, padding:"2px 7px" }}>{flow.schedule}</span>
           <button onClick={()=>setSchedPane(p=>!p)} title="Set schedule" style={{ background:"none", border:`1px solid ${T.border2}`, borderRadius:5, padding:"4px 8px", cursor:"pointer", color:T.muted, fontSize:10, display:"flex", alignItems:"center", gap:4 }}>
             <Clock size={11}/> Schedule
@@ -6241,7 +6409,10 @@ function DataflowsTab() {
               style={{ flex:1, background:T.bg, border:`1px solid ${T.border2}`, borderRadius:6, padding:"5px 8px", color:T.text, fontSize:11, fontFamily:"Consolas,monospace", outline:"none" }}
               placeholder="rows > 0 OR error" />
           </div>
-          <button onClick={()=>setSchedPane(false)} style={{ marginTop:10, width:"100%", background:T.accent, border:"none", borderRadius:6, padding:"7px", cursor:"pointer", color:"white", fontSize:11, fontWeight:700 }}>Save</button>
+          <button onClick={()=>{ setSchedPane(false); }}
+            style={{ marginTop:10, width:"100%", background:T.accent, border:"none", borderRadius:6, padding:"7px", cursor:"pointer", color:"white", fontSize:11, fontWeight:700 }}>
+            ✓ Save Schedule
+          </button>
         </div>
       )}
     </div>
@@ -6276,7 +6447,7 @@ function SchemaTableRow({ table, cols, T, onInsert }) {
 // ─────────────────────────────────────────────────────────────────────────────
 // AI AGENTS TAB
 // ─────────────────────────────────────────────────────────────────────────────
-const MWS_AGENTS = [
+const agents = [
   { id:"AGT-ORD",  table:"mws.orders",                   label:"Orders Agent",         icon:"📦", desc:"Detects duplicate orders, NULL ASINs on shipped items, price anomalies, stale download dates." },
   { id:"AGT-INV",  table:"mws.inventory",                label:"Inventory Agent",       icon:"🏭", desc:"Flags negative available qty, zero days-of-supply, missing restock recommendations." },
   { id:"AGT-RST",  table:"mws.inventory_restock",        label:"Restock Agent",         icon:"🔄", desc:"Detects zero/negative restock quantities, stale restock records, missing account linkage." },
@@ -6285,16 +6456,79 @@ const MWS_AGENTS = [
   { id:"AGT-SKU",  table:"mws.sales_and_traffic_by_sku", label:"Sales by SKU Agent",    icon:"🏷️", desc:"Cross-checks SKU sales vs ASIN sales, detects orphaned SKUs, revenue outliers." },
 ];
 
-function AIAgentsTab({ agentStates, setAgentStates, setAlertsState, accountId }) {
+function AIAgentsTab({ agentStates, setAgentStates, setAlertsState, accountId, addAuditEvent }) {
   const C = React.useContext(ThemeCtx);
-  const [running, setRunning] = React.useState({}); // agentId -> bool
-  const [expanded, setExpanded] = React.useState(null);
+  const [running,        setRunning]        = React.useState({});
+  const [expanded,       setExpanded]       = React.useState(null);
   const [scanAllLoading, setScanAllLoading] = React.useState(false);
+  const [agents,         setAgents]         = React.useState([]);
+  const [agentsLoading,  setAgentsLoading]  = React.useState(true);
   const API_BASE_AGENTS = "https://intentwise-backend-production.up.railway.app";
+
+  // Table name → emoji icon heuristic
+  const tableIcon = (name) => {
+    if (name.includes("order"))    return "📦";
+    if (name.includes("inventor")) return "🏭";
+    if (name.includes("restock"))  return "🔄";
+    if (name.includes("traffic"))  return "📊";
+    if (name.includes("sales"))    return "💰";
+    if (name.includes("sku"))      return "🏷️";
+    if (name.includes("asin"))     return "🔖";
+    if (name.includes("date"))     return "📅";
+    if (name.includes("report"))   return "📋";
+    if (name.includes("return"))   return "↩️";
+    if (name.includes("fee"))      return "💸";
+    if (name.includes("settle"))   return "🏦";
+    return "🗂️";
+  };
+
+  // Build human-readable label from snake_case table name
+  const tableLabel = (name) =>
+    name.replace(/_/g, " ").replace(/\w/g, c => c.toUpperCase()) + " Agent";
+
+  React.useEffect(() => {
+    setAgentsLoading(true);
+    fetch(API_BASE_AGENTS + "/api/tables")
+      .then(r => r.json())
+      .then(data => {
+        const tables = Array.isArray(data) ? data : [];
+        const built = tables.map((t, i) => ({
+          id:    `AGT-${t.schema.toUpperCase().slice(0,3)}-${i}`,
+          table: `${t.schema}.${t.name}`,
+          schema: t.schema,
+          name:   t.name,
+          label:  tableLabel(t.name),
+          icon:   tableIcon(t.name),
+          desc:   `AI agent that scans ${t.schema}.${t.name} and infers anomalies from column values and data patterns.`,
+        }));
+        setAgents(built);
+        // Seed agentStates for any new agents
+        setAgentStates(prev => {
+          const next = { ...prev };
+          built.forEach(a => { if (!next[a.id]) next[a.id] = { status:"idle", alertsFiled:0, log:[] }; });
+          return next;
+        });
+        setAgentsLoading(false);
+      })
+      .catch(() => {
+        // Fallback to the original 6 known tables
+        const fallback = [
+          { id:"AGT-MWS-0", table:"mws.orders",                    name:"orders",                    schema:"mws", label:"Orders Agent",          icon:"📦", desc:"Scans orders table." },
+          { id:"AGT-MWS-1", table:"mws.inventory",                  name:"inventory",                 schema:"mws", label:"Inventory Agent",        icon:"🏭", desc:"Scans inventory table." },
+          { id:"AGT-MWS-2", table:"mws.inventory_restock",          name:"inventory_restock",         schema:"mws", label:"Restock Agent",          icon:"🔄", desc:"Scans inventory_restock table." },
+          { id:"AGT-MWS-3", table:"mws.sales_and_traffic_by_date",  name:"sales_and_traffic_by_date", schema:"mws", label:"Sales by Date Agent",    icon:"📅", desc:"Scans sales_and_traffic_by_date table." },
+          { id:"AGT-MWS-4", table:"mws.sales_and_traffic_by_asin",  name:"sales_and_traffic_by_asin", schema:"mws", label:"Sales by ASIN Agent",    icon:"🔖", desc:"Scans sales_and_traffic_by_asin table." },
+          { id:"AGT-MWS-5", table:"mws.sales_and_traffic_by_sku",   name:"sales_and_traffic_by_sku",  schema:"mws", label:"Sales by SKU Agent",     icon:"🏷️", desc:"Scans sales_and_traffic_by_sku table." },
+        ];
+        setAgents(fallback);
+        setAgentsLoading(false);
+      });
+  }, []);
 
   const runAgent = async (agent) => {
     setRunning(p => ({ ...p, [agent.id]: true }));
     setAgentStates(p => ({ ...p, [agent.id]: { ...p[agent.id], status:"running", log:["🔍 Connecting to Redshift…"] } }));
+    if (addAuditEvent) addAuditEvent({ type:"agent", name:`${agent.label} scan started`, table:agent.table, source:agent.schema, result:"pending", detail:`Agent ${agent.id} initiated scan of ${agent.table}.`, duration:"—" });
 
     try {
       // Step 1: fetch a sample from that table
@@ -6319,43 +6553,34 @@ function AIAgentsTab({ agentStates, setAgentStates, setAlertsState, accountId })
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          max_tokens: 1200,
-          system: `You are an autonomous data quality agent monitoring ${agent.table} in a Redshift database for an Amazon seller analytics platform. Your job is to detect real anomalies in the data provided and file structured alerts.
+          max_tokens: 1500,
+          system: `You are an autonomous data quality agent for an Amazon seller analytics platform. You are scanning the table "${agent.table}" in a Redshift database.
 
-Table columns: ${colNames.join(", ")}
+Your task: inspect the sample data provided and detect any real data quality anomalies.
 
-Rules to check:
-${agent.id === "AGT-ORD" ? `- Duplicate amazon_order_id values
-- NULL or empty asin on rows where order_status = 'Shipped'
-- item_price <= 0 on non-cancelled orders
-- download_date older than 3 days` : ""}
-${agent.id === "AGT-INV" ? `- available < 0
-- days_of_supply = 0 or NULL with available > 0
-- total_units < available (impossible state)` : ""}
-${agent.id === "AGT-RST" ? `- quantity <= 0
-- missing account_id
-- download_date older than 7 days` : ""}
-${agent.id === "AGT-STD" ? `- ordered_product_sales_amt = 0 on days with sessions > 0
-- refund_rate > 0.15 (>15%)
-- buy_box_percentage < 0 or > 1` : ""}
-${agent.id === "AGT-ASN" ? `- traffic_by_asin_buy_box_prcntg not between 0 and 1
-- units_ordered = 0 but traffic_by_asin_sessions > 100
-- ordered_product_sales_amt < 0` : ""}
-${agent.id === "AGT-SKU" ? `- units_ordered = 0 with ordered_product_sales_amt > 0
-- missing sku or asin values
-- ordered_product_sales_amt < 0` : ""}
+Table: ${agent.table}
+Columns: ${colNames.join(", ")}
 
-Respond ONLY with a JSON object (no markdown):
+Use the column names to infer what each column represents and what valid values should look like. Apply these universal rules:
+- Flag NULL or empty values in columns that should never be null (IDs, required keys, foreign keys)
+- Flag numeric columns with impossible values (negative quantities, prices or percentages out of range)
+- Flag percentage columns (containing "pct", "prcntg", "rate", "percentage") with values outside 0–1 or 0–100
+- Flag date columns (containing "date") where values are older than 14 days (stale data)
+- Flag columns that should be unique (IDs, order numbers) if duplicates exist in the sample
+- Flag logical contradictions (e.g. sales > 0 but units = 0, available > total, restock qty <= 0)
+- Flag any statistical outliers: values more than 3x the median for quantity/price/revenue columns
+
+Respond ONLY with a JSON object (no markdown, no explanation):
 {
-  "anomalies_found": number,
+  "anomalies_found": <integer>,
   "severity": "critical|high|medium|low|none",
-  "summary": "one sentence summary",
+  "summary": "<one sentence>",
   "alerts": [
-    { "title": "short alert title", "detail": "what was found and why it matters", "severity": "critical|high|medium|low", "affected_rows": number }
+    { "title": "<short title>", "detail": "<what was found and why it matters>", "severity": "critical|high|medium|low", "affected_rows": <integer> }
   ],
-  "log": ["step description 1", "step description 2"]
+  "log": ["<step 1>", "<step 2>"]
 }`,
-          messages: [{ role: "user", content: `Analyse this sample data from ${agent.table} and file alerts for any anomalies:
+          messages: [{ role: "user", content: `Analyse this sample (${sample.length} rows) from ${agent.table} and return your JSON findings:
 
 ${JSON.stringify(sample, null, 2)}` }]
         })
@@ -6401,12 +6626,24 @@ ${JSON.stringify(sample, null, 2)}` }]
       setAgentStates(p => ({ ...p, [agent.id]: { status:"error", lastRun: new Date().toLocaleTimeString(), alertsFiled:0, log:[`❌ Error: ${e.message}`] } }));
     }
 
+    if (addAuditEvent) {
+      const st = agentStates[agent.id] || {};
+      addAuditEvent({
+        type:   "agent",
+        name:   `${agent.label} scan complete`,
+        table:  agent.table,
+        source: agent.schema || "mws",
+        result: st.alertsFiled > 0 ? "fail" : "pass",
+        detail: st.summary || (st.alertsFiled > 0 ? `Filed ${st.alertsFiled} alert(s).` : "No anomalies detected."),
+        duration: "—",
+      });
+    }
     setRunning(p => ({ ...p, [agent.id]: false }));
   };
 
   const runAllAgents = async () => {
     setScanAllLoading(true);
-    for (const agent of MWS_AGENTS) {
+    for (const agent of agents) {
       await runAgent(agent);
     }
     setScanAllLoading(false);
@@ -6441,7 +6678,7 @@ ${JSON.stringify(sample, null, 2)}` }]
       {/* Summary cards */}
       <div style={{ display:"grid", gridTemplateColumns:"repeat(4,1fr)", gap:12, marginBottom:20 }}>
         {[
-          { label:"Total Agents",    value:MWS_AGENTS.length, color:C.accent,  icon:"🤖" },
+          { label:"Total Agents",    value:agents.length, color:C.accent,  icon:"🤖" },
           { label:"Healthy",         value:healthyCount,       color:C.green,   icon:"✓" },
           { label:"Anomalies Found", value:alertCount,         color:C.red,     icon:"⚠" },
           { label:"Alerts Filed",    value:totalAlerts,        color:C.orange,  icon:"🔔" },
@@ -6455,7 +6692,16 @@ ${JSON.stringify(sample, null, 2)}` }]
 
       {/* Agent cards */}
       <div style={{ display:"flex", flexDirection:"column", gap:10 }}>
-        {MWS_AGENTS.map(agent => {
+        {agentsLoading ? (
+          <div style={{ gridColumn:"1/-1", textAlign:"center", padding:"48px 0", color:C.muted, fontSize:13 }}>
+            <RefreshCw size={20} style={{ animation:"spin 1s linear infinite", marginBottom:10 }} color={C.accent}/>
+            <div>Discovering tables…</div>
+          </div>
+        ) : agents.length === 0 ? (
+          <div style={{ gridColumn:"1/-1", textAlign:"center", padding:"48px 0", color:C.muted, fontSize:13 }}>
+            No tables found in mws schema.
+          </div>
+        ) : agents.map(agent => {
           const st = agentStates[agent.id] || {};
           const isRunning = running[agent.id];
           const isExpanded = expanded === agent.id;
@@ -6617,9 +6863,45 @@ export default function AIOpsMonitor() {
     } catch(e) { console.error(e); }
     setAgentScanLoading(false);
   };
-  const resolveAlert  = (id) => setAlertsState(p=>p.map(a=>a.id===id?{...a,status:"resolved"}:a));
-  const triageAlert   = (id) => setAlertsState(p=>p.map(a=>a.id===id?{...a,status:"triaged"}:a));
-  const autoFixAlert  = (id) => setAlertsState(p=>p.map(a=>a.id===id?{...a,status:"resolved",autoFixed:true}:a));
+  const resolveAlert = (id) => {
+    const alert = alertsState.find(a => a.id === id);
+    setAlertsState(p => p.map(a => a.id===id ? {...a, status:"resolved"} : a));
+    if (addAuditEvent) addAuditEvent({
+      type:   "alert",
+      name:   `Resolved: ${alert?.title || id}`,
+      table:  alert?.table  || "—",
+      source: alert?.source || "—",
+      result: "pass",
+      detail: `Alert marked as resolved manually.`,
+      duration: "—",
+    });
+  };
+  const triageAlert = (id) => {
+    const alert = alertsState.find(a => a.id === id);
+    setAlertsState(p => p.map(a => a.id===id ? {...a, status:"triaged"} : a));
+    if (addAuditEvent) addAuditEvent({
+      type:   "alert",
+      name:   `Investigating: ${alert?.title || id}`,
+      table:  alert?.table  || "—",
+      source: alert?.source || "—",
+      result: "pending",
+      detail: `Alert marked for investigation.`,
+      duration: "—",
+    });
+  };
+  const autoFixAlert = (id) => {
+    const alert = alertsState.find(a => a.id === id);
+    setAlertsState(p => p.map(a => a.id===id ? {...a, status:"resolved", autoFixed:true} : a));
+    if (addAuditEvent) addAuditEvent({
+      type:   "alert",
+      name:   `Auto-Fixed: ${alert?.title || id}`,
+      table:  alert?.table  || "—",
+      source: alert?.source || "—",
+      result: "pass",
+      detail: `Alert auto-fixed by AI agent.`,
+      duration: "—",
+    });
+  };
 
   const runAgentScan = async () => {
     setAlertsLoading(true);
@@ -6650,7 +6932,16 @@ export default function AIOpsMonitor() {
   const [sevFilter, setSevFilter] = useState("all");
   const [search, setSearch] = useState("");
   const [activeTab, setActiveTab] = useState("dashboard");
-  const [tick, setTick] = useState(0);
+  const [tick,     setTick]     = useState(0);
+  const [auditLog, setAuditLog] = useState(RUN_HISTORY);
+
+  const addAuditEvent = React.useCallback((event) => {
+    setAuditLog(prev => [{
+      id:  `AE-${Date.now()}`,
+      ts:  new Date().toLocaleTimeString(),
+      ...event,
+    }, ...prev].slice(0, 500));
+  }, []);
 
   // Pulse the "last updated" timer
   useEffect(() => {
@@ -6745,12 +7036,9 @@ export default function AIOpsMonitor() {
         <div style={{ display:"flex", alignItems:"center", gap:12 }}>
           <span style={{ fontSize:10, color:T.dim }}>Updated {tick === 0 ? "just now" : `${tick * 30}s ago`}</span>
           <div style={{ display:"flex", alignItems:"center", gap:6 }}>
-            <Dot status="running" />
-            <span style={{ fontSize:11, color:T.green }}>{runningAgents} QA agents active</span>
-          </div>
-          <button onClick={()=>setPaletteOpen(true)} style={{ background:T.border, border:`1px solid ${T.border2}`, borderRadius:7, padding:"6px 14px", cursor:"pointer", display:"flex", alignItems:"center", gap:6, fontSize:11, color:T.muted }}>
-            <Search size={13}/> <span>Search</span> <kbd style={{ fontSize:9, background:T.isDark?"#1E2330":T.border, borderRadius:4, padding:"1px 5px", color:T.dim, fontFamily:"Consolas,monospace" }}>⌘K</kbd>
-          </button>
+            <button onClick={()=>setPaletteOpen(true)} style={{ background:T.border, border:`1px solid ${T.border2}`, borderRadius:7, padding:"6px 14px", cursor:"pointer", display:"flex", alignItems:"center", gap:6, fontSize:11, color:T.muted }}>
+              <Search size={13}/> <span>Search</span> <kbd style={{ fontSize:9, background:T.isDark?"#1E2330":T.border, borderRadius:4, padding:"1px 5px", color:T.dim, fontFamily:"Consolas,monospace" }}>⌘K</kbd>
+            </button>
           {/* Data Mode Toggle */}
           <div style={{ display:"flex", alignItems:"center", gap:1, background:T.border, borderRadius:8, padding:2 }}>
             <button
@@ -6787,6 +7075,7 @@ export default function AIOpsMonitor() {
           <button style={{ background:T.border, border:`1px solid ${T.border2}`, borderRadius:7, padding:"6px", cursor:"pointer", color:T.muted }}>
             <Settings size={14} />
           </button>
+          </div>
         </div>
       </header>
 
@@ -6903,6 +7192,7 @@ export default function AIOpsMonitor() {
                 resolveAlert={resolveAlert} triageAlert={triageAlert} autoFixAlert={autoFixAlert}
                 openDrill={openDrill} setAiPanel={setAiPanel} aiPanel={aiPanel}
                 dataMode={dataMode}
+                addAuditEvent={addAuditEvent}
               />
               <div style={{ marginTop:20 }}>
                 <RootCauseTab />
@@ -7004,6 +7294,7 @@ export default function AIOpsMonitor() {
                 setAgentStates={setAgentStates}
                 setAlertsState={setAlertsState}
                 accountId={accountId}
+                addAuditEvent={addAuditEvent}
               />
             </div>
           )}
@@ -7027,7 +7318,7 @@ export default function AIOpsMonitor() {
           {/* ── Rules Tab (+ Validation) ── */}
           {activeTab === "rules" && (
             <div style={{ paddingBottom:24 }}>
-              <RulesAndValidationWrapper liveRules={dataMode==="prod"?liveRules:[]} rulesLoading={rulesLoading} />
+              <RulesAndValidationWrapper liveRules={dataMode==="prod"?liveRules:[]} rulesLoading={rulesLoading} addAuditEvent={addAuditEvent} />
             </div>
           )}
           

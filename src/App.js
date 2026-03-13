@@ -1172,7 +1172,7 @@ function WorkflowBuilderTab() {
     try {
       const res = await fetch("https://api.anthropic.com/v1/messages", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: { "Content-Type": "application/json", "anthropic-dangerous-direct-browser-access": "true" },
         body: JSON.stringify({
           model: "claude-sonnet-4-20250514",
           max_tokens: 1000,
@@ -1640,7 +1640,7 @@ function ValidationRulesTab({ liveRules, rulesLoading }) {
     setNlpLoading(true); setNlpResult(null);
     try {
       const res = await fetch("https://api.anthropic.com/v1/messages", {
-        method:"POST", headers:{"Content-Type":"application/json"},
+        method:"POST", headers:{"Content-Type":"application/json","anthropic-dangerous-direct-browser-access":"true"},
         body: JSON.stringify({
           model:"claude-sonnet-4-20250514", max_tokens:1000,
           system:`You are a data quality rule generator for the Intentwise QA platform. The ONLY datasource is "redshift-staging" (schema: mws). Tables and key columns:
@@ -1676,7 +1676,7 @@ Respond ONLY with valid JSON (no markdown): {"name":"string","type":"string","so
 
       // 2. Ask Claude to suggest test cases based on actual mws schema
       const res = await fetch("https://api.anthropic.com/v1/messages", {
-        method:"POST", headers:{"Content-Type":"application/json"},
+        method:"POST", headers:{"Content-Type":"application/json","anthropic-dangerous-direct-browser-access":"true"},
         body: JSON.stringify({
           model:"claude-sonnet-4-20250514", max_tokens:1500,
           system:`You are a data quality AI for Intentwise. The database is Redshift, schema: mws. Tables available: ${mwsTables.join(", ")}. Key columns per table — orders: amazon_order_id, asin, order_status, item_price, quantity, account_id, download_date. inventory: asin, available, total_units, days_of_supply, alert, account_id. sales_and_traffic_by_date: sale_date, ordered_product_sales_amt, units_ordered, buy_box_percentage, account_id. sales_and_traffic_by_asin: child_asin, units_ordered, traffic_by_asin_buy_box_prcntg, account_id. Suggest 6 high-value test cases covering nulls, duplicates, freshness, range checks, and referential integrity. Respond ONLY with a JSON array (no markdown): [{"table":"mws.TABLE","column":"col","type":"rule_type","name":"short name","severity":"critical|high|medium|low","reason":"why this matters","confidence":0.0-1.0,"sql_hint":"exact SQL"}]`,
@@ -2746,7 +2746,7 @@ function RuleTestRunnerTab() {
     setAiLoading(true);
     try {
       const resp = await fetch("https://api.anthropic.com/v1/messages",{
-        method:"POST", headers:{"Content-Type":"application/json"},
+        method:"POST", headers:{"Content-Type":"application/json","anthropic-dangerous-direct-browser-access":"true"},
         body: JSON.stringify({
           model:"claude-sonnet-4-20250514", max_tokens:400,
           system:"You are a data quality AI for Intentwise. Given a failed validation rule test, explain what the failure means in plain English, its likely root cause, and a concise recommended fix. Be specific and actionable. 2-3 sentences max.",
@@ -2877,7 +2877,7 @@ function RootCauseTab() {
     setAnalyzing(group.id);
     try {
       const res = await fetch("https://api.anthropic.com/v1/messages",{
-        method:"POST", headers:{"Content-Type":"application/json"},
+        method:"POST", headers:{"Content-Type":"application/json","anthropic-dangerous-direct-browser-access":"true"},
         body: JSON.stringify({
           model:"claude-sonnet-4-20250514", max_tokens:600,
           system:"You are a data pipeline root cause analyst for Intentwise. Given a correlated alert group, provide a deeper technical analysis: exact timeline of failure, cascade path, probability of recurrence, and a step-by-step remediation plan with estimated time for each step. Be concrete and specific. Format with clear sections.",
@@ -3038,7 +3038,7 @@ function AIChatPanel({ alert, onClose }) {
     try {
       const res = await fetch("https://api.anthropic.com/v1/messages", {
         method:"POST",
-        headers:{ "Content-Type":"application/json" },
+        headers:{ "Content-Type":"application/json", "anthropic-dangerous-direct-browser-access":"true" },
         body: JSON.stringify({
           model:"claude-sonnet-4-20250514",
           max_tokens:1000,
@@ -3223,6 +3223,12 @@ function AlertRow({ alert, onAIClick, onDrill, onResolve, onAutoFix, onTriage, s
             )}
           </div>
           <div style={{ display:"flex", flexDirection:"column", gap:6 }}>
+            <button
+              onClick={e=>{e.stopPropagation(); onAIClick && onAIClick(alert);}}
+              style={{ background:`${C.purple}18`, border:`1px solid ${C.purple}50`, borderRadius:7, padding:"7px 14px", cursor:"pointer", fontSize:11, color:C.purple, fontWeight:700, display:"flex", alignItems:"center", gap:6 }}
+            >
+              <Bot size={12} color={C.purple}/> Open AI Chat
+            </button>
             {alert.canAutoFix && !isResolved && (
               <button
                 onClick={handleAutoFix}
@@ -4339,8 +4345,7 @@ function CommandPalette({ onClose, onNavigate }) {
     { type:"nav",   icon:"🏠", label:"Ops Command Center",   hint:"Tab",  action:"tab:dashboard"  },
     { type:"nav",   icon:"🤖", label:"QA Process Health",    hint:"Tab",  action:"tab:qahealth"   },
     { type:"nav",   icon:"🔔", label:"Detect & Triage",      hint:"Tab",  action:"tab:alerts"     },
-    { type:"nav",   icon:"🧠", label:"Root Cause Analysis",  hint:"Tab",  action:"tab:rootcause"  },
-    { type:"nav",   icon:"🤖", label:"QA Agents",            hint:"Tab",  action:"tab:agents"     },
+        { type:"nav",   icon:"🤖", label:"QA Agents",            hint:"Tab",  action:"tab:agents"     },
     { type:"nav",   icon:"🔀", label:"Remediation Flows",    hint:"Tab",  action:"tab:workflows"  },
     { type:"nav",   icon:"✓",  label:"Quality Rules",        hint:"Tab",  action:"tab:rules"      },
     { type:"nav",   icon:"🧪", label:"Rule Validation",      hint:"Tab",  action:"tab:testrules"  },
@@ -4475,7 +4480,7 @@ function AgentEvalsPanel({ agentId, agent }) {
     try {
       const res = await fetch("https://api.anthropic.com/v1/messages", {
         method:"POST",
-        headers:{"Content-Type":"application/json"},
+        headers:{"Content-Type":"application/json","anthropic-dangerous-direct-browser-access":"true"},
         body: JSON.stringify({
           model:"claude-sonnet-4-20250514",
           max_tokens:600,
@@ -4958,7 +4963,7 @@ function DrillModal({ target, onClose, onNavigate }) {
     setAiLoading(true);
     try {
       const res = await fetch("https://api.anthropic.com/v1/messages", {
-        method:"POST", headers:{"Content-Type":"application/json"},
+        method:"POST", headers:{"Content-Type":"application/json","anthropic-dangerous-direct-browser-access":"true"},
         body: JSON.stringify({
           model:"claude-sonnet-4-20250514", max_tokens:350,
           system:"You are a data quality expert for Intentwise. Given a failed data rule, explain root cause and give a specific 2-step fix. Be concise and technical.",
@@ -5546,6 +5551,109 @@ function DBExplorerTab({ kpis, kpisLoading, alertsState, setActiveTab: setActive
 }
 
 // ─── Main App ─────────────────────────────────────────────────────────────────
+
+function DetectTriageRootCause({ alertsState, sevFilter, setSevFilter, search, setSearch,
+  resolveAlert, triageAlert, autoFixAlert, openDrill, setAiPanel, aiPanel, dataMode }) {
+  const T = useTheme();
+  const [sub, setSub] = useState("triage");
+
+  const liveAlerts = (alertsState?.length > 0 ? alertsState : ALERTS_RAW)
+    .filter(a => dataMode === "prod" ? a.id?.startsWith("AGT-") : !a.id?.startsWith("AGT-"));
+
+  const filtered = liveAlerts.filter(a =>
+    (sevFilter === "all" || a.severity === sevFilter) &&
+    (!search || a.title?.toLowerCase().includes(search.toLowerCase()) || a.table?.toLowerCase().includes(search.toLowerCase()))
+  );
+
+  const critCount = liveAlerts.filter(a => a.severity === "critical").length;
+  const openCount = liveAlerts.filter(a => a.status !== "resolved").length;
+
+  return (
+    <div style={{ paddingBottom:24 }}>
+      {/* Sub-nav */}
+      <div style={{ display:"flex", alignItems:"center", gap:0, marginBottom:16, background:T.card, border:`1px solid ${T.border2}`, borderRadius:10, padding:4, width:"fit-content" }}>
+        {[
+          { id:"triage", label:"Detect & Triage",     icon:Bell },
+        ].map(({ id, label, icon:Icon }) => (
+          <button key={id} onClick={()=>setSub(id)}
+            style={{ display:"flex", alignItems:"center", gap:6, padding:"6px 16px", borderRadius:7, border:"none", cursor:"pointer", fontSize:11, fontWeight:sub===id?700:500,
+              background: sub===id ? T.accent : "transparent",
+              color: sub===id ? "#fff" : T.muted, transition:"all 0.15s", fontFamily:"Calibri,sans-serif" }}>
+            <Icon size={12}/>{label}
+          </button>
+        ))}
+      </div>
+
+      {/* ── Detect & Triage ── */}
+      {sub === "triage" && (
+        <>
+          <Card style={{ marginBottom:16 }}>
+            <SectionHeader
+              icon={Bell}
+              title="Detected Quality Issues"
+              subtitle={`${critCount} critical · ${openCount} open · redshift-staging`}
+              action={
+                <div style={{ display:"flex", gap:8, alignItems:"center" }}>
+                  <input value={search} onChange={e=>setSearch(e.target.value)} placeholder="Search alerts…"
+                    style={{ background:T.bg, border:`1px solid ${T.border2}`, borderRadius:7, padding:"5px 10px", color:T.text, fontSize:11, outline:"none", width:160, fontFamily:"Calibri,sans-serif" }}/>
+                  <div style={{ display:"flex", gap:4 }}>
+                    {["all","critical","high","medium","low"].map(s=>(
+                      <button key={s} onClick={()=>setSevFilter(s)}
+                        style={{ padding:"4px 10px", borderRadius:6, border:`1px solid ${sevFilter===s?T.accent:T.border2}`, background:sevFilter===s?`${T.accent}15`:"transparent",
+                          color:sevFilter===s?T.accent:T.muted, fontSize:10, fontWeight:600, cursor:"pointer", textTransform:"capitalize", fontFamily:"Calibri,sans-serif" }}>
+                        {s}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              }
+            />
+          </Card>
+          <div style={{ display:"flex", flexDirection:"column", gap:6 }}>
+            {filtered.length === 0
+              ? <Card style={{ padding:"32px", textAlign:"center" }}><div style={{ color:T.muted, fontSize:12 }}>No alerts match current filters.</div></Card>
+              : filtered.map(a => (
+                  <AlertRow key={a.id} alert={a} selected={aiPanel?.id===a.id}
+                    onAIClick={setAiPanel} onDrill={openDrill}
+                    onResolve={resolveAlert} onAutoFix={autoFixAlert} onTriage={triageAlert}/>
+                ))
+            }
+          </div>
+        </>
+      )}
+
+    </div>
+  );
+}
+
+function RulesAndValidationWrapper({ liveRules, rulesLoading }) {
+  const T = useTheme();
+  const C = T;
+  const [view, setView] = React.useState("rules");
+  const tabs = [
+    { id:"rules", label:"Quality Rules", icon:Shield },
+    { id:"validation", label:"Rule Validation", icon:TestTube2 },
+  ];
+  return (
+    <div>
+      {/* Sub-nav */}
+      <div style={{ display:"flex", gap:4, marginBottom:18, borderBottom:`1px solid ${T.border}`, paddingBottom:0 }}>
+        {tabs.map(t=>(
+          <button key={t.id} onClick={()=>setView(t.id)}
+            style={{ display:"flex", alignItems:"center", gap:6, padding:"8px 16px", background:"none", border:"none",
+              borderBottom: view===t.id ? `2px solid ${T.accent}` : "2px solid transparent",
+              color: view===t.id ? T.accent : T.muted,
+              fontSize:12, fontWeight: view===t.id ? 700 : 500, cursor:"pointer", marginBottom:-1 }}>
+            <t.icon size={13}/> {t.label}
+          </button>
+        ))}
+      </div>
+      {view === "rules"      && <ValidationRulesTab liveRules={liveRules} rulesLoading={rulesLoading} />}
+      {view === "validation" && <RuleTestRunnerTab />}
+    </div>
+  );
+}
+
 export default function AIOpsMonitor() {
   const [theme, setTheme] = useState("light");
   const [dataMode, setDataMode] = useState("prod"); // "demo" | "prod"
@@ -5693,15 +5801,12 @@ export default function AIOpsMonitor() {
   const runningAgents = AGENTS.filter(a=>a.status==="running").length;
 
   const TABS = [
-    { id:"qahealth",   label:"QA Process Health",   icon:Activity,        count:0,                                                          badge:"NEW" },
+    { id:"qahealth",   label:"Health & Insights",   icon:Activity,        count:0 },
     { id:"dashboard",  label:"Ops Command Center",   icon:LayoutDashboard, count:0 },
     { id:"alerts",     label:"Detect & Triage",      icon:Bell,            count:openCount },
-    { id:"rootcause",  label:"Root Cause Analysis",  icon:BrainCircuit,    count:CORRELATED_GROUPS.length },
-    { id:"agents",     label:"QA Agents",            icon:Bot,             count:runningAgents },
-    { id:"workflows",  label:"Remediation Flows",    icon:GitBranch,       count:0 },
+    { id:"automation", label:"Automation & Controls", icon:Cpu,             count:0 },
     { id:"rules",      label:"Quality Rules",        icon:Shield,          count:INIT_RULES.filter(r=>r.lastResult==="fail").length },
     { id:"testrules",  label:"Rule Validation",      icon:TestTube2,       count:0 },
-    { id:"gates",      label:"Human-in-the-Loop",    icon:Lock,            count:PENDING_APPROVALS.length },
     { id:"history",    label:"Audit Trail",          icon:History,         count:0 },
     { id:"sources",    label:"Data Sources",         icon:Database,        count:DATASOURCES.filter(d=>d.status!=="healthy").length },
     { id:"dbexplorer", label:"DB Explorer",          icon:Database,        count:0, badge:"LIVE" },
@@ -5780,22 +5885,7 @@ export default function AIOpsMonitor() {
                 transition:"all 0.15s" }}
             >LIVE</button>
           </div>
-          {/* Account Selector */}
-          <div style={{ display:"flex", alignItems:"center", gap:6 }}>
-            <Users size={13} color={T.muted}/>
-            <select
-              value={accountId}
-              onChange={e=>setAccountId(e.target.value)}
-              style={{ background:T.card, border:`1px solid ${T.border2}`, borderRadius:7, padding:"5px 10px", color:T.text, fontSize:11, outline:"none", cursor:"pointer", fontFamily:"Calibri,sans-serif" }}
-            >
-              <option value="all">All Accounts</option>
-              {(accounts||[]).map(a=>(
-                <option key={a.account_id} value={String(a.account_id)}>
-                  {a.seller_id || `Account ${a.account_id}`}
-                </option>
-              ))}
-            </select>
-          </div>
+          
           <button onClick={()=>setNotifOpen(true)} style={{ background:T.border, border:`1px solid ${T.border2}`, borderRadius:7, padding:"6px 14px", cursor:"pointer", display:"flex", alignItems:"center", gap:6, fontSize:11, color:T.muted }}>
             <Bell size={13} /> Notifications
           </button>
@@ -5909,81 +5999,60 @@ export default function AIOpsMonitor() {
                  badge={kpis?"LIVE":null} />
           </div>
 
-          {/* ── QA Health Tab ── */}
+          {/* ── Health & Insights Tab ── */}
           {activeTab === "qahealth" && (
             <div style={{ paddingBottom:24 }}>
-              <QAHealthTab />
+              <SectionHeader icon={Activity} title="Health & Insights" subtitle="Pipeline health metrics and QA process analytics — coming soon" />
+              <div style={{ marginTop:4, padding:"32px", background:T.card, border:`1px dashed ${T.border2}`, borderRadius:12, textAlign:"center" }}>
+                <Activity size={32} color={T.border2} style={{ marginBottom:12 }}/>
+                <div style={{ fontSize:13, color:T.muted, marginBottom:6 }}>Health dashboards will be wired to <code style={{color:T.accentL,fontFamily:"Consolas,monospace"}}>redshift-staging</code> in a future release.</div>
+                <div style={{ fontSize:11, color:T.muted }}>Coverage metrics, pipeline SLAs, and QA trend charts coming soon.</div>
+              </div>
             </div>
           )}
 
-          {/* ── Alerts Tab ── */}
+          {/* ── Detect & Triage + Root Cause Tab ── */}
           {activeTab === "alerts" && (
             <>
-              <Card style={{ marginBottom:16 }}>
-                <SectionHeader
-                  icon={Bell}
-                  title="Detected Quality Issues"
-                  subtitle={`${alerts.length} matching · AI-triaged by severity${lastScan ? ` · last scan ${lastScan}` : ""}`}
-                  action={
-                    <div style={{ display:"flex", gap:8, alignItems:"center" }}>
-                      <button onClick={runAgentScan} disabled={alertsLoading} style={{ background:`${C.green}15`, border:`1px solid ${C.green}40`, borderRadius:7, padding:"6px 14px", cursor:"pointer", fontSize:11, color:C.green, fontWeight:700, display:"flex", alignItems:"center", gap:6 }}>
-                        {alertsLoading ? <><RefreshCw size={11} style={{animation:"spin 1s linear infinite"}}/> Scanning…</> : <><Zap size={11}/> Run Agent Scan</>}
-                      </button>
-                      <div style={{ position:"relative" }}>
-                        <Search size={12} color={C.dim} style={{ position:"absolute", left:10, top:"50%", transform:"translateY(-50%)" }} />
-                        <input value={search} onChange={e=>setSearch(e.target.value)} placeholder="Search alerts…" style={{ background:C.bg, border:`1px solid ${C.border2}`, borderRadius:7, padding:"6px 10px 6px 28px", color:C.text, fontSize:11, width:180, outline:"none" }} />
-                      </div>
-                      <div style={{ display:"flex", gap:4 }}>
-                        {["all","critical","high","medium","low"].map(s=>(
-                          <button key={s} onClick={()=>setSevFilter(s)} style={{ background:sevFilter===s?`${SEVERITY[s]||C.accent}20`:C.bg, border:`1px solid ${sevFilter===s?SEVERITY[s]||C.accent:C.border2}`, borderRadius:6, padding:"5px 10px", cursor:"pointer", fontSize:10, color:sevFilter===s?SEVERITY[s]||C.accentL:C.muted, fontWeight:700, textTransform:"uppercase", letterSpacing:"0.05em" }}>
-                            {s}
-                          </button>
-                        ))}
-                      </div>
-                    </div>
-                  }
-                  action2={null}
-                />
-                <div style={{ borderTop:`1px solid ${C.border}`, borderRadius:"0 0 10px 10px", overflow:"hidden" }}>
-                  {alerts.length === 0 ? (
-                    <div style={{ padding:"32px", textAlign:"center", color:C.muted, fontSize:12 }}>No alerts match current filters.</div>
-                  ) : alerts.map(a => (
-                    <AlertRow key={a.id} alert={a} onAIClick={setAiPanel} selected={aiPanel?.id===a.id}
-                      onDrill={openDrill}
-                      onResolve={resolveAlert}
-                      onAutoFix={autoFixAlert}
-                      onTriage={triageAlert}
-                    />
-                  ))}
-                </div>
-              </Card>
-
-              {/* AI Insights strip */}
-              <Card style={{ padding:"14px 18px", background:`linear-gradient(135deg, ${C.card} 0%, #16103A 100%)`, border:`1px solid ${C.purple}30` }}>
-                <div style={{ display:"flex", alignItems:"center", gap:10, marginBottom:12 }}>
-                  <Sparkles size={14} color={C.purple} />
-                  <span style={{ fontSize:12, fontWeight:700, color:C.text }}>Autonomous Pattern Recognition</span>
-                  <span style={{ fontSize:10, color:C.muted }}>· last 24h</span>
-                </div>
-                <div style={{ display:"grid", gridTemplateColumns:"repeat(3,1fr)", gap:10 }}>
-                  {[
-                    { label:"Monday spike pattern", detail:"Stuck-pending alerts +3x every Monday 6-9 AM. Recommend pre-emptive retry job at 5:45 AM.", color:C.orange },
-                    { label:"Redshift replication lag", detail:"Copy jobs fail when Redshift latency >280ms. Current: 340ms. Suggest throttle check.", color:C.red },
-                    { label:"Schema drift velocity", detail:"2 new columns/week avg on snowflake-dw. Auto-schema sync rule recommended.", color:C.cyan },
-                  ].map(i=>(
-                    <div key={i.label} style={{ background:`${i.color}08`, border:`1px solid ${i.color}25`, borderRadius:8, padding:"10px 12px" }}>
-                      <div style={{ fontSize:11, fontWeight:700, color:i.color, marginBottom:5 }}>{i.label}</div>
-                      <div style={{ fontSize:11, color:C.muted, lineHeight:1.6 }}>{i.detail}</div>
-                    </div>
-                  ))}
-                </div>
-              </Card>
+              <DetectTriageRootCause
+                alertsState={alertsState} sevFilter={sevFilter} setSevFilter={setSevFilter}
+                search={search} setSearch={setSearch}
+                resolveAlert={resolveAlert} triageAlert={triageAlert} autoFixAlert={autoFixAlert}
+                openDrill={openDrill} setAiPanel={setAiPanel} aiPanel={aiPanel}
+                dataMode={dataMode}
+              />
+              <div style={{ marginTop:20 }}>
+                <RootCauseTab />
+              </div>
             </>
           )}
 
-          {/* ── Agents Tab ── */}
-          {activeTab === "agents" && (
-            <AgentFleetTab onDrill={openDrill} agentScanResult={dataMode==="prod"?agentScanResult:null} agentScanLoading={agentScanLoading} onAgentScan={runFullAgentScan} dataMode={dataMode} />
+          {/* ── Automation & Controls Tab ── */}
+          {activeTab === "automation" && (
+            <div style={{ paddingBottom:24 }}>
+              <SectionHeader icon={Cpu} title="Automation & Controls" subtitle="QA agents, remediation flows and approval gates — coming soon" />
+              <div style={{ display:"grid", gridTemplateColumns:"repeat(3,1fr)", gap:14, marginTop:4 }}>
+                {[
+                  { icon:Bot,       title:"QA Agents",          desc:"Autonomous agents that scan mws tables, detect anomalies and file alerts.", badge:"Soon" },
+                  { icon:GitBranch, title:"Remediation Flows",  desc:"Automated workflows to fix, requeue or escalate detected data issues.",   badge:"Soon" },
+                  { icon:Lock,      title:"Human-in-the-Loop",  desc:"Approval gates requiring human sign-off before high-risk auto-fixes run.", badge:"Soon" },
+                ].map(({ icon:Icon, title, desc, badge }) => (
+                  <div key={title} style={{ background:T.card, border:`1px solid ${T.border2}`, borderRadius:12, padding:"20px 22px" }}>
+                    <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom:12 }}>
+                      <div style={{ width:36, height:36, borderRadius:10, background:`${T.accent}12`, display:"flex", alignItems:"center", justifyContent:"center" }}>
+                        <Icon size={18} color={T.accent}/>
+                      </div>
+                      <span style={{ fontSize:9, fontWeight:700, letterSpacing:"0.08em", color:T.muted, background:T.border, borderRadius:4, padding:"2px 7px" }}>{badge}</span>
+                    </div>
+                    <div style={{ fontSize:13, fontWeight:700, color:T.text, marginBottom:6 }}>{title}</div>
+                    <div style={{ fontSize:12, color:T.muted, lineHeight:1.6 }}>{desc}</div>
+                  </div>
+                ))}
+              </div>
+              <div style={{ marginTop:20, padding:"16px 20px", background:T.card, border:`1px dashed ${T.border2}`, borderRadius:12, textAlign:"center" }}>
+                <div style={{ fontSize:12, color:T.muted }}>These capabilities will be wired to <code style={{color:T.accentL,fontFamily:"Consolas,monospace"}}>redshift-staging</code> · mws schema in a future release.</div>
+              </div>
+            </div>
           )}
 
           {/* ── Sources Tab ── */}
@@ -6042,20 +6111,6 @@ export default function AIOpsMonitor() {
             </div>
           )}
 
-          {/* ── Root Cause Tab ── */}
-          {activeTab === "rootcause" && (
-            <div style={{ paddingBottom:24 }}>
-              <RootCauseTab />
-            </div>
-          )}
-
-          {/* ── Test Runner Tab ── */}
-          {activeTab === "testrules" && (
-            <div style={{ paddingBottom:24 }}>
-              <RuleTestRunnerTab />
-            </div>
-          )}
-
           {/* ── Run History Tab ── */}
           {activeTab === "history" && (
             <div style={{ paddingBottom:24 }}>
@@ -6063,26 +6118,22 @@ export default function AIOpsMonitor() {
             </div>
           )}
 
-          {/* ── Workflows Tab ── */}
-          {activeTab === "workflows" && (
-            <div style={{ paddingBottom:24 }}>
-              <WorkflowBuilderTab />
-            </div>
-          )}
+          
 
-          {/* ── Rules Tab ── */}
+          {/* ── Rules Tab (+ Validation) ── */}
           {activeTab === "rules" && (
             <div style={{ paddingBottom:24 }}>
-              <ValidationRulesTab liveRules={dataMode==="prod"?liveRules:[]} rulesLoading={rulesLoading} />
+              <RulesAndValidationWrapper liveRules={dataMode==="prod"?liveRules:[]} rulesLoading={rulesLoading} />
+            </div>
+          )}
+          
+          {/* ── Rule Validation Tab ── */}
+          {activeTab === "testrules" && (
+            <div style={{ paddingBottom:24 }}>
+              <RuleTestRunnerTab />
             </div>
           )}
 
-          {/* ── Gates Tab ── */}
-          {activeTab === "gates" && (
-            <div style={{ paddingBottom:24 }}>
-              <ApprovalGatesTab />
-            </div>
-          )}
         </main>
       </div>
 

@@ -1170,11 +1170,10 @@ function WorkflowBuilderTab() {
     if (!aiPrompt.trim() || aiLoading) return;
     setAiLoading(true);
     try {
-      const res = await fetch("https://api.anthropic.com/v1/messages", {
+      const res = await fetch(`${API_BASE}/api/ai/chat`, {
         method: "POST",
-        headers: { "Content-Type": "application/json", "anthropic-dangerous-direct-browser-access": "true" },
+        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          model: "claude-sonnet-4-20250514",
           max_tokens: 1000,
           system: `You are a data ops workflow designer for Intentwise. Convert the user's SOP description into a workflow node array. 
 Available node types: trigger, monitor, validate, condition, action, notify, approve, wait, loop, end.
@@ -1672,10 +1671,9 @@ function ValidationRulesTab({ liveRules, rulesLoading }) {
     if (!nlpInput.trim() || nlpLoading) return;
     setNlpLoading(true); setNlpResult(null);
     try {
-      const res = await fetch("https://api.anthropic.com/v1/messages", {
-        method:"POST", headers:{"Content-Type":"application/json","anthropic-dangerous-direct-browser-access":"true"},
-        body: JSON.stringify({
-          model:"claude-sonnet-4-20250514", max_tokens:1000,
+      const res = await fetch(`${API_BASE}/api/ai/chat`, {
+        method:"POST", headers:{"Content-Type":"application/json"},
+        body: JSON.stringify({ max_tokens:1000,
           system:`You are a data quality rule generator for the Intentwise QA platform. The ONLY datasource is "redshift-staging" (schema: mws). Tables and key columns:
 
 mws.orders: id, amazon_order_id, merchant_order_id, purchase_date, last_updated_date, order_status, fulfillment_channel, sales_channel, product_name, sku, asin, item_status, quantity, currency, item_price, item_tax, shipping_price, is_business_order, seller_id, account_id, download_date
@@ -1708,10 +1706,9 @@ Respond ONLY with valid JSON (no markdown): {"name":"string","type":"string","so
       const mwsTables = (tablesData || []).filter(t => t.schema === "mws").map(t => t.name);
 
       // 2. Ask Claude to suggest test cases based on actual mws schema
-      const res = await fetch("https://api.anthropic.com/v1/messages", {
-        method:"POST", headers:{"Content-Type":"application/json","anthropic-dangerous-direct-browser-access":"true"},
-        body: JSON.stringify({
-          model:"claude-sonnet-4-20250514", max_tokens:1500,
+      const res = await fetch(`${API_BASE}/api/ai/chat`, {
+        method:"POST", headers:{"Content-Type":"application/json"},
+        body: JSON.stringify({ max_tokens:1500,
           system:`You are a data quality AI for Intentwise. The database is Redshift, schema: mws. Tables available: ${mwsTables.join(", ")}. Key columns per table — orders: amazon_order_id, asin, order_status, item_price, quantity, account_id, download_date. inventory: asin, available, total_units, days_of_supply, alert, account_id. sales_and_traffic_by_date: sale_date, ordered_product_sales_amt, units_ordered, buy_box_percentage, account_id. sales_and_traffic_by_asin: child_asin, units_ordered, traffic_by_asin_buy_box_prcntg, account_id. Suggest 6 high-value test cases covering nulls, duplicates, freshness, range checks, and referential integrity. Respond ONLY with a JSON array (no markdown): [{"table":"mws.TABLE","column":"col","type":"rule_type","name":"short name","severity":"critical|high|medium|low","reason":"why this matters","confidence":0.0-1.0,"sql_hint":"exact SQL"}]`,
           messages:[{ role:"user", content:"Scan mws schema and suggest the most impactful data quality test cases." }]
         })
@@ -2829,10 +2826,9 @@ function RuleTestRunnerTab() {
   const explainFailure = async (res) => {
     setAiLoading(true);
     try {
-      const resp = await fetch("https://api.anthropic.com/v1/messages",{
-        method:"POST", headers:{"Content-Type":"application/json","anthropic-dangerous-direct-browser-access":"true"},
-        body: JSON.stringify({
-          model:"claude-sonnet-4-20250514", max_tokens:400,
+      const resp = await fetch(`${API_BASE}/api/ai/chat`,{
+        method:"POST", headers:{"Content-Type":"application/json"},
+        body: JSON.stringify({ max_tokens:400,
           system:"You are a data quality AI for Intentwise. Given a failed validation rule test, explain what the failure means in plain English, its likely root cause, and a concise recommended fix. Be specific and actionable. 2-3 sentences max.",
           messages:[{role:"user",content:`Rule: ${selectedRule.name} (${selectedRule.type}) on ${selectedRule.table}.${selectedRule.column}. Result: ${res.summary}. Explain the failure and recommend a fix.`}]
         })
@@ -2960,10 +2956,9 @@ function RootCauseTab() {
     if(aiAnalysis[group.id]||analyzing===group.id) return;
     setAnalyzing(group.id);
     try {
-      const res = await fetch("https://api.anthropic.com/v1/messages",{
-        method:"POST", headers:{"Content-Type":"application/json","anthropic-dangerous-direct-browser-access":"true"},
-        body: JSON.stringify({
-          model:"claude-sonnet-4-20250514", max_tokens:600,
+      const res = await fetch(`${API_BASE}/api/ai/chat`,{
+        method:"POST", headers:{"Content-Type":"application/json"},
+        body: JSON.stringify({ max_tokens:600,
           system:"You are a data pipeline root cause analyst for Intentwise. Given a correlated alert group, provide a deeper technical analysis: exact timeline of failure, cascade path, probability of recurrence, and a step-by-step remediation plan with estimated time for each step. Be concrete and specific. Format with clear sections.",
           messages:[{role:"user",content:`Analyze this correlated alert group:
 Title: ${group.title}
@@ -3120,11 +3115,10 @@ function AIChatPanel({ alert, onClose }) {
     setMessages(p => [...p, { role:"user", content: userMsg }]);
     setLoading(true);
     try {
-      const res = await fetch("https://api.anthropic.com/v1/messages", {
+      const res = await fetch(`${API_BASE}/api/ai/chat`, {
         method:"POST",
-        headers:{ "Content-Type":"application/json", "anthropic-dangerous-direct-browser-access":"true" },
+        headers:{"Content-Type":"application/json"},
         body: JSON.stringify({
-          model:"claude-sonnet-4-20250514",
           max_tokens:1000,
           system:`You are an expert Data QE AI agent for Intentwise. You help monitor, triage, and fix data quality issues in a Redshift database (schema: mws).
 
@@ -4568,11 +4562,10 @@ function AgentEvalsPanel({ agentId, agent }) {
     setRunning(ec.id);
     updateCase(ec.id, { verdict:null, score:null, judgeRationale:"Evaluating…" });
     try {
-      const res = await fetch("https://api.anthropic.com/v1/messages", {
+      const res = await fetch(`${API_BASE}/api/ai/chat`, {
         method:"POST",
-        headers:{"Content-Type":"application/json","anthropic-dangerous-direct-browser-access":"true"},
+        headers:{"Content-Type":"application/json"},
         body: JSON.stringify({
-          model:"claude-sonnet-4-20250514",
           max_tokens:600,
           system:`You are an expert AI evaluator for a data quality monitoring platform (Intentwise). 
 You will be given an eval case with: category, expected output, and actual output.
@@ -5052,10 +5045,9 @@ function DrillModal({ target, onClose, onNavigate }) {
   const fetchAIExplain = async () => {
     setAiLoading(true);
     try {
-      const res = await fetch("https://api.anthropic.com/v1/messages", {
-        method:"POST", headers:{"Content-Type":"application/json","anthropic-dangerous-direct-browser-access":"true"},
-        body: JSON.stringify({
-          model:"claude-sonnet-4-20250514", max_tokens:350,
+      const res = await fetch(`${API_BASE}/api/ai/chat`, {
+        method:"POST", headers:{"Content-Type":"application/json"},
+        body: JSON.stringify({ max_tokens:350,
           system:"You are a data quality expert for Intentwise. Given a failed data rule, explain root cause and give a specific 2-step fix. Be concise and technical.",
           messages:[{role:"user", content:`Rule failed: ${data.name} (${data.type}) on ${data.source} → ${data.table}. Give root cause + fix in 2-3 sentences.`}]
         })
@@ -5820,11 +5812,10 @@ function DataflowsTab() {
 
   const autoAnomalyCheck = async (f, rows) => {
     try {
-      const res = await fetch("https://api.anthropic.com/v1/messages", {
+      const res = await fetch(`${API_BASE}/api/ai/chat`, {
         method:"POST",
-        headers:{"Content-Type":"application/json","anthropic-dangerous-direct-browser-access":"true"},
-        body: JSON.stringify({
-          model:"claude-sonnet-4-20250514", max_tokens:400,
+        headers:{"Content-Type":"application/json"},
+        body: JSON.stringify({ max_tokens:400,
           system:`You are a data quality AI for Intentwise. Analyse query results briefly. If anomalies detected, respond with a short 1-2 sentence alert starting with "⚠ Anomaly:". If results look normal, respond with "✓ Results look healthy." Only respond with one of those two formats.`,
           messages:[{ role:"user", content:`Dataflow: "${f.name}"\nAlert condition: ${f.alertOn}\nRow count: ${rows.length}\nFirst 3 rows: ${JSON.stringify(rows.slice(0,3))}` }]
         })
@@ -5846,11 +5837,10 @@ function DataflowsTab() {
     setAiMessages(nextMsgs);
     setAiLoading(true);
     try {
-      const res = await fetch("https://api.anthropic.com/v1/messages", {
+      const res = await fetch(`${API_BASE}/api/ai/chat`, {
         method:"POST",
-        headers:{"Content-Type":"application/json","anthropic-dangerous-direct-browser-access":"true"},
-        body: JSON.stringify({
-          model:"claude-sonnet-4-20250514", max_tokens:800,
+        headers:{"Content-Type":"application/json"},
+        body: JSON.stringify({ max_tokens:800,
           system:`You are a SQL + data quality AI assistant for Intentwise. The user is working on a Dataflow called "${flow.name}". Current SQL:\n\`\`\`sql\n${editQuery}\n\`\`\`\nRedshift schema: mws — tables: orders, inventory, inventory_restock, sales_and_traffic_by_date, sales_and_traffic_by_asin, sales_and_traffic_by_sku.\nHelp the user write, fix, or optimise their SQL, explain results, or set up alert conditions. When suggesting SQL changes, wrap the full updated query in \`\`\`sql\n...\n\`\`\` blocks.`,
           messages: nextMsgs.filter((m,i,a)=>{const fi=a.findIndex(x=>x.role==="user");return i>=fi;}).map(m=>({role:m.role,content:m.content}))
         })

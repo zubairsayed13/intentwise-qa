@@ -1614,6 +1614,39 @@ Always start with trigger, always end with end. Use 5–12 nodes. Make them spec
 
 
 // ─── Validation Rules Tab ─────────────────────────────────────────────────────
+function SchedModal({ rule, T, CRON_PRESETS, setRules, onClose }) {
+  return (
+    <div style={{position:"fixed",inset:0,background:"rgba(0,0,0,0.5)",zIndex:200,display:"flex",alignItems:"center",justifyContent:"center"}} onClick={onClose}>
+      <div style={{background:T.card,border:`1px solid ${T.border2}`,borderRadius:14,padding:"24px",width:400}} onClick={e=>e.stopPropagation()}>
+        <div style={{fontSize:13,fontWeight:700,color:T.text,marginBottom:4}}>Schedule: {rule.name}</div>
+        <div style={{fontSize:11,color:T.muted,marginBottom:16}}>Auto-run against redshift-staging · mws schema</div>
+        <div style={{marginBottom:12}}>
+          <div style={{fontSize:10,color:T.muted,fontWeight:700,marginBottom:6}}>PRESETS</div>
+          <div style={{display:"flex",flexWrap:"wrap",gap:6}}>
+            {CRON_PRESETS.map(p=>(
+              <button key={p.value} onClick={()=>setRules(rs=>rs.map(r=>r.id===rule.id?{...r,schedule:p.value}:r))}
+                style={{fontSize:10,padding:"4px 10px",borderRadius:6,border:`1px solid ${rule.schedule===p.value?T.accent:T.border2}`,background:rule.schedule===p.value?`${T.accent}15`:T.bg,color:rule.schedule===p.value?T.accent:T.muted,cursor:"pointer",fontWeight:rule.schedule===p.value?700:400}}>
+                {p.label}
+              </button>
+            ))}
+          </div>
+        </div>
+        <div style={{marginBottom:16}}>
+          <div style={{fontSize:10,color:T.muted,fontWeight:700,marginBottom:6}}>CUSTOM CRON</div>
+          <input value={rule.schedule||""} onChange={e=>setRules(rs=>rs.map(r=>r.id===rule.id?{...r,schedule:e.target.value}:r))}
+            style={{width:"100%",background:T.bg,border:`1px solid ${T.border2}`,borderRadius:7,padding:"7px 10px",color:T.text,fontSize:12,fontFamily:"Consolas,monospace",outline:"none",boxSizing:"border-box"}}
+            placeholder="0 * * * *" />
+          <div style={{fontSize:10,color:T.muted,marginTop:4}}>Current: <code style={{color:T.accentL}}>{rule.schedule||"not set"}</code></div>
+        </div>
+        <div style={{display:"flex",justifyContent:"flex-end",gap:8}}>
+          <button onClick={onClose} style={{fontSize:11,padding:"6px 14px",borderRadius:7,border:`1px solid ${T.border2}`,background:"none",color:T.muted,cursor:"pointer"}}>Cancel</button>
+          <button onClick={onClose} style={{fontSize:11,padding:"6px 14px",borderRadius:7,border:"none",background:T.accent,color:"white",cursor:"pointer",fontWeight:700}}>Save</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function ValidationRulesTab({ liveRules, rulesLoading }) {
   const [rules, setRules]           = useState(INIT_RULES);
   useEffect(() => {
@@ -1711,7 +1744,16 @@ Respond ONLY with valid JSON (no markdown): {"name":"string","type":"string","so
     setBuilder({ name:"", type:"not_null", source:"redshift-staging", table:"", column:"", severity:"high", schedule:"0 * * * *", params:{} });
   };
 
-  const [runningRules, setRunningRules] = useState({});  // {ruleId: "running"|"pass"|"fail"|{count,rows}}
+  const [runningRules,  setRunningRules]  = useState({});
+  const [expandedRule,  setExpandedRule]  = useState(null);
+  const [scheduleEdit,  setScheduleEdit]  = useState(null); // rule id being edited
+  const CRON_PRESETS = [
+    { label:"Every 15 min",  value:"*/15 * * * *" },
+    { label:"Every hour",    value:"0 * * * *" },
+    { label:"Every 6 hours", value:"0 */6 * * *" },
+    { label:"Daily 2am",     value:"0 2 * * *" },
+    { label:"Weekly Mon",    value:"0 6 * * 1" },
+  ];  // {ruleId: "running"|"pass"|"fail"|{count,rows}}
 
   const runRule = async (rule) => {
     if (!rule.sql) return;
@@ -1743,6 +1785,7 @@ Respond ONLY with valid JSON (no markdown): {"name":"string","type":"string","so
   );
 
   return (
+  <>
     <div>
       {/* Sub-nav */}
       <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom:18 }}>
@@ -1788,56 +1831,95 @@ Respond ONLY with valid JSON (no markdown): {"name":"string","type":"string","so
             ))}
           </div>
           {visibleRules.map(r => (
-            <div key={r.id} className="row-hover" style={{ display:"grid", gridTemplateColumns:"64px minmax(180px,1fr) 110px 120px 100px 90px 90px 110px", gap:12, padding:"11px 18px", borderBottom:`1px solid ${C.border}`, alignItems:"center", animation:"fadein 0.2s ease" }}>
-              <div style={{ fontSize:10, color:C.muted, fontFamily:"'Consolas', 'Cascadia Code', 'Fira Code', 'Courier New', monospace" }}>{r.id}</div>
-              <div>
-                <div style={{ fontSize:12, fontWeight:600, color:C.text, display:"flex", alignItems:"center", gap:6 }}>
-                  {r.name}
-                  {r.aiGen && <span style={{ fontSize:9, color:C.purple, background:`${C.purple}18`, border:`1px solid ${C.purple}30`, borderRadius:4, padding:"1px 5px" }}>AI</span>}
+            <div key={r.id} style={{ borderBottom:`1px solid ${C.border}` }}>
+              <div className="row-hover" onClick={()=>setExpandedRule(p=>p===r.id?null:r.id)} style={{ display:"grid", gridTemplateColumns:"64px minmax(180px,1fr) 110px 120px 100px 90px 90px 110px", gap:12, padding:"11px 18px", alignItems:"center", cursor:"pointer" }}>
+                <div style={{ fontSize:10, color:C.muted, fontFamily:"Consolas,monospace" }}>{r.id}</div>
+                <div>
+                  <div style={{ fontSize:12, fontWeight:600, color:C.text, display:"flex", alignItems:"center", gap:6 }}>
+                    {r.name}
+                    {r.aiGen && <span style={{ fontSize:9, color:C.purple, background:`${C.purple}18`, border:`1px solid ${C.purple}30`, borderRadius:4, padding:"1px 5px" }}>AI</span>}
+                  </div>
+                  <div style={{ fontSize:10, color:C.muted, marginTop:1 }}>{r.table} · <code style={{color:C.muted,fontSize:9}}>{r.column}</code></div>
                 </div>
-                <div style={{ fontSize:10, color:C.muted, marginTop:1 }}>{r.table} · <code style={{color:C.dim,fontSize:9}}>{r.column}</code></div>
-              </div>
-              <div style={{ display:"flex", alignItems:"center", gap:5 }}>
-                <span style={{ fontSize:12, color:C.muted }}>{typeIcon[r.type]||"?"}</span>
-                <span style={{ fontSize:10, color:C.muted }}>{RULE_TYPES.find(t=>t.id===r.type)?.label||r.type}</span>
-              </div>
-              <div style={{ fontSize:10, color:C.muted }}>{r.source}</div>
-              <SevBadge sev={r.severity} />
-              <div style={{ fontSize:10, color:C.muted }}>{r.lastRun}</div>
-              <div style={{ fontSize:11, fontWeight:700, textTransform:"uppercase", color:
-                runningRules[r.id]==="running" ? C.muted :
-                runningRules[r.id]==="pass"    ? C.green :
-                runningRules[r.id]==="error"   ? C.orange :
-                runningRules[r.id] && typeof runningRules[r.id]==="object" ? C.red :
-                resultColor[r.lastResult]||C.muted }}>
-                {runningRules[r.id]==="running" ? "running…" :
-                 runningRules[r.id]==="pass"    ? "pass ✓" :
-                 runningRules[r.id]==="error"   ? "error" :
-                 runningRules[r.id] && typeof runningRules[r.id]==="object" ? `fail (${runningRules[r.id].count})` :
-                 r.lastResult}
-              </div>
-              <div style={{ display:"flex", gap:4, alignItems:"center" }}>
-                {r.sql && (
-                  <button
-                    onClick={()=>runRule(r)}
-                    disabled={runningRules[r.id]==="running"}
-                    title={r.sql}
-                    style={{ fontSize:10, padding:"3px 8px", borderRadius:5, border:`1px solid ${C.accent}40`, background:runningRules[r.id]==="running"?`${C.accent}15`:`${C.accent}10`, color:runningRules[r.id]==="running"?C.muted:C.accentL, cursor:runningRules[r.id]==="running"?"not-allowed":"pointer", fontWeight:700 }}
-                  >
-                    {runningRules[r.id]==="running" ? "⏳" : "▶ Run"}
+                <div style={{ display:"flex", alignItems:"center", gap:5 }}>
+                  <span style={{ fontSize:12, color:C.muted }}>{typeIcon[r.type]||"?"}</span>
+                  <span style={{ fontSize:10, color:C.muted }}>{RULE_TYPES.find(t=>t.id===r.type)?.label||r.type}</span>
+                </div>
+                <div style={{ fontSize:10, color:C.muted }}>{r.source}</div>
+                <SevBadge sev={r.severity} />
+                <div style={{ fontSize:10, color:C.muted }}>{r.lastRun}</div>
+                <div style={{ fontSize:11, fontWeight:700, textTransform:"uppercase", color:
+                  runningRules[r.id]==="running" ? C.muted :
+                  runningRules[r.id]==="pass"    ? C.green :
+                  runningRules[r.id]==="error"   ? C.orange :
+                  runningRules[r.id] && typeof runningRules[r.id]==="object" ? C.red :
+                  resultColor[r.lastResult]||C.muted }}>
+                  {runningRules[r.id]==="running" ? "running…" :
+                   runningRules[r.id]==="pass"    ? "pass ✓" :
+                   runningRules[r.id]==="error"   ? "error" :
+                   runningRules[r.id] && typeof runningRules[r.id]==="object" ? `fail (${runningRules[r.id].count})` :
+                   r.lastResult}
+                </div>
+                <div style={{ display:"flex", gap:4, alignItems:"center" }}>
+                  {r.sql && (
+                    <button
+                      onClick={e=>{e.stopPropagation();runRule(r);}}
+                      disabled={runningRules[r.id]==="running"}
+                      title={r.sql}
+                      style={{ fontSize:10, padding:"3px 8px", borderRadius:5, border:`1px solid ${C.accent}40`, background:runningRules[r.id]==="running"?`${C.accent}15`:`${C.accent}10`, color:runningRules[r.id]==="running"?C.muted:C.accentL, cursor:runningRules[r.id]==="running"?"not-allowed":"pointer", fontWeight:700 }}
+                    >
+                      {runningRules[r.id]==="running" ? "⏳" : "▶ Run"}
+                    </button>
+                  )}
+                  <button onClick={e=>{e.stopPropagation();toggleRule(r.id);}} style={{ display:"flex", alignItems:"center", gap:5, background:"none", border:"none", cursor:"pointer", padding:0 }}>
+                    {r.status==="active"
+                      ? <><span style={{width:28,height:16,borderRadius:8,background:C.green,display:"block",position:"relative"}}><span style={{position:"absolute",right:2,top:2,width:12,height:12,borderRadius:"50%",background:"white"}} /></span><span style={{fontSize:10,color:C.green}}>ON</span></>
+                      : <><span style={{width:28,height:16,borderRadius:8,background:C.dim,display:"block",position:"relative"}}><span style={{position:"absolute",left:2,top:2,width:12,height:12,borderRadius:"50%",background:"white"}} /></span><span style={{fontSize:10,color:C.muted}}>OFF</span></>
+                    }
                   </button>
-                )}
-                <button onClick={()=>toggleRule(r.id)} style={{ display:"flex", alignItems:"center", gap:5, background:"none", border:"none", cursor:"pointer", padding:0 }}>
-                  {r.status==="active"
-                    ? <><span style={{width:28,height:16,borderRadius:8,background:C.green,display:"block",position:"relative"}}><span style={{position:"absolute",right:2,top:2,width:12,height:12,borderRadius:"50%",background:"white"}} /></span><span style={{fontSize:10,color:C.green}}>ON</span></>
-                    : <><span style={{width:28,height:16,borderRadius:8,background:C.dim,display:"block",position:"relative"}}><span style={{position:"absolute",left:2,top:2,width:12,height:12,borderRadius:"50%",background:"white"}} /></span><span style={{fontSize:10,color:C.muted}}>OFF</span></>
-                  }
-                </button>
+                  <button onClick={e=>{e.stopPropagation();setScheduleEdit(r.id);}} title="Set schedule" style={{ background:"none", border:`1px solid ${C.border2}`, borderRadius:4, padding:"2px 5px", cursor:"pointer", color:C.muted, fontSize:9 }}>⏰</button>
+                </div>
               </div>
-              <div style={{ display:"flex", gap:4 }}>
-                <button style={{ background:C.border, border:"none", borderRadius:5, padding:"4px 6px", cursor:"pointer", color:C.muted }}><Play size={10}/></button>
-                <button style={{ background:C.border, border:"none", borderRadius:5, padding:"4px 6px", cursor:"pointer", color:C.red }}><Trash2 size={10}/></button>
-              </div>
+              {/* Expanded: scan data */}
+              {expandedRule === r.id && (
+                <div style={{ padding:"12px 18px 16px", borderTop:`1px solid ${C.border}`, background:`${C.bg}80` }}>
+                  {runningRules[r.id]==="running" && <div style={{fontSize:11,color:C.muted}}>Running scan…</div>}
+                  {runningRules[r.id]==="pass" && (
+                    <div style={{fontSize:11,color:C.green,display:"flex",alignItems:"center",gap:6}}>
+                      <span>✓</span> No issues found — rule passed on last scan.
+                    </div>
+                  )}
+                  {runningRules[r.id] && typeof runningRules[r.id]==="object" && (
+                    <div>
+                      <div style={{fontSize:11,fontWeight:700,color:C.red,marginBottom:8}}>
+                        ⚠ {runningRules[r.id].count} issue{runningRules[r.id].count!==1?"s":""} detected
+                      </div>
+                      <div style={{overflowX:"auto"}}>
+                        <table style={{width:"100%",borderCollapse:"collapse",fontSize:11}}>
+                          <thead>
+                            <tr style={{background:C.border}}>
+                              {runningRules[r.id].rows[0] && Object.keys(runningRules[r.id].rows[0]).map(col=>(
+                                <th key={col} style={{padding:"5px 10px",textAlign:"left",color:C.muted,fontWeight:700,fontSize:10,whiteSpace:"nowrap"}}>{col}</th>
+                              ))}
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {runningRules[r.id].rows.slice(0,50).map((row,i)=>(
+                              <tr key={i} style={{borderBottom:`1px solid ${C.border}`}}>
+                                {Object.values(row).map((v,j)=>(
+                                  <td key={j} style={{padding:"5px 10px",color:C.text,whiteSpace:"nowrap",maxWidth:200,overflow:"hidden",textOverflow:"ellipsis"}}>{String(v??"-")}</td>
+                                ))}
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                        {runningRules[r.id].rows.length > 50 && <div style={{fontSize:10,color:C.muted,marginTop:6}}>Showing 50 of {runningRules[r.id].count} rows</div>}
+                      </div>
+                    </div>
+                  )}
+                  {!runningRules[r.id] && <div style={{fontSize:11,color:C.muted}}>Click ▶ Run to scan this rule against redshift-staging.</div>}
+                </div>
+              )}
             </div>
           ))}
         </Card>
@@ -2047,6 +2129,8 @@ Respond ONLY with valid JSON (no markdown): {"name":"string","type":"string","so
         </Card>
       )}
     </div>
+    {scheduleEdit && rules.find(r=>r.id===scheduleEdit) && <SchedModal rule={rules.find(r=>r.id===scheduleEdit)} T={T} CRON_PRESETS={CRON_PRESETS} setRules={setRules} onClose={()=>setScheduleEdit(null)} />}
+  </>
   );
 }
 
@@ -3060,7 +3144,13 @@ BACKEND API: https://intentwise-backend-production.up.railway.app
 CURRENT ALERT: ID=${alert.id}, Severity=${alert.severity}, Source=${alert.source||"redshift-staging"}, Table=${alert.table}, Rule=${alert.rule||"N/A"}, Issue="${alert.title}".
 
 Be concise, technical, and actionable. When suggesting SQL, write exact queries against mws.* tables. Format code in backticks.`,
-          messages: [...messages, { role:"user", content: userMsg }].map(m=>({ role:m.role, content:m.content }))
+          messages: [...messages, { role:"user", content: userMsg }]
+            .filter((m,i,arr) => {
+              // API requires first message to be user role
+              const firstUserIdx = arr.findIndex(x => x.role === "user");
+              return i >= firstUserIdx;
+            })
+            .map(m=>({ role:m.role, content:m.content }))
         })
       });
       const data = await res.json();
@@ -5654,6 +5744,387 @@ function RulesAndValidationWrapper({ liveRules, rulesLoading }) {
   );
 }
 
+// ─── Dataflows Tab ────────────────────────────────────────────────────────────
+const INIT_DATAFLOWS = [
+  {
+    id: "df-001", name: "Daily Order Health", status: "active",
+    query: `SELECT order_status, COUNT(*) as count, SUM(item_price) as revenue\nFROM mws.orders\nWHERE purchase_date >= CURRENT_DATE - 1\nGROUP BY order_status`,
+    schedule: "0 6 * * *", lastRun: "Today 6:00 AM", lastResult: "pass",
+    lastRows: 4, alertOn: "row_count < 1 OR error",
+    description: "Check order volume and status distribution daily.",
+  },
+  {
+    id: "df-002", name: "Inventory Stockout Alert", status: "active",
+    query: `SELECT asin, product_name, available, days_of_supply\nFROM mws.inventory\nWHERE days_of_supply < 7\nORDER BY days_of_supply ASC`,
+    schedule: "0 */6 * * *", lastRun: "Today 12:00 PM", lastResult: "fail",
+    lastRows: 3, alertOn: "rows > 0",
+    description: "Surface ASINs at risk of stockout within 7 days.",
+  },
+  {
+    id: "df-003", name: "Buy Box Degradation", status: "active",
+    query: `SELECT child_asin, traffic_by_asin_buy_box_prcntg as buy_box_pct,\n  units_ordered, ordered_product_sales_amt\nFROM mws.sales_and_traffic_by_asin\nWHERE traffic_by_asin_buy_box_prcntg < 0.8\nORDER BY ordered_product_sales_amt DESC\nLIMIT 20`,
+    schedule: "0 8 * * *", lastRun: "Today 8:00 AM", lastResult: "pass",
+    lastRows: 0, alertOn: "rows > 5",
+    description: "Flag ASINs where buy box % drops below 80%.",
+  },
+];
+
+const DF_CRON_PRESETS = [
+  { label:"Every 15 min", value:"*/15 * * * *" },
+  { label:"Every hour",   value:"0 * * * *"    },
+  { label:"Every 6h",     value:"0 */6 * * *"  },
+  { label:"Daily 6am",    value:"0 6 * * *"    },
+  { label:"Weekly Mon",   value:"0 6 * * 1"    },
+];
+
+function DataflowsTab() {
+  const T = useTheme();
+  const [flows, setFlows]               = useState(INIT_DATAFLOWS);
+  const [selected, setSelected]         = useState(INIT_DATAFLOWS[0].id);
+  const [editQuery, setEditQuery]       = useState(INIT_DATAFLOWS[0].query);
+  const [runState, setRunState]         = useState({}); // {dfId: "running"|{rows,cols}|"error"}
+  const [aiPane, setAiPane]             = useState(false);
+  const [aiMessages, setAiMessages]     = useState([]);
+  const [aiInput, setAiInput]           = useState("");
+  const [aiLoading, setAiLoading]       = useState(false);
+  const [schedPane, setSchedPane]       = useState(false);
+  const [newFlow, setNewFlow]           = useState(false);
+  const [newName, setNewName]           = useState("");
+  const chatEndRef = useRef(null);
+
+  const flow = flows.find(f => f.id === selected) || flows[0];
+
+  // Sync editQuery when selection changes
+  useEffect(() => { setEditQuery(flow.query); setAiPane(false); setAiMessages([]); }, [selected]);
+  useEffect(() => { chatEndRef.current?.scrollIntoView({ behavior:"smooth" }); }, [aiMessages]);
+
+  const runFlow = async (f) => {
+    const q = f.id === selected ? editQuery : f.query;
+    setRunState(p => ({...p, [f.id]:"running"}));
+    try {
+      const res  = await fetch(`${API_BASE}/api/query?sql=${encodeURIComponent(q)}`);
+      const data = await res.json();
+      const rows = data.rows || [];
+      const cols = rows.length > 0 ? Object.keys(rows[0]) : [];
+      const result = { rows, cols, ts: new Date().toLocaleTimeString() };
+      setRunState(p => ({...p, [f.id]: result}));
+      setFlows(p => p.map(x => x.id===f.id
+        ? {...x, lastRun:`Today ${result.ts}`, lastResult: rows.length>0?"pass":"pass", lastRows:rows.length}
+        : x));
+      // AI auto-check for anomalies
+      if (rows.length > 0) autoAnomalyCheck(f, rows);
+    } catch(e) {
+      setRunState(p => ({...p, [f.id]:"error"}));
+    }
+  };
+
+  const autoAnomalyCheck = async (f, rows) => {
+    try {
+      const res = await fetch("https://api.anthropic.com/v1/messages", {
+        method:"POST",
+        headers:{"Content-Type":"application/json","anthropic-dangerous-direct-browser-access":"true"},
+        body: JSON.stringify({
+          model:"claude-sonnet-4-20250514", max_tokens:400,
+          system:`You are a data quality AI for Intentwise. Analyse query results briefly. If anomalies detected, respond with a short 1-2 sentence alert starting with "⚠ Anomaly:". If results look normal, respond with "✓ Results look healthy." Only respond with one of those two formats.`,
+          messages:[{ role:"user", content:`Dataflow: "${f.name}"\nAlert condition: ${f.alertOn}\nRow count: ${rows.length}\nFirst 3 rows: ${JSON.stringify(rows.slice(0,3))}` }]
+        })
+      });
+      const d = await res.json();
+      const msg = d.content?.find(b=>b.type==="text")?.text || "";
+      if (msg) {
+        setAiMessages(p => [...p, { role:"assistant", content:msg, auto:true }]);
+        setAiPane(true);
+      }
+    } catch(_) {}
+  };
+
+  const sendAiMessage = async () => {
+    if (!aiInput.trim() || aiLoading) return;
+    const userMsg = aiInput.trim();
+    setAiInput("");
+    const nextMsgs = [...aiMessages, { role:"user", content:userMsg }];
+    setAiMessages(nextMsgs);
+    setAiLoading(true);
+    try {
+      const res = await fetch("https://api.anthropic.com/v1/messages", {
+        method:"POST",
+        headers:{"Content-Type":"application/json","anthropic-dangerous-direct-browser-access":"true"},
+        body: JSON.stringify({
+          model:"claude-sonnet-4-20250514", max_tokens:800,
+          system:`You are a SQL + data quality AI assistant for Intentwise. The user is working on a Dataflow called "${flow.name}". Current SQL:\n\`\`\`sql\n${editQuery}\n\`\`\`\nRedshift schema: mws — tables: orders, inventory, inventory_restock, sales_and_traffic_by_date, sales_and_traffic_by_asin, sales_and_traffic_by_sku.\nHelp the user write, fix, or optimise their SQL, explain results, or set up alert conditions. When suggesting SQL changes, wrap the full updated query in \`\`\`sql\n...\n\`\`\` blocks.`,
+          messages: nextMsgs.filter((m,i,a)=>{const fi=a.findIndex(x=>x.role==="user");return i>=fi;}).map(m=>({role:m.role,content:m.content}))
+        })
+      });
+      const d = await res.json();
+      const reply = d.content?.find(b=>b.type==="text")?.text || "No response.";
+      setAiMessages(p => [...p, { role:"assistant", content:reply }]);
+      // Auto-apply SQL if suggested
+      const sqlMatch = reply.match(/```sql\n([\s\S]*?)```/);
+      if (sqlMatch) {
+        setEditQuery(sqlMatch[1].trim());
+        setFlows(p => p.map(x => x.id===selected ? {...x, query:sqlMatch[1].trim()} : x));
+      }
+    } catch(_) {
+      setAiMessages(p => [...p, { role:"assistant", content:"API error. Please try again." }]);
+    } finally { setAiLoading(false); }
+  };
+
+  const saveQuery = () => {
+    setFlows(p => p.map(x => x.id===selected ? {...x, query:editQuery} : x));
+  };
+
+  const createFlow = () => {
+    if (!newName.trim()) return;
+    const nf = { id:`df-${Date.now()}`, name:newName.trim(), status:"active",
+      query:`SELECT *\nFROM mws.orders\nLIMIT 10`, schedule:"0 6 * * *",
+      lastRun:"Never", lastResult:"pending", lastRows:0, alertOn:"error", description:"" };
+    setFlows(p => [...p, nf]);
+    setSelected(nf.id);
+    setNewName(""); setNewFlow(false);
+  };
+
+  const result = runState[flow?.id];
+  const STATUS_COLOR = { active:T.green, paused:T.muted, error:T.red };
+
+  return (
+    <div style={{ display:"flex", height:"calc(100vh - 120px)", gap:0, background:T.bg, borderRadius:12, overflow:"hidden", border:`1px solid ${T.border2}` }}>
+
+      {/* ── Left panel: flow list ── */}
+      <div style={{ width:220, borderRight:`1px solid ${T.border2}`, display:"flex", flexDirection:"column", flexShrink:0 }}>
+        <div style={{ padding:"12px 14px 8px", borderBottom:`1px solid ${T.border}`, display:"flex", alignItems:"center", justifyContent:"space-between" }}>
+          <span style={{ fontSize:11, fontWeight:700, color:T.muted, letterSpacing:"0.08em" }}>DATAFLOWS</span>
+          <button onClick={()=>setNewFlow(true)} style={{ background:`${T.accent}15`, border:`1px solid ${T.accent}30`, borderRadius:5, padding:"2px 7px", cursor:"pointer", color:T.accent, fontSize:11, fontWeight:700 }}>+ New</button>
+        </div>
+        {newFlow && (
+          <div style={{ padding:"8px 10px", borderBottom:`1px solid ${T.border}`, display:"flex", gap:4 }}>
+            <input autoFocus value={newName} onChange={e=>setNewName(e.target.value)}
+              onKeyDown={e=>e.key==="Enter"&&createFlow()}
+              placeholder="Flow name…" style={{ flex:1, background:T.bg, border:`1px solid ${T.accent}`, borderRadius:5, padding:"4px 7px", color:T.text, fontSize:11, outline:"none" }} />
+            <button onClick={createFlow} style={{ background:T.accent, border:"none", borderRadius:5, padding:"4px 8px", cursor:"pointer", color:"white", fontSize:10, fontWeight:700 }}>✓</button>
+            <button onClick={()=>setNewFlow(false)} style={{ background:"none", border:`1px solid ${T.border2}`, borderRadius:5, padding:"4px 6px", cursor:"pointer", color:T.muted, fontSize:10 }}>✕</button>
+          </div>
+        )}
+        <div style={{ flex:1, overflowY:"auto" }}>
+          {flows.map(f => (
+            <div key={f.id} onClick={()=>setSelected(f.id)}
+              style={{ padding:"10px 14px", cursor:"pointer", borderBottom:`1px solid ${T.border}`,
+                background: selected===f.id ? `${T.accent}12` : "transparent",
+                borderLeft: selected===f.id ? `3px solid ${T.accent}` : "3px solid transparent" }}>
+              <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom:3 }}>
+                <span style={{ fontSize:12, fontWeight:600, color:selected===f.id?T.accent:T.text, whiteSpace:"nowrap", overflow:"hidden", textOverflow:"ellipsis", maxWidth:130 }}>{f.name}</span>
+                <span style={{ width:6, height:6, borderRadius:"50%", background:STATUS_COLOR[f.status]||T.muted, flexShrink:0 }} />
+              </div>
+              <div style={{ fontSize:10, color:T.muted }}>
+                {runState[f.id]==="running" ? "⏳ running…" :
+                 runState[f.id] && typeof runState[f.id]==="object" ? `✓ ${runState[f.id].rows.length} rows · ${runState[f.id].ts}` :
+                 f.lastRun}
+              </div>
+              <div style={{ marginTop:4, display:"flex", gap:4 }}>
+                <span style={{ fontSize:9, padding:"1px 5px", borderRadius:3,
+                  background: f.lastResult==="pass"?`${T.green}18`:f.lastResult==="fail"?`${T.red}18`:`${T.muted}18`,
+                  color: f.lastResult==="pass"?T.green:f.lastResult==="fail"?T.red:T.muted }}>
+                  {f.lastResult}
+                </span>
+              </div>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      {/* ── Center: query editor + results ── */}
+      <div style={{ flex:1, display:"flex", flexDirection:"column", minWidth:0 }}>
+        {/* toolbar */}
+        <div style={{ padding:"10px 16px", borderBottom:`1px solid ${T.border2}`, display:"flex", alignItems:"center", gap:8 }}>
+          <Workflow size={14} color={T.accent} />
+          <span style={{ fontSize:13, fontWeight:700, color:T.text, flex:1 }}>{flow.name}</span>
+          <span style={{ fontSize:10, color:T.muted, background:T.border, borderRadius:4, padding:"2px 7px" }}>{flow.schedule}</span>
+          <button onClick={()=>setSchedPane(p=>!p)} title="Set schedule" style={{ background:"none", border:`1px solid ${T.border2}`, borderRadius:5, padding:"4px 8px", cursor:"pointer", color:T.muted, fontSize:10, display:"flex", alignItems:"center", gap:4 }}>
+            <Clock size={11}/> Schedule
+          </button>
+          <button onClick={saveQuery} style={{ background:"none", border:`1px solid ${T.border2}`, borderRadius:5, padding:"4px 8px", cursor:"pointer", color:T.muted, fontSize:10, display:"flex", alignItems:"center", gap:4 }}>
+            <Save size={11}/> Save
+          </button>
+          <button onClick={()=>runFlow(flow)} disabled={runState[flow.id]==="running"}
+            style={{ background:runState[flow.id]==="running"?`${T.green}30`:T.green, border:"none", borderRadius:6, padding:"5px 14px", cursor:"pointer", color:"white", fontSize:11, fontWeight:700, display:"flex", alignItems:"center", gap:5, opacity:runState[flow.id]==="running"?0.6:1 }}>
+            <Play size={11}/> {runState[flow.id]==="running"?"Running…":"Run"}
+          </button>
+          <button onClick={()=>{setAiPane(p=>!p);}} style={{ background:aiPane?`${T.purple}20`:`${T.border}`, border:`1px solid ${aiPane?T.purple:T.border2}`, borderRadius:6, padding:"5px 10px", cursor:"pointer", color:aiPane?T.purple:T.muted, fontSize:11, display:"flex", alignItems:"center", gap:5 }}>
+            <Bot size={12} color={aiPane?T.purple:T.muted}/> AI
+            {aiMessages.length > 0 && <span style={{ width:6, height:6, borderRadius:"50%", background:T.purple }} />}
+          </button>
+        </div>
+
+        <div style={{ flex:1, display:"flex", flexDirection:"column", overflow:"hidden" }}>
+          {/* SQL editor */}
+          <div style={{ padding:"0 0 0 0", borderBottom:`1px solid ${T.border}` }}>
+            <div style={{ padding:"6px 16px", fontSize:9, color:T.muted, fontWeight:700, letterSpacing:"0.08em", borderBottom:`1px solid ${T.border}` }}>QUERY</div>
+            <textarea value={editQuery} onChange={e=>setEditQuery(e.target.value)}
+              spellCheck={false}
+              style={{ width:"100%", minHeight:160, maxHeight:260, padding:"12px 16px", background:T.bg, border:"none", outline:"none", color:T.text, fontSize:12, fontFamily:"Consolas,'Cascadia Code',monospace", resize:"vertical", boxSizing:"border-box", lineHeight:1.7 }} />
+          </div>
+
+          {/* Results */}
+          <div style={{ flex:1, overflow:"auto" }}>
+            <div style={{ padding:"6px 16px", fontSize:9, color:T.muted, fontWeight:700, letterSpacing:"0.08em", borderBottom:`1px solid ${T.border}`, display:"flex", alignItems:"center", gap:8 }}>
+              <span>RESULTS</span>
+              {result && typeof result==="object" && <span style={{color:T.green}}>· {result.rows.length} rows · {result.ts}</span>}
+              {result==="running" && <span style={{color:T.muted}}>· running…</span>}
+              {result==="error"   && <span style={{color:T.red}}>· error</span>}
+            </div>
+            {!result && (
+              <div style={{ padding:"32px", textAlign:"center", color:T.muted, fontSize:12 }}>
+                Click <strong>Run</strong> to execute this query against <code style={{color:T.accentL}}>redshift-staging</code>
+              </div>
+            )}
+            {result==="running" && <div style={{ padding:"24px", textAlign:"center", color:T.muted, fontSize:12 }}>Running query…</div>}
+            {result==="error"   && <div style={{ padding:"24px", textAlign:"center", color:T.red,  fontSize:12 }}>Query failed. Check SQL syntax or connection.</div>}
+            {result && typeof result==="object" && result.rows.length === 0 && (
+              <div style={{ padding:"24px", textAlign:"center", color:T.green, fontSize:12 }}>✓ Query returned 0 rows — no issues found.</div>
+            )}
+            {result && typeof result==="object" && result.rows.length > 0 && (
+              <div style={{ overflowX:"auto" }}>
+                <table style={{ width:"100%", borderCollapse:"collapse", fontSize:11 }}>
+                  <thead>
+                    <tr style={{ background:T.border, position:"sticky", top:0 }}>
+                      {result.cols.map(c => (
+                        <th key={c} style={{ padding:"7px 12px", textAlign:"left", color:T.muted, fontWeight:700, fontSize:10, whiteSpace:"nowrap", borderRight:`1px solid ${T.border2}` }}>{c}</th>
+                      ))}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {result.rows.map((row,i) => (
+                      <tr key={i} style={{ borderBottom:`1px solid ${T.border}`, background:i%2===0?"transparent":`${T.border}30` }}>
+                        {result.cols.map(c => (
+                          <td key={c} style={{ padding:"6px 12px", color:T.text, whiteSpace:"nowrap", maxWidth:220, overflow:"hidden", textOverflow:"ellipsis", borderRight:`1px solid ${T.border}` }}>{String(row[c]??"-")}</td>
+                        ))}
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </div>
+        </div>
+      </div>
+
+      {/* ── Right: schema browser ── */}
+      <div style={{ width:200, borderLeft:`1px solid ${T.border2}`, display:"flex", flexDirection:"column", flexShrink:0 }}>
+        <div style={{ padding:"10px 12px 8px", borderBottom:`1px solid ${T.border}`, fontSize:10, fontWeight:700, color:T.muted, letterSpacing:"0.08em" }}>MWS SCHEMA</div>
+        <div style={{ flex:1, overflowY:"auto", padding:"6px 0" }}>
+          {[
+            { t:"orders",                      cols:["amazon_order_id","order_status","asin","item_price","purchase_date"] },
+            { t:"inventory",                   cols:["asin","available","days_of_supply","alert","account_id"] },
+            { t:"inventory_restock",           cols:["asin","quantity","account_id","download_date"] },
+            { t:"sales_and_traffic_by_date",   cols:["sale_date","ordered_product_sales_amt","sessions","buy_box_percentage"] },
+            { t:"sales_and_traffic_by_asin",   cols:["child_asin","units_ordered","traffic_by_asin_buy_box_prcntg"] },
+            { t:"sales_and_traffic_by_sku",    cols:["sku","units_ordered","ordered_product_sales_amt"] },
+          ].map(({ t, cols }) => (
+            <SchemaTableRow key={t} table={t} cols={cols} T={T}
+              onInsert={col => setEditQuery(q => q + (col ? `\n-- ${t}.${col}` : `\nFROM mws.${t}`))} />
+          ))}
+        </div>
+      </div>
+
+      {/* ── AI Chat slide-in ── */}
+      {aiPane && (
+        <div style={{ width:320, borderLeft:`1px solid ${T.border2}`, display:"flex", flexDirection:"column", background:T.surface, flexShrink:0 }}>
+          <div style={{ padding:"10px 14px", borderBottom:`1px solid ${T.border}`, display:"flex", alignItems:"center", justifyContent:"space-between" }}>
+            <div style={{ display:"flex", alignItems:"center", gap:6 }}>
+              <Bot size={13} color={T.purple}/>
+              <span style={{ fontSize:12, fontWeight:700, color:T.text }}>AI Assistant</span>
+            </div>
+            <button onClick={()=>setAiPane(false)} style={{ background:"none", border:"none", cursor:"pointer", color:T.muted }}><X size={13}/></button>
+          </div>
+          <div style={{ flex:1, overflowY:"auto", padding:"10px 12px", display:"flex", flexDirection:"column", gap:8 }}>
+            {aiMessages.length === 0 && (
+              <div style={{ fontSize:11, color:T.muted, lineHeight:1.6 }}>
+                Ask me to write SQL, explain results, optimise queries, or set up alert conditions for this dataflow.
+              </div>
+            )}
+            {aiMessages.map((m, i) => (
+              <div key={i} style={{ display:"flex", flexDirection:"column", alignItems:m.role==="user"?"flex-end":"flex-start" }}>
+                {m.auto && <span style={{ fontSize:9, color:T.purple, marginBottom:2 }}>AUTO-ANALYSIS</span>}
+                <div style={{ maxWidth:"92%", padding:"8px 10px", borderRadius:8, fontSize:11, lineHeight:1.6,
+                  background: m.role==="user"?`${T.accent}20`:m.auto?`${T.purple}12`:T.card,
+                  color: T.text, border:`1px solid ${m.role==="user"?T.accent:m.auto?T.purple:T.border}` }}>
+                  {m.content}
+                </div>
+              </div>
+            ))}
+            {aiLoading && <div style={{ fontSize:11, color:T.muted }}>Thinking…</div>}
+            <div ref={chatEndRef}/>
+          </div>
+          <div style={{ padding:"8px 10px", borderTop:`1px solid ${T.border}`, display:"flex", gap:6 }}>
+            <textarea value={aiInput} onChange={e=>setAiInput(e.target.value)}
+              onKeyDown={e=>{ if(e.key==="Enter"&&!e.shiftKey){e.preventDefault();sendAiMessage();}}}
+              placeholder="Ask AI to write or fix SQL…" rows={2}
+              style={{ flex:1, background:T.bg, border:`1px solid ${T.border2}`, borderRadius:6, padding:"6px 8px", color:T.text, fontSize:11, outline:"none", resize:"none", fontFamily:"inherit" }} />
+            <button onClick={sendAiMessage} disabled={aiLoading}
+              style={{ background:T.accent, border:"none", borderRadius:6, padding:"6px 10px", cursor:"pointer", color:"white", alignSelf:"flex-end" }}>
+              <Send size={12}/>
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* ── Schedule pane ── */}
+      {schedPane && (
+        <div style={{ position:"absolute", top:120, right:aiPane?340:10, width:260, background:T.card, border:`1px solid ${T.border2}`, borderRadius:12, padding:"16px", zIndex:100, boxShadow:"0 8px 32px rgba(0,0,0,0.2)" }}>
+          <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom:12 }}>
+            <span style={{ fontSize:12, fontWeight:700, color:T.text }}>Schedule</span>
+            <button onClick={()=>setSchedPane(false)} style={{ background:"none", border:"none", cursor:"pointer", color:T.muted }}><X size={12}/></button>
+          </div>
+          <div style={{ display:"flex", flexWrap:"wrap", gap:6, marginBottom:10 }}>
+            {DF_CRON_PRESETS.map(p => (
+              <button key={p.value} onClick={()=>setFlows(fs=>fs.map(f=>f.id===selected?{...f,schedule:p.value}:f))}
+                style={{ fontSize:10, padding:"3px 8px", borderRadius:5,
+                  border:`1px solid ${flow.schedule===p.value?T.accent:T.border2}`,
+                  background:flow.schedule===p.value?`${T.accent}15`:T.bg,
+                  color:flow.schedule===p.value?T.accent:T.muted, cursor:"pointer" }}>
+                {p.label}
+              </button>
+            ))}
+          </div>
+          <input value={flow.schedule} onChange={e=>setFlows(fs=>fs.map(f=>f.id===selected?{...f,schedule:e.target.value}:f))}
+            style={{ width:"100%", background:T.bg, border:`1px solid ${T.border2}`, borderRadius:6, padding:"6px 8px", color:T.text, fontSize:11, fontFamily:"Consolas,monospace", outline:"none", boxSizing:"border-box" }}
+            placeholder="0 6 * * *" />
+          <div style={{ fontSize:10, color:T.muted, marginTop:6 }}>Alert condition: <code style={{color:T.accentL}}>{flow.alertOn}</code></div>
+          <div style={{ marginTop:10, display:"flex", gap:6 }}>
+            <input value={flow.alertOn} onChange={e=>setFlows(fs=>fs.map(f=>f.id===selected?{...f,alertOn:e.target.value}:f))}
+              style={{ flex:1, background:T.bg, border:`1px solid ${T.border2}`, borderRadius:6, padding:"5px 8px", color:T.text, fontSize:11, fontFamily:"Consolas,monospace", outline:"none" }}
+              placeholder="rows > 0 OR error" />
+          </div>
+          <button onClick={()=>setSchedPane(false)} style={{ marginTop:10, width:"100%", background:T.accent, border:"none", borderRadius:6, padding:"7px", cursor:"pointer", color:"white", fontSize:11, fontWeight:700 }}>Save</button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function SchemaTableRow({ table, cols, T, onInsert }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <div>
+      <div onClick={()=>setOpen(p=>!p)} style={{ padding:"5px 12px", cursor:"pointer", display:"flex", alignItems:"center", gap:5, userSelect:"none" }}>
+        {open ? <ChevronDown size={10} color={T.muted}/> : <ChevronRight size={10} color={T.muted}/>}
+        <span style={{ fontSize:11, color:T.text, fontFamily:"Consolas,monospace" }}>{table}</span>
+        <button onClick={e=>{e.stopPropagation();onInsert(null);}} title="Insert FROM clause"
+          style={{ marginLeft:"auto", background:"none", border:"none", cursor:"pointer", color:T.accent, fontSize:9, padding:"1px 4px" }}>+FROM</button>
+      </div>
+      {open && (
+        <div style={{ paddingLeft:22 }}>
+          {cols.map(c => (
+            <div key={c} onClick={()=>onInsert(c)} style={{ padding:"3px 8px", cursor:"pointer", fontSize:10, color:T.muted, fontFamily:"Consolas,monospace", display:"flex", alignItems:"center", gap:4 }}
+              className="row-hover">
+              <span style={{ color:T.border2 }}>—</span> {c}
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 export default function AIOpsMonitor() {
   const [theme, setTheme] = useState("light");
   const [dataMode, setDataMode] = useState("prod"); // "demo" | "prod"
@@ -5810,6 +6281,7 @@ export default function AIOpsMonitor() {
     { id:"history",    label:"Audit Trail",          icon:History,         count:0 },
     { id:"sources",    label:"Data Sources",         icon:Database,        count:DATASOURCES.filter(d=>d.status!=="healthy").length },
     { id:"dbexplorer", label:"DB Explorer",          icon:Database,        count:0, badge:"LIVE" },
+    { id:"dataflows",  label:"Dataflows",            icon:Workflow,        count:0 },
   ];
 
   return (
@@ -6103,6 +6575,15 @@ export default function AIOpsMonitor() {
               dataMode={dataMode}
             />
           )}
+
+          {/* ── Dataflows Tab ── */}
+          {activeTab === "dataflows" && (
+            <div style={{ paddingBottom:24 }}>
+              <SectionHeader icon={Workflow} title="Dataflows" subtitle="Query · Schedule · AI anomaly detection — redshift-staging" />
+              <DataflowsTab />
+            </div>
+          )}
+
 
           {/* ── Dashboard Tab ── */}
           {activeTab === "dashboard" && (

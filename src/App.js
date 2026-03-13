@@ -1704,6 +1704,7 @@ function ValidationRulesTab({ liveRules, rulesLoading }) {
 
   // Builder state
   const [builder, setBuilder] = useState({ name:"", type:"not_null", source:"redshift-staging", table:"", column:"", severity:"high", schedule:"0 * * * *", params:{} });
+  const [collapsedTables, setCollapsedTables] = useState({});
 
   const visibleRules = rules.filter(r => filterStatus === "all" || r.status === filterStatus);
 
@@ -1884,116 +1885,116 @@ Respond ONLY with valid JSON (no markdown): {"name":"string","type":"string","so
       </div>
 
       {/* ── List View ── */}
-      {view==="list" && (
-        <Card>
-          <div style={{ padding:"14px 16px", borderBottom:`1px solid ${C.border}`, display:"flex", alignItems:"center", justifyContent:"space-between" }}>
-            <div style={{ fontSize:13, fontWeight:700, color:C.text }}>Validation Rules</div>
-            <div style={{ display:"flex", gap:6 }}>
+      {view==="list" && (() => {
+        // Group rules by table
+        const grouped = rules.reduce((acc, r) => {
+          const tbl = r.table || "uncategorised";
+          if (!acc[tbl]) acc[tbl] = [];
+          acc[tbl].push(r);
+          return acc;
+        }, {});
+        const tables = Object.keys(grouped).sort();
+        return (
+          <div>
+            {/* Summary bar */}
+            <div style={{ display:"flex", gap:12, alignItems:"center", padding:"10px 4px", marginBottom:8 }}>
+              <span style={{ fontSize:12, fontWeight:700, color:C.text }}>{rules.length} Rules</span>
+              <span style={{ fontSize:11, color:C.muted }}>across {tables.length} tables</span>
               <span style={{ fontSize:11, color:C.green }}>{rules.filter(r=>r.lastResult==="pass").length} passing</span>
-              <span style={{ color:C.dim }}>·</span>
               <span style={{ fontSize:11, color:C.red }}>{rules.filter(r=>r.lastResult==="fail").length} failing</span>
             </div>
-          </div>
-          {/* Table header */}
-          <div style={{ display:"grid", gridTemplateColumns:"64px minmax(180px,1fr) 110px 120px 100px 90px 90px 110px", gap:12, padding:"10px 18px", borderBottom:`1px solid ${C.border}`, background:C.isDark?"#0A0C10":C.border }}>
-            {["ID","Name / Table","Type","Source","Severity","Last Run","Result","Status",""].map(h=>(
-              <div key={h} style={{ fontSize:9, color:C.dim, fontWeight:700, letterSpacing:"0.08em", textTransform:"uppercase" }}>{h}</div>
-            ))}
-          </div>
-          {visibleRules.map(r => (
-            <div key={r.id} style={{ borderBottom:`1px solid ${C.border}` }}>
-              <div className="row-hover" onClick={()=>setExpandedRule(p=>p===r.id?null:r.id)} style={{ display:"grid", gridTemplateColumns:"64px minmax(180px,1fr) 110px 120px 100px 90px 90px 110px", gap:12, padding:"11px 18px", alignItems:"center", cursor:"pointer" }}>
-                <div style={{ fontSize:10, color:C.muted, fontFamily:"Consolas,monospace" }}>{r.id}</div>
-                <div>
-                  <div style={{ fontSize:12, fontWeight:600, color:C.text, display:"flex", alignItems:"center", gap:6 }}>
-                    {r.name}
-                    {r.aiGen && <span style={{ fontSize:9, color:C.purple, background:`${C.purple}18`, border:`1px solid ${C.purple}30`, borderRadius:4, padding:"1px 5px" }}>AI</span>}
+            {tables.map(tbl => {
+              const tblRules = grouped[tbl];
+              const isOpen = !collapsedTables[tbl];
+              const passing = tblRules.filter(r=>r.lastResult==="pass").length;
+              const failing = tblRules.filter(r=>r.lastResult==="fail").length;
+              const shortTbl = tbl.replace("mws.","");
+              return (
+                <Card key={tbl} style={{ marginBottom:10, overflow:"hidden" }}>
+                  {/* Table header row */}
+                  <div
+                    onClick={() => setCollapsedTables(p => ({ ...p, [tbl]: !p[tbl] }))}
+                    style={{ display:"flex", alignItems:"center", justifyContent:"space-between", padding:"11px 16px", cursor:"pointer", background:C.isDark?"#0A0C1090":"#F1F5F9", borderBottom: isOpen?`1px solid ${C.border}`:"none" }}
+                  >
+                    <div style={{ display:"flex", alignItems:"center", gap:10 }}>
+                      <div style={{ width:7, height:7, borderRadius:"50%", background: failing>0?C.red:passing>0?C.green:C.muted }} />
+                      <span style={{ fontSize:12, fontWeight:700, color:C.text, fontFamily:"monospace" }}>{tbl}</span>
+                      <span style={{ fontSize:11, background:`${C.accent}18`, color:C.accent, borderRadius:4, padding:"1px 7px", fontWeight:600 }}>{tblRules.length} rule{tblRules.length!==1?"s":""}</span>
+                      {failing>0 && <span style={{ fontSize:11, background:`${C.red}15`, color:C.red, borderRadius:4, padding:"1px 7px", fontWeight:600 }}>⚠ {failing} failing</span>}
+                      {passing>0 && <span style={{ fontSize:11, background:`${C.green}15`, color:C.green, borderRadius:4, padding:"1px 7px", fontWeight:600 }}>✓ {passing} passing</span>}
+                    </div>
+                    <span style={{ color:C.muted, fontSize:12 }}>{isOpen ? "▾" : "▸"}</span>
                   </div>
-                  <div style={{ fontSize:10, color:C.muted, marginTop:1 }}>{r.table} · <code style={{color:C.muted,fontSize:9}}>{r.column}</code></div>
-                </div>
-                <div style={{ display:"flex", alignItems:"center", gap:5 }}>
-                  <span style={{ fontSize:12, color:C.muted }}>{typeIcon[r.type]||"?"}</span>
-                  <span style={{ fontSize:10, color:C.muted }}>{RULE_TYPES.find(t=>t.id===r.type)?.label||r.type}</span>
-                </div>
-                <div style={{ fontSize:10, color:C.muted }}>{r.source}</div>
-                <SevBadge sev={r.severity} />
-                <div style={{ fontSize:10, color:C.muted }}>{r.lastRun}</div>
-                <div style={{ fontSize:11, fontWeight:700, textTransform:"uppercase", color:
-                  runningRules[r.id]==="running" ? C.muted :
-                  runningRules[r.id]==="pass"    ? C.green :
-                  runningRules[r.id]==="error"   ? C.orange :
-                  runningRules[r.id] && typeof runningRules[r.id]==="object" ? C.red :
-                  resultColor[r.lastResult]||C.muted }}>
-                  {runningRules[r.id]==="running" ? "running…" :
-                   runningRules[r.id]==="pass"    ? "pass ✓" :
-                   runningRules[r.id]==="error"   ? "error" :
-                   runningRules[r.id] && typeof runningRules[r.id]==="object" ? `fail (${runningRules[r.id].count})` :
-                   r.lastResult}
-                </div>
-                <div style={{ display:"flex", gap:4, alignItems:"center" }}>
-                  {r.sql && (
-                    <button
-                      onClick={e=>{e.stopPropagation();runRule(r);}}
-                      disabled={runningRules[r.id]==="running"}
-                      title={r.sql}
-                      style={{ fontSize:10, padding:"3px 8px", borderRadius:5, border:`1px solid ${C.accent}40`, background:runningRules[r.id]==="running"?`${C.accent}15`:`${C.accent}10`, color:runningRules[r.id]==="running"?C.muted:C.accentL, cursor:runningRules[r.id]==="running"?"not-allowed":"pointer", fontWeight:700 }}
-                    >
-                      {runningRules[r.id]==="running" ? "⏳" : "▶ Run"}
-                    </button>
-                  )}
-                  <button onClick={e=>{e.stopPropagation();toggleRule(r.id);}} style={{ display:"flex", alignItems:"center", gap:5, background:"none", border:"none", cursor:"pointer", padding:0 }}>
-                    {r.status==="active"
-                      ? <><span style={{width:28,height:16,borderRadius:8,background:C.green,display:"block",position:"relative"}}><span style={{position:"absolute",right:2,top:2,width:12,height:12,borderRadius:"50%",background:"white"}} /></span><span style={{fontSize:10,color:C.green}}>ON</span></>
-                      : <><span style={{width:28,height:16,borderRadius:8,background:C.dim,display:"block",position:"relative"}}><span style={{position:"absolute",left:2,top:2,width:12,height:12,borderRadius:"50%",background:"white"}} /></span><span style={{fontSize:10,color:C.muted}}>OFF</span></>
-                    }
-                  </button>
-                  <button onClick={e=>{e.stopPropagation();setScheduleEdit(r.id);}} title="Set schedule" style={{ background:"none", border:`1px solid ${C.border2}`, borderRadius:4, padding:"2px 5px", cursor:"pointer", color:C.muted, fontSize:9 }}>⏰</button>
-                </div>
-              </div>
-              {/* Expanded: scan data */}
-              {expandedRule === r.id && (
-                <div style={{ padding:"12px 18px 16px", borderTop:`1px solid ${C.border}`, background:`${C.bg}80` }}>
-                  {runningRules[r.id]==="running" && <div style={{fontSize:11,color:C.muted}}>Running scan…</div>}
-                  {runningRules[r.id]==="pass" && (
-                    <div style={{fontSize:11,color:C.green,display:"flex",alignItems:"center",gap:6}}>
-                      <span>✓</span> No issues found — rule passed on last scan.
-                    </div>
-                  )}
-                  {runningRules[r.id] && typeof runningRules[r.id]==="object" && (
-                    <div>
-                      <div style={{fontSize:11,fontWeight:700,color:C.red,marginBottom:8}}>
-                        ⚠ {runningRules[r.id].count} issue{runningRules[r.id].count!==1?"s":""} detected
+                  {/* Rule rows */}
+                  {isOpen && tblRules.map((r, i) => (
+                    <div key={r.id} style={{ borderBottom: i<tblRules.length-1?`1px solid ${C.border}`:"none" }}>
+                      <div
+                        className="row-hover"
+                        onClick={() => setExpandedRule(p => p===r.id ? null : r.id)}
+                        style={{ display:"grid", gridTemplateColumns:"64px minmax(180px,1fr) 110px 100px 90px 90px 110px auto", gap:10, padding:"10px 16px", alignItems:"center", cursor:"pointer" }}
+                      >
+                        {/* ID */}
+                        <div style={{ fontFamily:"monospace", fontSize:11, color:C.muted }}>{r.id}</div>
+                        {/* Name */}
+                        <div>
+                          <div style={{ fontSize:12, fontWeight:600, color:C.text, display:"flex", alignItems:"center", gap:6 }}>
+                            {r.name}
+                            {r.aiGen && <span style={{ fontSize:9, background:`${C.purple}18`, color:C.purple, borderRadius:3, padding:"1px 5px", fontWeight:700 }}>AI</span>}
+                          </div>
+                          <div style={{ fontSize:10, color:C.muted, fontFamily:"monospace" }}>{r.column}</div>
+                        </div>
+                        {/* Type */}
+                        <div style={{ fontSize:11, background:`${C.accent}12`, color:C.accentL, borderRadius:4, padding:"2px 7px", fontWeight:600, width:"fit-content" }}>{r.type}</div>
+                        {/* Severity */}
+                        <div style={{ fontSize:11, color:{critical:C.red,high:C.orange,medium:C.yellow,low:C.muted}[r.severity]||C.muted, fontWeight:600 }}>{r.severity}</div>
+                        {/* Last Run */}
+                        <div style={{ fontSize:10, color:C.muted }}>{r.lastRun}</div>
+                        {/* Result */}
+                        <div style={{ fontSize:11, color:r.lastResult==="pass"?C.green:r.lastResult==="fail"?C.red:C.muted, fontWeight:600 }}>
+                          {r.lastResult==="pass"?"✓ pass":r.lastResult==="fail"?"✗ fail":"—"}
+                        </div>
+                        {/* Status toggle */}
+                        <div onClick={e=>{e.stopPropagation();setRules(p=>p.map(x=>x.id===r.id?{...x,status:x.status==="active"?"paused":"active"}:x))}}
+                          style={{ fontSize:10, background:r.status==="active"?`${C.green}15`:`${C.muted}15`, color:r.status==="active"?C.green:C.muted, borderRadius:4, padding:"2px 8px", cursor:"pointer", fontWeight:600 }}>
+                          {r.status}
+                        </div>
+                        {/* Actions */}
+                        <div style={{ display:"flex", gap:6, alignItems:"center" }} onClick={e=>e.stopPropagation()}>
+                          <button onClick={()=>runRule(r)} style={{ fontSize:10, background:`${C.accent}15`, color:C.accentL, border:"none", borderRadius:5, padding:"3px 9px", cursor:"pointer", fontWeight:700 }}>▶ Run</button>
+                          <button onClick={()=>setScheduleEdit(r.id)} style={{ fontSize:11, background:"none", border:"none", cursor:"pointer", color:C.muted }} title="Schedule">⏰</button>
+                        </div>
                       </div>
-                      <div style={{overflowX:"auto"}}>
-                        <table style={{width:"100%",borderCollapse:"collapse",fontSize:11}}>
-                          <thead>
-                            <tr style={{background:C.border}}>
-                              {runningRules[r.id].rows[0] && Object.keys(runningRules[r.id].rows[0]).map(col=>(
-                                <th key={col} style={{padding:"5px 10px",textAlign:"left",color:C.muted,fontWeight:700,fontSize:10,whiteSpace:"nowrap"}}>{col}</th>
-                              ))}
-                            </tr>
-                          </thead>
-                          <tbody>
-                            {runningRules[r.id].rows.slice(0,50).map((row,i)=>(
-                              <tr key={i} style={{borderBottom:`1px solid ${C.border}`}}>
-                                {Object.values(row).map((v,j)=>(
-                                  <td key={j} style={{padding:"5px 10px",color:C.text,whiteSpace:"nowrap",maxWidth:200,overflow:"hidden",textOverflow:"ellipsis"}}>{String(v??"-")}</td>
-                                ))}
-                              </tr>
-                            ))}
-                          </tbody>
-                        </table>
-                        {runningRules[r.id].rows.length > 50 && <div style={{fontSize:10,color:C.muted,marginTop:6}}>Showing 50 of {runningRules[r.id].count} rows</div>}
-                      </div>
+                      {/* Expanded panel */}
+                      {expandedRule===r.id && (
+                        <div style={{ padding:"12px 16px 14px", background:C.isDark?"#0A0C1060":"#F8FAFC", borderTop:`1px solid ${C.border}` }}>
+                          <div style={{ fontSize:11, color:C.muted, marginBottom:6, fontWeight:600 }}>SQL</div>
+                          <pre style={{ fontSize:11, color:C.cyan, background:C.isDark?"#0A0C10":"#1E293B", borderRadius:6, padding:"10px 12px", overflowX:"auto", margin:0, fontFamily:"monospace", lineHeight:1.6 }}>{r.sql||"No SQL defined"}</pre>
+                          {runningRules[r.id] && (
+                            <div style={{ marginTop:10 }}>
+                              <div style={{ fontSize:11, color:C.muted, marginBottom:6 }}>RESULTS — {runningRules[r.id].status==="running"?"running…":`${runningRules[r.id].count} rows`}</div>
+                              {runningRules[r.id].rows?.length>0 && (
+                                <div style={{ overflowX:"auto" }}>
+                                  <table style={{ width:"100%", borderCollapse:"collapse", fontSize:11 }}>
+                                    <thead><tr>{Object.keys(runningRules[r.id].rows[0]).map(col=><th key={col} style={{ textAlign:"left", padding:"4px 8px", color:C.muted, borderBottom:`1px solid ${C.border}`, fontWeight:600 }}>{col}</th>)}</tr></thead>
+                                    <tbody>{runningRules[r.id].rows.slice(0,50).map((row,ri)=><tr key={ri}>{Object.values(row).map((v,vi)=><td key={vi} style={{ padding:"4px 8px", color:C.text, borderBottom:`1px solid ${C.border}30` }}>{String(v)}</td>)}</tr>)}</tbody>
+                                  </table>
+                                </div>
+                              )}
+                              {!runningRules[r.id].rows?.length && runningRules[r.id].status!=="running" && <div style={{fontSize:11,color:C.green}}>✓ No issues found</div>}
+                            </div>
+                          )}
+                          {!runningRules[r.id] && <div style={{fontSize:11,color:C.muted,marginTop:8}}>Click ▶ Run to scan against redshift-staging.</div>}
+                        </div>
+                      )}
+                      {scheduleEdit===r.id && <SchedModal rule={r} T={C} CRON_PRESETS={CRON_PRESETS} setRules={setRules} onClose={()=>setScheduleEdit(null)} />}
                     </div>
-                  )}
-                  {!runningRules[r.id] && <div style={{fontSize:11,color:C.muted}}>Click ▶ Run to scan this rule against redshift-staging.</div>}
-                </div>
-              )}
-            </div>
-          ))}
-        </Card>
-      )}
+                  ))}
+                </Card>
+              );
+            })}
+          </div>
+        );
+      })()}
 
       {/* ── Visual Builder ── */}
       {view==="builder" && (
@@ -3221,11 +3222,18 @@ Be concise, technical, and actionable. When suggesting SQL, write exact queries 
         })
       });
       const data = await res.json();
-      if (!res.ok) {
-        const errMsg = data?.error?.message || JSON.stringify(data);
-        setMessages(p => [...p, { role:"assistant", content:`❌ API error ${res.status}: ${errMsg}` }]);
+      // Surface any error — backend error, Anthropic error, or missing content
+      const errText = !res.ok
+        ? `❌ ${res.status}: ${data?.error?.message || data?.error || JSON.stringify(data)}`
+        : data?.error
+          ? `❌ Backend: ${typeof data.error === "string" ? data.error : data.error.message || JSON.stringify(data.error)}`
+          : data?.type === "error"
+            ? `❌ Anthropic: ${data?.error?.message || JSON.stringify(data)}`
+            : null;
+      if (errText) {
+        setMessages(p => [...p, { role:"assistant", content: errText }]);
       } else {
-        const text = data.content?.find(b=>b.type==="text")?.text || "Unable to get response.";
+        const text = data.content?.find(b=>b.type==="text")?.text || "❌ Empty response — check Railway logs.";
         setMessages(p => [...p, { role:"assistant", content: text }]);
       }
     } catch(err) {
@@ -3271,7 +3279,43 @@ Be concise, technical, and actionable. When suggesting SQL, write exact queries 
               {m.role==="user" ? <span style={{fontSize:11,color:C.accentL}}>You</span> : <Bot size={13} color={C.purple} />}
             </div>
             <div style={{ maxWidth:"82%", background: m.role==="user" ? `${C.accent}18` : C.card, border:`1px solid ${C.border}`, borderRadius:8, padding:"9px 12px", fontSize:12, color:C.text, lineHeight:1.7 }}>
-              {m.content.split("\n").map((line, j) => <div key={j}>{renderText(line)}</div>)}
+              {(() => {
+                // Parse content into text segments and SQL blocks
+                const content = m.content;
+                const parts = [];
+                const sqlRegex = /```sql\n([\s\S]*?)```|```([\s\S]*?)```/gi;
+                let last = 0, match;
+                while ((match = sqlRegex.exec(content)) !== null) {
+                  if (match.index > last) parts.push({ type:"text", value: content.slice(last, match.index) });
+                  parts.push({ type:"sql", value: (match[1]||match[2]).trim() });
+                  last = match.index + match[0].length;
+                }
+                if (last < content.length) parts.push({ type:"text", value: content.slice(last) });
+                return parts.map((p, pi) => p.type === "sql" ? (
+                  <div key={pi} style={{ marginTop:8, marginBottom:4, borderRadius:8, overflow:"hidden", border:`1px solid ${C.cyan}40` }}>
+                    <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", padding:"5px 10px", background:C.isDark?"#0A0C10":"#1E293B" }}>
+                      <span style={{ fontSize:10, color:C.cyan, fontWeight:700, letterSpacing:"0.06em" }}>SQL</span>
+                      <div style={{ display:"flex", gap:6 }}>
+                        <button onClick={() => { navigator.clipboard?.writeText(p.value); }} style={{ fontSize:10, background:"none", border:`1px solid ${C.cyan}40`, borderRadius:4, padding:"2px 8px", cursor:"pointer", color:C.cyan }}>Copy</button>
+                        <button onClick={async () => {
+                          try {
+                            const r = await fetch(`${API_BASE}/api/query?sql=${encodeURIComponent(p.value)}`);
+                            const d = await r.json();
+                            const rows = d.rows || d;
+                            const msg = Array.isArray(rows) && rows.length > 0
+                              ? ["**Query Results (" + rows.length + " rows):**", Object.keys(rows[0]).join(" | "), ...rows.slice(0,10).map(row => Object.values(row).join(" | "))].join("\n")
+                              : "✓ Query returned 0 rows — no issues found.";
+                            setMessages(prev => [...prev, { role:"assistant", content: msg }]);
+                          } catch(e) { setMessages(prev => [...prev, { role:"assistant", content:`❌ Query error: ${e.message}` }]); }
+                        }} style={{ fontSize:10, background:`${C.green}20`, border:`1px solid ${C.green}40`, borderRadius:4, padding:"2px 8px", cursor:"pointer", color:C.green, fontWeight:700 }}>▶ Run</button>
+                      </div>
+                    </div>
+                    <pre style={{ margin:0, padding:"10px 12px", fontSize:11, color:C.cyan, background:C.isDark?"#0D1017":"#0F172A", overflowX:"auto", lineHeight:1.6, fontFamily:"monospace" }}>{p.value}</pre>
+                  </div>
+                ) : (
+                  <div key={pi}>{p.value.split("\n").map((line,j) => <div key={j} style={{ minHeight: line ? undefined : "0.5em" }}>{renderText(line)}</div>)}</div>
+                ));
+              })()}
             </div>
           </div>
         ))}
@@ -5923,7 +5967,7 @@ function DataflowsTab() {
         })
       });
       const d = await res.json();
-      const reply = d.content?.find(b=>b.type==="text")?.text || "No response.";
+      const reply = d.content?.find(b=>b.type==="text")?.text || "❌ No response. Check ANTHROPIC_API_KEY in Railway.";
       setAiMessages(p => [...p, { role:"assistant", content:reply }]);
       // Auto-apply SQL if suggested
       const sqlMatch = reply.match(/```sql\n([\s\S]*?)```/);
@@ -6114,7 +6158,43 @@ function DataflowsTab() {
                 <div style={{ maxWidth:"92%", padding:"8px 10px", borderRadius:8, fontSize:11, lineHeight:1.6,
                   background: m.role==="user"?`${T.accent}20`:m.auto?`${T.purple}12`:T.card,
                   color: T.text, border:`1px solid ${m.role==="user"?T.accent:m.auto?T.purple:T.border}` }}>
-                  {m.content}
+                  {(() => {
+                    const content = m.content;
+                    const parts = [];
+                    const sqlRe = /```sql\n([\s\S]*?)```|```([\s\S]*?)```/gi;
+                    let last = 0, match;
+                    while ((match = sqlRe.exec(content)) !== null) {
+                      if (match.index > last) parts.push({ type:"text", value: content.slice(last, match.index) });
+                      parts.push({ type:"sql", value: (match[1]||match[2]).trim() });
+                      last = match.index + match[0].length;
+                    }
+                    if (last < content.length) parts.push({ type:"text", value: content.slice(last) });
+                    return parts.map((p, pi) => p.type === "sql" ? (
+                      <div key={pi} style={{ marginTop:6, borderRadius:7, overflow:"hidden", border:`1px solid ${T.cyan}40` }}>
+                        <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", padding:"4px 9px", background:T.isDark?"#0A0C10":"#1E293B" }}>
+                          <span style={{ fontSize:10, color:T.cyan, fontWeight:700 }}>SQL</span>
+                          <div style={{ display:"flex", gap:5 }}>
+                            <button onClick={() => navigator.clipboard?.writeText(p.value)} style={{ fontSize:10, background:"none", border:`1px solid ${T.cyan}40`, borderRadius:4, padding:"2px 7px", cursor:"pointer", color:T.cyan }}>Copy</button>
+                            <button onClick={() => { setEditQuery(p.value); }} style={{ fontSize:10, background:`${T.accent}20`, border:`1px solid ${T.accent}40`, borderRadius:4, padding:"2px 7px", cursor:"pointer", color:T.accentL, fontWeight:700 }}>← Use</button>
+                            <button onClick={async () => {
+                              try {
+                                const r = await fetch(`${API_BASE}/api/query?sql=${encodeURIComponent(p.value)}`);
+                                const d = await r.json();
+                                const rows = d.rows || d;
+                                const msg = Array.isArray(rows) && rows.length > 0
+                                  ? `Results (${rows.length} rows):\n` + Object.keys(rows[0]).join(" | ") + "\n" + rows.slice(0,10).map(row=>Object.values(row).join(" | ")).join("\n")
+                                  : "✓ 0 rows returned.";
+                                setAiMessages(prev => [...prev, { role:"assistant", content: msg }]);
+                              } catch(e) { setAiMessages(prev => [...prev, { role:"assistant", content:`❌ ${e.message}` }]); }
+                            }} style={{ fontSize:10, background:`${T.green}20`, border:`1px solid ${T.green}40`, borderRadius:4, padding:"2px 7px", cursor:"pointer", color:T.green, fontWeight:700 }}>▶ Run</button>
+                          </div>
+                        </div>
+                        <pre style={{ margin:0, padding:"8px 10px", fontSize:11, color:T.cyan, background:T.isDark?"#0D1017":"#0F172A", overflowX:"auto", lineHeight:1.6, fontFamily:"monospace" }}>{p.value}</pre>
+                      </div>
+                    ) : (
+                      <div key={pi}>{p.value.split("\n").map((line,j) => <div key={j} style={{ minHeight: line ? undefined : "0.5em" }}>{line}</div>)}</div>
+                    ));
+                  })()}
                 </div>
               </div>
             ))}
@@ -6192,6 +6272,271 @@ function SchemaTableRow({ table, cols, T, onInsert }) {
   );
 }
 
+
+// ─────────────────────────────────────────────────────────────────────────────
+// AI AGENTS TAB
+// ─────────────────────────────────────────────────────────────────────────────
+const MWS_AGENTS = [
+  { id:"AGT-ORD",  table:"mws.orders",                   label:"Orders Agent",         icon:"📦", desc:"Detects duplicate orders, NULL ASINs on shipped items, price anomalies, stale download dates." },
+  { id:"AGT-INV",  table:"mws.inventory",                label:"Inventory Agent",       icon:"🏭", desc:"Flags negative available qty, zero days-of-supply, missing restock recommendations." },
+  { id:"AGT-RST",  table:"mws.inventory_restock",        label:"Restock Agent",         icon:"🔄", desc:"Detects zero/negative restock quantities, stale restock records, missing account linkage." },
+  { id:"AGT-STD",  table:"mws.sales_and_traffic_by_date",label:"Sales by Date Agent",   icon:"📅", desc:"Checks for missing days in last 30d, anomalous revenue drops, refund rate spikes." },
+  { id:"AGT-ASN",  table:"mws.sales_and_traffic_by_asin",label:"Sales by ASIN Agent",   icon:"🔖", desc:"Validates buy-box % range, detects session anomalies, flags zero-unit ASINs with traffic." },
+  { id:"AGT-SKU",  table:"mws.sales_and_traffic_by_sku", label:"Sales by SKU Agent",    icon:"🏷️", desc:"Cross-checks SKU sales vs ASIN sales, detects orphaned SKUs, revenue outliers." },
+];
+
+function AIAgentsTab({ agentStates, setAgentStates, setAlertsState, accountId }) {
+  const C = React.useContext(ThemeCtx);
+  const [running, setRunning] = React.useState({}); // agentId -> bool
+  const [expanded, setExpanded] = React.useState(null);
+  const [scanAllLoading, setScanAllLoading] = React.useState(false);
+  const API_BASE_AGENTS = "https://intentwise-backend-production.up.railway.app";
+
+  const runAgent = async (agent) => {
+    setRunning(p => ({ ...p, [agent.id]: true }));
+    setAgentStates(p => ({ ...p, [agent.id]: { ...p[agent.id], status:"running", log:["🔍 Connecting to Redshift…"] } }));
+
+    try {
+      // Step 1: fetch a sample from that table
+      const qs = accountId && accountId !== "all" ? `&account_id=${accountId}` : "";
+      const previewRes = await fetch(`${API_BASE_AGENTS}/api/preview?schema=mws&table=${agent.table.replace("mws.","")}&limit=200${qs}`);
+      const preview = await previewRes.json();
+      const rows = preview.rows || preview || [];
+
+      setAgentStates(p => ({ ...p, [agent.id]: { ...p[agent.id], log:[...p[agent.id].log, `📊 Loaded ${rows.length} rows from ${agent.table}`] } }));
+
+      if (!rows.length) {
+        setAgentStates(p => ({ ...p, [agent.id]: { status:"idle", lastRun: new Date().toLocaleTimeString(), alertsFiled:0, log:[...p[agent.id].log, "⚠️ No rows returned — table may be empty for this account."] } }));
+        setRunning(p => ({ ...p, [agent.id]: false }));
+        return;
+      }
+
+      // Step 2: send to AI for anomaly analysis
+      const colNames = Object.keys(rows[0]);
+      const sample = rows.slice(0, 50);
+
+      const aiRes = await fetch(`${API_BASE_AGENTS}/api/ai/chat`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          max_tokens: 1200,
+          system: `You are an autonomous data quality agent monitoring ${agent.table} in a Redshift database for an Amazon seller analytics platform. Your job is to detect real anomalies in the data provided and file structured alerts.
+
+Table columns: ${colNames.join(", ")}
+
+Rules to check:
+${agent.id === "AGT-ORD" ? `- Duplicate amazon_order_id values
+- NULL or empty asin on rows where order_status = 'Shipped'
+- item_price <= 0 on non-cancelled orders
+- download_date older than 3 days` : ""}
+${agent.id === "AGT-INV" ? `- available < 0
+- days_of_supply = 0 or NULL with available > 0
+- total_units < available (impossible state)` : ""}
+${agent.id === "AGT-RST" ? `- quantity <= 0
+- missing account_id
+- download_date older than 7 days` : ""}
+${agent.id === "AGT-STD" ? `- ordered_product_sales_amt = 0 on days with sessions > 0
+- refund_rate > 0.15 (>15%)
+- buy_box_percentage < 0 or > 1` : ""}
+${agent.id === "AGT-ASN" ? `- traffic_by_asin_buy_box_prcntg not between 0 and 1
+- units_ordered = 0 but traffic_by_asin_sessions > 100
+- ordered_product_sales_amt < 0` : ""}
+${agent.id === "AGT-SKU" ? `- units_ordered = 0 with ordered_product_sales_amt > 0
+- missing sku or asin values
+- ordered_product_sales_amt < 0` : ""}
+
+Respond ONLY with a JSON object (no markdown):
+{
+  "anomalies_found": number,
+  "severity": "critical|high|medium|low|none",
+  "summary": "one sentence summary",
+  "alerts": [
+    { "title": "short alert title", "detail": "what was found and why it matters", "severity": "critical|high|medium|low", "affected_rows": number }
+  ],
+  "log": ["step description 1", "step description 2"]
+}`,
+          messages: [{ role: "user", content: `Analyse this sample data from ${agent.table} and file alerts for any anomalies:
+
+${JSON.stringify(sample, null, 2)}` }]
+        })
+      });
+
+      const aiData = await aiRes.json();
+      const raw = aiData.content?.find(b => b.type === "text")?.text || "{}";
+      const result = JSON.parse(raw.replace(/```json|```/g, "").trim());
+
+      const alerts = (result.alerts || []).map((a, i) => ({
+        id: `${agent.id}-${Date.now()}-${i}`,
+        title: a.title,
+        detail: a.detail,
+        severity: a.severity || result.severity || "medium",
+        table: agent.table,
+        source: agent.label,
+        ts: new Date().toISOString(),
+        status: "open",
+        aiGenerated: true,
+      }));
+
+      // File alerts into the global alerts state
+      if (alerts.length > 0) {
+        setAlertsState(prev => {
+          const existingIds = new Set(prev.map(a => a.id));
+          return [...prev, ...alerts.filter(a => !existingIds.has(a.id))];
+        });
+      }
+
+      setAgentStates(p => ({
+        ...p,
+        [agent.id]: {
+          status: result.anomalies_found > 0 ? "alert" : "healthy",
+          lastRun: new Date().toLocaleTimeString(),
+          alertsFiled: alerts.length,
+          severity: result.severity,
+          summary: result.summary,
+          log: [...(result.log || []), alerts.length > 0 ? `🚨 Filed ${alerts.length} alert(s)` : "✅ No anomalies detected"],
+        }
+      }));
+
+    } catch(e) {
+      setAgentStates(p => ({ ...p, [agent.id]: { status:"error", lastRun: new Date().toLocaleTimeString(), alertsFiled:0, log:[`❌ Error: ${e.message}`] } }));
+    }
+
+    setRunning(p => ({ ...p, [agent.id]: false }));
+  };
+
+  const runAllAgents = async () => {
+    setScanAllLoading(true);
+    for (const agent of MWS_AGENTS) {
+      await runAgent(agent);
+    }
+    setScanAllLoading(false);
+  };
+
+  const statusColor = (s, C) => ({ healthy:C.green, alert:C.red, running:C.yellow, error:C.orange, idle:C.muted })[s] || C.muted;
+  const statusLabel = (s) => ({ healthy:"✓ Healthy", alert:"⚠ Anomalies", running:"⟳ Scanning…", error:"✗ Error", idle:"— Not run" })[s] || "—";
+
+  const totalAlerts = Object.values(agentStates).reduce((sum, s) => sum + (s.alertsFiled || 0), 0);
+  const healthyCount = Object.values(agentStates).filter(s => s.status === "healthy").length;
+  const alertCount   = Object.values(agentStates).filter(s => s.status === "alert").length;
+
+  return (
+    <div style={{ paddingBottom:32 }}>
+      {/* Header */}
+      <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom:20 }}>
+        <div>
+          <div style={{ fontSize:18, fontWeight:700, color:C.text, display:"flex", alignItems:"center", gap:10 }}>
+            <BrainCircuit size={20} color={C.purple}/> AI Agents
+          </div>
+          <div style={{ fontSize:12, color:C.muted, marginTop:3 }}>Autonomous agents that scan mws tables, detect anomalies and file alerts</div>
+        </div>
+        <button
+          onClick={runAllAgents}
+          disabled={scanAllLoading}
+          style={{ display:"flex", alignItems:"center", gap:8, padding:"9px 18px", background: scanAllLoading?`${C.muted}20`:`${C.purple}18`, border:`1px solid ${scanAllLoading?C.muted:C.purple}50`, borderRadius:9, cursor: scanAllLoading?"not-allowed":"pointer", fontSize:12, color: scanAllLoading?C.muted:C.purple, fontWeight:700 }}
+        >
+          <BrainCircuit size={13}/> {scanAllLoading ? "Scanning all tables…" : "Run All Agents"}
+        </button>
+      </div>
+
+      {/* Summary cards */}
+      <div style={{ display:"grid", gridTemplateColumns:"repeat(4,1fr)", gap:12, marginBottom:20 }}>
+        {[
+          { label:"Total Agents",    value:MWS_AGENTS.length, color:C.accent,  icon:"🤖" },
+          { label:"Healthy",         value:healthyCount,       color:C.green,   icon:"✓" },
+          { label:"Anomalies Found", value:alertCount,         color:C.red,     icon:"⚠" },
+          { label:"Alerts Filed",    value:totalAlerts,        color:C.orange,  icon:"🔔" },
+        ].map(({ label, value, color, icon }) => (
+          <div key={label} style={{ background:C.card, border:`1px solid ${C.border}`, borderRadius:10, padding:"14px 16px" }}>
+            <div style={{ fontSize:11, color:C.muted, marginBottom:6 }}>{icon} {label.toUpperCase()}</div>
+            <div style={{ fontSize:26, fontWeight:800, color }}>{value}</div>
+          </div>
+        ))}
+      </div>
+
+      {/* Agent cards */}
+      <div style={{ display:"flex", flexDirection:"column", gap:10 }}>
+        {MWS_AGENTS.map(agent => {
+          const st = agentStates[agent.id] || {};
+          const isRunning = running[agent.id];
+          const isExpanded = expanded === agent.id;
+          const sc = statusColor(isRunning ? "running" : st.status, C);
+
+          return (
+            <div key={agent.id} style={{ background:C.card, border:`1px solid ${isExpanded?C.accent:C.border}`, borderRadius:12, overflow:"hidden", transition:"border 0.2s" }}>
+              {/* Agent row */}
+              <div
+                onClick={() => setExpanded(p => p === agent.id ? null : agent.id)}
+                style={{ display:"grid", gridTemplateColumns:"40px 1fr 180px 130px 120px 110px auto", gap:12, padding:"14px 18px", alignItems:"center", cursor:"pointer" }}
+              >
+                {/* Icon */}
+                <div style={{ fontSize:22, textAlign:"center" }}>{agent.icon}</div>
+                {/* Label + table */}
+                <div>
+                  <div style={{ fontSize:13, fontWeight:700, color:C.text }}>{agent.label}</div>
+                  <div style={{ fontSize:11, color:C.muted, fontFamily:"monospace", marginTop:2 }}>{agent.table}</div>
+                </div>
+                {/* Status */}
+                <div style={{ display:"flex", alignItems:"center", gap:6 }}>
+                  <div style={{ width:7, height:7, borderRadius:"50%", background:sc, boxShadow: isRunning?`0 0 6px ${sc}`:undefined }} />
+                  <span style={{ fontSize:11, color:sc, fontWeight:600 }}>{statusLabel(isRunning?"running":st.status)}</span>
+                </div>
+                {/* Last run */}
+                <div style={{ fontSize:11, color:C.muted }}>{st.lastRun ? `Last: ${st.lastRun}` : "Never run"}</div>
+                {/* Alerts filed */}
+                <div style={{ fontSize:11 }}>
+                  {st.alertsFiled > 0
+                    ? <span style={{ color:C.red, fontWeight:700 }}>🔔 {st.alertsFiled} alert{st.alertsFiled!==1?"s":""}</span>
+                    : <span style={{ color:C.muted }}>No alerts</span>}
+                </div>
+                {/* Severity badge */}
+                <div>
+                  {st.severity && st.severity !== "none" && (
+                    <span style={{ fontSize:10, fontWeight:700, borderRadius:5, padding:"2px 8px", background:`${{critical:C.red,high:C.orange,medium:C.yellow,low:C.green}[st.severity]||C.muted}18`, color:{critical:C.red,high:C.orange,medium:C.yellow,low:C.green}[st.severity]||C.muted }}>
+                      {st.severity}
+                    </span>
+                  )}
+                </div>
+                {/* Run button */}
+                <button
+                  onClick={e => { e.stopPropagation(); runAgent(agent); }}
+                  disabled={isRunning}
+                  style={{ padding:"6px 14px", background:isRunning?`${C.muted}15`:`${C.accent}18`, border:`1px solid ${isRunning?C.muted:C.accent}40`, borderRadius:7, cursor:isRunning?"not-allowed":"pointer", fontSize:11, color:isRunning?C.muted:C.accentL, fontWeight:700, whiteSpace:"nowrap" }}
+                >
+                  {isRunning ? "⟳ Scanning" : "▶ Run"}
+                </button>
+              </div>
+
+              {/* Expanded panel */}
+              {isExpanded && (
+                <div style={{ borderTop:`1px solid ${C.border}`, padding:"14px 18px", background:C.isDark?"#0A0C1060":"#F8FAFC" }}>
+                  <div style={{ fontSize:11, color:C.muted, marginBottom:8 }}>{agent.desc}</div>
+                  {st.summary && (
+                    <div style={{ fontSize:12, color:C.text, background:`${C.accent}10`, border:`1px solid ${C.accent}30`, borderRadius:8, padding:"8px 12px", marginBottom:10 }}>
+                      💡 {st.summary}
+                    </div>
+                  )}
+                  {st.log && st.log.length > 0 && (
+                    <div>
+                      <div style={{ fontSize:10, color:C.muted, fontWeight:700, marginBottom:6, letterSpacing:"0.08em" }}>SCAN LOG</div>
+                      <div style={{ background:C.isDark?"#0A0C10":"#1E293B", borderRadius:7, padding:"10px 12px", fontFamily:"monospace", fontSize:11 }}>
+                        {st.log.map((line, i) => (
+                          <div key={i} style={{ color: line.startsWith("❌")?"#EF4444":line.startsWith("🚨")?"#F97316":line.startsWith("✅")?"#10B981":"#94A3B8", marginBottom:3 }}>{line}</div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                  {!st.log && <div style={{ fontSize:11, color:C.muted }}>Click ▶ Run to start this agent.</div>}
+                </div>
+              )}
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+
 export default function AIOpsMonitor() {
   const [theme, setTheme] = useState("light");
   const [dataMode, setDataMode] = useState("prod"); // "demo" | "prod"
@@ -6217,6 +6562,7 @@ export default function AIOpsMonitor() {
   const [rulesLoading,setRulesLoading]= useState(false);
   const [agentScanResult, setAgentScanResult] = useState(null);
   const [agentScanLoading, setAgentScanLoading] = useState(false);
+  const [agentStates, setAgentStates] = useState({}); // agentId -> { status, lastRun, alertsFiled, log }
 
   // Load accounts on mount
   useEffect(() => {
@@ -6348,6 +6694,7 @@ export default function AIOpsMonitor() {
     { id:"sources",    label:"Data Sources",         icon:Database,        count:DATASOURCES.filter(d=>d.status!=="healthy").length },
     { id:"dbexplorer", label:"DB Explorer",          icon:Database,        count:0, badge:"LIVE" },
     { id:"dataflows",  label:"Dataflows",            icon:Workflow,        count:0 },
+    { id:"agents",     label:"AI Agents",             icon:BrainCircuit,    count:0, badge:"NEW" },
   ];
 
   return (
@@ -6648,6 +6995,18 @@ export default function AIOpsMonitor() {
             </div>
           )}
 
+
+          {/* ── AI Agents Tab ── */}
+          {activeTab === "agents" && (
+            <div style={{ paddingBottom:24 }}>
+              <AIAgentsTab
+                agentStates={agentStates}
+                setAgentStates={setAgentStates}
+                setAlertsState={setAlertsState}
+                accountId={accountId}
+              />
+            </div>
+          )}
 
           {/* ── Dashboard Tab ── */}
           {activeTab === "dashboard" && (

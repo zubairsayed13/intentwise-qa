@@ -1651,6 +1651,48 @@ function ValidationRulesTab({ liveRules, rulesLoading }) {
   useEffect(() => {
     if (liveRules && liveRules.length > 0) setRules(liveRules);
   }, [liveRules]);
+
+  // Auto-generate rules from mws schema on mount
+  useEffect(() => {
+    const autoGenerate = async () => {
+      try {
+        // 1. Fetch real mws tables
+        const tablesRes = await fetch(`${API_BASE}/api/tables`);
+        const tablesData = await tablesRes.json();
+        const mwsTables = (tablesData || []).filter(t => t.schema === "mws").map(t => t.name);
+        if (!mwsTables.length) return;
+
+        // 2. Ask AI to generate rules
+        const res = await fetch(`${API_BASE}/api/ai/chat`, {
+          method:"POST", headers:{"Content-Type":"application/json"},
+          body: JSON.stringify({
+            max_tokens: 2000,
+            system: `You are a data quality AI for Intentwise. Redshift schema: mws. Tables: ${mwsTables.join(", ")}. Key columns — orders: amazon_order_id, asin, order_status, item_price, quantity, purchase_date, account_id. inventory: asin, available, total_units, days_of_supply, alert, account_id. sales_and_traffic_by_date: sale_date, ordered_product_sales_amt, units_ordered, buy_box_percentage, refund_rate, account_id. sales_and_traffic_by_asin: child_asin, units_ordered, traffic_by_asin_buy_box_prcntg, account_id. inventory_restock: asin, quantity, account_id. sales_and_traffic_by_sku: sku, units_ordered, ordered_product_sales_amt, account_id. Generate 8-10 high-value data quality rules. Respond ONLY with a valid JSON array, no markdown, no explanation: [{"id":"MWS-A01","name":"short rule name","type":"unique|not_null|range|freshness|row_count","source":"redshift-staging","table":"mws.TABLE","column":"col","severity":"critical|high|medium|low","status":"active","lastRun":"—","lastResult":"pending","aiGen":true,"schedule":"0 * * * *","sql":"exact runnable SQL that returns 0 rows if passing or failing rows if not"}]`,
+            messages:[{ role:"user", content:"Generate data quality rules for all mws tables." }]
+          })
+        });
+        const d = await res.json();
+        const raw = d.content?.find(b => b.type === "text")?.text || "[]";
+        const clean = raw.replace(/```json|```/g, "").trim();
+        const generated = JSON.parse(clean);
+        if (!Array.isArray(generated) || !generated.length) return;
+
+        // 3. Merge — skip any rule whose table+column+type already exists
+        setRules(prev => {
+          const existing = new Set(prev.map(r => `${r.table}|${r.column}|${r.type}`));
+          const novel = generated
+            .filter(r => r.sql && !existing.has(`${r.table}|${r.column}|${r.type}`))
+            .map((r, i) => ({
+              ...r,
+              id: `MWS-A${String(i+1).padStart(2,"0")}`,
+              lastRun: "—", lastResult: "pending", aiGen: true,
+            }));
+          return novel.length ? [...prev, ...novel] : prev;
+        });
+      } catch(_) {}
+    };
+    autoGenerate();
+  }, []); // run once on mount
   const [view, setView]             = useState("list");   // list | builder | nlp | scan
   const [nlpInput, setNlpInput]     = useState("");
   const [nlpLoading, setNlpLoading] = useState(false);
@@ -1693,7 +1735,9 @@ Respond ONLY with valid JSON (no markdown): {"name":"string","type":"string","so
       const raw = data.content?.find(b=>b.type==="text")?.text || "{}";
       const clean = raw.replace(/```json|```/g,"").trim();
       setNlpResult(JSON.parse(clean));
-    } catch { setNlpResult({ error:"Could not parse. Try rephrasing." }); }
+    } catch(err) {
+      setNlpResult({ error:`Network/parse error: ${err.message}. Check that backend is running.` });
+    }
     setNlpLoading(false);
   };
 
@@ -1801,6 +1845,35 @@ Respond ONLY with valid JSON (no markdown): {"name":"string","type":"string","so
             style={{ padding:"7px 14px", borderRadius:7, border:`1px solid ${C.green}50`, background:`${C.green}12`, color:C.green, fontSize:11, fontWeight:700, cursor:"pointer", display:"flex", alignItems:"center", gap:5 }}
           >
             ⚡ Run All Active
+          </button>
+          <button
+            onClick={async () => {
+              try {
+                const tablesRes = await fetch(`${API_BASE}/api/tables`);
+                const tablesData = await tablesRes.json();
+                const mwsTables = (tablesData||[]).filter(t=>t.schema==="mws").map(t=>t.name);
+                const res = await fetch(`${API_BASE}/api/ai/chat`, {
+                  method:"POST", headers:{"Content-Type":"application/json"},
+                  body: JSON.stringify({ max_tokens:2000,
+                    system:`You are a data quality AI for Intentwise. Redshift schema: mws. Tables: ${mwsTables.join(", ")}. Key columns — orders: amazon_order_id, asin, order_status, item_price, quantity, purchase_date, account_id. inventory: asin, available, total_units, days_of_supply, alert, account_id. sales_and_traffic_by_date: sale_date, ordered_product_sales_amt, units_ordered, buy_box_percentage, refund_rate, account_id. sales_and_traffic_by_asin: child_asin, units_ordered, traffic_by_asin_buy_box_prcntg, account_id. inventory_restock: asin, quantity, account_id. sales_and_traffic_by_sku: sku, units_ordered, account_id. Generate 8-10 high-value data quality rules. Respond ONLY with a valid JSON array, no markdown: [{"id":"MWS-A01","name":"short rule name","type":"unique|not_null|range|freshness|row_count","source":"redshift-staging","table":"mws.TABLE","column":"col","severity":"critical|high|medium|low","status":"active","lastRun":"—","lastResult":"pending","aiGen":true,"schedule":"0 * * * *","sql":"exact runnable SQL"}]`,
+                    messages:[{ role:"user", content:"Generate fresh data quality rules for all mws tables." }]
+                  })
+                });
+                const d = await res.json();
+                const raw = d.content?.find(b=>b.type==="text")?.text||"[]";
+                const generated = JSON.parse(raw.replace(/```json|```/g,"").trim());
+                if (!Array.isArray(generated)||!generated.length) return;
+                setRules(prev => {
+                  const existing = new Set(prev.map(r=>`${r.table}|${r.column}|${r.type}`));
+                  const novel = generated.filter(r=>r.sql&&!existing.has(`${r.table}|${r.column}|${r.type}`))
+                    .map((r,i)=>({...r, id:`MWS-A${String(i+1).padStart(2,"0")}`, lastRun:"—", lastResult:"pending", aiGen:true}));
+                  return novel.length?[...prev,...novel]:prev;
+                });
+              } catch(_) {}
+            }}
+            style={{ background:`${C.purple}12`, border:`1px solid ${C.purple}30`, borderRadius:7, padding:"6px 12px", cursor:"pointer", fontSize:11, color:C.purple, fontWeight:700, display:"flex", alignItems:"center", gap:5 }}
+          >
+            <Sparkles size={11} color={C.purple}/> Regenerate Rules
           </button>
         </div>
         <div style={{ display:"flex", gap:6 }}>
@@ -2835,7 +2908,7 @@ function RuleTestRunnerTab() {
       });
       const data = await resp.json();
       setAiExplain(data.content?.find(b=>b.type==="text")?.text || "");
-    } catch(e){ setAiExplain(""); }
+    } catch(e){ setAiExplain(`❌ Error: ${e.message}`); }
     setAiLoading(false);
   };
 
@@ -2971,7 +3044,7 @@ Pattern: ${group.pattern}`}]
       const data = await res.json();
       const text = data.content?.find(b=>b.type==="text")?.text||"Analysis unavailable.";
       setAiAnalysis(p=>({...p,[group.id]:text}));
-    } catch(e){ setAiAnalysis(p=>({...p,[group.id]:"Analysis failed. Please retry."})); }
+    } catch(e){ setAiAnalysis(p=>({...p,[group.id]:`Analysis failed: ${e.message}`})); }
     setAnalyzing(null);
   };
 
@@ -3148,10 +3221,15 @@ Be concise, technical, and actionable. When suggesting SQL, write exact queries 
         })
       });
       const data = await res.json();
-      const text = data.content?.find(b=>b.type==="text")?.text || "Unable to get response.";
-      setMessages(p => [...p, { role:"assistant", content: text }]);
-    } catch {
-      setMessages(p => [...p, { role:"assistant", content:"API error. Please try again." }]);
+      if (!res.ok) {
+        const errMsg = data?.error?.message || JSON.stringify(data);
+        setMessages(p => [...p, { role:"assistant", content:`❌ API error ${res.status}: ${errMsg}` }]);
+      } else {
+        const text = data.content?.find(b=>b.type==="text")?.text || "Unable to get response.";
+        setMessages(p => [...p, { role:"assistant", content: text }]);
+      }
+    } catch(err) {
+      setMessages(p => [...p, { role:"assistant", content:`❌ Network error: ${err.message}` }]);
     }
     setLoading(false);
   };
@@ -4432,8 +4510,7 @@ function CommandPalette({ onClose, onNavigate }) {
         { type:"nav",   icon:"🤖", label:"QA Agents",            hint:"Tab",  action:"tab:agents"     },
     { type:"nav",   icon:"🔀", label:"Remediation Flows",    hint:"Tab",  action:"tab:workflows"  },
     { type:"nav",   icon:"✓",  label:"Quality Rules",        hint:"Tab",  action:"tab:rules"      },
-    { type:"nav",   icon:"🧪", label:"Rule Validation",      hint:"Tab",  action:"tab:testrules"  },
-    { type:"nav",   icon:"🔒", label:"Human-in-the-Loop",    hint:"Tab",  action:"tab:gates"      },
+        { type:"nav",   icon:"🔒", label:"Human-in-the-Loop",    hint:"Tab",  action:"tab:gates"      },
     { type:"nav",   icon:"📋", label:"Audit Trail",          hint:"Tab",  action:"tab:history"    },
     { type:"nav",   icon:"🗄️", label:"Data Sources",         hint:"Tab",  action:"tab:sources"    },
     // Alerts
@@ -6267,7 +6344,6 @@ export default function AIOpsMonitor() {
     { id:"alerts",     label:"Detect & Triage",      icon:Bell,            count:openCount },
     { id:"automation", label:"Automation & Controls", icon:Cpu,             count:0 },
     { id:"rules",      label:"Quality Rules",        icon:Shield,          count:INIT_RULES.filter(r=>r.lastResult==="fail").length },
-    { id:"testrules",  label:"Rule Validation",      icon:TestTube2,       count:0 },
     { id:"history",    label:"Audit Trail",          icon:History,         count:0 },
     { id:"sources",    label:"Data Sources",         icon:Database,        count:DATASOURCES.filter(d=>d.status!=="healthy").length },
     { id:"dbexplorer", label:"DB Explorer",          icon:Database,        count:0, badge:"LIVE" },
@@ -6347,7 +6423,6 @@ export default function AIOpsMonitor() {
                 transition:"all 0.15s" }}
             >LIVE</button>
           </div>
-          
           <button onClick={()=>setNotifOpen(true)} style={{ background:T.border, border:`1px solid ${T.border2}`, borderRadius:7, padding:"6px 14px", cursor:"pointer", display:"flex", alignItems:"center", gap:6, fontSize:11, color:T.muted }}>
             <Bell size={13} /> Notifications
           </button>
@@ -6391,8 +6466,7 @@ export default function AIOpsMonitor() {
           <div style={{ marginTop:"auto", paddingTop:16, borderTop:`1px solid ${T.border}` }}>
             <div style={{ fontSize:9, color:T.dim, marginBottom:8, letterSpacing:"0.08em", fontWeight:700, paddingLeft:10 }}>QUICK LINKS</div>
             {[
-              ["QE Test Suite",  GitBranch, "testrules", null],
-              ["Remediation Flows", Layers,  "workflows", null],
+               ["Remediation Flows", Layers,  "workflows", null],
               ["Quality Rules",  Settings,  "rules",     null],
               ["Audit Trail",    History,   "history",   null],
               ["Intentwise Docs", ExternalLink, null, "https://docs.intentwise.com"],
@@ -6598,13 +6672,7 @@ export default function AIOpsMonitor() {
             </div>
           )}
           
-          {/* ── Rule Validation Tab ── */}
-          {activeTab === "testrules" && (
-            <div style={{ paddingBottom:24 }}>
-              <RuleTestRunnerTab />
-            </div>
-          )}
-
+          
         </main>
       </div>
 

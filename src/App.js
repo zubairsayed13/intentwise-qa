@@ -42,25 +42,37 @@ let C = DARK_THEME;
 // ─── Demo Data ─────────────────────────────────────────────────────────────────
 
 const DATASOURCES = [
-  { id:"pg1", name:"prod-postgres",   type:"PostgreSQL", status:"healthy",  latency:12,   tables:84,  host:"prod-db.intentwise.internal", port:"5432", database:"intentwise_prod",   schema:"public",     user:"prod_reader",    sslMode:"require",  syncSchedule:"*/5 * * * *",  description:"Primary production Postgres — source of truth for report table." },
-  { id:"rs1", name:"analytics-rs",    type:"Redshift",   status:"degraded", latency:340,  tables:212, host:"analytics.abc123.us-east-1.redshift.amazonaws.com", port:"5439", database:"analytics", schema:"public", user:"rs_user", sslMode:"require", syncSchedule:"0 * * * *", description:"Main Redshift cluster for campaign and keyword analytics." },
-  { id:"bq1", name:"gds-bigquery",    type:"BigQuery",   status:"healthy",  latency:87,   tables:56,  host:"bigquery.googleapis.com",     port:"443",  database:"intentwise-gds",     schema:"ads_data",   user:"service-account@intentwise.iam.gserviceaccount.com", sslMode:"require", syncSchedule:"0 */2 * * *", description:"GDS BigQuery — Google Ads data pipeline output." },
-  { id:"sf1", name:"snowflake-dw",    type:"Snowflake",  status:"healthy",  latency:64,   tables:130, host:"intentwise.snowflakecomputing.com", port:"443", database:"ANALYTICS_DW", schema:"PUBLIC", user:"snowflake_svc", sslMode:"require", syncSchedule:"0 4 * * *", description:"Snowflake data warehouse for cross-channel analytics." },
-  { id:"my1", name:"mysql-reporting", type:"MySQL",      status:"offline",  latency:null, tables:28,  host:"mysql-reporting.intentwise.internal", port:"3306", database:"reporting_db", schema:"",       user:"mysql_reader",   sslMode:"require",  syncSchedule:"*/30 * * * *", description:"MySQL reporting DB — currently offline, connection refused." },
-  { id:"gs1", name:"ops-gsheets",     type:"GSheets",    status:"healthy",  latency:220,  tables:14,  host:"sheets.googleapis.com",       port:"443",  database:"ops-spreadsheets",   schema:"",           user:"sheets-svc@intentwise.iam.gserviceaccount.com", sslMode:"require", syncSchedule:"0 9 * * 1-5", description:"Google Sheets ops data — SLA trackers and manual overrides." },
+  {
+    id:"rs-staging",
+    name:"redshift-staging",
+    type:"Redshift",
+    status:"healthy",
+    latency: null,
+    tables: 6,
+    host:"intentwise-backend-production.up.railway.app",
+    port:"443",
+    database:"intentwise",
+    schema:"mws",
+    user:"readonly",
+    sslMode:"require",
+    syncSchedule:"*/15 * * * *",
+    description:"Redshift staging — mws schema. Tables: orders, inventory, inventory_restock, sales_and_traffic_by_asin, sales_and_traffic_by_date, sales_and_traffic_by_sku.",
+    apiBase:"https://intentwise-backend-production.up.railway.app"
+  },
 ];
+
 
 const SEVERITY = { critical: C.red, high: C.orange, medium: C.yellow, low: C.cyan, info: C.muted };
 
 const ALERTS_RAW = [
-  { id:"A001", ts:"09:14 AM", severity:"critical", source:"analytics-rs",  table:"tbl_amzn_campaign_report",  rule:"RPT-002", title:"Download succeeded but replication failed", status:"open",    aiSuggestion:"Redshift copy job stalled. Re-trigger GDS copy pipeline for campaign_summary. ETA ~8 min.", canAutoFix:true },
-  { id:"A002", ts:"09:08 AM", severity:"critical", source:"prod-postgres",  table:"report",                    rule:"RPT-001", title:"23 missing downloads detected for today",   status:"triaged", aiSuggestion:"Start new Step Function execution with original payload. 23 profiles missing for report_date=today.", canAutoFix:true },
-  { id:"A003", ts:"08:55 AM", severity:"high",     source:"analytics-rs",  table:"tbl_amzn_keyword_report",   rule:"RPT-004", title:"Duplicate rows: 1,842 dupes in keyword report",status:"open",   aiSuggestion:"Run DISTINCT dedup query and refresh keyword summary table. Pattern seen 3x this week — recommend adding unique constraint.", canAutoFix:false },
-  { id:"A004", ts:"08:44 AM", severity:"high",     source:"snowflake-dw",  table:"account_performance",       rule:"AUT-007", title:"Row count dropped 34% vs 7-day avg",          status:"open",   aiSuggestion:"Anomaly detected. Compare against upstream Step Function execution — possible partial download. Check CloudWatch logs.", canAutoFix:false },
-  { id:"A005", ts:"08:31 AM", severity:"medium",   source:"gds-bigquery",  table:"advertised_product_summary",rule:"RPT-005", title:"3 downloads failed with no retry attempted",  status:"open",   aiSuggestion:"Redrive from failed Step Function state. All 3 are requester-step failures — safe to auto-redrive.", canAutoFix:true },
-  { id:"A006", ts:"07:59 AM", severity:"medium",   source:"prod-postgres",  table:"report",                   rule:"RPT-003", title:"12 reports stuck in pending >4.5 hours",      status:"open",   aiSuggestion:"Force-transition stuck rows to failed state, then re-queue for processing. Common pattern on Monday mornings.", canAutoFix:true },
-  { id:"A007", ts:"07:22 AM", severity:"low",      source:"ops-gsheets",   table:"budget_tracker",            rule:"AUT-011", title:"Stale data: sheet not updated in 26 hours",   status:"open",   aiSuggestion:"Send Slack nudge to @finance-team. Sheet typically updates at 6 AM — may be blocked on upstream data.", canAutoFix:false },
-  { id:"A008", ts:"06:48 AM", severity:"info",     source:"snowflake-dw",  table:"keyword_summary",           rule:"AUT-003", title:"Schema drift: 2 new columns detected",        status:"resolved",aiSuggestion:"New columns: 'bid_adjustment_pct', 'impression_share'. Auto-added to validation schema. No action needed.", canAutoFix:false },
+  { id:"A001", ts:"09:14 AM", severity:"critical", source:"redshift-staging",  table:"tbl_amzn_campaign_report",  rule:"RPT-002", title:"Download succeeded but replication failed", status:"open",    aiSuggestion:"Redshift copy job stalled. Re-trigger GDS copy pipeline for campaign_summary. ETA ~8 min.", canAutoFix:true },
+  { id:"A002", ts:"09:08 AM", severity:"critical", source:"redshift-staging",  table:"report",                    rule:"RPT-001", title:"23 missing downloads detected for today",   status:"triaged", aiSuggestion:"Start new Step Function execution with original payload. 23 profiles missing for report_date=today.", canAutoFix:true },
+  { id:"A003", ts:"08:55 AM", severity:"high",     source:"redshift-staging",  table:"tbl_amzn_keyword_report",   rule:"RPT-004", title:"Duplicate rows: 1,842 dupes in keyword report",status:"open",   aiSuggestion:"Run DISTINCT dedup query and refresh keyword summary table. Pattern seen 3x this week — recommend adding unique constraint.", canAutoFix:false },
+  { id:"A004", ts:"08:44 AM", severity:"high",     source:"redshift-staging",  table:"account_performance",       rule:"AUT-007", title:"Row count dropped 34% vs 7-day avg",          status:"open",   aiSuggestion:"Anomaly detected. Compare against upstream Step Function execution — possible partial download. Check CloudWatch logs.", canAutoFix:false },
+  { id:"A005", ts:"08:31 AM", severity:"medium",   source:"redshift-staging",  table:"advertised_product_summary",rule:"RPT-005", title:"3 downloads failed with no retry attempted",  status:"open",   aiSuggestion:"Redrive from failed Step Function state. All 3 are requester-step failures — safe to auto-redrive.", canAutoFix:true },
+  { id:"A006", ts:"07:59 AM", severity:"medium",   source:"redshift-staging",  table:"report",                   rule:"RPT-003", title:"12 reports stuck in pending >4.5 hours",      status:"open",   aiSuggestion:"Force-transition stuck rows to failed state, then re-queue for processing. Common pattern on Monday mornings.", canAutoFix:true },
+  { id:"A007", ts:"07:22 AM", severity:"low",      source:"redshift-staging",   table:"budget_tracker",            rule:"AUT-011", title:"Stale data: sheet not updated in 26 hours",   status:"open",   aiSuggestion:"Send Slack nudge to @finance-team. Sheet typically updates at 6 AM — may be blocked on upstream data.", canAutoFix:false },
+  { id:"A008", ts:"06:48 AM", severity:"info",     source:"redshift-staging",  table:"keyword_summary",           rule:"AUT-003", title:"Schema drift: 2 new columns detected",        status:"resolved",aiSuggestion:"New columns: 'bid_adjustment_pct', 'impression_share'. Auto-added to validation schema. No action needed.", canAutoFix:false },
 ];
 
 const AGENT_LOGS = {
@@ -258,12 +270,12 @@ const QA_STAGES = [
 ];
 
 const RULE_COVERAGE = [
-  { source:"prod-postgres",   tables:84,  covered:78, critical:12, failing:2  },
-  { source:"analytics-rs",    tables:212, covered:156,critical:31, failing:8  },
-  { source:"gds-bigquery",    tables:56,  covered:56, critical:8,  failing:0  },
-  { source:"snowflake-dw",    tables:130, covered:94, critical:18, failing:1  },
-  { source:"mysql-reporting", tables:28,  covered:10, critical:4,  failing:4  },
-  { source:"ops-gsheets",     tables:14,  covered:14, critical:0,  failing:0  },
+  { source:"redshift-staging",   tables:84,  covered:78, critical:12, failing:2  },
+  { source:"redshift-staging",    tables:212, covered:156,critical:31, failing:8  },
+  { source:"redshift-staging",    tables:56,  covered:56, critical:8,  failing:0  },
+  { source:"redshift-staging",    tables:130, covered:94, critical:18, failing:1  },
+  { source:"redshift-staging", tables:28,  covered:10, critical:4,  failing:4  },
+  { source:"redshift-staging",     tables:14,  covered:14, critical:0,  failing:0  },
 ];
 
 const ROADMAP_MILESTONES = [
@@ -332,18 +344,18 @@ const NOTIF_HISTORY = [
 
 // ─── Run History Data ─────────────────────────────────────────────────────────
 const RUN_HISTORY = [
-  { id:"RH-001", type:"rule",     name:"Campaign report row count > 1000", source:"analytics-rs",  table:"tbl_amzn_campaign_report",   ts:"09:10 AM", duration:"1.2s",  result:"pass",   detail:"2,847 rows found. Threshold: 1000. ✓" },
-  { id:"RH-002", type:"rule",     name:"Report table freshness < 6h",      source:"prod-postgres", table:"report",                     ts:"09:00 AM", duration:"0.8s",  result:"fail",   detail:"Last update: 8h 22m ago. Threshold: 6h. ✗ Triggered alert A-003." },
+  { id:"RH-001", type:"rule",     name:"Campaign report row count > 1000", source:"redshift-staging",  table:"tbl_amzn_campaign_report",   ts:"09:10 AM", duration:"1.2s",  result:"pass",   detail:"2,847 rows found. Threshold: 1000. ✓" },
+  { id:"RH-002", type:"rule",     name:"Report table freshness < 6h",      source:"redshift-staging", table:"report",                     ts:"09:00 AM", duration:"0.8s",  result:"fail",   detail:"Last update: 8h 22m ago. Threshold: 6h. ✗ Triggered alert A-003." },
   { id:"RH-003", type:"agent",    name:"Ads Download Monitor",              source:"—",             table:"—",                          ts:"09:15 AM", duration:"4.1s",  result:"pass",   detail:"23 profiles checked. 0 missing. All Step Functions healthy." },
   { id:"RH-004", type:"gate",     name:"Data Available Confirmation",       source:"—",             table:"—",                          ts:"09:08 AM", duration:"—",     result:"pending",detail:"Waiting for approval from @Abhishek. Escalates in 18 min." },
-  { id:"RH-005", type:"rule",     name:"Keyword report unique rows",        source:"analytics-rs",  table:"tbl_amzn_keyword_report",    ts:"08:55 AM", duration:"3.4s",  result:"fail",   detail:"1,842 duplicate rows found on (report_date, profile_id, keyword_id). Triggered alert A-003." },
+  { id:"RH-005", type:"rule",     name:"Keyword report unique rows",        source:"redshift-staging",  table:"tbl_amzn_keyword_report",    ts:"08:55 AM", duration:"3.4s",  result:"fail",   detail:"1,842 duplicate rows found on (report_date, profile_id, keyword_id). Triggered alert A-003." },
   { id:"RH-006", type:"workflow", name:"Report Status Auto-Triage",         source:"—",             table:"—",                          ts:"08:40 AM", duration:"12.3s", result:"pass",   detail:"8 reports triaged. 5 redriven. 3 new executions started." },
-  { id:"RH-007", type:"rule",     name:"Account perf row count anomaly",    source:"snowflake-dw",  table:"account_performance",        ts:"08:44 AM", duration:"2.1s",  result:"fail",   detail:"Row count: 14,203 (vs 7-day avg 21,580). Drop: 34.2%. Triggered alert A-004." },
-  { id:"RH-008", type:"agent",    name:"Replication Checker",               source:"analytics-rs",  table:"—",                          ts:"09:14 AM", duration:"1.8s",  result:"pass",   detail:"All 6 GDS copy jobs verified. Redshift latency: 340ms (degraded)." },
+  { id:"RH-007", type:"rule",     name:"Account perf row count anomaly",    source:"redshift-staging",  table:"account_performance",        ts:"08:44 AM", duration:"2.1s",  result:"fail",   detail:"Row count: 14,203 (vs 7-day avg 21,580). Drop: 34.2%. Triggered alert A-004." },
+  { id:"RH-008", type:"agent",    name:"Replication Checker",               source:"redshift-staging",  table:"—",                          ts:"09:14 AM", duration:"1.8s",  result:"pass",   detail:"All 6 GDS copy jobs verified. Redshift latency: 340ms (degraded)." },
   { id:"RH-009", type:"gate",     name:"Mage Pause Approval",               source:"—",             table:"—",                          ts:"Yesterday 4:22 PM", duration:"8m 14s", result:"pass", detail:"Approved by @Zubair at 4:30 PM. Bluewheel + Maryruth paused successfully." },
   { id:"RH-010", type:"workflow", name:"Ads Download Failure SOP",          source:"—",             table:"—",                          ts:"Yesterday 4:20 PM", duration:"2h 14m", result:"pass", detail:"Full SOP completed. 5 gates passed. All refreshes done. Completion notice sent." },
-  { id:"RH-011", type:"rule",     name:"Profile ID valid format",           source:"prod-postgres", table:"report",                     ts:"06:00 AM", duration:"1.1s",  result:"pass",   detail:"All 48,291 profile_id values match expected format. ✓" },
-  { id:"RH-012", type:"agent",    name:"Schema Drift Detector",             source:"snowflake-dw",  table:"keyword_summary",            ts:"06:48 AM", duration:"5.6s",  result:"pass",   detail:"2 new columns detected: bid_adjustment_pct, impression_share. Rules auto-generated." },
+  { id:"RH-011", type:"rule",     name:"Profile ID valid format",           source:"redshift-staging", table:"report",                     ts:"06:00 AM", duration:"1.1s",  result:"pass",   detail:"All 48,291 profile_id values match expected format. ✓" },
+  { id:"RH-012", type:"agent",    name:"Schema Drift Detector",             source:"redshift-staging",  table:"keyword_summary",            ts:"06:48 AM", duration:"5.6s",  result:"pass",   detail:"2 new columns detected: bid_adjustment_pct, impression_share. Rules auto-generated." },
 ];
 
 // ─── Rule Test Data ────────────────────────────────────────────────────────────
@@ -361,7 +373,7 @@ const CORRELATED_GROUPS = [
     title:"Redshift replication lag cascade",
     rootCause:"analytics-rs Redshift latency spiked to 340ms at ~8:40 AM, causing downstream copy jobs to stall. This single event triggered 3 separate alerts.",
     alerts:["A001","A003","A004"],
-    affectedSystems:["analytics-rs","tbl_amzn_campaign_report","tbl_amzn_keyword_report","account_performance"],
+    affectedSystems:["redshift-staging","tbl_amzn_campaign_report","tbl_amzn_keyword_report","account_performance"],
     suggestedFix:"Check Redshift cluster WLM queues. Re-trigger stalled GDS copy jobs. Monitor latency — if >300ms for >10 min, scale cluster.",
     pattern:"Seen 2x in last 30 days. Usually resolves within 45 min without intervention.",
   },
@@ -370,7 +382,7 @@ const CORRELATED_GROUPS = [
     title:"Missing downloads → stuck pending chain",
     rootCause:"Step Function execution for 23 profiles failed at requester step around 3:30 AM. This caused both the missing download alert and the stuck-pending alert as rows aged in the report table.",
     alerts:["A002","A006"],
-    affectedSystems:["prod-postgres","report","AWS Step Functions"],
+    affectedSystems:["redshift-staging","report","AWS Step Functions"],
     suggestedFix:"Start new executions for 23 missing profiles. Force-clear 12 stuck-pending rows. Check IAM permissions on Step Function role — failed 3x this week.",
     pattern:"Missing + stuck-pending co-occur 80% of the time. Consider a combined remediation workflow.",
   },
@@ -390,15 +402,14 @@ const RULE_TYPES = [
 ];
 
 const INIT_RULES = [
-  { id:"VR-001", name:"Campaign report not null profiles",  type:"not_null",      source:"analytics-rs",  table:"tbl_amzn_campaign_report",   column:"profile_id",    severity:"critical", status:"active",  lastRun:"09:10 AM", lastResult:"pass", aiGen:false, schedule:"*/30 * * * *" },
-  { id:"VR-002", name:"Campaign report row count > 1000",   type:"row_count",     source:"analytics-rs",  table:"tbl_amzn_campaign_report",   column:"*",             severity:"high",     status:"active",  lastRun:"09:10 AM", lastResult:"pass", aiGen:false, schedule:"0 * * * *" },
-  { id:"VR-003", name:"Report table freshness < 6h",        type:"freshness",     source:"prod-postgres", table:"report",                     column:"updated_at",    severity:"high",     status:"active",  lastRun:"09:00 AM", lastResult:"fail", aiGen:true,  schedule:"0 */2 * * *" },
-  { id:"VR-004", name:"Keyword report unique rows",         type:"unique",        source:"analytics-rs",  table:"tbl_amzn_keyword_report",    column:"report_date,profile_id,keyword_id", severity:"critical", status:"active", lastRun:"08:55 AM", lastResult:"fail", aiGen:true, schedule:"0 6 * * *" },
-  { id:"VR-005", name:"Account perf row count anomaly",     type:"row_count",     source:"snowflake-dw",  table:"account_performance",        column:"*",             severity:"high",     status:"active",  lastRun:"08:44 AM", lastResult:"fail", aiGen:true,  schedule:"0 */1 * * *" },
-  { id:"VR-006", name:"Budget tracker freshness < 25h",     type:"freshness",     source:"ops-gsheets",   table:"budget_tracker",             column:"last_modified", severity:"medium",   status:"active",  lastRun:"07:22 AM", lastResult:"fail", aiGen:true,  schedule:"0 8 * * *" },
-  { id:"VR-007", name:"Profile ID valid format",            type:"regex",         source:"prod-postgres", table:"report",                     column:"profile_id",    severity:"medium",   status:"paused",  lastRun:"06:00 AM", lastResult:"pass", aiGen:false, schedule:"0 6 * * *" },
-  { id:"VR-008", name:"Download status enum check",         type:"custom_sql",    source:"prod-postgres", table:"report",                     column:"status",        severity:"low",      status:"active",  lastRun:"09:00 AM", lastResult:"pass", aiGen:false, schedule:"*/15 * * * *" },
+  { id:"MWS-001", name:"orders: no duplicate amazon_order_id",         type:"unique",     source:"redshift-staging", table:"mws.orders",                       column:"amazon_order_id",             severity:"critical", status:"active",  lastRun:"—", lastResult:"pending", aiGen:false, schedule:"0 * * * *",   sql:"SELECT amazon_order_id, COUNT(*) c FROM mws.orders GROUP BY 1 HAVING c > 1" },
+  { id:"MWS-002", name:"orders: no NULL asin on shipped orders",        type:"not_null",   source:"redshift-staging", table:"mws.orders",                       column:"asin",                        severity:"critical", status:"active",  lastRun:"—", lastResult:"pending", aiGen:false, schedule:"*/30 * * * *", sql:"SELECT COUNT(*) FROM mws.orders WHERE order_status='Shipped' AND asin IS NULL" },
+  { id:"MWS-003", name:"inventory: available qty >= 0",                 type:"range",      source:"redshift-staging", table:"mws.inventory",                    column:"available",                   severity:"high",     status:"active",  lastRun:"—", lastResult:"pending", aiGen:false, schedule:"0 * * * *",   sql:"SELECT COUNT(*) FROM mws.inventory WHERE available < 0" },
+  { id:"MWS-004", name:"sales_by_date: no missing days (last 30d)",     type:"freshness",  source:"redshift-staging", table:"mws.sales_and_traffic_by_date",    column:"sale_date",                   severity:"high",     status:"active",  lastRun:"—", lastResult:"pending", aiGen:false, schedule:"0 6 * * *",   sql:"SELECT COUNT(DISTINCT sale_date) FROM mws.sales_and_traffic_by_date WHERE sale_date >= CURRENT_DATE - 30" },
+  { id:"MWS-005", name:"sales_by_asin: buy_box_pct between 0 and 1",   type:"range",      source:"redshift-staging", table:"mws.sales_and_traffic_by_asin",    column:"traffic_by_asin_buy_box_prcntg", severity:"medium",   status:"active",  lastRun:"—", lastResult:"pending", aiGen:false, schedule:"0 */2 * * *", sql:"SELECT COUNT(*) FROM mws.sales_and_traffic_by_asin WHERE traffic_by_asin_buy_box_prcntg NOT BETWEEN 0 AND 1" },
+  { id:"MWS-006", name:"inventory_restock: qty > 0 on open restocks",  type:"range",      source:"redshift-staging", table:"mws.inventory_restock",            column:"quantity",                    severity:"medium",   status:"active",  lastRun:"—", lastResult:"pending", aiGen:false, schedule:"0 */4 * * *", sql:"SELECT COUNT(*) FROM mws.inventory_restock WHERE quantity <= 0" },
 ];
+
 
 const AI_SUGGESTED_RULES = [
   { table:"tbl_amzn_campaign_report",   type:"not_null",      column:"campaign_id",    reason:"campaign_id is NULL in 0.02% of rows — low but persistent",   confidence:94 },
@@ -539,7 +550,7 @@ const INIT_WORKFLOWS = [
     lastRun: "Today 9:15 AM", runs: 42, successRate: 94,
     nodes: [
       { id:"n1", type:"trigger",   label:"Scheduled Trigger",         color:"#6366F1", icon:"⚡", config:{ schedule:"0 16 * * 1-5", desc:"Runs at 4 PM IST on weekdays" }, yOffset:0 },
-      { id:"n2", type:"monitor",   label:"Check Ads Data Availability",color:"#06B6D4", icon:"👁", config:{ source:"prod-postgres", table:"report", metric:"missing downloads" }, yOffset:1 },
+      { id:"n2", type:"monitor",   label:"Check Ads Data Availability",color:"#06B6D4", icon:"👁", config:{ source:"redshift-staging", table:"report", metric:"missing downloads" }, yOffset:1 },
       { id:"n3", type:"condition", label:"Downloads missing?",         color:"#F59E0B", icon:"◇", config:{ expr:"missing_count > 0", yes:"Escalate", no:"End" }, yOffset:2 },
       { id:"n4", type:"notify",    label:"Notify Ads Team on Slack",   color:"#E01E5A", icon:"📣", config:{ channel:"#dev-python-support", mention:"@Abhishek @Abhiraj" }, yOffset:3 },
       { id:"n5", type:"approve",   label:"Approve: Pause Mage Jobs",   color:"#F97316", icon:"🔒", config:{ approvers:"@Zubair @Raghavendra", escalateAfter:30 }, yOffset:4 },
@@ -559,7 +570,7 @@ const INIT_WORKFLOWS = [
     lastRun: "Today 9:10 AM", runs: 187, successRate: 98,
     nodes: [
       { id:"n1", type:"trigger",   label:"Every 30 min",               color:"#6366F1", icon:"⚡", config:{ schedule:"*/30 * * * *" }, yOffset:0 },
-      { id:"n2", type:"monitor",   label:"Scan report_status table",   color:"#06B6D4", icon:"👁", config:{ source:"prod-postgres", table:"report" }, yOffset:1 },
+      { id:"n2", type:"monitor",   label:"Scan report_status table",   color:"#06B6D4", icon:"👁", config:{ source:"redshift-staging", table:"report" }, yOffset:1 },
       { id:"n3", type:"condition", label:"Any failures?",              color:"#F59E0B", icon:"◇", config:{ expr:"failed_count > 0" }, yOffset:2 },
       { id:"n4", type:"action",    label:"Classify Step Function",     color:"#10B981", icon:"⚙", config:{ action:"Query Redshift", target:"step_functions" }, yOffset:3 },
       { id:"n5", type:"condition", label:"Requester failure?",         color:"#F59E0B", icon:"◇", config:{ expr:"failure_step == 'requester'" }, yOffset:4 },
@@ -1614,11 +1625,11 @@ function ValidationRulesTab({ liveRules, rulesLoading }) {
   const [nlpResult, setNlpResult]   = useState(null);
   const [scanLoading, setScanLoading] = useState(false);
   const [scanResults, setScanResults] = useState(null);
-  const [selectedDs, setSelectedDs] = useState("analytics-rs");
+  const [selectedDs, setSelectedDs] = useState("redshift-staging");
   const [filterStatus, setFilterStatus] = useState("all");
 
   // Builder state
-  const [builder, setBuilder] = useState({ name:"", type:"not_null", source:"analytics-rs", table:"", column:"", severity:"high", schedule:"0 * * * *", params:{} });
+  const [builder, setBuilder] = useState({ name:"", type:"not_null", source:"redshift-staging", table:"", column:"", severity:"high", schedule:"0 * * * *", params:{} });
 
   const visibleRules = rules.filter(r => filterStatus === "all" || r.status === filterStatus);
 
@@ -1632,7 +1643,18 @@ function ValidationRulesTab({ liveRules, rulesLoading }) {
         method:"POST", headers:{"Content-Type":"application/json"},
         body: JSON.stringify({
           model:"claude-sonnet-4-20250514", max_tokens:1000,
-          system:`You are a data validation rule generator for Intentwise. Convert natural language into a structured JSON rule. Available rule types: not_null, row_count, freshness, unique, range, regex, ref_integrity, custom_sql. Available sources: prod-postgres, analytics-rs, gds-bigquery, snowflake-dw, ops-gsheets. Respond ONLY with JSON in this exact shape, no markdown: {"name":"string","type":"string","source":"string","table":"string","column":"string","severity":"critical|high|medium|low","schedule":"cron string","params":{},"sql_hint":"example SQL for this check"}`,
+          system:`You are a data quality rule generator for the Intentwise QA platform. The ONLY datasource is "redshift-staging" (schema: mws). Tables and key columns:
+
+mws.orders: id, amazon_order_id, merchant_order_id, purchase_date, last_updated_date, order_status, fulfillment_channel, sales_channel, product_name, sku, asin, item_status, quantity, currency, item_price, item_tax, shipping_price, is_business_order, seller_id, account_id, download_date
+mws.inventory: id, country, product_name, fnsku, merchant_sku, asin, condition, price, sales_last_30_days, units_sold_last_30_days, total_units, inbound, available, fc_transfer, unfulfillable, days_of_supply, alert, recommended_replenishment_qty, account_id, download_date
+mws.inventory_restock: same structure as inventory with restock order columns
+mws.sales_and_traffic_by_asin: id, parent_asin, child_asin, units_ordered, ordered_product_sales_amt, total_order_items, traffic_by_asin_sessions, traffic_by_asin_buy_box_prcntg, traffic_by_asin_units_session_prcntg, account_id, report_start_date, report_end_date, download_date
+mws.sales_and_traffic_by_date: id, sale_date, ordered_product_sales_amt, units_ordered, total_order_items, avg_selling_price_amt, units_refunded, refund_rate, page_views, sessions, buy_box_percentage, unit_session_percentage, account_id, download_date
+mws.sales_and_traffic_by_sku: same as sales_and_traffic_by_asin but with sku field
+
+Rule types: not_null, row_count, freshness, unique, range, regex, ref_integrity, custom_sql.
+Always set source to "redshift-staging". Pick the most relevant table and column from the schema above.
+Respond ONLY with valid JSON (no markdown): {"name":"string","type":"string","source":"redshift-staging","table":"mws.TABLE","column":"string","severity":"critical|high|medium|low","schedule":"cron string","params":{},"sql_hint":"exact SQL to run this check"}`,
           messages:[{ role:"user", content: nlpInput }]
         })
       });
@@ -1647,31 +1669,37 @@ function ValidationRulesTab({ liveRules, rulesLoading }) {
   const runSchemaScan = async () => {
     setScanLoading(true); setScanResults(null);
     try {
+      // 1. Fetch real schema from backend
+      const tablesRes = await fetch("https://intentwise-backend-production.up.railway.app/api/tables");
+      const tablesData = await tablesRes.json();
+      const mwsTables = (tablesData || []).filter(t => t.schema === "mws").map(t => t.name);
+
+      // 2. Ask Claude to suggest test cases based on actual mws schema
       const res = await fetch("https://api.anthropic.com/v1/messages", {
         method:"POST", headers:{"Content-Type":"application/json"},
         body: JSON.stringify({
-          model:"claude-sonnet-4-20250514", max_tokens:1000,
-          system:`You are a data quality AI for Intentwise. Given a datasource name, generate realistic validation rule suggestions based on common Amazon Ads / e-commerce data patterns. Respond ONLY with a JSON array of 4 suggestions (no markdown): [{"table":"string","column":"string","type":"string","name":"string","severity":"string","reason":"string","confidence":number}]`,
-          messages:[{ role:"user", content:`Generate validation rules for datasource: ${selectedDs}` }]
+          model:"claude-sonnet-4-20250514", max_tokens:1500,
+          system:`You are a data quality AI for Intentwise. The database is Redshift, schema: mws. Tables available: ${mwsTables.join(", ")}. Key columns per table — orders: amazon_order_id, asin, order_status, item_price, quantity, account_id, download_date. inventory: asin, available, total_units, days_of_supply, alert, account_id. sales_and_traffic_by_date: sale_date, ordered_product_sales_amt, units_ordered, buy_box_percentage, account_id. sales_and_traffic_by_asin: child_asin, units_ordered, traffic_by_asin_buy_box_prcntg, account_id. Suggest 6 high-value test cases covering nulls, duplicates, freshness, range checks, and referential integrity. Respond ONLY with a JSON array (no markdown): [{"table":"mws.TABLE","column":"col","type":"rule_type","name":"short name","severity":"critical|high|medium|low","reason":"why this matters","confidence":0.0-1.0,"sql_hint":"exact SQL"}]`,
+          messages:[{ role:"user", content:"Scan mws schema and suggest the most impactful data quality test cases." }]
         })
       });
       const data = await res.json();
       const raw = data.content?.find(b=>b.type==="text")?.text || "[]";
       const clean = raw.replace(/```json|```/g,"").trim();
       setScanResults(JSON.parse(clean));
-    } catch { setScanResults([]); }
+    } catch(e) { setScanResults([]); }
     setScanLoading(false);
   };
 
   const acceptNlpRule = () => {
     if (!nlpResult || nlpResult.error) return;
-    const newRule = { ...nlpResult, id:`VR-${String(rules.length+1).padStart(3,"0")}`, status:"active", lastRun:"—", lastResult:"pending", aiGen:true };
+    const newRule = { ...nlpResult, id:`MWS-${String(rules.length+1).padStart(3,"0")}`, status:"active", lastRun:"—", lastResult:"pending", aiGen:true, sql: nlpResult.sql_hint || "" };
     setRules(p => [...p, newRule]);
     setNlpInput(""); setNlpResult(null); setView("list");
   };
 
   const acceptScanRule = (r) => {
-    const newRule = { id:`VR-${String(rules.length+1).padStart(3,"0")}`, name:r.name, type:r.type, source:selectedDs, table:r.table, column:r.column, severity:r.severity, status:"active", lastRun:"—", lastResult:"pending", aiGen:true, schedule:"0 * * * *" };
+    const newRule = { id:`MWS-${String(rules.length+1).padStart(3,"0")}`, name:r.name, type:r.type, source:"redshift-staging", table:r.table, column:r.column, severity:r.severity, status:"active", lastRun:"—", lastResult:"pending", aiGen:true, schedule:"0 * * * *", sql: r.sql_hint || "" };
     setRules(p => [...p, newRule]);
     setScanResults(p => p ? p.filter(x=>x.name!==r.name) : p);
   };
@@ -1680,7 +1708,29 @@ function ValidationRulesTab({ liveRules, rulesLoading }) {
     if (!builder.name || !builder.table) return;
     const newRule = { ...builder, id:`VR-${String(rules.length+1).padStart(3,"0")}`, status:"active", lastRun:"—", lastResult:"pending", aiGen:false };
     setRules(p => [...p, newRule]); setView("list");
-    setBuilder({ name:"", type:"not_null", source:"analytics-rs", table:"", column:"", severity:"high", schedule:"0 * * * *", params:{} });
+    setBuilder({ name:"", type:"not_null", source:"redshift-staging", table:"", column:"", severity:"high", schedule:"0 * * * *", params:{} });
+  };
+
+  const [runningRules, setRunningRules] = useState({});  // {ruleId: "running"|"pass"|"fail"|{count,rows}}
+
+  const runRule = async (rule) => {
+    if (!rule.sql) return;
+    setRunningRules(p => ({...p, [rule.id]:"running"}));
+    try {
+      const qs = `?sql=${encodeURIComponent(rule.sql)}`;
+      const res = await fetch(`https://intentwise-backend-production.up.railway.app/api/query${qs}`);
+      const data = await res.json();
+      const rows = data.rows || [];
+      const count = rows[0] ? (Object.values(rows[0])[0] ?? rows.length) : 0;
+      const passed = count === 0;
+      setRunningRules(p => ({...p, [rule.id]: passed ? "pass" : {count, rows}}));
+      setRules(p => p.map(r => r.id===rule.id
+        ? {...r, lastResult: passed?"pass":"fail", lastRun: new Date().toLocaleTimeString()}
+        : r
+      ));
+    } catch(e) {
+      setRunningRules(p => ({...p, [rule.id]:"error"}));
+    }
   };
 
   const resultColor = { pass:C.green, fail:C.red, pending:C.muted };
@@ -1696,11 +1746,22 @@ function ValidationRulesTab({ liveRules, rulesLoading }) {
     <div>
       {/* Sub-nav */}
       <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom:18 }}>
-        <div style={{ display:"flex", gap:6 }}>
+        <div style={{ display:"flex", gap:6, alignItems:"center" }}>
           <Btn active={view==="list"}    onClick={()=>setView("list")}>📋 All Rules ({rules.length})</Btn>
           <Btn active={view==="builder"} onClick={()=>setView("builder")}>🔨 Visual Builder</Btn>
           <Btn active={view==="nlp"}     onClick={()=>setView("nlp")}>✨ Natural Language</Btn>
           <Btn active={view==="scan"}    onClick={()=>setView("scan")}>🔍 Schema Scan</Btn>
+        </div>
+        <div style={{ display:"flex", gap:6, alignItems:"center" }}>
+          <button
+            onClick={async ()=>{
+              const rulesWithSql = rules.filter(r=>r.sql && r.status==="active");
+              for (const r of rulesWithSql) { await runRule(r); }
+            }}
+            style={{ padding:"7px 14px", borderRadius:7, border:`1px solid ${C.green}50`, background:`${C.green}12`, color:C.green, fontSize:11, fontWeight:700, cursor:"pointer", display:"flex", alignItems:"center", gap:5 }}
+          >
+            ⚡ Run All Active
+          </button>
         </div>
         <div style={{ display:"flex", gap:6 }}>
           {["all","active","paused"].map(s=>(
@@ -1721,13 +1782,13 @@ function ValidationRulesTab({ liveRules, rulesLoading }) {
             </div>
           </div>
           {/* Table header */}
-          <div style={{ display:"grid", gridTemplateColumns:"64px minmax(180px,1fr) 110px 120px 100px 90px 90px 80px 60px", gap:12, padding:"10px 18px", borderBottom:`1px solid ${C.border}`, background:C.isDark?"#0A0C10":C.border }}>
+          <div style={{ display:"grid", gridTemplateColumns:"64px minmax(180px,1fr) 110px 120px 100px 90px 90px 110px", gap:12, padding:"10px 18px", borderBottom:`1px solid ${C.border}`, background:C.isDark?"#0A0C10":C.border }}>
             {["ID","Name / Table","Type","Source","Severity","Last Run","Result","Status",""].map(h=>(
               <div key={h} style={{ fontSize:9, color:C.dim, fontWeight:700, letterSpacing:"0.08em", textTransform:"uppercase" }}>{h}</div>
             ))}
           </div>
           {visibleRules.map(r => (
-            <div key={r.id} className="row-hover" style={{ display:"grid", gridTemplateColumns:"64px minmax(180px,1fr) 110px 120px 100px 90px 90px 80px 60px", gap:12, padding:"11px 18px", borderBottom:`1px solid ${C.border}`, alignItems:"center", animation:"fadein 0.2s ease" }}>
+            <div key={r.id} className="row-hover" style={{ display:"grid", gridTemplateColumns:"64px minmax(180px,1fr) 110px 120px 100px 90px 90px 110px", gap:12, padding:"11px 18px", borderBottom:`1px solid ${C.border}`, alignItems:"center", animation:"fadein 0.2s ease" }}>
               <div style={{ fontSize:10, color:C.muted, fontFamily:"'Consolas', 'Cascadia Code', 'Fira Code', 'Courier New', monospace" }}>{r.id}</div>
               <div>
                 <div style={{ fontSize:12, fontWeight:600, color:C.text, display:"flex", alignItems:"center", gap:6 }}>
@@ -1743,8 +1804,29 @@ function ValidationRulesTab({ liveRules, rulesLoading }) {
               <div style={{ fontSize:10, color:C.muted }}>{r.source}</div>
               <SevBadge sev={r.severity} />
               <div style={{ fontSize:10, color:C.muted }}>{r.lastRun}</div>
-              <div style={{ fontSize:11, fontWeight:700, color:resultColor[r.lastResult]||C.muted, textTransform:"uppercase" }}>{r.lastResult}</div>
-              <div>
+              <div style={{ fontSize:11, fontWeight:700, textTransform:"uppercase", color:
+                runningRules[r.id]==="running" ? C.muted :
+                runningRules[r.id]==="pass"    ? C.green :
+                runningRules[r.id]==="error"   ? C.orange :
+                runningRules[r.id] && typeof runningRules[r.id]==="object" ? C.red :
+                resultColor[r.lastResult]||C.muted }}>
+                {runningRules[r.id]==="running" ? "running…" :
+                 runningRules[r.id]==="pass"    ? "pass ✓" :
+                 runningRules[r.id]==="error"   ? "error" :
+                 runningRules[r.id] && typeof runningRules[r.id]==="object" ? `fail (${runningRules[r.id].count})` :
+                 r.lastResult}
+              </div>
+              <div style={{ display:"flex", gap:4, alignItems:"center" }}>
+                {r.sql && (
+                  <button
+                    onClick={()=>runRule(r)}
+                    disabled={runningRules[r.id]==="running"}
+                    title={r.sql}
+                    style={{ fontSize:10, padding:"3px 8px", borderRadius:5, border:`1px solid ${C.accent}40`, background:runningRules[r.id]==="running"?`${C.accent}15`:`${C.accent}10`, color:runningRules[r.id]==="running"?C.muted:C.accentL, cursor:runningRules[r.id]==="running"?"not-allowed":"pointer", fontWeight:700 }}
+                  >
+                    {runningRules[r.id]==="running" ? "⏳" : "▶ Run"}
+                  </button>
+                )}
                 <button onClick={()=>toggleRule(r.id)} style={{ display:"flex", alignItems:"center", gap:5, background:"none", border:"none", cursor:"pointer", padding:0 }}>
                   {r.status==="active"
                     ? <><span style={{width:28,height:16,borderRadius:8,background:C.green,display:"block",position:"relative"}}><span style={{position:"absolute",right:2,top:2,width:12,height:12,borderRadius:"50%",background:"white"}} /></span><span style={{fontSize:10,color:C.green}}>ON</span></>
@@ -2315,19 +2397,20 @@ const ThemeCtx = React.createContext(DARK_THEME);
 const useTheme = () => React.useContext(ThemeCtx);
 
 // ─── Command Center Tab ───────────────────────────────────────────────────────
-function CommandCenterTab({ onNavigate, kpis, kpisLoading, trend, topAsins, accountId, agentScanResult, agentScanLoading, onAgentScan }) {
+function CommandCenterTab({ onNavigate, kpis, kpisLoading, trend, topAsins, accountId, agentScanResult, agentScanLoading, onAgentScan, alertsState, dataMode }) {
   const T = useTheme();
   const C = T;
   const liveKpiTiles = kpis ? [
-    { label:"Total Orders",     value: kpis.orders.total.toLocaleString(),                                                    sub:`${kpis.orders.shipped} shipped`,     color:C.accent  },
-    { label:"Revenue",          value:`$${kpis.sales.total_sales.toLocaleString(undefined,{maximumFractionDigits:0})}`,       sub:`${kpis.sales.units.toLocaleString()} units`, color:C.green },
-    { label:"Pending Orders",   value: kpis.orders.pending.toLocaleString(),                                                  sub:`${kpis.orders.canceled} canceled`,   color: kpis.orders.pending>50 ? C.red : C.yellow },
-    { label:"Buy Box %",        value:`${(kpis.sales.buy_box_pct*100).toFixed(1)}%`,                                          sub:"avg across ASINs",                   color:C.cyan    },
-    { label:"Inventory Alerts", value: kpis.inventory.alerts.toLocaleString(),                                                sub:`${kpis.inventory.out_of_stock} OOS`, color: kpis.inventory.alerts>0 ? C.orange : C.green },
-    { label:"Sessions",         value: kpis.sales.sessions.toLocaleString(),                                                  sub:"today",                              color:C.purple  },
+    { label:"mws.orders",          value: kpis.orders.total.toLocaleString(),                                                   sub:`${kpis.orders.shipped} shipped · ${kpis.orders.pending} pending`,  color:C.accent  },
+    { label:"Revenue",             value:`$${kpis.sales.total_sales.toLocaleString(undefined,{maximumFractionDigits:0})}`,      sub:`${kpis.sales.units.toLocaleString()} units ordered`,               color:C.green   },
+    { label:"Buy Box %",           value:`${(kpis.sales.buy_box_pct*100).toFixed(1)}%`,                                         sub:"avg · mws.sales_and_traffic_by_asin",                              color:C.cyan    },
+    { label:"Inventory Alerts",    value: kpis.inventory.alerts.toLocaleString(),                                               sub:`${kpis.inventory.out_of_stock} OOS · mws.inventory`,               color: kpis.inventory.alerts>0 ? C.orange : C.green },
+    { label:"Sessions (30d)",      value: kpis.sales.sessions.toLocaleString(),                                                 sub:"mws.sales_and_traffic_by_date",                                    color:C.purple  },
+    { label:"Refund Rate",         value: kpis.sales.refund_rate != null ? `${(kpis.sales.refund_rate*100).toFixed(1)}%` : "—", sub:"mws.sales_and_traffic_by_date",                                    color: (kpis.sales.refund_rate||0)>0.05 ? C.red : C.green },
   ] : null;
-  const critCount  = ALERTS_RAW.filter(a=>a.severity==="critical"&&a.status!=="resolved").length;
-  const openCount  = ALERTS_RAW.filter(a=>a.status==="open").length;
+    const liveAlerts = (alertsState && alertsState.length > 0) ? alertsState : ALERTS_RAW;
+  const critCount  = liveAlerts.filter(a=>a.severity==="critical"&&a.status!=="resolved").length;
+  const openCount  = liveAlerts.filter(a=>a.status==="open").length;
   const runningAg  = AGENTS.filter(a=>a.status==="running").length;
   const pendingGt  = PENDING_APPROVALS.length;
   const healthyDs  = DATASOURCES.filter(d=>d.status==="healthy").length;
@@ -2345,8 +2428,8 @@ function CommandCenterTab({ onNavigate, kpis, kpisLoading, trend, topAsins, acco
   );
 
   const metricGrid = [
-    { label:"Critical Alerts",   value:critCount,                  color:critCount>0?T.red:T.green,    icon:"🔴", sub:"need immediate action",    tab:"alerts" },
-    { label:"Open Issues",       value:openCount,                  color:T.orange,                     icon:"🔔", sub:"AI-triaged queue",          tab:"alerts" },
+    { label:"Critical Alerts",   value:critCount,                  color:critCount>0?T.red:T.green,    icon:"🔴", sub: alertsState?.length > 0 ? "from mws scan" : "need immediate action", tab:"alerts" },
+    { label:"Open Issues",       value:openCount,                  color:T.orange,                     icon:"🔔", sub: alertsState?.length > 0 ? "detected in Redshift" : "AI-triaged queue", tab:"alerts" },
     { label:"QA Agents Active",  value:runningAg,                  color:T.green,                      icon:"🤖", sub:`of ${AGENTS.length} total`, tab:"agents" },
     { label:"Pending Approvals", value:pendingGt,                  color:pendingGt>0?T.yellow:T.green, icon:"🔒", sub:"awaiting human review",    tab:"gates" },
     { label:"Healthy Sources",   value:`${healthyDs}/${DATASOURCES.length}`, color:healthyDs===DATASOURCES.length?T.green:T.yellow, icon:"🗄️", sub:"pipeline coverage", tab:"sources" },
@@ -2959,7 +3042,24 @@ function AIChatPanel({ alert, onClose }) {
         body: JSON.stringify({
           model:"claude-sonnet-4-20250514",
           max_tokens:1000,
-          system:`You are an expert Data QE AI agent for Intentwise. You help monitor, triage, and fix data pipeline issues. Be concise, technical, and actionable. The current alert context: ID=${alert.id}, Severity=${alert.severity}, Source=${alert.source}, Table=${alert.table}, Rule=${alert.rule}, Issue="${alert.title}". Provide specific, executable remediation steps. Format code in backticks.`,
+          system:`You are an expert Data QE AI agent for Intentwise. You help monitor, triage, and fix data quality issues in a Redshift database (schema: mws).
+
+MWS SCHEMA REFERENCE:
+- mws.orders: amazon_order_id, order_status, fulfillment_channel, asin, sku, quantity, item_price, item_tax, currency, seller_id, account_id, purchase_date, download_date
+- mws.inventory: asin, merchant_sku, available, total_units, inbound, unfulfillable, days_of_supply, alert, recommended_replenishment_qty, account_id, download_date
+- mws.inventory_restock: restock order columns, quantity, account_id, download_date
+- mws.sales_and_traffic_by_date: sale_date, ordered_product_sales_amt, units_ordered, units_refunded, refund_rate, sessions, buy_box_percentage, account_id, download_date
+- mws.sales_and_traffic_by_asin: child_asin, parent_asin, units_ordered, ordered_product_sales_amt, traffic_by_asin_buy_box_prcntg, traffic_by_asin_sessions, account_id, report_start_date
+- mws.sales_and_traffic_by_sku: same as by_asin with sku field
+
+BACKEND API: https://intentwise-backend-production.up.railway.app
+- GET /api/query?sql=<SQL> — run any read-only SQL against mws schema
+- GET /api/kpis?account_id=<id> — orders, sales, inventory KPIs
+- GET /api/alerts/detect?account_id=<id> — live anomaly detection
+
+CURRENT ALERT: ID=${alert.id}, Severity=${alert.severity}, Source=${alert.source||"redshift-staging"}, Table=${alert.table}, Rule=${alert.rule||"N/A"}, Issue="${alert.title}".
+
+Be concise, technical, and actionable. When suggesting SQL, write exact queries against mws.* tables. Format code in backticks.`,
           messages: [...messages, { role:"user", content: userMsg }].map(m=>({ role:m.role, content:m.content }))
         })
       });
@@ -3093,7 +3193,11 @@ function AlertRow({ alert, onAIClick, onDrill, onResolve, onAutoFix, onTriage, s
         <div style={{ width:62, flexShrink:0 }}><SevBadge sev={alert.severity} /></div>
         <div style={{ flex:1, minWidth:0 }}>
           <div onClick={e=>{e.stopPropagation();onDrill&&onDrill("alert",alert);}} style={{ fontSize:13, fontWeight:600, color:C.accentL, whiteSpace:"nowrap", overflow:"hidden", textOverflow:"ellipsis", cursor:"pointer", textDecoration:"underline", textDecorationColor:`${C.accentL}50`, textUnderlineOffset:3 }}>{alert.title}<DataBadge live={alert.id?.startsWith("AGT-")} /></div>
-          <div style={{ fontSize:11, color:C.muted, marginTop:3 }}>{alert.source} · <code style={{color:C.dim,fontSize:11,fontFamily:'Consolas,monospace'}}>{alert.table}</code> · {alert.rule}</div>
+          <div style={{ fontSize:11, color:C.muted, marginTop:3, display:"flex", alignItems:"center", gap:6, flexWrap:"wrap" }}>
+              <span style={{ background:`${C.cyan}15`, color:C.cyan, borderRadius:4, padding:"1px 6px", fontSize:10, fontWeight:700 }}>{alert.source||"redshift-staging"}</span>
+              <code style={{color:C.accentL,fontSize:11,fontFamily:'Consolas,monospace', background:`${C.accent}10`, padding:"1px 5px", borderRadius:3}}>{alert.table}</code>
+              {alert.rule && <span style={{color:C.muted, fontSize:10}}>rule: {alert.rule}</span>}
+            </div>
         </div>
         <div style={{ fontSize:11, color:C.muted, flexShrink:0, width:72, textAlign:"right" }}>{alert.ts}</div>
         <span style={{ color:statusColor, fontSize:11, fontWeight:700, letterSpacing:"0.04em", textTransform:"uppercase", flexShrink:0, width:72, textAlign:"right" }}>{alert.autoFixed?"auto-fixed":alert.status}</span>
@@ -5206,7 +5310,7 @@ function DBExplorerTab({ kpis, kpisLoading, alertsState, setActiveTab: setActive
   const critCount     = alertsState ? alertsState.filter(a=>a.severity==="critical"&&a.status!=="resolved").length : 0;
   const openCount     = alertsState ? alertsState.filter(a=>a.status==="open").length : 0;
   const fixedCount    = alertsState ? alertsState.filter(a=>a.status==="resolved").length : 0;
-  const runningAgents = AGENTS.filter(a=>a.status==="running").length;y
+  const runningAgents = AGENTS.filter(a=>a.status==="running").length;
 
   useEffect(() => {
     fetch(API_BASE + "/api/tables")
@@ -5337,7 +5441,6 @@ function DBExplorerTab({ kpis, kpisLoading, alertsState, setActiveTab: setActive
                   )}
                   {preview.data.error && <span style={{ fontSize:11, color:T.red }}>{preview.data.error}</span>}
                   <button
-                    onClick={()=>setSql(`SELECT * FROM "${preview.schema}"."${preview.table}" LIMIT 100`)}
                     style={{ marginLeft:"auto", background:`${T.accent}15`, border:`1px solid ${T.accent}40`, borderRadius:7, padding:"5px 12px", cursor:"pointer", fontSize:11, color:T.accentL, fontWeight:700 }}
                     onClick={()=>{ setSql(`SELECT * FROM "${preview.schema}"."${preview.table}" LIMIT 100`); setView("query"); }}
                   >
@@ -5445,7 +5548,7 @@ function DBExplorerTab({ kpis, kpisLoading, alertsState, setActiveTab: setActive
 // ─── Main App ─────────────────────────────────────────────────────────────────
 export default function AIOpsMonitor() {
   const [theme, setTheme] = useState("light");
-  const [dataMode, setDataMode] = useState("demo"); // "demo" | "prod"
+  const [dataMode, setDataMode] = useState("prod"); // "demo" | "prod"
   const T = theme === "dark" ? DARK_THEME : LIGHT_THEME;
   // Keep module-level C in sync for non-hook components
   C = T;
@@ -5575,7 +5678,7 @@ export default function AIOpsMonitor() {
     return () => window.removeEventListener("keydown", handler);
   }, []);
 
-  const alerts = alertsState.filter(a => {
+  const alerts = (alertsState||[]).filter(a => {
     // In demo mode only show demo alerts (A0xx), in prod only show real (AGT-xx) + keep resolved
     if (dataMode === "demo" && a.id?.startsWith("AGT-")) return false;
     if (dataMode === "prod" && !a.id?.startsWith("AGT-") && a.status !== "resolved") return false;
@@ -5686,7 +5789,7 @@ export default function AIOpsMonitor() {
               style={{ background:T.card, border:`1px solid ${T.border2}`, borderRadius:7, padding:"5px 10px", color:T.text, fontSize:11, outline:"none", cursor:"pointer", fontFamily:"Calibri,sans-serif" }}
             >
               <option value="all">All Accounts</option>
-              {accounts.map(a=>(
+              {(accounts||[]).map(a=>(
                 <option key={a.account_id} value={String(a.account_id)}>
                   {a.seller_id || `Account ${a.account_id}`}
                 </option>
@@ -5935,7 +6038,7 @@ export default function AIOpsMonitor() {
           {/* ── Dashboard Tab ── */}
           {activeTab === "dashboard" && (
             <div style={{ paddingBottom:24 }}>
-              <CommandCenterTab onNavigate={setActiveTab} kpis={dataMode==="prod"?kpis:null} kpisLoading={kpisLoading} trend={trend} topAsins={topAsins} accountId={accountId} agentScanResult={dataMode==="prod"?agentScanResult:null} agentScanLoading={agentScanLoading} runFullAgentScan={runFullAgentScan} dataMode={dataMode} />
+              <CommandCenterTab onNavigate={setActiveTab} kpis={dataMode==="prod"?kpis:null} kpisLoading={kpisLoading} trend={trend} topAsins={topAsins} accountId={accountId} agentScanResult={dataMode==="prod"?agentScanResult:null} agentScanLoading={agentScanLoading} onAgentScan={runFullAgentScan} alertsState={dataMode==="prod"?alertsState:null} dataMode={dataMode} />
             </div>
           )}
 

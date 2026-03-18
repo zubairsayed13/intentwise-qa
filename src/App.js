@@ -1661,7 +1661,7 @@ function ValidationRulesTab({ liveRules, rulesLoading, addAuditEvent }) {
     // 1. Fetch real mws tables
     const tablesRes  = await fetch(`${API_BASE}/api/tables`);
     const tablesData = await tablesRes.json();
-    const mwsTables  = (tablesData || []).filter(t => (t.schema || t.table_schema) === "mws").map(t => t.name);
+    const mwsTables  = (tablesData || []).filter(t => !["pg_catalog","information_schema","pg_internal"].includes(t.schema || t.table_schema)).map(t => t.name || t.table_name);
     if (!mwsTables.length) return;
 
     const tableHash = mwsTables.slice().sort().join(",");
@@ -1790,13 +1790,13 @@ Respond ONLY with valid JSON (no markdown): {"name":"string","type":"string","so
       // 1. Fetch real schema from backend
       const tablesRes = await fetch("https://intentwise-backend-production.up.railway.app/api/tables");
       const tablesData = await tablesRes.json();
-      const mwsTables = (tablesData || []).filter(t => (t.schema || t.table_schema) === "mws").map(t => t.name || t.table_name);
+      const mwsTables = (tablesData || []).filter(t => !["pg_catalog","information_schema","pg_internal"].includes(t.schema || t.table_schema)).map(t => t.name || t.table_name);
 
       // 2. Ask Claude to suggest test cases based on actual mws schema
       const res = await fetch(`${API_BASE}/api/ai/chat`, {
         method:"POST", headers:{"Content-Type":"application/json"},
         body: JSON.stringify({ max_tokens:1500,
-          system:`You are a data quality AI for Intentwise. The database is Redshift, schema: mws. Tables available: ${mwsTables.join(", ")}. Key columns per table — orders: amazon_order_id, asin, order_status, item_price, quantity, account_id, download_date. inventory: asin, available, total_units, days_of_supply, alert, account_id. sales_and_traffic_by_date: sale_date, ordered_product_sales_amt, units_ordered, buy_box_percentage, account_id. sales_and_traffic_by_asin: child_asin, units_ordered, traffic_by_asin_buy_box_prcntg, account_id. Suggest 6 high-value test cases covering nulls, duplicates, freshness, range checks, and referential integrity. Respond ONLY with a JSON array (no markdown): [{"table":"mws.TABLE","column":"col","type":"rule_type","name":"short name","severity":"critical|high|medium|low","reason":"why this matters","confidence":0.0-1.0,"sql_hint":"exact SQL"}]`,
+          system:`You are a data quality AI for Intentwise. The database is Redshift. Tables available: ${mwsTables.join(", ")}. Key columns per table — orders: amazon_order_id, asin, order_status, item_price, quantity, account_id, download_date. inventory: asin, available, total_units, days_of_supply, alert, account_id. sales_and_traffic_by_date: sale_date, ordered_product_sales_amt, units_ordered, buy_box_percentage, account_id. sales_and_traffic_by_asin: child_asin, units_ordered, traffic_by_asin_buy_box_prcntg, account_id. Suggest 6 high-value test cases covering nulls, duplicates, freshness, range checks, and referential integrity. Respond ONLY with a JSON array (no markdown): [{"table":"schema.TABLE","column":"col","type":"rule_type","name":"short name","severity":"critical|high|medium|low","reason":"why this matters","confidence":0.0-1.0,"sql_hint":"exact SQL"}]`,
           messages:[{ role:"user", content:"Scan mws schema and suggest the most impactful data quality test cases." }]
         })
       });

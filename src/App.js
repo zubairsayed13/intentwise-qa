@@ -566,19 +566,20 @@ const INIT_WORKFLOWS = [
   },
   {
     id: "WF-002", name: "Report Status Auto-Triage", status: "active",
-    description: "Monitors report table every 30 min, classifies failures, auto-redrives or escalates.",
+    description: "Scans mws.report — detects failed/pending downloads (status!=processed), unreplicated reports (copy_status!=REPLICATED), and stuck copies (processed but not replicated >2h). Auto-fixes or escalates.",
     lastRun: "Today 9:10 AM", runs: 187, successRate: 98,
     nodes: [
-      { id:"n1", type:"trigger",   label:"Every 30 min",               color:"#6366F1", icon:"⚡", config:{ schedule:"*/30 * * * *" }, yOffset:0 },
-      { id:"n2", type:"monitor",   label:"Scan report_status table",   color:"#06B6D4", icon:"👁", config:{ source:"redshift-staging", table:"report" }, yOffset:1 },
-      { id:"n3", type:"condition", label:"Any failures?",              color:"#F59E0B", icon:"◇", config:{ expr:"failed_count > 0" }, yOffset:2 },
-      { id:"n4", type:"action",    label:"Classify Step Function",     color:"#10B981", icon:"⚙", config:{ action:"Query Redshift", target:"step_functions" }, yOffset:3 },
-      { id:"n5", type:"condition", label:"Requester failure?",         color:"#F59E0B", icon:"◇", config:{ expr:"failure_step == 'requester'" }, yOffset:4 },
-      { id:"n6", type:"action",    label:"New Step Function Execution",color:"#10B981", icon:"⚙", config:{ action:"Start new Step Function" }, yOffset:5 },
-      { id:"n7", type:"action",    label:"Redrive from failed state",  color:"#10B981", icon:"⚙", config:{ action:"Redrive Step Function" }, yOffset:6 },
-      { id:"n8", type:"loop",      label:"Retry up to 3 times",        color:"#EC4899", icon:"↺", config:{ maxRetries:3, interval:10 }, yOffset:7 },
-      { id:"n9", type:"notify",    label:"Alert if still failing",     color:"#E01E5A", icon:"📣", config:{ channel:"#dev-python-support", severity:"high" }, yOffset:8 },
-      { id:"n10",type:"end",       label:"End",                        color:"#334155", icon:"■", config:{}, yOffset:9 },
+      { id:"n1", type:"trigger",   label:"Every 30 min",                    color:"#6366F1", icon:"⚡", config:{ schedule:"*/30 * * * *", desc:"Cron: */30 * * * *" }, yOffset:0 },
+      { id:"n2", type:"monitor",   label:"Scan mws.report",                 color:"#06B6D4", icon:"👁", config:{ source:"redshift-staging", table:"mws.report", endpoint:"/api/report/triage", desc:"Hits /api/report/triage — 5 checks" }, yOffset:1 },
+      { id:"n3", type:"condition", label:"Any issues found?",               color:"#F59E0B", icon:"◇", config:{ expr:"issues.length > 0", yes:"Triage", no:"End clean" }, yOffset:2 },
+      { id:"n4", type:"action",    label:"Classify issues",                 color:"#10B981", icon:"⚙", config:{ action:"GET /api/report/triage", desc:"RPT-001: status!=processed | RPT-002: copy_status!=REPLICATED | RPT-003: stuck >2h" }, yOffset:3 },
+      { id:"n5", type:"condition", label:"Retriable failure?",              color:"#F59E0B", icon:"◇", config:{ expr:"fix_action in [redrive, recopy]", yes:"Auto-fix", no:"Escalate" }, yOffset:4 },
+      { id:"n6", type:"action",    label:"Auto-fix: redrive / recopy",      color:"#10B981", icon:"⚙", config:{ action:"POST /api/report/fix", desc:"dry_run=false, fix_action=redrive|recopy" }, yOffset:5 },
+      { id:"n7", type:"action",    label:"Check stuck copies (RPT-004)",    color:"#10B981", icon:"⚙", config:{ action:"Check copy_status=PENDING >2h", desc:"POST /api/report/fix redrive_copy" }, yOffset:6 },
+      { id:"n8", type:"loop",      label:"Retry up to 3 times",             color:"#EC4899", icon:"↺", config:{ maxRetries:3, interval:10, desc:"Re-check after each fix" }, yOffset:7 },
+      { id:"n9", type:"validate",  label:"Validate: missing report types",  color:"#8B5CF6", icon:"✓", config:{ action:"Check RPT-005", desc:"SP/SD/SB types present for today" }, yOffset:8 },
+      { id:"n10",type:"notify",    label:"Escalate if still failing",       color:"#E01E5A", icon:"📣", config:{ channel:"#dev-python-support", severity:"high", desc:"Slack alert with issue count" }, yOffset:9 },
+      { id:"n11",type:"end",       label:"End",                             color:"#334155", icon:"■", config:{}, yOffset:10 },
     ],
   },
   {
@@ -1068,365 +1069,959 @@ function WorkflowDetailDrawer({ workflow: wf, onClose, onEdit }) {
 }
 
 // ─── Workflow Builder Tab ─────────────────────────────────────────────────────
-// ─── Remediation Flow Tab ────────────────────────────────────────────────────
-function RemediationFlowTab({ addAuditEvent }) {
-  const T = useTheme();
+// ─── Report Triage Tab ───────────────────────────────────────────────────────
+function ReportTriageTab({ addAuditEvent, accountId }) {
+  const T  = useTheme();
   const API = "https://intentwise-backend-production.up.railway.app";
 
-  // ── state ─────────────────────────────────────────────────────────────────
-  const [step,         setStep]         = React.useState(0);
-  // 0=idle 1=scanning 2=scanned 3=confirming 4=fixing 5=fixed 6=notifying 7=done
-  const [scanResult,   setScanResult]   = React.useState(null);
-  const [selectedFix,  setSelectedFix]  = React.useState(null); // issue id
-  const [dryRunResult, setDryRunResult] = React.useState(null);
-  const [fixResult,    setFixResult]    = React.useState(null);
-  const [notifyResult, setNotifyResult] = React.useState(null);
-  const [error,        setError]        = React.useState(null);
-  const [log,          setLog]          = React.useState([]);
-  const [slackMsg,     setSlackMsg]     = React.useState("");
+  const [triageResult,  setTriageResult]  = React.useState(null);
+  const [scanning,      setScanning]      = React.useState(false);
+  const [fixing,        setFixing]        = React.useState({});
+  const [dryRuns,       setDryRuns]       = React.useState({});
+  const [fixResults,    setFixResults]    = React.useState({});
+  const [expandSamples, setExpandSamples] = React.useState({});
+  const [log,           setLog]           = React.useState([]);
+  const [error,         setError]         = React.useState(null);
 
-  const addLog = (msg, level="info") => setLog(p => [...p, {
-    ts: new Date().toLocaleTimeString(), msg, level
-  }]);
+  const addLog = (msg, level="info") =>
+    setLog(p => [...p.slice(-60), { ts: new Date().toLocaleTimeString(), msg, level }]);
 
-  const sev = { critical: T.red, high: T.orange, medium: T.yellow, low: T.cyan };
+  const SEV = { critical: T.red, high: T.orange, medium: T.yellow, low: T.cyan };
 
-  // ── STEP 1: Scan ──────────────────────────────────────────────────────────
-  const runScan = async () => {
-    setStep(1); setError(null); setScanResult(null);
-    setSelectedFix(null); setDryRunResult(null); setFixResult(null);
-    setNotifyResult(null); setLog([]);
-    addLog("▶ Starting scan on mws.orders…");
+  // ── Scan ──────────────────────────────────────────────────────────────────
+  const runTriage = async () => {
+    setScanning(true); setError(null); setTriageResult(null);
+    setFixResults({}); setDryRuns({});
+    addLog("▶ Scanning mws.report…");
     try {
-      const res  = await fetch(`${API}/api/remediation/scan`);
+      const qs  = accountId && accountId !== "all" ? `?account=${accountId}` : "";
+      const res = await fetch(`${API}/api/report/triage${qs}`);
       const data = await res.json();
       if (data.error) throw new Error(data.error);
-      setScanResult(data);
-      const issueCount = data.issues.filter(i => i.count > 0).length;
-      addLog(`✓ Scan complete — ${data.total_rows.toLocaleString()} total rows, ${issueCount} issue type(s) found`, "success");
-      data.issues.forEach(i => {
-        if (i.count > 0) addLog(`  ⚠ ${i.title}: ${i.count.toLocaleString()} rows affected`, "warning");
-        else addLog(`  ✓ ${i.title}: clean`, "success");
+      setTriageResult(data);
+      const issueCount = (data.issues||[]).length;
+      addLog(`✓ Scan complete — ${data.total_rows?.toLocaleString()} rows, ${issueCount} issue(s) found`,
+        issueCount > 0 ? "warning" : "success");
+      (data.issues||[]).forEach(i =>
+        addLog(`  ⚠ [${i.severity}] ${i.title}: ${i.count} affected`, "warning")
+      );
+      if (issueCount === 0) addLog("✅ All report checks passed — table is healthy", "success");
+      if (addAuditEvent) addAuditEvent({
+        type:"workflow", name:"Report auto-triage scan", table:"mws.report",
+        source:"redshift-staging",
+        result: issueCount > 0 ? "fail" : "pass",
+        detail: `${issueCount} issues across ${data.total_rows} rows`
       });
-      setStep(2);
-      if (addAuditEvent) addAuditEvent({ type:"workflow", name:"Remediation scan — mws.orders", table:"mws.orders", source:"redshift-staging", result: issueCount > 0 ? "fail" : "pass", detail:`${issueCount} issues found across ${data.total_rows} rows` });
-    } catch(e) { setError(e.message); addLog(`✗ Scan failed: ${e.message}`, "error"); setStep(0); }
+    } catch(e) {
+      setError(e.message);
+      addLog(`✗ Scan failed: ${e.message}`, "error");
+    }
+    setScanning(false);
   };
 
-  // ── STEP 2: Dry run ───────────────────────────────────────────────────────
+  // ── Dry run ───────────────────────────────────────────────────────────────
   const runDryRun = async (issue) => {
-    setSelectedFix(issue.id); setStep(3); setDryRunResult(null);
-    addLog(`▶ Dry run: ${issue.title}…`);
+    if (!issue.fix_action || issue.fix_action === "trigger_download") return;
+    setDryRuns(p => ({...p, [issue.id]: "loading"}));
+    addLog(`▶ Dry run: ${issue.fix_action} for ${issue.title}…`);
     try {
-      const res  = await fetch(`${API}/api/remediation/fix`, {
+      const res  = await fetch(`${API}/api/report/fix`, {
         method:"POST", headers:{"Content-Type":"application/json"},
-        body: JSON.stringify({ fix_type: issue.fix_type, dry_run: true })
+        body: JSON.stringify({ fix_action: issue.fix_action, dry_run: true,
+          account: accountId !== "all" ? accountId : undefined })
       });
       const data = await res.json();
       if (data.error) throw new Error(data.error);
-      setDryRunResult(data);
-      addLog(`✓ Dry run complete — ${data.rows_affected.toLocaleString()} rows would be affected (total: ${data.before.toLocaleString()})`, "success");
-      setStep(3);
-    } catch(e) { setError(e.message); addLog(`✗ Dry run failed: ${e.message}`, "error"); setStep(2); }
+      setDryRuns(p => ({...p, [issue.id]: data}));
+      addLog(`✓ Dry run: ${data.rows_affected} rows would be affected`, "success");
+    } catch(e) {
+      setDryRuns(p => ({...p, [issue.id]: "error"}));
+      addLog(`✗ Dry run failed: ${e.message}`, "error");
+    }
   };
 
-  // ── STEP 3: Execute fix ───────────────────────────────────────────────────
-  const executeFix = async () => {
-    const issue = scanResult?.issues.find(i => i.id === selectedFix);
-    if (!issue) return;
+  // ── Execute fix ───────────────────────────────────────────────────────────
+  const executeFix = async (issue) => {
     const confirmed = window.confirm(
-      `⚠️ This will run a live fix on mws.orders\n\nFix: ${issue.fix_type}\nRows affected: ${dryRunResult?.rows_affected?.toLocaleString()}\n\nThis cannot be undone. Proceed?`
+      `Execute fix on mws.report?\n\nAction: ${issue.fix_action}\nAffected: ${dryRuns[issue.id]?.rows_affected ?? "?"} rows\n\nThis modifies live data.`
     );
     if (!confirmed) return;
-    setStep(4); setFixResult(null);
-    addLog(`▶ Executing fix: ${issue.fix_type}…`);
+    setFixing(p => ({...p, [issue.id]: true}));
+    addLog(`▶ Executing: ${issue.fix_action}…`);
     try {
-      const res  = await fetch(`${API}/api/remediation/fix`, {
+      const res  = await fetch(`${API}/api/report/fix`, {
         method:"POST", headers:{"Content-Type":"application/json"},
-        body: JSON.stringify({ fix_type: issue.fix_type, dry_run: false })
+        body: JSON.stringify({ fix_action: issue.fix_action, dry_run: false,
+          account: accountId !== "all" ? accountId : undefined })
       });
       const data = await res.json();
       if (data.error) throw new Error(data.error);
-      setFixResult(data);
-      addLog(`✓ Fix executed — before: ${data.before.toLocaleString()}, after: ${data.after.toLocaleString()}, removed: ${(data.before-data.after).toLocaleString()} rows`, "success");
-      const msg = `✅ *mws.orders remediation complete*\nFix: \`${issue.fix_type}\`\nRows affected: ${data.rows_affected} | Before: ${data.before} → After: ${data.after}`;
-      setSlackMsg(msg);
-      setStep(5);
-      if (addAuditEvent) addAuditEvent({ type:"workflow", name:`Remediation fix — ${issue.fix_type}`, table:"mws.orders", source:"redshift-staging", result:"pass", detail:`Before: ${data.before} → After: ${data.after} (${data.rows_affected} rows affected)`, duration:"live" });
-    } catch(e) { setError(e.message); addLog(`✗ Fix failed: ${e.message}`, "error"); setStep(3); }
-  };
-
-  // ── STEP 4: Re-scan ───────────────────────────────────────────────────────
-  const reScan = async () => {
-    setStep(1); addLog("▶ Re-scanning to verify fix…");
-    try {
-      const res  = await fetch(`${API}/api/remediation/scan`);
-      const data = await res.json();
-      if (data.error) throw new Error(data.error);
-      setScanResult(data);
-      const remaining = data.issues.filter(i => i.count > 0).length;
-      addLog(`✓ Re-scan complete — ${remaining} issue type(s) remaining`, remaining === 0 ? "success" : "warning");
-      setStep(5);
-    } catch(e) { setError(e.message); addLog(`✗ Re-scan failed: ${e.message}`, "error"); }
-  };
-
-  // ── STEP 5: Notify ────────────────────────────────────────────────────────
-  const sendNotification = async () => {
-    setStep(6); addLog("▶ Sending Slack notification…");
-    try {
-      const issue = scanResult?.issues.find(i => i.id === selectedFix);
-      const res   = await fetch(`${API}/api/remediation/notify`, {
-        method:"POST", headers:{"Content-Type":"application/json"},
-        body: JSON.stringify({
-          message: slackMsg,
-          fix_type: issue?.fix_type || "",
-          rows_affected: fixResult?.rows_affected || 0,
-          before: fixResult?.before || 0,
-          after:  fixResult?.after  || 0,
-        })
+      setFixResults(p => ({...p, [issue.id]: data}));
+      addLog(`✓ Fix complete — before: ${data.before}, after: ${data.after}`, "success");
+      if (addAuditEvent) addAuditEvent({
+        type:"workflow", name:`Report fix — ${issue.fix_action}`, table:"mws.report",
+        source:"redshift-staging", result:"pass",
+        detail:`${data.rows_affected} rows affected. Before: ${data.before} → After: ${data.after}`
       });
-      const data = await res.json();
-      setNotifyResult(data);
-      if (data.sent) {
-        addLog("✓ Slack notification sent", "success");
-        if (addAuditEvent) addAuditEvent({ type:"workflow", name:"Slack notification sent", table:"mws.orders", source:"slack", result:"pass", detail:slackMsg });
-      } else {
-        addLog(`⚠ Slack returned status ${data.status} (check SLACK_WEBHOOK_URL)`, "warning");
-      }
-      setStep(7);
-    } catch(e) { setError(e.message); addLog(`✗ Notify failed: ${e.message}`, "error"); setStep(5); }
+    } catch(e) {
+      addLog(`✗ Fix failed: ${e.message}`, "error");
+    }
+    setFixing(p => ({...p, [issue.id]: false}));
   };
 
-  // ── helpers ───────────────────────────────────────────────────────────────
-  const Btn = ({ onClick, disabled, color, children, small }) => (
-    <button onClick={onClick} disabled={disabled}
-      style={{ display:"flex", alignItems:"center", gap:6, padding: small ? "5px 12px" : "8px 18px",
-        background: disabled ? T.border : color || T.accent,
-        color: disabled ? T.muted : "white", border:"none", borderRadius:7,
-        cursor: disabled ? "not-allowed" : "pointer", fontSize: small ? 11 : 12,
-        fontWeight:600, opacity: disabled ? 0.6 : 1, transition:"all 0.15s" }}>
-      {children}
-    </button>
-  );
-
-  const StepDot = ({ n, label }) => {
-    const done    = step >  n;
-    const active  = step === n;
-    return (
-      <div style={{ display:"flex", flexDirection:"column", alignItems:"center", gap:4, flex:1 }}>
-        <div style={{ width:28, height:28, borderRadius:"50%", display:"flex", alignItems:"center", justifyContent:"center", fontSize:11, fontWeight:700,
-          background: done ? T.green : active ? T.accent : T.border,
-          color: (done||active) ? "white" : T.muted,
-          boxShadow: active ? `0 0 0 3px ${T.accent}30` : "none",
-          transition:"all 0.3s" }}>
-          {done ? "✓" : n}
-        </div>
-        <span style={{ fontSize:9, color: active ? T.accent : done ? T.green : T.muted, fontWeight: active ? 700 : 400, textAlign:"center", lineHeight:1.3 }}>{label}</span>
-      </div>
-    );
-  };
-
-  const isScanning   = step === 1;
-  const hasScanned   = step >= 2;
-  const issue        = scanResult?.issues.find(i => i.id === selectedFix);
-  const activeIssues = (scanResult?.issues || []).filter(i => i.count > 0);
+  const issues = triageResult?.issues || [];
+  const fixableActions = ["redrive","recopy","redrive_copy"];
 
   return (
-    <div style={{ padding:"0 2px" }}>
+    <div>
       {/* Header */}
-      <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom:20 }}>
+      <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom:16 }}>
         <div>
-          <div style={{ fontSize:16, fontWeight:700, color:T.text }}>Remediation Flow</div>
-          <div style={{ fontSize:12, color:T.muted, marginTop:2 }}>Live end-to-end fix pipeline · <code style={{ color:T.cyan, fontFamily:"Consolas,monospace", fontSize:11 }}>mws.orders</code></div>
-        </div>
-        <Btn onClick={runScan} disabled={isScanning} color={T.accent}>
-          {isScanning ? "⏳ Scanning…" : step === 0 ? "▶ Run Scan" : "↺ Re-scan"}
-        </Btn>
-      </div>
-
-      {/* Step progress bar */}
-      <div style={{ background:T.card, border:`1px solid ${T.border}`, borderRadius:10, padding:"14px 20px", marginBottom:16, display:"flex", alignItems:"flex-start", gap:0 }}>
-        {[
-          [1,"Scan"],
-          [2,"Issues"],
-          [3,"Dry Run"],
-          [4,"Execute"],
-          [5,"Verify"],
-          [6,"Notify"],
-          [7,"Done"],
-        ].map(([n, label], i, arr) => (
-          <React.Fragment key={n}>
-            <StepDot n={n} label={label} />
-            {i < arr.length-1 && (
-              <div style={{ flex:0.5, height:2, background: step > n ? T.green : T.border, marginTop:13, transition:"background 0.3s" }}/>
-            )}
-          </React.Fragment>
-        ))}
-      </div>
-
-      <div style={{ display:"grid", gridTemplateColumns:"1fr 340px", gap:14 }}>
-        {/* Left — main panel */}
-        <div style={{ display:"flex", flexDirection:"column", gap:12 }}>
-
-          {/* Scan results */}
-          {hasScanned && scanResult && (
-            <div style={{ background:T.card, border:`1px solid ${T.border}`, borderRadius:10, padding:"16px 18px" }}>
-              <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom:12 }}>
-                <span style={{ fontSize:13, fontWeight:700, color:T.text }}>Scan Results — mws.orders</span>
-                <span style={{ fontSize:11, color:T.muted }}>{scanResult.total_rows?.toLocaleString()} total rows</span>
-              </div>
-              <div style={{ display:"flex", flexDirection:"column", gap:8 }}>
-                {scanResult.issues.map(issue => (
-                  <div key={issue.id} style={{
-                    padding:"12px 14px", borderRadius:8, border:`1px solid ${issue.count > 0 ? sev[issue.severity]+"40" : T.border}`,
-                    background: issue.count > 0 ? sev[issue.severity]+"08" : T.surface,
-                    display:"flex", alignItems:"center", gap:12
-                  }}>
-                    <div style={{ width:8, height:8, borderRadius:"50%", background: issue.count > 0 ? sev[issue.severity] : T.green, flexShrink:0 }}/>
-                    <div style={{ flex:1 }}>
-                      <div style={{ fontSize:12, fontWeight:600, color:T.text }}>{issue.title}</div>
-                      <div style={{ fontSize:11, color:T.muted, marginTop:2 }}>{issue.description}</div>
-                    </div>
-                    <div style={{ textAlign:"right", flexShrink:0 }}>
-                      <div style={{ fontSize:15, fontWeight:700, color: issue.count > 0 ? sev[issue.severity] : T.green }}>
-                        {issue.count.toLocaleString()}
-                      </div>
-                      <div style={{ fontSize:9, color:T.muted }}>rows</div>
-                    </div>
-                    {issue.count > 0 && step < 4 && (
-                      <Btn small color={T.accent} onClick={() => runDryRun(issue)}
-                        disabled={isScanning || step === 3 || step === 4}>
-                        Dry Run →
-                      </Btn>
-                    )}
-                    {issue.count > 0 && fixResult && selectedFix === issue.id && (
-                      <span style={{ fontSize:10, fontWeight:700, color:T.green, background:`${T.green}15`, borderRadius:5, padding:"3px 8px" }}>FIXED</span>
-                    )}
-                  </div>
-                ))}
-              </div>
-            </div>
-          )}
-
-          {/* Dry run result */}
-          {dryRunResult && step >= 3 && !fixResult && (
-            <div style={{ background:T.card, border:`1px solid ${T.orange}40`, borderRadius:10, padding:"16px 18px" }}>
-              <div style={{ fontSize:13, fontWeight:700, color:T.text, marginBottom:10 }}>⚠ Dry Run Preview</div>
-              <div style={{ display:"grid", gridTemplateColumns:"repeat(3,1fr)", gap:10, marginBottom:14 }}>
-                {[
-                  ["Fix type", dryRunResult.fix_type],
-                  ["Rows affected", dryRunResult.rows_affected?.toLocaleString()],
-                  ["Table total before", dryRunResult.before?.toLocaleString()],
-                ].map(([label, val]) => (
-                  <div key={label} style={{ background:T.surface, borderRadius:7, padding:"10px 12px" }}>
-                    <div style={{ fontSize:9, color:T.muted, marginBottom:4, textTransform:"uppercase", letterSpacing:"0.06em" }}>{label}</div>
-                    <div style={{ fontSize:14, fontWeight:700, color:T.text, fontFamily:"Consolas,monospace" }}>{val}</div>
-                  </div>
-                ))}
-              </div>
-              <div style={{ display:"flex", gap:8, alignItems:"center" }}>
-                <Btn onClick={executeFix} color={T.red}>🔧 Execute Fix (Live)</Btn>
-                <span style={{ fontSize:11, color:T.muted }}>This will modify mws.orders</span>
-              </div>
-            </div>
-          )}
-
-          {/* Fix result */}
-          {fixResult && (
-            <div style={{ background:T.card, border:`1px solid ${T.green}40`, borderRadius:10, padding:"16px 18px" }}>
-              <div style={{ fontSize:13, fontWeight:700, color:T.green, marginBottom:10 }}>✅ Fix Executed</div>
-              <div style={{ display:"grid", gridTemplateColumns:"repeat(4,1fr)", gap:10, marginBottom:14 }}>
-                {[
-                  ["Before", fixResult.before?.toLocaleString()],
-                  ["After",  fixResult.after?.toLocaleString()],
-                  ["Removed", (fixResult.before - fixResult.after)?.toLocaleString()],
-                  ["Fix type", fixResult.fix_type],
-                ].map(([label, val]) => (
-                  <div key={label} style={{ background:T.surface, borderRadius:7, padding:"10px 12px" }}>
-                    <div style={{ fontSize:9, color:T.muted, marginBottom:4, textTransform:"uppercase", letterSpacing:"0.06em" }}>{label}</div>
-                    <div style={{ fontSize:14, fontWeight:700, color:T.text, fontFamily:"Consolas,monospace" }}>{val}</div>
-                  </div>
-                ))}
-              </div>
-              <div style={{ display:"flex", gap:8 }}>
-                <Btn small color={T.cyan} onClick={reScan}>↺ Re-scan to Verify</Btn>
-                <Btn small color={T.purple} onClick={sendNotification} disabled={step===6||step===7}>
-                  📣 Notify (optional)
-                </Btn>
-              </div>
-            </div>
-          )}
-
-          {/* Notify result */}
-          {notifyResult && (
-            <div style={{ background:T.card, border:`1px solid ${notifyResult.sent ? T.green : T.yellow}40`, borderRadius:10, padding:"14px 18px" }}>
-              {notifyResult.sent
-                ? <span style={{ fontSize:12, color:T.green }}>✅ Slack notification sent successfully</span>
-                : <span style={{ fontSize:12, color:T.yellow }}>⚠ Slack notification not sent — add SLACK_WEBHOOK_URL to Railway env vars</span>
-              }
-            </div>
-          )}
-
-          {/* Error */}
-          {error && (
-            <div style={{ background:`${T.red}10`, border:`1px solid ${T.red}40`, borderRadius:10, padding:"12px 16px", fontSize:12, color:T.red }}>
-              ✗ {error}
-            </div>
-          )}
-        </div>
-
-        {/* Right — live log */}
-        <div style={{ display:"flex", flexDirection:"column", gap:12 }}>
-          <div style={{ background:T.card, border:`1px solid ${T.border}`, borderRadius:10, padding:"14px 16px" }}>
-            <div style={{ fontSize:12, fontWeight:700, color:T.text, marginBottom:10 }}>📋 Run Log</div>
-            <div style={{ background:T.isDark ? "#0A0C10" : "#F1F5F9", borderRadius:7, padding:"10px 12px",
-              height:320, overflowY:"auto", display:"flex", flexDirection:"column", gap:4 }}>
-              {log.length === 0
-                ? <span style={{ fontSize:11, color:T.muted }}>Waiting to start…</span>
-                : log.map((l,i) => (
-                  <div key={i} style={{ fontFamily:"Consolas,monospace", fontSize:11,
-                    color: l.level==="success" ? T.green : l.level==="error" ? T.red : l.level==="warning" ? T.yellow : T.muted }}>
-                    <span style={{ color:T.muted, marginRight:6 }}>[{l.ts}]</span>{l.msg}
-                  </div>
-                ))
-              }
-            </div>
+          <div style={{ fontSize:15, fontWeight:700, color:T.text }}>Report Status Auto-Triage</div>
+          <div style={{ fontSize:12, color:T.muted, marginTop:2 }}>
+            Live scan of <code style={{color:T.cyan,fontFamily:"Consolas,monospace",fontSize:11}}>mws.report</code>
+            {triageResult && <span> · {triageResult.total_rows?.toLocaleString()} rows · scanned {new Date(triageResult.scanned_at).toLocaleTimeString()}</span>}
           </div>
+        </div>
+        <button onClick={runTriage} disabled={scanning}
+          style={{ padding:"7px 18px", background: scanning ? T.border : T.accent,
+            color:"white", border:"none", borderRadius:7, fontWeight:700, fontSize:12,
+            cursor: scanning ? "not-allowed" : "pointer", display:"flex", alignItems:"center", gap:6 }}>
+          {scanning ? "⏳ Scanning…" : triageResult ? "↺ Re-scan" : "▶ Run Triage"}
+        </button>
+      </div>
 
-          {/* Slack preview */}
-          {slackMsg && (
-            <div style={{ background:T.card, border:`1px solid ${T.border}`, borderRadius:10, padding:"14px 16px" }}>
-              <div style={{ fontSize:11, fontWeight:700, color:T.muted, marginBottom:8 }}>SLACK PREVIEW</div>
-              <div style={{ background:"#1A1D21", borderRadius:7, padding:"10px 12px", borderLeft:`4px solid #36C5F0` }}>
-                <div style={{ fontSize:11, color:"#E8E8E8", lineHeight:1.7, fontFamily:"monospace", whiteSpace:"pre-wrap" }}>{slackMsg}</div>
-              </div>
-              <textarea
-                value={slackMsg}
-                onChange={e => setSlackMsg(e.target.value)}
-                style={{ width:"100%", marginTop:8, padding:"8px 10px", background:T.surface, border:`1px solid ${T.border}`,
-                  borderRadius:6, color:T.text, fontSize:11, fontFamily:"Consolas,monospace", resize:"vertical", minHeight:60, boxSizing:"border-box" }}
-              />
+      {error && (
+        <div style={{ background:`${T.red}10`, border:`1px solid ${T.red}40`, borderRadius:8,
+          padding:"10px 14px", fontSize:12, color:T.red, marginBottom:12 }}>✗ {error}</div>
+      )}
+
+      <div style={{ display:"grid", gridTemplateColumns:"1fr 300px", gap:14 }}>
+        {/* Left — issue cards */}
+        <div style={{ display:"flex", flexDirection:"column", gap:10 }}>
+          {!triageResult && !scanning && (
+            <div style={{ textAlign:"center", padding:"48px 0", color:T.muted, fontSize:13,
+              background:T.card, border:`1px dashed ${T.border}`, borderRadius:10 }}>
+              Click <b>▶ Run Triage</b> to scan <code style={{fontFamily:"Consolas,monospace"}}>mws.report</code> for issues
             </div>
           )}
 
-          {/* Done summary */}
-          {step === 7 && (
-            <div style={{ background:`${T.green}10`, border:`1px solid ${T.green}40`, borderRadius:10, padding:"14px 16px" }}>
-              <div style={{ fontSize:13, fontWeight:700, color:T.green, marginBottom:6 }}>🎉 Flow Complete</div>
-              <div style={{ fontSize:11, color:T.muted, lineHeight:1.6 }}>
-                Fix executed · Re-scan verified · Slack notified · Audit logged
-              </div>
-              <button onClick={() => { setStep(0); setLog([]); setScanResult(null); setFixResult(null); setNotifyResult(null); setDryRunResult(null); setSelectedFix(null); setSlackMsg(""); setError(null); }}
-                style={{ marginTop:10, fontSize:11, color:T.accent, background:"none", border:"none", cursor:"pointer", textDecoration:"underline" }}>
-                Reset flow
-              </button>
+          {triageResult?.clean && (
+            <div style={{ textAlign:"center", padding:"32px 0", color:T.green, fontSize:14,
+              background:`${T.green}08`, border:`1px solid ${T.green}30`, borderRadius:10 }}>
+              ✅ All checks passed — mws.report is healthy
             </div>
+          )}
+
+          {issues.map(issue => {
+            const dr = dryRuns[issue.id];
+            const fr = fixResults[issue.id];
+            const isFixing = fixing[issue.id];
+            const isFixed  = !!fr;
+            const canFix   = fixableActions.includes(issue.fix_action);
+            const sevColor = SEV[issue.severity] || T.muted;
+            const expanded = expandSamples[issue.id];
+
+            return (
+              <div key={issue.id} style={{ background:T.card, border:`1px solid ${isFixed ? T.green+"60" : sevColor+"40"}`,
+                borderRadius:10, overflow:"hidden" }}>
+                {/* Issue header */}
+                <div style={{ padding:"12px 16px", display:"flex", alignItems:"center", gap:12,
+                  background: isFixed ? `${T.green}06` : `${sevColor}06` }}>
+                  <div style={{ width:8, height:8, borderRadius:"50%", background: isFixed ? T.green : sevColor, flexShrink:0 }}/>
+                  <div style={{ flex:1 }}>
+                    <div style={{ fontSize:12, fontWeight:700, color:T.text }}>{issue.title}</div>
+                    <div style={{ fontSize:11, color:T.muted, marginTop:1 }}>{issue.description}</div>
+                  </div>
+                  <div style={{ textAlign:"right", flexShrink:0 }}>
+                    <div style={{ fontSize:18, fontWeight:800, color: isFixed ? T.green : sevColor }}>
+                      {isFixed ? "✓ Fixed" : issue.count.toLocaleString()}
+                    </div>
+                    <div style={{ fontSize:9, color:T.muted, textTransform:"uppercase" }}>
+                      {isFixed ? `${fr.rows_affected} rows fixed` : issue.severity}
+                    </div>
+                  </div>
+                </div>
+
+                {/* Breakdown badges */}
+                {issue.breakdown?.length > 0 && (
+                  <div style={{ padding:"6px 16px", display:"flex", gap:6, flexWrap:"wrap",
+                    borderBottom:`1px solid ${T.border}` }}>
+                    {issue.breakdown.map(b => (
+                      <span key={b.status} style={{ fontSize:10, padding:"2px 8px",
+                        background:`${sevColor}15`, color:sevColor, borderRadius:4, fontFamily:"Consolas,monospace" }}>
+                        {b.status}: {b.count}
+                      </span>
+                    ))}
+                  </div>
+                )}
+
+                {/* Fix row */}
+                {!isFixed && (
+                  <div style={{ padding:"10px 16px", display:"flex", alignItems:"center", gap:8,
+                    borderTop:`1px solid ${T.border}` }}>
+                    {issue.samples?.length > 0 && (
+                      <button onClick={() => setExpandSamples(p => ({...p, [issue.id]: !p[issue.id]}))}
+                        style={{ fontSize:10, padding:"4px 10px", background:T.surface,
+                          color:T.muted, border:`1px solid ${T.border}`, borderRadius:5, cursor:"pointer" }}>
+                        {expanded ? "▲ Hide" : "▼ Samples"}
+                      </button>
+                    )}
+                    {canFix && !dr && (
+                      <button onClick={() => runDryRun(issue)}
+                        style={{ fontSize:10, padding:"4px 10px", background:`${T.accent}15`,
+                          color:T.accentL, border:`1px solid ${T.accent}30`, borderRadius:5,
+                          cursor:"pointer", fontWeight:600 }}>
+                        Dry Run →
+                      </button>
+                    )}
+                    {dr && dr !== "loading" && dr !== "error" && !fr && (
+                      <div style={{ display:"flex", alignItems:"center", gap:8 }}>
+                        <span style={{ fontSize:11, color:T.muted }}>
+                          {dr.rows_affected} rows affected (total: {dr.before?.toLocaleString()})
+                        </span>
+                        <button onClick={() => executeFix(issue)} disabled={isFixing}
+                          style={{ fontSize:10, padding:"4px 12px",
+                            background: isFixing ? T.border : T.red,
+                            color:"white", border:"none", borderRadius:5,
+                            cursor: isFixing ? "not-allowed" : "pointer", fontWeight:700 }}>
+                          {isFixing ? "Fixing…" : "🔧 Execute Fix"}
+                        </button>
+                      </div>
+                    )}
+                    {issue.fix_action === "trigger_download" && (
+                      <span style={{ fontSize:11, color:T.muted, fontStyle:"italic" }}>
+                        ⚡ Manual trigger required — no automated fix available
+                      </span>
+                    )}
+                    {fr && (
+                      <span style={{ fontSize:11, color:T.green }}>
+                        ✓ Before: {fr.before?.toLocaleString()} → After: {fr.after?.toLocaleString()}
+                      </span>
+                    )}
+                  </div>
+                )}
+
+                {/* Sample rows */}
+                {expanded && issue.samples?.length > 0 && (
+                  <div style={{ padding:"8px 16px 12px", borderTop:`1px solid ${T.border}`,
+                    overflowX:"auto" }}>
+                    <div style={{ fontSize:9, color:T.muted, marginBottom:6, fontWeight:700,
+                      textTransform:"uppercase", letterSpacing:"0.06em" }}>
+                      Sample rows
+                    </div>
+                    <table style={{ width:"100%", borderCollapse:"collapse", fontSize:10,
+                      fontFamily:"Consolas,monospace" }}>
+                      <thead>
+                        <tr style={{ borderBottom:`1px solid ${T.border}` }}>
+                          {Object.keys(issue.samples[0]).map(k => (
+                            <th key={k} style={{ textAlign:"left", padding:"3px 8px",
+                              color:T.muted, fontWeight:700, whiteSpace:"nowrap" }}>{k}</th>
+                          ))}
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {issue.samples.map((row,i) => (
+                          <tr key={i} style={{ borderBottom:`1px solid ${T.border}40` }}>
+                            {Object.values(row).map((v,j) => (
+                              <td key={j} style={{ padding:"4px 8px", color:
+                                v === null ? T.red :
+                                String(v).includes("fail") || String(v).includes("FAIL") ? T.red :
+                                String(v).includes("REPLICATED") ? T.green : T.text,
+                                whiteSpace:"nowrap" }}>
+                                {v === null ? <span style={{fontWeight:700}}>NULL</span> : String(v)}
+                              </td>
+                            ))}
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+              </div>
+            );
+          })}
+        </div>
+
+        {/* Right — log */}
+        <div style={{ background:T.card, border:`1px solid ${T.border}`, borderRadius:10,
+          padding:"14px 16px", alignSelf:"start" }}>
+          <div style={{ fontSize:12, fontWeight:700, color:T.text, marginBottom:8 }}>📋 Triage Log</div>
+          <div style={{ background: T.isDark ? "#0A0C10" : "#F1F5F9", borderRadius:7,
+            padding:"10px 12px", height:340, overflowY:"auto",
+            display:"flex", flexDirection:"column", gap:3 }}>
+            {log.length === 0
+              ? <span style={{ fontSize:11, color:T.muted }}>Waiting to start…</span>
+              : log.map((l,i) => (
+                <div key={i} style={{ fontFamily:"Consolas,monospace", fontSize:10,
+                  color: l.level==="success" ? T.green : l.level==="error" ? T.red :
+                         l.level==="warning" ? T.yellow : T.muted }}>
+                  <span style={{ color:T.muted, marginRight:6 }}>[{l.ts}]</span>{l.msg}
+                </div>
+              ))
+            }
+          </div>
+          {log.length > 0 && (
+            <button onClick={() => setLog([])}
+              style={{ marginTop:8, fontSize:10, color:T.muted, background:"none",
+                border:"none", cursor:"pointer", textDecoration:"underline" }}>
+              Clear log
+            </button>
           )}
         </div>
       </div>
     </div>
   );
 }
+
+// ─── Automation & Controls Tab ───────────────────────────────────────────────
+function AutomationTab({ addAuditEvent, agentScanResult, agentScanLoading, onAgentScan, openDrill, accountId }) {
+  const T = useTheme();
+  const [sub, setSub] = React.useState("triage");
+
+  const TABS = [
+    { id:"triage",      label:"🚨 Report Triage",      desc:"Live auto-triage on mws.report" },
+    { id:"remediation", label:"🔧 Remediation Flows",  desc:"Live fix pipelines on mws tables" },
+    { id:"workflows",   label:"⚡ Workflow Builder",   desc:"Build & run agentic workflows" },
+    { id:"gates",       label:"🔒 Approval Gates",     desc:"Human-in-the-loop controls" },
+  ];
+
+  return (
+    <div style={{ paddingBottom:24 }}>
+      <SectionHeader icon={GitBranch} title="Automation & Controls"
+        subtitle="Remediation flows, workflow builder and approval gates" />
+
+      {/* Sub-tab bar */}
+      <div style={{ display:"flex", gap:6, marginBottom:20, borderBottom:`1px solid ${T.border}`, paddingBottom:0 }}>
+        {TABS.map(t => (
+          <button key={t.id} onClick={() => setSub(t.id)}
+            style={{ padding:"8px 16px", background:"none", border:"none",
+              borderBottom: sub===t.id ? `2px solid ${T.accent}` : "2px solid transparent",
+              color: sub===t.id ? T.accent : T.muted,
+              fontSize:12, fontWeight: sub===t.id ? 700 : 400,
+              cursor:"pointer", marginBottom:-1, transition:"all 0.15s" }}>
+            {t.label}
+          </button>
+        ))}
+      </div>
+
+      {sub === "triage"      && <ReportTriageTab addAuditEvent={addAuditEvent} accountId={accountId} />}
+      {sub === "remediation" && <RemediationFlowTab addAuditEvent={addAuditEvent} />}
+      {sub === "workflows"   && <WorkflowBuilderTab />}
+      {sub === "gates"       && <ApprovalGatesTab />}
+    </div>
+  );
+}
+
+// ─── Remediation Flow Tab ─────────────────────────────────────────────────────
+function RemediationFlowTab({ addAuditEvent }) {
+  const T  = useTheme();
+  const API = "https://intentwise-backend-production.up.railway.app";
+
+  // ── View: "builder" | "run" | "saved" ─────────────────────────────────────
+  const [view, setView] = React.useState("builder");
+
+  // ── Flow definition ────────────────────────────────────────────────────────
+  const [flowName,  setFlowName]  = React.useState("New Remediation Flow");
+  const [flowDesc,  setFlowDesc]  = React.useState("");
+  const [steps,     setSteps]     = React.useState([]);
+  const [editStep,  setEditStep]  = React.useState(null); // step being edited
+
+  // ── Schedule ────────────────────────────────────────────────────────────────
+  const [schedEnabled, setSchedEnabled] = React.useState(false);
+  const [schedCron,    setSchedCron]    = React.useState("0 9 * * 1-5"); // weekdays 9am
+  const [schedTZ,      setSchedTZ]      = React.useState("Asia/Kolkata");
+
+  // ── Run state ──────────────────────────────────────────────────────────────
+  const [running,       setRunning]       = React.useState(false);
+  const [runResults,    setRunResults]    = React.useState(null);
+  const [approvedSteps, setApprovedSteps] = React.useState([]); // step ids approved
+  const [pendingStep,   setPendingStep]   = React.useState(null); // step awaiting approval
+  const [log,           setLog]           = React.useState([]);
+
+  // ── Saved flows ────────────────────────────────────────────────────────────
+  const [savedFlows,   setSavedFlows]   = React.useState([]);
+  const [loadedFlowId, setLoadedFlowId] = React.useState(null);
+  const [saving,       setSaving]       = React.useState(false);
+  const [saveFlash,    setSaveFlash]    = React.useState(false);
+
+  const addLog = (msg, level="info") => setLog(p => [...p.slice(-100), {
+    ts: new Date().toLocaleTimeString(), msg, level
+  }]);
+
+  // ── Load saved flows on mount ──────────────────────────────────────────────
+  React.useEffect(() => {
+    fetch(`${API}/api/flows`)
+      .then(r => r.json())
+      .then(data => Array.isArray(data) && setSavedFlows(data))
+      .catch(() => {});
+  }, []);
+
+  // ── Step type config ───────────────────────────────────────────────────────
+  const STEP_TYPES = [
+    { type:"select",    label:"SELECT Query",      icon:"🔍", color:"#06B6D4",
+      desc:"Run a read-only SELECT — shows results, never modifies data",
+      sqlPlaceholder:"SELECT COUNT(*) AS cnt, asin\nFROM mws.orders\nWHERE asin IS NULL\nGROUP BY asin\nLIMIT 20" },
+    { type:"condition", label:"Condition Check",   icon:"◇",  color:"#F59E0B",
+      desc:"Evaluate a threshold — flow continues or skips based on result",
+      sqlPlaceholder:"SELECT COUNT(*) AS cnt FROM mws.orders WHERE asin IS NULL" },
+    { type:"fix",       label:"Fix (needs approval)", icon:"🔧", color:"#EF4444",
+      desc:"Modifies data — PAUSES and asks for human approval before executing",
+      sqlPlaceholder:"DELETE FROM mws.orders\nWHERE id NOT IN (\n  SELECT MIN(id) FROM mws.orders\n  GROUP BY amazon_order_id\n)",
+      countSqlPlaceholder:"SELECT COUNT(*) AS cnt FROM mws.orders WHERE id NOT IN (SELECT MIN(id) FROM mws.orders GROUP BY amazon_order_id)" },
+    { type:"notify",    label:"Notification",      icon:"📣", color:"#8B5CF6",
+      desc:"Log a message to the audit trail (Slack when webhook configured)",
+      messagePlaceholder:"Flow step completed — review results above" },
+  ];
+
+  const newStep = (type) => ({
+    id:        `step-${Date.now()}`,
+    type,
+    label:     STEP_TYPES.find(t=>t.type===type)?.label || type,
+    sql:       "",
+    count_sql: "",
+    message:   "",
+    condition_threshold: 0,
+  });
+
+  const addStep = (type) => {
+    const s = newStep(type);
+    setSteps(p => [...p, s]);
+    setEditStep(s.id);
+  };
+
+  const updateStep = (id, patch) => setSteps(p => p.map(s => s.id===id ? {...s,...patch} : s));
+  const removeStep = (id) => { setSteps(p => p.filter(s => s.id!==id)); if(editStep===id) setEditStep(null); };
+  const moveStep   = (id, dir) => setSteps(p => {
+    const i = p.findIndex(s => s.id===id);
+    if (i < 0) return p;
+    const j = i + dir;
+    if (j < 0 || j >= p.length) return p;
+    const n = [...p]; [n[i], n[j]] = [n[j], n[i]]; return n;
+  });
+
+  // ── Save flow ──────────────────────────────────────────────────────────────
+  const saveFlow = async () => {
+    if (!steps.length) return;
+    setSaving(true);
+    const flow_id = loadedFlowId || `flow-${Date.now()}`;
+    try {
+      const res  = await fetch(`${API}/api/flows/save`, {
+        method:"POST", headers:{"Content-Type":"application/json"},
+        body: JSON.stringify({ flow_id, name:flowName, description:flowDesc, steps,
+          schedule:{ enabled:schedEnabled, cron:schedCron, timezone:schedTZ } })
+      });
+      const data = await res.json();
+      if (data.saved) {
+        setLoadedFlowId(flow_id);
+        setSaveFlash(true);
+        setTimeout(() => setSaveFlash(false), 2000);
+        // Refresh saved list
+        const list = await fetch(`${API}/api/flows`).then(r=>r.json());
+        if (Array.isArray(list)) setSavedFlows(list);
+        addLog(`✓ Flow saved: "${flowName}"`, "success");
+        if (addAuditEvent) addAuditEvent({ type:"workflow", name:`Flow saved: ${flowName}`,
+          table:"—", source:"flow-builder", result:"pass", detail:`${steps.length} steps, schedule: ${schedEnabled?schedCron:"off"}` });
+      }
+    } catch(e) { addLog(`✗ Save failed: ${e.message}`, "error"); }
+    setSaving(false);
+  };
+
+  // ── Load saved flow ────────────────────────────────────────────────────────
+  const loadFlow = (flow) => {
+    setFlowName(flow.name);
+    setFlowDesc(flow.description || "");
+    setSteps(flow.steps || []);
+    setLoadedFlowId(flow.flow_id);
+    setSchedEnabled(flow.schedule?.enabled || false);
+    setSchedCron(flow.schedule?.cron || "0 9 * * 1-5");
+    setSchedTZ(flow.schedule?.timezone || "Asia/Kolkata");
+    setRunResults(null); setApprovedSteps([]); setPendingStep(null); setLog([]);
+    setView("builder");
+    addLog(`✓ Loaded flow: "${flow.name}"`, "success");
+  };
+
+  // ── Run flow ───────────────────────────────────────────────────────────────
+  const runFlow = async (extraApproved = []) => {
+    if (!loadedFlowId && !steps.length) return;
+    const allApproved = [...approvedSteps, ...extraApproved];
+    setRunning(true); setPendingStep(null);
+    addLog(`▶ Running flow: "${flowName}" (${steps.length} steps)…`);
+    try {
+      // Save first if not saved
+      let fid = loadedFlowId;
+      if (!fid) {
+        fid = `flow-${Date.now()}`;
+        await fetch(`${API}/api/flows/save`, {
+          method:"POST", headers:{"Content-Type":"application/json"},
+          body: JSON.stringify({ flow_id:fid, name:flowName, description:flowDesc, steps,
+            schedule:{ enabled:schedEnabled, cron:schedCron, timezone:schedTZ } })
+        });
+        setLoadedFlowId(fid);
+      }
+      const res  = await fetch(`${API}/api/flows/${fid}/run`, {
+        method:"POST", headers:{"Content-Type":"application/json"},
+        body: JSON.stringify({ approved_steps: allApproved })
+      });
+      const data = await res.json();
+      if (data.error) throw new Error(data.error);
+
+      setRunResults(data.steps || []);
+
+      // Check if any step is awaiting approval
+      const waiting = (data.steps || []).find(s => s.status === "awaiting_approval");
+      if (waiting) {
+        setPendingStep(waiting);
+        addLog(`⏸ Step "${waiting.label}" requires human approval — ${waiting.preview_count} rows affected`, "warning");
+      } else {
+        addLog(`✓ Flow complete — all steps executed`, "success");
+        if (addAuditEvent) addAuditEvent({ type:"workflow", name:`Flow run: ${flowName}`,
+          table:"—", source:"flow-builder", result:"pass",
+          detail:`${(data.steps||[]).length} steps completed` });
+      }
+    } catch(e) { addLog(`✗ Run failed: ${e.message}`, "error"); }
+    setRunning(false);
+  };
+
+  const approveStep = (stepId) => {
+    const next = [...approvedSteps, stepId];
+    setApprovedSteps(next);
+    setPendingStep(null);
+    addLog(`✓ Step approved by human — re-running with approval`, "success");
+    runFlow([stepId]);
+  };
+
+  const rejectStep = (stepId) => {
+    setPendingStep(null);
+    addLog(`⛔ Fix step "${pendingStep?.label}" rejected — skipping data modification, flow continues`, "warning");
+    // Mark step as skipped in results
+    setRunResults(p => (p||[]).map(s => s.step_id===stepId ? {...s, status:"skipped_by_human"} : s));
+    if (addAuditEvent) addAuditEvent({ type:"gate", name:`Fix rejected: ${pendingStep?.label}`,
+      table:"—", source:"flow-builder", result:"pending", detail:"Human chose not to apply fix" });
+  };
+
+  // ── Helpers ────────────────────────────────────────────────────────────────
+  const cronHuman = (cron) => {
+    const presets = {
+      "0 9 * * 1-5":  "Weekdays at 9:00 AM",
+      "0 0 * * *":    "Daily at midnight",
+      "0 6 * * *":    "Daily at 6:00 AM",
+      "0 18 * * *":   "Daily at 6:00 PM",
+      "0 9 * * 1":    "Every Monday at 9:00 AM",
+      "*/30 * * * *": "Every 30 minutes",
+    };
+    return presets[cron] || cron;
+  };
+
+  const statusColor = (status) => ({
+    done:               T.green,
+    awaiting_approval:  T.orange,
+    skipped_by_human:   T.muted,
+    error:              T.red,
+    running:            T.cyan,
+  }[status] || T.muted);
+
+  const statusIcon = (status) => ({
+    done:               "✓",
+    awaiting_approval:  "⏸",
+    skipped_by_human:   "⛔",
+    error:              "✗",
+    running:            "⏳",
+  }[status] || "·");
+
+  const Btn = ({onClick,disabled,color,small,children,outline}) => (
+    <button onClick={onClick} disabled={disabled} style={{
+      display:"flex",alignItems:"center",gap:5,
+      padding: small ? "5px 12px" : "7px 16px",
+      background: outline ? "transparent" : disabled ? T.border : color||T.accent,
+      color: outline ? color||T.accent : disabled ? T.muted : "white",
+      border: outline ? `1px solid ${color||T.accent}` : "none",
+      borderRadius:7, cursor:disabled?"not-allowed":"pointer",
+      fontSize: small?11:12, fontWeight:600,
+      opacity:disabled?0.6:1, transition:"all 0.15s", flexShrink:0
+    }}>{children}</button>
+  );
+
+  const TabBtn = ({id,label,icon}) => (
+    <button onClick={()=>setView(id)} style={{
+      padding:"7px 16px", background: view===id ? T.accent : "transparent",
+      color: view===id ? "white" : T.muted, border:"none", borderRadius:7,
+      cursor:"pointer", fontSize:12, fontWeight:600 }}>{icon} {label}</button>
+  );
+
+  const stepTypeMeta = (type) => STEP_TYPES.find(t=>t.type===type) || STEP_TYPES[0];
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // RENDER
+  // ═══════════════════════════════════════════════════════════════════════════
+  return (
+    <div style={{paddingBottom:32}}>
+      {/* Header */}
+      <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:16}}>
+        <div>
+          <div style={{fontSize:16,fontWeight:700,color:T.text}}>Remediation Flows</div>
+          <div style={{fontSize:12,color:T.muted,marginTop:2}}>
+            Build · Save · Schedule · Human-in-the-loop approval on all fix steps
+          </div>
+        </div>
+        <div style={{display:"flex",gap:6}}>
+          <TabBtn id="builder" label="Flow Builder" icon="🏗" />
+          <TabBtn id="run"     label="Run & Monitor" icon="▶" />
+          <TabBtn id="saved"   label={`Saved (${savedFlows.length})`} icon="💾" />
+        </div>
+      </div>
+
+      {/* ── BUILDER VIEW ── */}
+      {view === "builder" && (
+        <div style={{display:"grid",gridTemplateColumns:"1fr 320px",gap:14}}>
+          {/* Left: step list */}
+          <div style={{display:"flex",flexDirection:"column",gap:10}}>
+            {/* Flow meta */}
+            <div style={{background:T.card,border:`1px solid ${T.border}`,borderRadius:10,padding:"14px 16px"}}>
+              <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10,marginBottom:10}}>
+                <div>
+                  <label style={{fontSize:10,color:T.muted,fontWeight:700,textTransform:"uppercase",letterSpacing:"0.06em",display:"block",marginBottom:4}}>Flow Name</label>
+                  <input value={flowName} onChange={e=>setFlowName(e.target.value)}
+                    style={{width:"100%",padding:"7px 10px",background:T.surface,border:`1px solid ${T.border}`,borderRadius:6,color:T.text,fontSize:13,fontWeight:600,boxSizing:"border-box"}}/>
+                </div>
+                <div>
+                  <label style={{fontSize:10,color:T.muted,fontWeight:700,textTransform:"uppercase",letterSpacing:"0.06em",display:"block",marginBottom:4}}>Description</label>
+                  <input value={flowDesc} onChange={e=>setFlowDesc(e.target.value)}
+                    placeholder="Optional description…"
+                    style={{width:"100%",padding:"7px 10px",background:T.surface,border:`1px solid ${T.border}`,borderRadius:6,color:T.text,fontSize:12,boxSizing:"border-box"}}/>
+                </div>
+              </div>
+              {/* Add step palette */}
+              <div style={{fontSize:10,color:T.muted,fontWeight:700,textTransform:"uppercase",letterSpacing:"0.06em",marginBottom:6}}>Add Step</div>
+              <div style={{display:"flex",gap:6,flexWrap:"wrap"}}>
+                {STEP_TYPES.map(st => (
+                  <button key={st.type} onClick={()=>addStep(st.type)} style={{
+                    display:"flex",alignItems:"center",gap:5,padding:"6px 12px",
+                    background:`${st.color}15`,color:st.color,
+                    border:`1px solid ${st.color}40`,borderRadius:7,
+                    fontSize:11,fontWeight:600,cursor:"pointer"}}>
+                    {st.icon} {st.label}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            {/* Steps */}
+            {steps.length === 0 ? (
+              <div style={{textAlign:"center",padding:"40px 0",color:T.muted,fontSize:13,background:T.card,border:`1px dashed ${T.border2}`,borderRadius:10}}>
+                No steps yet — add a step above to start building your flow
+              </div>
+            ) : steps.map((step, idx) => {
+              const meta      = stepTypeMeta(step.type);
+              const isEditing = editStep === step.id;
+              return (
+                <div key={step.id} style={{background:T.card,border:`1px solid ${isEditing?meta.color+"60":T.border}`,borderRadius:10,overflow:"hidden",transition:"border 0.2s"}}>
+                  {/* Step header */}
+                  <div style={{display:"flex",alignItems:"center",gap:10,padding:"11px 14px",cursor:"pointer",borderBottom:isEditing?`1px solid ${T.border}`:"none"}}
+                    onClick={()=>setEditStep(p=>p===step.id?null:step.id)}>
+                    <span style={{fontSize:11,color:T.muted,fontFamily:"Consolas,monospace",width:18,textAlign:"right",flexShrink:0}}>{idx+1}</span>
+                    <div style={{width:28,height:28,borderRadius:7,background:`${meta.color}20`,display:"flex",alignItems:"center",justifyContent:"center",fontSize:14,flexShrink:0}}>{meta.icon}</div>
+                    <div style={{flex:1,minWidth:0}}>
+                      <div style={{fontSize:12,fontWeight:600,color:T.text}}>{step.label}</div>
+                      <div style={{fontSize:10,color:T.muted}}>{meta.desc}</div>
+                    </div>
+                    {step.type==="fix" && (
+                      <span style={{fontSize:9,padding:"2px 7px",background:`${T.red}15`,color:T.red,borderRadius:4,fontWeight:700,flexShrink:0}}>⏸ APPROVAL REQUIRED</span>
+                    )}
+                    <div style={{display:"flex",gap:4,flexShrink:0}}>
+                      <button onClick={e=>{e.stopPropagation();moveStep(step.id,-1);}} disabled={idx===0}
+                        style={{padding:"2px 6px",background:"none",border:`1px solid ${T.border}`,borderRadius:4,fontSize:10,cursor:"pointer",color:T.muted}}>↑</button>
+                      <button onClick={e=>{e.stopPropagation();moveStep(step.id,1);}} disabled={idx===steps.length-1}
+                        style={{padding:"2px 6px",background:"none",border:`1px solid ${T.border}`,borderRadius:4,fontSize:10,cursor:"pointer",color:T.muted}}>↓</button>
+                      <button onClick={e=>{e.stopPropagation();removeStep(step.id);}}
+                        style={{padding:"2px 6px",background:"none",border:`1px solid ${T.red}30`,borderRadius:4,fontSize:10,cursor:"pointer",color:T.red}}>✕</button>
+                    </div>
+                  </div>
+                  {/* Step editor */}
+                  {isEditing && (
+                    <div style={{padding:"12px 14px",background:`${meta.color}04`}}>
+                      <div style={{marginBottom:8}}>
+                        <label style={{fontSize:10,color:T.muted,fontWeight:700,textTransform:"uppercase",letterSpacing:"0.06em",display:"block",marginBottom:4}}>Step Label</label>
+                        <input value={step.label} onChange={e=>updateStep(step.id,{label:e.target.value})}
+                          style={{width:"100%",padding:"6px 9px",background:T.surface,border:`1px solid ${T.border}`,borderRadius:6,color:T.text,fontSize:12,boxSizing:"border-box"}}/>
+                      </div>
+                      {(step.type==="select"||step.type==="fix"||step.type==="condition") && (
+                        <div style={{marginBottom:8}}>
+                          <label style={{fontSize:10,color:T.muted,fontWeight:700,textTransform:"uppercase",letterSpacing:"0.06em",display:"block",marginBottom:4}}>
+                            {step.type==="fix"?"Fix SQL (will require approval)":step.type==="condition"?"Condition SQL (must return single numeric value)":"SQL Query (SELECT only)"}
+                          </label>
+                          <textarea value={step.sql} onChange={e=>updateStep(step.id,{sql:e.target.value})}
+                            rows={5} placeholder={meta.sqlPlaceholder}
+                            style={{width:"100%",padding:"8px 10px",background:T.surface,border:`1px solid ${step.type==="fix"?T.red+"40":T.border}`,
+                              borderRadius:6,color:T.text,fontSize:11,fontFamily:"Consolas,monospace",resize:"vertical",boxSizing:"border-box"}}/>
+                        </div>
+                      )}
+                      {step.type==="fix" && (
+                        <div style={{marginBottom:8}}>
+                          <label style={{fontSize:10,color:T.muted,fontWeight:700,textTransform:"uppercase",letterSpacing:"0.06em",display:"block",marginBottom:4}}>Count SQL (preview — how many rows will be affected)</label>
+                          <textarea value={step.count_sql} onChange={e=>updateStep(step.id,{count_sql:e.target.value})}
+                            rows={2} placeholder={meta.countSqlPlaceholder}
+                            style={{width:"100%",padding:"8px 10px",background:T.surface,border:`1px solid ${T.border}`,
+                              borderRadius:6,color:T.text,fontSize:11,fontFamily:"Consolas,monospace",resize:"vertical",boxSizing:"border-box"}}/>
+                        </div>
+                      )}
+                      {step.type==="condition" && (
+                        <div style={{marginBottom:8}}>
+                          <label style={{fontSize:10,color:T.muted,fontWeight:700,textTransform:"uppercase",letterSpacing:"0.06em",display:"block",marginBottom:4}}>Threshold (stop flow if result ≥ this value)</label>
+                          <input type="number" value={step.condition_threshold} onChange={e=>updateStep(step.id,{condition_threshold:Number(e.target.value)})}
+                            style={{width:120,padding:"6px 9px",background:T.surface,border:`1px solid ${T.border}`,borderRadius:6,color:T.text,fontSize:12}}/>
+                        </div>
+                      )}
+                      {step.type==="notify" && (
+                        <div>
+                          <label style={{fontSize:10,color:T.muted,fontWeight:700,textTransform:"uppercase",letterSpacing:"0.06em",display:"block",marginBottom:4}}>Message</label>
+                          <textarea value={step.message} onChange={e=>updateStep(step.id,{message:e.target.value})}
+                            rows={2} placeholder={meta.messagePlaceholder}
+                            style={{width:"100%",padding:"8px 10px",background:T.surface,border:`1px solid ${T.border}`,
+                              borderRadius:6,color:T.text,fontSize:12,resize:"vertical",boxSizing:"border-box"}}/>
+                        </div>
+                      )}
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+
+          {/* Right: schedule + save */}
+          <div style={{display:"flex",flexDirection:"column",gap:10}}>
+            {/* Schedule */}
+            <div style={{background:T.card,border:`1px solid ${T.border}`,borderRadius:10,padding:"14px 16px"}}>
+              <div style={{fontSize:12,fontWeight:700,color:T.text,marginBottom:12}}>⏰ Schedule</div>
+              <label style={{display:"flex",alignItems:"center",gap:8,marginBottom:12,cursor:"pointer"}}>
+                <input type="checkbox" checked={schedEnabled} onChange={e=>setSchedEnabled(e.target.checked)}/>
+                <span style={{fontSize:12,color:T.text}}>Enable scheduled runs</span>
+              </label>
+              {schedEnabled && (
+                <>
+                  <div style={{marginBottom:8}}>
+                    <label style={{fontSize:10,color:T.muted,fontWeight:700,textTransform:"uppercase",letterSpacing:"0.06em",display:"block",marginBottom:4}}>Preset</label>
+                    <select value={schedCron} onChange={e=>setSchedCron(e.target.value)}
+                      style={{width:"100%",padding:"6px 9px",background:T.surface,border:`1px solid ${T.border}`,borderRadius:6,color:T.text,fontSize:12}}>
+                      <option value="0 9 * * 1-5">Weekdays at 9:00 AM</option>
+                      <option value="0 6 * * *">Daily at 6:00 AM</option>
+                      <option value="0 18 * * *">Daily at 6:00 PM</option>
+                      <option value="0 0 * * *">Daily at midnight</option>
+                      <option value="0 9 * * 1">Every Monday at 9:00 AM</option>
+                      <option value="*/30 * * * *">Every 30 minutes</option>
+                      <option value="custom">Custom cron…</option>
+                    </select>
+                  </div>
+                  <div style={{marginBottom:8}}>
+                    <label style={{fontSize:10,color:T.muted,fontWeight:700,textTransform:"uppercase",letterSpacing:"0.06em",display:"block",marginBottom:4}}>Cron Expression</label>
+                    <input value={schedCron} onChange={e=>setSchedCron(e.target.value)}
+                      style={{width:"100%",padding:"6px 9px",background:T.surface,border:`1px solid ${T.border}`,borderRadius:6,color:T.text,fontSize:11,fontFamily:"Consolas,monospace",boxSizing:"border-box"}}/>
+                    <div style={{fontSize:10,color:T.accent,marginTop:3}}>{cronHuman(schedCron)}</div>
+                  </div>
+                  <div>
+                    <label style={{fontSize:10,color:T.muted,fontWeight:700,textTransform:"uppercase",letterSpacing:"0.06em",display:"block",marginBottom:4}}>Timezone</label>
+                    <select value={schedTZ} onChange={e=>setSchedTZ(e.target.value)}
+                      style={{width:"100%",padding:"6px 9px",background:T.surface,border:`1px solid ${T.border}`,borderRadius:6,color:T.text,fontSize:12}}>
+                      <option value="Asia/Kolkata">Asia/Kolkata (IST)</option>
+                      <option value="UTC">UTC</option>
+                      <option value="America/New_York">America/New_York (EST)</option>
+                      <option value="America/Los_Angeles">America/Los_Angeles (PST)</option>
+                    </select>
+                  </div>
+                </>
+              )}
+            </div>
+
+            {/* Save + Run buttons */}
+            <div style={{background:T.card,border:`1px solid ${T.border}`,borderRadius:10,padding:"14px 16px",display:"flex",flexDirection:"column",gap:8}}>
+              <Btn onClick={saveFlow} disabled={saving||!steps.length} color={saveFlash?T.green:T.accent}>
+                {saveFlash ? "✓ Saved!" : saving ? "Saving…" : "💾 Save Flow"}
+              </Btn>
+              <Btn onClick={()=>{setView("run");runFlow();}} disabled={!steps.length||running} color={T.green}>
+                ▶ Save & Run Now
+              </Btn>
+              {loadedFlowId && (
+                <div style={{fontSize:10,color:T.muted,textAlign:"center"}}>ID: {loadedFlowId}</div>
+              )}
+            </div>
+
+            {/* Legend */}
+            <div style={{background:T.card,border:`1px solid ${T.border}`,borderRadius:10,padding:"14px 16px"}}>
+              <div style={{fontSize:11,fontWeight:700,color:T.muted,marginBottom:8}}>STEP TYPES</div>
+              {STEP_TYPES.map(st=>(
+                <div key={st.type} style={{display:"flex",gap:8,marginBottom:8,alignItems:"flex-start"}}>
+                  <span style={{fontSize:13,flexShrink:0}}>{st.icon}</span>
+                  <div>
+                    <div style={{fontSize:11,fontWeight:700,color:st.color}}>{st.label}</div>
+                    <div style={{fontSize:10,color:T.muted,lineHeight:1.4}}>{st.desc}</div>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ── RUN & MONITOR VIEW ── */}
+      {view === "run" && (
+        <div style={{display:"grid",gridTemplateColumns:"1fr 300px",gap:14}}>
+          <div style={{display:"flex",flexDirection:"column",gap:10}}>
+            {/* Run header */}
+            <div style={{background:T.card,border:`1px solid ${T.border}`,borderRadius:10,padding:"14px 16px",display:"flex",alignItems:"center",justifyContent:"space-between"}}>
+              <div>
+                <div style={{fontSize:13,fontWeight:700,color:T.text}}>{flowName}</div>
+                <div style={{fontSize:11,color:T.muted}}>{steps.length} steps</div>
+              </div>
+              <div style={{display:"flex",gap:8}}>
+                <Btn onClick={()=>runFlow()} disabled={running||!steps.length} color={T.green} small>
+                  {running?"⏳ Running…":"▶ Run Flow"}
+                </Btn>
+                <Btn onClick={()=>setView("builder")} color={T.accent} small outline>Edit Flow</Btn>
+              </div>
+            </div>
+
+            {/* Human approval gate */}
+            {pendingStep && (
+              <div style={{background:`${T.orange}10`,border:`2px solid ${T.orange}`,borderRadius:10,padding:"16px 18px"}}>
+                <div style={{fontSize:14,fontWeight:700,color:T.orange,marginBottom:6}}>⏸ Human Approval Required</div>
+                <div style={{fontSize:12,color:T.text,marginBottom:4}}>
+                  Step: <strong>{pendingStep.label}</strong>
+                </div>
+                <div style={{fontSize:12,color:T.muted,marginBottom:4}}>
+                  This fix will affect <strong style={{color:T.orange}}>{String(pendingStep.preview_count)} row(s)</strong> in your database.
+                </div>
+                <div style={{fontFamily:"Consolas,monospace",fontSize:11,background:T.surface,borderRadius:6,padding:"8px 10px",marginBottom:12,color:T.text}}>
+                  {steps.find(s=>s.id===pendingStep.step_id)?.sql || ""}
+                </div>
+                <div style={{display:"flex",gap:8}}>
+                  <Btn onClick={()=>approveStep(pendingStep.step_id)} color={T.green}>✓ Approve — Execute Fix</Btn>
+                  <Btn onClick={()=>rejectStep(pendingStep.step_id)} color={T.red} outline>⛔ Reject — Skip Fix</Btn>
+                </div>
+              </div>
+            )}
+
+            {/* Step results */}
+            {runResults ? runResults.map((res, i) => {
+              const stepDef = steps.find(s=>s.id===res.step_id);
+              const meta    = stepTypeMeta(res.type);
+              const sc      = statusColor(res.status);
+              return (
+                <div key={res.step_id} style={{background:T.card,border:`1px solid ${res.status==="error"?T.red+"40":res.status==="awaiting_approval"?T.orange+"40":T.border}`,borderRadius:10,overflow:"hidden"}}>
+                  <div style={{display:"flex",alignItems:"center",gap:10,padding:"11px 14px",borderBottom:res.rows||res.error?`1px solid ${T.border}`:"none"}}>
+                    <span style={{fontSize:13,fontFamily:"Consolas,monospace",color:T.muted,width:18,textAlign:"right"}}>{i+1}</span>
+                    <span style={{fontSize:14}}>{meta.icon}</span>
+                    <div style={{flex:1}}>
+                      <div style={{fontSize:12,fontWeight:600,color:T.text}}>{res.label}</div>
+                    </div>
+                    <div style={{display:"flex",alignItems:"center",gap:6}}>
+                      <span style={{fontSize:14,color:sc}}>{statusIcon(res.status)}</span>
+                      <span style={{fontSize:11,fontWeight:700,color:sc,textTransform:"uppercase"}}>{res.status?.replace("_"," ")}</span>
+                    </div>
+                    {res.row_count !== undefined && (
+                      <span style={{fontSize:11,color:T.muted}}>{res.row_count} rows</span>
+                    )}
+                    {res.rows_affected !== undefined && (
+                      <span style={{fontSize:11,color:T.green}}>{res.rows_affected} affected</span>
+                    )}
+                    {res.passed !== undefined && (
+                      <span style={{fontSize:11,fontWeight:700,color:res.passed?T.red:T.green}}>
+                        {res.passed?"THRESHOLD MET":"THRESHOLD OK"} ({res.value})
+                      </span>
+                    )}
+                  </div>
+                  {/* Rows preview */}
+                  {res.rows && res.rows.length > 0 && (
+                    <div style={{padding:"10px 14px",overflowX:"auto"}}>
+                      <table style={{width:"100%",borderCollapse:"collapse",fontSize:11}}>
+                        <thead>
+                          <tr>{Object.keys(res.rows[0]).map(k=>(
+                            <th key={k} style={{textAlign:"left",padding:"4px 8px",color:T.muted,fontWeight:700,fontSize:9,textTransform:"uppercase",borderBottom:`1px solid ${T.border}`,whiteSpace:"nowrap"}}>{k}</th>
+                          ))}</tr>
+                        </thead>
+                        <tbody>
+                          {res.rows.slice(0,10).map((row,ri)=>(
+                            <tr key={ri} style={{background:ri%2===0?"transparent":`${T.accent}04`}}>
+                              {Object.values(row).map((v,ci)=>(
+                                <td key={ci} style={{padding:"5px 8px",color:v===null?T.red:T.text,fontFamily:"Consolas,monospace",borderBottom:`1px solid ${T.border}`,whiteSpace:"nowrap"}}>
+                                  {v===null?"NULL":String(v).slice(0,60)}
+                                </td>
+                              ))}
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                      {res.rows.length > 10 && <div style={{fontSize:10,color:T.muted,marginTop:4}}>Showing 10 of {res.row_count} rows</div>}
+                    </div>
+                  )}
+                  {res.error && (
+                    <div style={{padding:"8px 14px",fontSize:11,color:T.red,fontFamily:"Consolas,monospace"}}>✗ {res.error}</div>
+                  )}
+                  {res.status==="skipped_by_human" && (
+                    <div style={{padding:"8px 14px",fontSize:11,color:T.muted}}>⛔ Fix skipped — data not modified</div>
+                  )}
+                </div>
+              );
+            }) : (
+              <div style={{textAlign:"center",padding:"40px 0",color:T.muted,fontSize:13,background:T.card,border:`1px dashed ${T.border2}`,borderRadius:10}}>
+                No run results yet — click ▶ Run Flow
+              </div>
+            )}
+          </div>
+
+          {/* Right — log */}
+          <div style={{background:T.card,border:`1px solid ${T.border}`,borderRadius:10,padding:"14px 16px",height:"fit-content",position:"sticky",top:14}}>
+            <div style={{fontSize:12,fontWeight:700,color:T.text,marginBottom:8}}>📋 Run Log</div>
+            <div style={{background:T.isDark?"#0A0C10":"#F1F5F9",borderRadius:7,padding:"10px 12px",height:400,overflowY:"auto",display:"flex",flexDirection:"column",gap:3}}>
+              {log.length===0
+                ? <span style={{fontSize:11,color:T.muted}}>Waiting to start…</span>
+                : log.map((l,i)=>(
+                  <div key={i} style={{fontFamily:"Consolas,monospace",fontSize:11,
+                    color:l.level==="success"?T.green:l.level==="error"?T.red:l.level==="warning"?T.orange:T.muted}}>
+                    <span style={{color:T.muted,marginRight:6}}>[{l.ts}]</span>{l.msg}
+                  </div>
+                ))
+              }
+            </div>
+            {log.length>0 && <button onClick={()=>setLog([])} style={{marginTop:8,fontSize:10,color:T.muted,background:"none",border:"none",cursor:"pointer",textDecoration:"underline"}}>Clear</button>}
+          </div>
+        </div>
+      )}
+
+      {/* ── SAVED FLOWS VIEW ── */}
+      {view === "saved" && (
+        <div>
+          {savedFlows.length === 0 ? (
+            <div style={{textAlign:"center",padding:"60px 0",color:T.muted,fontSize:13}}>
+              No saved flows yet — build one in the Flow Builder tab
+            </div>
+          ) : (
+            <div style={{display:"flex",flexDirection:"column",gap:10}}>
+              {savedFlows.map(flow => (
+                <div key={flow.flow_id} style={{background:T.card,border:`1px solid ${loadedFlowId===flow.flow_id?T.accent+"60":T.border}`,borderRadius:10,padding:"16px 18px",display:"flex",alignItems:"center",gap:14}}>
+                  <div style={{flex:1}}>
+                    <div style={{fontSize:13,fontWeight:700,color:T.text,marginBottom:3}}>{flow.name}</div>
+                    {flow.description && <div style={{fontSize:11,color:T.muted,marginBottom:4}}>{flow.description}</div>}
+                    <div style={{display:"flex",gap:12,fontSize:10,color:T.muted}}>
+                      <span>📋 {(flow.steps||[]).length} steps</span>
+                      {flow.schedule?.enabled && <span>⏰ {cronHuman(flow.schedule.cron)} · {flow.schedule.timezone}</span>}
+                      {flow.last_run && <span>Last run: {new Date(flow.last_run).toLocaleString()}</span>}
+                      <span>Runs: {flow.run_count||0}</span>
+                    </div>
+                  </div>
+                  <div style={{display:"flex",gap:6}}>
+                    <Btn small color={T.accent} onClick={()=>loadFlow(flow)}>Load</Btn>
+                    <Btn small color={T.green} outline onClick={()=>{loadFlow(flow);setTimeout(()=>{setView("run");runFlow();},100);}}>▶ Run</Btn>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 
 function WorkflowBuilderTab() {
   const [workflows, setWorkflows]   = useState(INIT_WORKFLOWS);
@@ -1439,6 +2034,12 @@ function WorkflowBuilderTab() {
   const [aiPrompt, setAiPrompt]     = useState("");
   const [saveFlash, setSaveFlash]   = useState(false);
   const [runSim, setRunSim]         = useState(null);   // null | index of running node
+  const simRunningRef = React.useRef(false);  // ref to avoid stale closure in async runWorkflow
+  const [simLog,        setSimLog]        = useState([]);    // run log entries
+  const [simRunning,    setSimRunning]    = useState(false); // is a sim active
+  const [simNodeStatus, setSimNodeStatus] = useState({});    // { nodeId: "pending"|"running"|"done"|"failed" }
+  const [activeRunWf,   setActiveRunWf]   = useState(null);  // workflow being simulated
+  const [simDone,       setSimDone]       = useState(false);
 
   const wf = selected && selected !== "new"
     ? workflows.find(w => w.id === selected)
@@ -1515,15 +2116,73 @@ function WorkflowBuilderTab() {
     setEditNode(null);
   };
 
-  // Simulate run
-  const simulate = async () => {
-    setRunSim(0);
-    for (let i = 0; i < nodes.length; i++) {
+  // ── Run workflow simulation ─────────────────────────────────────────────────
+  const runWorkflow = async (wf) => {
+    if (simRunningRef.current) return;
+    const wfNodes = wf.nodes || [];
+    if (!wfNodes.length) { alert("No nodes in workflow"); return; }
+    simRunningRef.current = true;
+    setActiveRunWf(wf);
+    setSimRunning(true);
+    setSimDone(false);
+    setSimLog([]);
+    setSimNodeStatus({});
+    const addLog = (msg, level="info") =>
+      setSimLog(p => [...p, { ts: new Date().toLocaleTimeString(), msg, level }]);
+
+    addLog(`▶ Starting: ${wf.name}`);
+    addLog(`  ${wfNodes.length} nodes to execute`);
+
+    // Initial state — all pending
+    const initStatus = {};
+    wfNodes.forEach(n => { initStatus[n.id] = "pending"; });
+    setSimNodeStatus(initStatus);
+
+    for (let i = 0; i < wfNodes.length; i++) {
+      const node = wfNodes[i];
       setRunSim(i);
-      await new Promise(r => setTimeout(r, 600));
+      setSimNodeStatus(p => ({ ...p, [node.id]: "running" }));
+      addLog(`  ⏳ [${node.type}] ${node.label}…`);
+
+      // Simulate node duration based on type
+      const dur = node.type === "approve" ? 1200
+                : node.type === "action"  ? 1400
+                : node.type === "wait"    ? 1600
+                : node.type === "monitor" ? 1000
+                : 700;
+      await new Promise(r => setTimeout(r, dur));
+
+      // Randomly fail condition nodes occasionally for realism
+      const failed = node.type === "condition" && Math.random() < 0.15;
+      setSimNodeStatus(p => ({ ...p, [node.id]: failed ? "failed" : "done" }));
+
+      if (failed) {
+        addLog(`  ✗ [${node.type}] ${node.label} → condition not met`, "warning");
+        addLog(`⚠ Workflow paused at gate — manual review required`, "warning");
+        simRunningRef.current = false;
+        setSimRunning(false);
+        setRunSim(null);
+        return;
+      }
+
+      const detail = node.config?.desc || node.config?.action || node.config?.channel || "";
+      addLog(`  ✓ [${node.type}] ${node.label}${detail ? " — " + detail : ""}`, "success");
     }
+
     setRunSim(null);
+    simRunningRef.current = false;
+    setSimRunning(false);
+    setSimDone(true);
+    addLog(`✅ Workflow complete: ${wf.name}`, "success");
+    // Update workflow lastRun + runs count
+    setWorkflows(p => p.map(w => w.id === wf.id
+      ? { ...w, lastRun: "Just now", runs: (w.runs || 0) + 1 }
+      : w
+    ));
   };
+
+  // Legacy simulate (canvas mode)
+  const simulate = async () => { if (wf) runWorkflow(wf); };
 
   // AI generate workflow
   const generateWithAI = async () => {
@@ -1777,6 +2436,45 @@ Always start with trigger, always end with end. Use 5–12 nodes. Make them spec
           </div>
         </Card>
 
+        {/* ── Run Panel ── */}
+        {(simRunning || simDone) && activeRunWf && (
+          <div style={{ background:C.card, border:`2px solid ${simDone ? C.green : C.accent}`, borderRadius:14, marginBottom:20, overflow:"hidden" }}>
+            {/* Header */}
+            <div style={{ padding:"12px 16px", borderBottom:`1px solid ${C.border}`, display:"flex", alignItems:"center", justifyContent:"space-between", background:`${simDone ? C.green : C.accent}08` }}>
+              <div>
+                <div style={{ fontSize:12, fontWeight:700, color:C.text }}>{simDone ? "✅" : "⏳"} {activeRunWf.name}</div>
+                <div style={{ fontSize:10, color:C.muted }}>{simDone ? "Completed" : "Running…"} · {activeRunWf.nodes?.length || 0} nodes</div>
+              </div>
+              {!simRunning && (
+                <button onClick={() => { setSimDone(false); setActiveRunWf(null); setSimLog([]); setSimNodeStatus({}); }}
+                  style={{ background:"none", border:"none", color:C.muted, cursor:"pointer", fontSize:16 }}>✕</button>
+              )}
+            </div>
+            {/* Node progress */}
+            <div style={{ padding:"10px 16px", display:"flex", flexWrap:"wrap", gap:4, borderBottom:`1px solid ${C.border}` }}>
+              {(activeRunWf.nodes || []).map((node,idx) => {
+                const st = simNodeStatus[node.id] || "pending";
+                const col = st==="done" ? C.green : st==="running" ? C.accent : st==="failed" ? C.red : C.muted;
+                return (
+                  <div key={node.id} style={{ display:"flex", alignItems:"center", gap:4, padding:"3px 7px", borderRadius:5, background:`${col}15`, border:`1px solid ${col}30` }}>
+                    <div style={{ width:6, height:6, borderRadius:"50%", background:col, animation:st==="running"?"ping 1s infinite":"none" }}/>
+                    <span style={{ fontSize:9, color:col, fontWeight:600, fontFamily:"Consolas,monospace" }}>{node.label}</span>
+                  </div>
+                );
+              })}
+            </div>
+            {/* Log */}
+            <div style={{ height:160, overflowY:"auto", padding:"8px 14px", display:"flex", flexDirection:"column", gap:2, background:C.isDark?"#0A0C10":"#F8FAFC" }}>
+              {simLog.map((l,i) => (
+                <div key={i} style={{ fontFamily:"Consolas,monospace", fontSize:10,
+                  color: l.level==="success" ? C.green : l.level==="warning" ? C.yellow : l.level==="error" ? C.red : C.muted }}>
+                  <span style={{ color:C.muted, marginRight:6 }}>[{l.ts}]</span>{l.msg}
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
         <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 14 }}>
           {workflows.map(w => (
             <Card key={w.id} style={{ padding: "18px 20px", cursor: "pointer", transition: "border-color 0.15s" }}
@@ -1818,7 +2516,22 @@ Always start with trigger, always end with end. Use 5–12 nodes. Make them spec
                   </div>
                 ))}
               </div>
-              <div style={{ marginTop: 10, fontSize: 10, color: C.dim }}>Last run: {w.lastRun}</div>
+              <div style={{ marginTop:10, display:"flex", alignItems:"center", justifyContent:"space-between" }}>
+                <div style={{ fontSize: 10, color: C.dim }}>Last run: {w.lastRun}</div>
+                <div style={{ display:"flex", gap:6 }}>
+                  <button
+                    onClick={e => { e.stopPropagation(); setDrawerWf(w); }}
+                    style={{ fontSize:10, padding:"4px 10px", background:`${C.accent}15`, color:C.accentL, border:`1px solid ${C.accent}30`, borderRadius:6, cursor:"pointer", fontWeight:600 }}>
+                    Details
+                  </button>
+                  <button
+                    onClick={e => { e.stopPropagation(); runWorkflow(w); }}
+                    disabled={simRunning}
+                    style={{ fontSize:10, padding:"4px 12px", background: simRunning ? C.border : C.green, color:"white", border:"none", borderRadius:6, cursor: simRunning ? "not-allowed" : "pointer", fontWeight:700, opacity: simRunning ? 0.6 : 1 }}>
+                    {simRunning && activeRunWf?.id === w.id ? "⏳ Running…" : "▶ Run"}
+                  </button>
+                </div>
+              </div>
             </Card>
           ))}
         </div>
@@ -6817,331 +7530,367 @@ const agents = [
   { id:"AGT-SKU",  table:"mws.sales_and_traffic_by_sku", label:"Sales by SKU Agent",    icon:"🏷️", desc:"Cross-checks SKU sales vs ASIN sales, detects orphaned SKUs, revenue outliers." },
 ];
 
+// ─── AI Agents Tab ────────────────────────────────────────────────────────────
+// Architecture: one Schema Agent per schema → expand → Table Sub-agents
+// Table sub-agents can further be split into specialised agents per check type
 function AIAgentsTab({ agentStates, setAgentStates, setAlertsState, accountId, addAuditEvent, alertsState }) {
   const C = React.useContext(ThemeCtx);
-  const [running,        setRunning]        = React.useState({});
-  const [expanded,       setExpanded]       = React.useState(null);
-  const [scanAllLoading, setScanAllLoading] = React.useState(false);
-  const [agents,         setAgents]         = React.useState([]);
-  const [agentsLoading,  setAgentsLoading]  = React.useState(true);
-  const API_BASE_AGENTS = "https://intentwise-backend-production.up.railway.app";
+  const API = "https://intentwise-backend-production.up.railway.app";
 
-  // Table name → emoji icon heuristic
-  const tableIcon = (name) => {
-    if (name.includes("order"))    return "📦";
-    if (name.includes("inventor")) return "🏭";
-    if (name.includes("restock"))  return "🔄";
-    if (name.includes("traffic"))  return "📊";
-    if (name.includes("sales"))    return "💰";
-    if (name.includes("sku"))      return "🏷️";
-    if (name.includes("asin"))     return "🔖";
-    if (name.includes("date"))     return "📅";
-    if (name.includes("report"))   return "📋";
-    if (name.includes("return"))   return "↩️";
-    if (name.includes("fee"))      return "💸";
-    if (name.includes("settle"))   return "🏦";
-    return "🗂️";
-  };
+  // ── State ──────────────────────────────────────────────────────────────────
+  const [schemas,        setSchemas]        = React.useState({});
+  // { [schemaName]: { tables: [{table_name,column_count}], status, expanded, subAgents: {} } }
+  const [schemaLoading,  setSchemaLoading]  = React.useState(true);
+  const [scanningSchema, setScanningSchema] = React.useState({});   // { [schema]: bool }
+  const [scanningTable,  setScanningTable]  = React.useState({});   // { "schema.table": bool }
+  const [results,        setResults]        = React.useState({});   // { "schema.table": {issues,summary} }
+  const [schemaResults,  setSchemaResults]  = React.useState({});   // { schema: {summary} }
+  const [expandedSchema, setExpandedSchema] = React.useState({});   // { schema: bool }
+  const [subAgents,      setSubAgents]      = React.useState({});
+  // { "schema.table": ["nulls","freshness","duplicates","range","schema"] }
+  const [expandedTable,  setExpandedTable]  = React.useState({});   // { "schema.table": bool }
+  const [log,            setLog]            = React.useState([]);
 
-  // Build human-readable label from snake_case table name
-  const tableLabel = (name) =>
-    name.replace(/_/g, " ").replace(/\w/g, c => c.toUpperCase()) + " Agent";
+  const addLog = (msg, level="info") => setLog(p => [...p.slice(-80), {
+    ts: new Date().toLocaleTimeString(), msg, level
+  }]);
 
+  // ── Fetch schemas + tables on mount ────────────────────────────────────────
   React.useEffect(() => {
-    setAgentsLoading(true);
-    fetch(API_BASE_AGENTS + "/api/tables")
+    setSchemaLoading(true);
+    fetch(`${API}/api/tables`)
       .then(r => r.json())
       .then(data => {
-        const tables = Array.isArray(data) ? data : [];
-        const built = tables.map((t, i) => {
-          const sc = t.schema || t.table_schema || "mws";
-          const nm = t.name   || t.table_name   || `table_${i}`;
-          return {
-            id:    `AGT-${sc.toUpperCase().slice(0,3)}-${i}`,
-            table: `${sc}.${nm}`,
-            schema: sc,
-            name:   nm,
-            label:  tableLabel(nm),
-            icon:   tableIcon(nm),
-            desc:   `AI agent that scans ${sc}.${nm} and infers anomalies from column values and data patterns.`,
-          };
+        if (!Array.isArray(data)) { setSchemaLoading(false); return; }
+        // Group flat array into { schema: { tables: [] } }
+        const grouped = {};
+        data.forEach(t => {
+          const sc = t.table_schema || t.schema || "unknown";
+          const nm = t.table_name   || t.name   || "unknown";
+          if (!grouped[sc]) grouped[sc] = { tables: [], status: "idle", expanded: false };
+          grouped[sc].tables.push({ name: nm, column_count: t.column_count || 0 });
         });
-        setAgents(built);
-        // Seed agentStates for any new agents
-        setAgentStates(prev => {
-          const next = { ...prev };
-          built.forEach(a => { if (!next[a.id]) next[a.id] = { status:"idle", alertsFiled:0, log:[] }; });
-          return next;
-        });
-        setAgentsLoading(false);
+        setSchemas(grouped);
+        // Auto-expand first schema
+        const first = Object.keys(grouped)[0];
+        if (first) setExpandedSchema({ [first]: true });
+        addLog(`✓ Discovered ${Object.keys(grouped).length} schema(s), ${data.length} total tables`,"success");
       })
-      .catch(() => {
-        // Fallback to the original 6 known tables
-        const fallback = [
-          { id:"AGT-MWS-0", table:"mws.orders",                    name:"orders",                    schema:"mws", label:"Orders Agent",          icon:"📦", desc:"Scans orders table." },
-          { id:"AGT-MWS-1", table:"mws.inventory",                  name:"inventory",                 schema:"mws", label:"Inventory Agent",        icon:"🏭", desc:"Scans inventory table." },
-          { id:"AGT-MWS-2", table:"mws.inventory_restock",          name:"inventory_restock",         schema:"mws", label:"Restock Agent",          icon:"🔄", desc:"Scans inventory_restock table." },
-          { id:"AGT-MWS-3", table:"mws.sales_and_traffic_by_date",  name:"sales_and_traffic_by_date", schema:"mws", label:"Sales by Date Agent",    icon:"📅", desc:"Scans sales_and_traffic_by_date table." },
-          { id:"AGT-MWS-4", table:"mws.sales_and_traffic_by_asin",  name:"sales_and_traffic_by_asin", schema:"mws", label:"Sales by ASIN Agent",    icon:"🔖", desc:"Scans sales_and_traffic_by_asin table." },
-          { id:"AGT-MWS-5", table:"mws.sales_and_traffic_by_sku",   name:"sales_and_traffic_by_sku",  schema:"mws", label:"Sales by SKU Agent",     icon:"🏷️", desc:"Scans sales_and_traffic_by_sku table." },
-        ];
-        setAgents(fallback);
-        setAgentsLoading(false);
-      });
+      .catch(e => addLog(`✗ Failed to load tables: ${e.message}`,"error"))
+      .finally(() => setSchemaLoading(false));
   }, []);
 
-  const runAgent = async (agent) => {
-    setRunning(p => ({ ...p, [agent.id]: true }));
-    setAgentStates(p => ({ ...p, [agent.id]: { ...p[agent.id], status:"running", log:["🔍 Connecting to Redshift…"] } }));
-    if (addAuditEvent) addAuditEvent({ type:"agent", name:`${agent.label} scan started`, table:agent.table, source:agent.schema, result:"pending", detail:`Agent ${agent.id} initiated scan of ${agent.table}.`, duration:"—" });
-
-    try {
-      // Step 1: fetch a sample from that table
-      const qs = accountId && accountId !== "all" ? `&account_id=${accountId}` : "";
-      const previewRes = await fetch(`${API_BASE_AGENTS}/api/preview?schema=mws&table=${agent.table.replace("mws.","")}&limit=200${qs}`);
-      const preview = await previewRes.json();
-      const rows = preview.rows || preview || [];
-
-      setAgentStates(p => ({ ...p, [agent.id]: { ...p[agent.id], log:[...p[agent.id].log, `📊 Loaded ${rows.length} rows from ${agent.table}`] } }));
-
-      if (!rows.length) {
-        setAgentStates(p => ({ ...p, [agent.id]: { status:"idle", lastRun: new Date().toLocaleTimeString(), alertsFiled:0, log:[...p[agent.id].log, "⚠️ No rows returned — table may be empty for this account."] } }));
-        setRunning(p => ({ ...p, [agent.id]: false }));
-        return;
-      }
-
-      // Step 2: send to AI for anomaly analysis
-      const colNames = Object.keys(rows[0]);
-      const sample = rows.slice(0, 50);
-
-      const aiRes = await fetch(`${API_BASE_AGENTS}/api/ai/chat`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          max_tokens: 1500,
-          system: `You are an autonomous data quality agent for an Amazon seller analytics platform. You are scanning the table "${agent.table}" in a Redshift database.
-
-Your task: inspect the sample data provided and detect any real data quality anomalies.
-
-Table: ${agent.table}
-Columns: ${colNames.join(", ")}
-
-Use the column names to infer what each column represents and what valid values should look like. Apply these universal rules:
-- Flag NULL or empty values in columns that should never be null (IDs, required keys, foreign keys)
-- Flag numeric columns with impossible values (negative quantities, prices or percentages out of range)
-- Flag percentage columns (containing "pct", "prcntg", "rate", "percentage") with values outside 0–1 or 0–100
-- Flag date columns (containing "date") where values are older than 14 days (stale data)
-- Flag columns that should be unique (IDs, order numbers) if duplicates exist in the sample
-- Flag logical contradictions (e.g. sales > 0 but units = 0, available > total, restock qty <= 0)
-- Flag any statistical outliers: values more than 3x the median for quantity/price/revenue columns
-
-Respond ONLY with a JSON object (no markdown, no explanation):
-{
-  "anomalies_found": <integer>,
-  "severity": "critical|high|medium|low|none",
-  "summary": "<one sentence>",
-  "alerts": [
-    { "title": "<short title>", "detail": "<what was found and why it matters>", "severity": "critical|high|medium|low", "affected_rows": <integer> }
-  ],
-  "log": ["<step 1>", "<step 2>"]
-}`,
-          messages: [{ role: "user", content: `Analyse this sample (${sample.length} rows) from ${agent.table} and return your JSON findings:
-
-${JSON.stringify(sample, null, 2)}` }]
-        })
-      });
-
-      const aiData = await aiRes.json();
-      const raw = aiData.content?.find(b => b.type === "text")?.text || "{}";
-      const result = JSON.parse(raw.replace(/```json|```/g, "").trim());
-
-      const alerts = (result.alerts || []).map((a, i) => ({
-        id: `${agent.id}-${Date.now()}-${i}`,
-        title: a.title,
-        detail: a.detail,
-        severity: a.severity || result.severity || "medium",
-        table: agent.table,
-        source: agent.label,
-        ts: new Date().toISOString(),
-        status: "open",
-        aiGenerated: true,
-      }));
-
-      // File alerts into the global alerts state
-      if (alerts.length > 0) {
-        setAlertsState(prev => {
-          const existingIds = new Set(prev.map(a => a.id));
-          return [...prev, ...alerts.filter(a => !existingIds.has(a.id))];
+  // ── Schema-level scan ──────────────────────────────────────────────────────
+  const scanSchema = async (schemaName) => {
+    const tables = schemas[schemaName]?.tables || [];
+    if (!tables.length) return;
+    setScanningSchema(p => ({...p, [schemaName]: true}));
+    addLog(`▶ Schema scan: ${schemaName} (${tables.length} tables)…`);
+    let totalIssues = 0, scanned = 0;
+    for (const t of tables) {
+      const key = `${schemaName}.${t.name}`;
+      try {
+        const res = await fetch(`${API}/api/agents/analyze`, {
+          method: "POST", headers: {"Content-Type":"application/json"},
+          body: JSON.stringify({ schema: schemaName, table: t.name, account_id: accountId })
         });
+        const data = await res.json();
+        const issues = data.alerts?.length || data.issues?.length || 0;
+        totalIssues += issues;
+        setResults(p => ({...p, [key]: data}));
+        scanned++;
+        addLog(`  ${issues > 0 ? "⚠" : "✓"} ${key}: ${issues} issue(s)`, issues > 0 ? "warning" : "success");
+      } catch(e) {
+        addLog(`  ✗ ${key}: ${e.message}`, "error");
       }
-
-      setAgentStates(p => ({
-        ...p,
-        [agent.id]: {
-          status: result.anomalies_found > 0 ? "alert" : "healthy",
-          lastRun: new Date().toLocaleTimeString(),
-          alertsFiled: alerts.length,
-          severity: result.severity,
-          summary: result.summary,
-          log: [...(result.log || []), alerts.length > 0 ? `🚨 Filed ${alerts.length} alert(s)` : "✅ No anomalies detected"],
-        }
-      }));
-
-    } catch(e) {
-      setAgentStates(p => ({ ...p, [agent.id]: { status:"error", lastRun: new Date().toLocaleTimeString(), alertsFiled:0, log:[`❌ Error: ${e.message}`] } }));
     }
-
-    if (addAuditEvent) {
-      const st = agentStates[agent.id] || {};
-      addAuditEvent({
-        type:   "agent",
-        name:   `${agent.label} scan complete`,
-        table:  agent.table,
-        source: agent.schema || "mws",
-        result: st.alertsFiled > 0 ? "fail" : "pass",
-        detail: st.summary || (st.alertsFiled > 0 ? `Filed ${st.alertsFiled} alert(s).` : "No anomalies detected."),
-        duration: "—",
+    setSchemaResults(p => ({...p, [schemaName]: { scanned, totalIssues, ts: new Date().toLocaleTimeString() }}));
+    setScanningSchema(p => ({...p, [schemaName]: false}));
+    addLog(`✓ Schema scan complete: ${schemaName} — ${totalIssues} total issues across ${scanned} tables`, totalIssues > 0 ? "warning" : "success");
+    if (addAuditEvent) addAuditEvent({ type:"agent", name:`Schema scan — ${schemaName}`, table:`${schemaName}.*`, source:"redshift-staging", result: totalIssues > 0 ? "fail" : "pass", detail:`${totalIssues} issues across ${scanned} tables` });
+    // Push alerts
+    if (totalIssues > 0) {
+      const newAlerts = tables.flatMap(t => {
+        const key = `${schemaName}.${t.name}`;
+        return (results[key]?.alerts || []).map(a => ({...a, table: key}));
       });
+      setAlertsState(p => [...p, ...newAlerts]);
     }
-    setRunning(p => ({ ...p, [agent.id]: false }));
   };
 
-  const runAllAgents = async () => {
-    setScanAllLoading(true);
-    for (const agent of agents) {
-      await runAgent(agent);
+  // ── Table sub-agent scan ───────────────────────────────────────────────────
+  const scanTable = async (schemaName, tableName, agentType = "full") => {
+    const key = `${schemaName}.${tableName}`;
+    setScanningTable(p => ({...p, [key]: true}));
+    addLog(`▶ Table scan [${agentType}]: ${key}…`);
+    try {
+      const res = await fetch(`${API}/api/agents/analyze`, {
+        method: "POST", headers: {"Content-Type":"application/json"},
+        body: JSON.stringify({ schema: schemaName, table: tableName, account_id: accountId, agent_type: agentType })
+      });
+      const data = await res.json();
+      const issues = data.alerts?.length || 0;
+      setResults(p => ({...p, [`${key}:${agentType}`]: data, [key]: data}));
+      addLog(`✓ ${key} [${agentType}]: ${issues} issue(s)`, issues > 0 ? "warning" : "success");
+      if (addAuditEvent) addAuditEvent({ type:"agent", name:`Agent [${agentType}] — ${key}`, table:key, source:"redshift-staging", result: issues > 0 ? "fail" : "pass", detail:`${issues} issues found` });
+      if (issues > 0 && setAlertsState) setAlertsState(p => [...p, ...(data.alerts||[]).map(a => ({...a, table:key}))]);
+    } catch(e) {
+      addLog(`✗ ${key}: ${e.message}`, "error");
     }
-    setScanAllLoading(false);
+    setScanningTable(p => ({...p, [key]: false}));
   };
 
-  const statusColor = (s, C) => ({ healthy:C.green, alert:C.red, running:C.yellow, error:C.orange, idle:C.muted })[s] || C.muted;
-  const statusLabel = (s) => ({ healthy:"✓ Healthy", alert:"⚠ Anomalies", running:"⟳ Scanning…", error:"✗ Error", idle:"— Not run" })[s] || "—";
+  // ── Add / remove sub-agents for a table ────────────────────────────────────
+  const toggleSubAgent = (schemaName, tableName, agentType) => {
+    const key = `${schemaName}.${tableName}`;
+    setSubAgents(p => {
+      const cur = p[key] || [];
+      const next = cur.includes(agentType) ? cur.filter(x => x !== agentType) : [...cur, agentType];
+      return {...p, [key]: next};
+    });
+  };
 
-  const totalAlerts = Object.values(agentStates).reduce((sum, s) => sum + (s.alertsFiled || 0), 0);
-  const healthyCount = Object.values(agentStates).filter(s => s.status === "healthy").length;
-  const alertCount   = Object.values(agentStates).filter(s => s.status === "alert").length;
+  // ── Helpers ────────────────────────────────────────────────────────────────
+  const tableIcon = n => {
+    if (/order/i.test(n))     return "📦";
+    if (/inventor/i.test(n))  return "🏪";
+    if (/sales|traffic/i.test(n)) return "📈";
+    if (/keyword/i.test(n))   return "🔑";
+    if (/campaign/i.test(n))  return "📣";
+    if (/product/i.test(n))   return "🛍";
+    if (/account/i.test(n))   return "👤";
+    if (/report/i.test(n))    return "📋";
+    return "🗄";
+  };
 
+  const SUB_AGENT_TYPES = [
+    { id:"nulls",      label:"NULL Check",    icon:"⬜", desc:"Detect NULL values in key columns" },
+    { id:"duplicates", label:"Dedup",         icon:"♊", desc:"Find duplicate primary keys" },
+    { id:"freshness",  label:"Freshness",     icon:"🕐", desc:"Check data staleness vs threshold" },
+    { id:"range",      label:"Range Check",   icon:"📏", desc:"Flag out-of-range numeric values" },
+    { id:"schema",     label:"Schema Drift",  icon:"🔀", desc:"Detect unexpected column changes" },
+  ];
+
+  const statusDot = (scanning, res) => {
+    if (scanning) return { color: "#06B6D4", label: "Scanning…", pulse: true };
+    if (!res)     return { color: C.muted,   label: "Idle",      pulse: false };
+    const issues = res.alerts?.length || 0;
+    if (issues > 0) return { color: C.red,   label: `${issues} issue${issues>1?"s":""}`, pulse: false };
+    return { color: C.green, label: "Clean", pulse: false };
+  };
+
+  // ── Render ─────────────────────────────────────────────────────────────────
   return (
-    <div style={{ paddingBottom:32 }}>
+    <div style={{ paddingBottom: 32 }}>
       {/* Header */}
       <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom:20 }}>
         <div>
           <div style={{ fontSize:18, fontWeight:700, color:C.text, display:"flex", alignItems:"center", gap:10 }}>
-            <BrainCircuit size={20} color={C.purple}/> AI Agents
+            🤖 AI Agents
           </div>
-          <div style={{ fontSize:12, color:C.muted, marginTop:3 }}>Autonomous agents that scan mws tables, detect anomalies and file alerts</div>
+          <div style={{ fontSize:12, color:C.muted, marginTop:3 }}>
+            Schema-level agents · expand to add table sub-agents · break down further by check type
+          </div>
         </div>
-        <button
-          onClick={runAllAgents}
-          disabled={scanAllLoading}
-          style={{ display:"flex", alignItems:"center", gap:8, padding:"9px 18px", background: scanAllLoading?`${C.muted}20`:`${C.purple}18`, border:`1px solid ${scanAllLoading?C.muted:C.purple}50`, borderRadius:9, cursor: scanAllLoading?"not-allowed":"pointer", fontSize:12, color: scanAllLoading?C.muted:C.purple, fontWeight:700 }}
-        >
-          <BrainCircuit size={13}/> {scanAllLoading ? "Scanning all tables…" : "Run All Agents"}
-        </button>
       </div>
 
-      {/* Summary cards */}
-      <div style={{ display:"grid", gridTemplateColumns:"repeat(4,1fr)", gap:12, marginBottom:20 }}>
-        {[
-          { label:"Total Agents",    value:agents.length, color:C.accent,  icon:"🤖" },
-          { label:"Healthy",         value:healthyCount,       color:C.green,   icon:"✓" },
-          { label:"Anomalies Found", value:alertCount,         color:C.red,     icon:"⚠" },
-          { label:"Alerts Filed",    value:totalAlerts,        color:C.orange,  icon:"🔔" },
-        ].map(({ label, value, color, icon }) => (
-          <div key={label} style={{ background:C.card, border:`1px solid ${C.border}`, borderRadius:10, padding:"14px 16px" }}>
-            <div style={{ fontSize:11, color:C.muted, marginBottom:6 }}>{icon} {label.toUpperCase()}</div>
-            <div style={{ fontSize:26, fontWeight:800, color }}>{value}</div>
-          </div>
-        ))}
-      </div>
+      <div style={{ display:"grid", gridTemplateColumns:"1fr 300px", gap:14 }}>
+        {/* Left — schema + table tree */}
+        <div style={{ display:"flex", flexDirection:"column", gap:10 }}>
+          {schemaLoading ? (
+            <div style={{ textAlign:"center", padding:"40px 0", color:C.muted, fontSize:13 }}>⏳ Discovering schemas…</div>
+          ) : Object.keys(schemas).length === 0 ? (
+            <div style={{ textAlign:"center", padding:"40px 0", color:C.muted, fontSize:13 }}>No schemas found — check backend connection</div>
+          ) : Object.entries(schemas).map(([schemaName, schemaData]) => {
+            const isExpanded    = expandedSchema[schemaName];
+            const isScanning    = scanningSchema[schemaName];
+            const schemaRes     = schemaResults[schemaName];
+            const dot           = statusDot(isScanning, schemaRes);
+            const tableCount    = schemaData.tables.length;
 
-      {/* Agent cards */}
-      <div style={{ display:"flex", flexDirection:"column", gap:10 }}>
-        {agentsLoading ? (
-          <div style={{ gridColumn:"1/-1", textAlign:"center", padding:"48px 0", color:C.muted, fontSize:13 }}>
-            <RefreshCw size={20} style={{ animation:"spin 1s linear infinite", marginBottom:10 }} color={C.accent}/>
-            <div>Discovering tables…</div>
-          </div>
-        ) : agents.length === 0 ? (
-          <div style={{ gridColumn:"1/-1", textAlign:"center", padding:"48px 0", color:C.muted, fontSize:13 }}>
-            No tables found in mws schema.
-          </div>
-        ) : agents.map(agent => {
-          const st = agentStates[agent.id] || {};
-          const isRunning = running[agent.id];
-          const isExpanded = expanded === agent.id;
-          const sc = statusColor(isRunning ? "running" : st.status, C);
-
-          return (
-            <div key={agent.id} style={{ background:C.card, border:`1px solid ${isExpanded?C.accent:C.border}`, borderRadius:12, overflow:"hidden", transition:"border 0.2s" }}>
-              {/* Agent row */}
-              <div
-                onClick={() => setExpanded(p => p === agent.id ? null : agent.id)}
-                style={{ display:"grid", gridTemplateColumns:"40px 1fr 180px 130px 120px 110px auto", gap:12, padding:"14px 18px", alignItems:"center", cursor:"pointer" }}
-              >
-                {/* Icon */}
-                <div style={{ fontSize:22, textAlign:"center" }}>{agent.icon}</div>
-                {/* Label + table */}
-                <div>
-                  <div style={{ fontSize:13, fontWeight:700, color:C.text }}>{agent.label}</div>
-                  <div style={{ fontSize:11, color:C.muted, fontFamily:"monospace", marginTop:2 }}>{agent.table}</div>
-                </div>
-                {/* Status */}
-                <div style={{ display:"flex", alignItems:"center", gap:6 }}>
-                  <div style={{ width:7, height:7, borderRadius:"50%", background:sc, boxShadow: isRunning?`0 0 6px ${sc}`:undefined }} />
-                  <span style={{ fontSize:11, color:sc, fontWeight:600 }}>{statusLabel(isRunning?"running":st.status)}</span>
-                </div>
-                {/* Last run */}
-                <div style={{ fontSize:11, color:C.muted }}>{st.lastRun ? `Last: ${st.lastRun}` : "Never run"}</div>
-                {/* Alerts filed */}
-                <div style={{ fontSize:11 }}>
-                  {st.alertsFiled > 0
-                    ? <span style={{ color:C.red, fontWeight:700 }}>🔔 {st.alertsFiled} alert{st.alertsFiled!==1?"s":""}</span>
-                    : <span style={{ color:C.muted }}>No alerts</span>}
-                </div>
-                {/* Severity badge */}
-                <div>
-                  {st.severity && st.severity !== "none" && (
-                    <span style={{ fontSize:10, fontWeight:700, borderRadius:5, padding:"2px 8px", background:`${{critical:C.red,high:C.orange,medium:C.yellow,low:C.green}[st.severity]||C.muted}18`, color:{critical:C.red,high:C.orange,medium:C.yellow,low:C.green}[st.severity]||C.muted }}>
-                      {st.severity}
-                    </span>
+            return (
+              <div key={schemaName} style={{ background:C.card, border:`1px solid ${isExpanded ? C.accent+"60" : C.border}`, borderRadius:12, overflow:"hidden" }}>
+                {/* Schema header row */}
+                <div style={{ display:"flex", alignItems:"center", gap:12, padding:"14px 18px", cursor:"pointer", borderBottom: isExpanded ? `1px solid ${C.border}` : "none" }}
+                  onClick={() => setExpandedSchema(p => ({...p, [schemaName]: !p[schemaName]}))}>
+                  <span style={{ fontSize:11, color:C.muted }}>{isExpanded ? "▾" : "▸"}</span>
+                  <div style={{ width:34, height:34, borderRadius:9, background:`${C.accent}15`, display:"flex", alignItems:"center", justifyContent:"center", fontSize:16 }}>🗄</div>
+                  <div style={{ flex:1 }}>
+                    <div style={{ fontSize:13, fontWeight:700, color:C.text, fontFamily:"Consolas,monospace" }}>{schemaName}</div>
+                    <div style={{ fontSize:11, color:C.muted }}>{tableCount} table{tableCount!==1?"s":""} available</div>
+                  </div>
+                  {/* Status */}
+                  <div style={{ display:"flex", alignItems:"center", gap:6 }}>
+                    <div style={{ width:8, height:8, borderRadius:"50%", background:dot.color, animation: dot.pulse?"ping 1.5s infinite":"none" }}/>
+                    <span style={{ fontSize:11, color:dot.color, fontWeight:600 }}>{dot.label}</span>
+                  </div>
+                  {schemaRes && (
+                    <span style={{ fontSize:10, color:C.muted }}>{schemaRes.scanned}/{tableCount} scanned · {schemaRes.ts}</span>
                   )}
+                  {/* Scan schema button */}
+                  <button
+                    onClick={e => { e.stopPropagation(); scanSchema(schemaName); }}
+                    disabled={isScanning}
+                    style={{ padding:"5px 12px", background: isScanning ? C.border : C.accent, color:"white", border:"none", borderRadius:6, fontSize:11, fontWeight:600, cursor: isScanning ? "not-allowed" : "pointer", opacity: isScanning ? 0.7 : 1 }}>
+                    {isScanning ? "Scanning…" : "▶ Scan Schema"}
+                  </button>
                 </div>
-                {/* Run button */}
-                <button
-                  onClick={e => { e.stopPropagation(); runAgent(agent); }}
-                  disabled={isRunning}
-                  style={{ padding:"6px 14px", background:isRunning?`${C.muted}15`:`${C.accent}18`, border:`1px solid ${isRunning?C.muted:C.accent}40`, borderRadius:7, cursor:isRunning?"not-allowed":"pointer", fontSize:11, color:isRunning?C.muted:C.accentL, fontWeight:700, whiteSpace:"nowrap" }}
-                >
-                  {isRunning ? "⟳ Scanning" : "▶ Run"}
-                </button>
+
+                {/* Table sub-agents */}
+                {isExpanded && (
+                  <div style={{ padding:"10px 14px", display:"flex", flexDirection:"column", gap:6 }}>
+                    {schemaData.tables.map(t => {
+                      const key        = `${schemaName}.${t.name}`;
+                      const isScanningT= scanningTable[key];
+                      const tableRes   = results[key];
+                      const tdot       = statusDot(isScanningT, tableRes);
+                      const isExpandedT= expandedTable[key];
+                      const activeSubAgents = subAgents[key] || [];
+
+                      return (
+                        <div key={t.name} style={{ background:C.surface, border:`1px solid ${isExpandedT ? C.accent+"40" : C.border}`, borderRadius:9, overflow:"hidden" }}>
+                          {/* Table row */}
+                          <div style={{ display:"flex", alignItems:"center", gap:10, padding:"9px 14px" }}>
+                            <span style={{ fontSize:14 }}>{tableIcon(t.name)}</span>
+                            <div style={{ flex:1 }}>
+                              <div style={{ fontSize:12, fontWeight:600, color:C.text, fontFamily:"Consolas,monospace" }}>{t.name}</div>
+                              <div style={{ fontSize:10, color:C.muted }}>{t.column_count} columns</div>
+                            </div>
+                            {/* Status dot */}
+                            <div style={{ display:"flex", alignItems:"center", gap:5 }}>
+                              <div style={{ width:7, height:7, borderRadius:"50%", background:tdot.color }}/>
+                              <span style={{ fontSize:10, color:tdot.color }}>{tdot.label}</span>
+                            </div>
+                            {/* Active sub-agent badges */}
+                            {activeSubAgents.length > 0 && (
+                              <div style={{ display:"flex", gap:3 }}>
+                                {activeSubAgents.map(a => (
+                                  <span key={a} style={{ fontSize:9, padding:"2px 6px", background:`${C.accent}15`, color:C.accentL, borderRadius:4, fontWeight:600 }}>
+                                    {SUB_AGENT_TYPES.find(x=>x.id===a)?.icon} {a}
+                                  </span>
+                                ))}
+                              </div>
+                            )}
+                            {/* Quick scan button */}
+                            <button
+                              onClick={() => scanTable(schemaName, t.name, "full")}
+                              disabled={isScanningT}
+                              style={{ padding:"4px 10px", background: isScanningT ? C.border : `${C.accent}20`, color: isScanningT ? C.muted : C.accentL, border:`1px solid ${C.accent}30`, borderRadius:6, fontSize:10, fontWeight:600, cursor: isScanningT ? "not-allowed" : "pointer" }}>
+                              {isScanningT ? "…" : "Scan"}
+                            </button>
+                            {/* Expand sub-agents */}
+                            <button
+                              onClick={() => setExpandedTable(p => ({...p, [key]: !p[key]}))}
+                              style={{ padding:"4px 8px", background:"none", color:C.muted, border:`1px solid ${C.border}`, borderRadius:6, fontSize:10, cursor:"pointer" }}>
+                              {isExpandedT ? "▲ Sub-agents" : "▼ Sub-agents"}
+                            </button>
+                          </div>
+
+                          {/* Sub-agent panel */}
+                          {isExpandedT && (
+                            <div style={{ padding:"10px 14px", borderTop:`1px solid ${C.border}`, background:`${C.accent}04` }}>
+                              <div style={{ fontSize:10, fontWeight:700, color:C.muted, marginBottom:8, textTransform:"uppercase", letterSpacing:"0.06em" }}>
+                                Specialised Sub-agents — click to activate
+                              </div>
+                              <div style={{ display:"flex", gap:6, flexWrap:"wrap", marginBottom:10 }}>
+                                {SUB_AGENT_TYPES.map(sa => {
+                                  const active = activeSubAgents.includes(sa.id);
+                                  const isRunningSub = scanningTable[`${key}:${sa.id}`];
+                                  return (
+                                    <div key={sa.id} style={{ display:"flex", flexDirection:"column", gap:4 }}>
+                                      <button
+                                        onClick={() => toggleSubAgent(schemaName, t.name, sa.id)}
+                                        style={{ padding:"6px 10px", background: active ? `${C.accent}20` : C.card,
+                                          color: active ? C.accentL : C.muted,
+                                          border:`1px solid ${active ? C.accent : C.border}`,
+                                          borderRadius:7, fontSize:11, fontWeight: active ? 700 : 400,
+                                          cursor:"pointer", display:"flex", alignItems:"center", gap:5 }}>
+                                        <span>{sa.icon}</span> {sa.label}
+                                        {active && <span style={{ fontSize:9, color:C.accent }}>✓</span>}
+                                      </button>
+                                      {active && (
+                                        <button
+                                          onClick={() => scanTable(schemaName, t.name, sa.id)}
+                                          disabled={isRunningSub}
+                                          style={{ padding:"3px 8px", background: isRunningSub ? C.border : C.green, color:"white", border:"none", borderRadius:5, fontSize:10, cursor: isRunningSub ? "not-allowed" : "pointer" }}>
+                                          {isRunningSub ? "Running…" : `▶ Run ${sa.label}`}
+                                        </button>
+                                      )}
+                                    </div>
+                                  );
+                                })}
+                              </div>
+                              {/* Show table scan results */}
+                              {tableRes && (
+                                <div style={{ marginTop:6 }}>
+                                  {(tableRes.alerts || []).length === 0 ? (
+                                    <div style={{ fontSize:11, color:C.green }}>✓ No issues found</div>
+                                  ) : (
+                                    <div style={{ display:"flex", flexDirection:"column", gap:4 }}>
+                                      {(tableRes.alerts || []).slice(0,5).map((a,i) => (
+                                        <div key={i} style={{ fontSize:11, color:C.red, background:`${C.red}08`, borderRadius:5, padding:"5px 8px" }}>
+                                          ⚠ {a.title || a.message || JSON.stringify(a).slice(0,80)}
+                                        </div>
+                                      ))}
+                                      {(tableRes.alerts||[]).length > 5 && (
+                                        <div style={{ fontSize:10, color:C.muted }}>+{(tableRes.alerts.length-5)} more — see Detect & Triage tab</div>
+                                      )}
+                                    </div>
+                                  )}
+                                </div>
+                              )}
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
               </div>
+            );
+          })}
+        </div>
 
-              {/* Expanded panel */}
-              {isExpanded && (
-                <div style={{ borderTop:`1px solid ${C.border}`, padding:"14px 18px", background:C.isDark?"#0A0C1060":"#F8FAFC" }}>
-                  <div style={{ fontSize:11, color:C.muted, marginBottom:8 }}>{agent.desc}</div>
-                  {st.summary && (
-                    <div style={{ fontSize:12, color:C.text, background:`${C.accent}10`, border:`1px solid ${C.accent}30`, borderRadius:8, padding:"8px 12px", marginBottom:10 }}>
-                      💡 {st.summary}
-                    </div>
-                  )}
-                  {st.log && st.log.length > 0 && (
-                    <div>
-                      <div style={{ fontSize:10, color:C.muted, fontWeight:700, marginBottom:6, letterSpacing:"0.08em" }}>SCAN LOG</div>
-                      <div style={{ background:C.isDark?"#0A0C10":"#1E293B", borderRadius:7, padding:"10px 12px", fontFamily:"monospace", fontSize:11 }}>
-                        {st.log.map((line, i) => (
-                          <div key={i} style={{ color: line.startsWith("❌")?"#EF4444":line.startsWith("🚨")?"#F97316":line.startsWith("✅")?"#10B981":"#94A3B8", marginBottom:3 }}>{line}</div>
-                        ))}
-                      </div>
-                    </div>
-                  )}
-                  {!st.log && <div style={{ fontSize:11, color:C.muted }}>Click ▶ Run to start this agent.</div>}
-                </div>
-              )}
+        {/* Right — run log */}
+        <div style={{ display:"flex", flexDirection:"column", gap:10 }}>
+          <div style={{ background:C.card, border:`1px solid ${C.border}`, borderRadius:10, padding:"14px 16px" }}>
+            <div style={{ fontSize:12, fontWeight:700, color:C.text, marginBottom:8 }}>📋 Agent Log</div>
+            <div style={{ background: C.isDark ? "#0A0C10" : "#F1F5F9", borderRadius:7, padding:"10px 12px",
+              height:400, overflowY:"auto", display:"flex", flexDirection:"column", gap:3 }}>
+              {log.length === 0
+                ? <span style={{ fontSize:11, color:C.muted }}>No activity yet — run a schema scan or expand a table</span>
+                : log.map((l,i) => (
+                  <div key={i} style={{ fontFamily:"Consolas,monospace", fontSize:11,
+                    color: l.level==="success" ? C.green : l.level==="error" ? C.red : l.level==="warning" ? C.yellow : C.muted }}>
+                    <span style={{ color:C.muted, marginRight:6 }}>[{l.ts}]</span>{l.msg}
+                  </div>
+                ))
+              }
             </div>
-          );
-        })}
+            {log.length > 0 && (
+              <button onClick={() => setLog([])}
+                style={{ marginTop:8, fontSize:10, color:C.muted, background:"none", border:"none", cursor:"pointer", textDecoration:"underline" }}>
+                Clear log
+              </button>
+            )}
+          </div>
+
+          {/* Legend */}
+          <div style={{ background:C.card, border:`1px solid ${C.border}`, borderRadius:10, padding:"14px 16px" }}>
+            <div style={{ fontSize:11, fontWeight:700, color:C.muted, marginBottom:8 }}>HOW IT WORKS</div>
+            {[
+              ["▶ Scan Schema", "Runs a full scan across all tables in the schema"],
+              ["Scan (table)", "Runs a quick full-check on one table"],
+              ["▼ Sub-agents", "Activate specialised agents for a single table"],
+              ["▶ Run [type]", "Run only that check type (nulls / dupes etc.)"],
+            ].map(([label, desc]) => (
+              <div key={label} style={{ display:"flex", gap:8, marginBottom:6 }}>
+                <span style={{ fontSize:11, fontWeight:700, color:C.accentL, flexShrink:0, minWidth:90 }}>{label}</span>
+                <span style={{ fontSize:11, color:C.muted }}>{desc}</span>
+              </div>
+            ))}
+          </div>
+        </div>
       </div>
     </div>
   );
@@ -7566,11 +8315,14 @@ export default function AIOpsMonitor() {
 
           {/* ── Automation & Controls Tab ── */}
           {activeTab === "automation" && (
-            <div style={{ paddingBottom:24 }}>
-              <SectionHeader icon={GitBranch} title="Automation & Controls"
-                subtitle="Live remediation flows · mws.orders end-to-end" />
-              <RemediationFlowTab addAuditEvent={addAuditEvent} />
-            </div>
+            <AutomationTab
+              addAuditEvent={addAuditEvent}
+              agentScanResult={agentScanResult}
+              agentScanLoading={agentScanLoading}
+              onAgentScan={() => {}}
+              openDrill={openDrill}
+              accountId={accountId}
+            />
           )}
 
           {/* ── Sources Tab ── */}

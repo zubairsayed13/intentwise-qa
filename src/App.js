@@ -1074,13 +1074,13 @@ function ReportTriageTab({ addAuditEvent, accountId }) {
   const T  = useTheme();
   const API = "https://intentwise-backend-production.up.railway.app";
 
-  const [triageResult,  setTriageResult]  = React.useState(null);
+  const [triageResult,  setTriageResult]  = useSessionState("iw_triageResult", null);
   const [scanning,      setScanning]      = React.useState(false);
   const [fixing,        setFixing]        = React.useState({});
-  const [dryRuns,       setDryRuns]       = React.useState({});
-  const [fixResults,    setFixResults]    = React.useState({});
+  const [dryRuns,       setDryRuns]       = useSessionState("iw_triageDryRuns", {});
+  const [fixResults,    setFixResults]    = useSessionState("iw_triageFixResults", {});
   const [expandSamples, setExpandSamples] = React.useState({});
-  const [log,           setLog]           = React.useState([]);
+  const [log,           setLog]           = useSessionState("iw_triageLog", []);
   const [error,         setError]         = React.useState(null);
 
   const addLog = (msg, level="info") =>
@@ -1377,7 +1377,7 @@ function ReportTriageTab({ addAuditEvent, accountId }) {
 // ─── Automation & Controls Tab ───────────────────────────────────────────────
 function AutomationTab({ addAuditEvent, agentScanResult, agentScanLoading, onAgentScan, openDrill, accountId }) {
   const T = useTheme();
-  const [sub, setSub] = React.useState("triage");
+  const [sub, setSub] = useSessionState("iw_automationSub", "triage");
 
   const TABS = [
     { id:"triage",      label:"🚨 Report Triage",      desc:"Live auto-triage on mws.report" },
@@ -1424,7 +1424,7 @@ function RemediationFlowTab({ addAuditEvent }) {
   // ── Flow definition ────────────────────────────────────────────────────────
   const [flowName,  setFlowName]  = React.useState("New Remediation Flow");
   const [flowDesc,  setFlowDesc]  = React.useState("");
-  const [steps,     setSteps]     = React.useState([]);
+  const [steps,     setSteps]     = useSessionState("iw_remSteps", []);
   const [editStep,  setEditStep]  = React.useState(null); // step being edited
 
   // ── Schedule ────────────────────────────────────────────────────────────────
@@ -1434,13 +1434,13 @@ function RemediationFlowTab({ addAuditEvent }) {
 
   // ── Run state ──────────────────────────────────────────────────────────────
   const [running,       setRunning]       = React.useState(false);
-  const [runResults,    setRunResults]    = React.useState(null);
-  const [approvedSteps, setApprovedSteps] = React.useState([]); // step ids approved
+  const [runResults,    setRunResults]    = useSessionState("iw_remRunResults", null);
+  const [approvedSteps, setApprovedSteps] = useSessionState("iw_remApprovedSteps", []); // step ids approved
   const [pendingStep,   setPendingStep]   = React.useState(null); // step awaiting approval
-  const [log,           setLog]           = React.useState([]);
+  const [log,           setLog]           = useSessionState("iw_remLog", []);
 
   // ── Saved flows ────────────────────────────────────────────────────────────
-  const [savedFlows,   setSavedFlows]   = React.useState([]);
+  const [savedFlows,   setSavedFlows]   = useSessionState("iw_remSavedFlows", []);
   const [loadedFlowId, setLoadedFlowId] = React.useState(null);
   const [saving,       setSaving]       = React.useState(false);
   const [saveFlash,    setSaveFlash]    = React.useState(false);
@@ -2035,11 +2035,11 @@ function WorkflowBuilderTab() {
   const [saveFlash, setSaveFlash]   = useState(false);
   const [runSim, setRunSim]         = useState(null);   // null | index of running node
   const simRunningRef = React.useRef(false);  // ref to avoid stale closure in async runWorkflow
-  const [simLog,        setSimLog]        = useState([]);    // run log entries
+  const [simLog,        setSimLog]        = useSessionState("iw_wfSimLog", []);
   const [simRunning,    setSimRunning]    = useState(false); // is a sim active
-  const [simNodeStatus, setSimNodeStatus] = useState({});    // { nodeId: "pending"|"running"|"done"|"failed" }
-  const [activeRunWf,   setActiveRunWf]   = useState(null);  // workflow being simulated
-  const [simDone,       setSimDone]       = useState(false);
+  const [simNodeStatus, setSimNodeStatus] = useSessionState("iw_wfSimNodeStatus", {});
+  const [activeRunWf,   setActiveRunWf]   = useSessionState("iw_wfActiveRunWf", null);
+  const [simDone,       setSimDone]       = useSessionState("iw_wfSimDone", false);
 
   const wf = selected && selected !== "new"
     ? workflows.find(w => w.id === selected)
@@ -2721,7 +2721,7 @@ function SchedModal({ rule, T, CRON_PRESETS, setRules, onClose }) {
 
 function ValidationRulesTab({ liveRules, rulesLoading, addAuditEvent }) {
   const [rules, setRules]           = useState(INIT_RULES);
-  const [view,  setView]            = useState("list"); // list | builder | nlp | scan
+  const [view,  setView]            = useSessionState("iw_rulesView", "list");
   useEffect(() => {
     if (liveRules && liveRules.length > 0) setRules(liveRules);
   }, [liveRules]);
@@ -2815,11 +2815,11 @@ function ValidationRulesTab({ liveRules, rulesLoading, addAuditEvent }) {
   const [scanLoading, setScanLoading] = useState(false);
   const [scanResults, setScanResults] = useState(null);
   const [selectedDs, setSelectedDs] = useState("redshift-staging");
-  const [filterStatus, setFilterStatus] = useState("all");
+  const [filterStatus, setFilterStatus] = useSessionState("iw_rulesFilter", "all");
 
   // Builder state
   const [builder, setBuilder] = useState({ name:"", type:"not_null", source:"redshift-staging", table:"", column:"", severity:"high", schedule:"0 * * * *", params:{} });
-  const [collapsedTables, setCollapsedTables] = useState({});
+  const [collapsedTables, setCollapsedTables] = useSessionState("iw_rulesCollapsed", {});
 
   const visibleRules = rules.filter(r => filterStatus === "all" || r.status === filterStatus);
 
@@ -3676,6 +3676,51 @@ function ApprovalGatesTab() {
 // ─── Theme Context ────────────────────────────────────────────────────────────
 const ThemeCtx = React.createContext(DARK_THEME);
 const useTheme = () => React.useContext(ThemeCtx);
+
+// ─── Persistent state hooks ───────────────────────────────────────────────────
+
+// useLocalState: persists across browser sessions (theme, preferences)
+function useLocalState(key, defaultVal) {
+  const [val, setVal] = React.useState(() => {
+    try {
+      const s = localStorage.getItem(key);
+      return s !== null ? JSON.parse(s) : defaultVal;
+    } catch { return defaultVal; }
+  });
+  const set = React.useCallback(v => {
+    setVal(prev => {
+      const next = typeof v === "function" ? v(prev) : v;
+      try { localStorage.setItem(key, JSON.stringify(next)); } catch {}
+      return next;
+    });
+  }, [key]);
+  return [val, set];
+}
+
+// useSessionState: persists within the browser tab session (scan results, logs, UI state)
+// Clears when the tab is closed. Perfect for "don't reset on nav switch".
+function useSessionState(key, defaultVal) {
+  const [val, setVal] = React.useState(() => {
+    try {
+      const s = sessionStorage.getItem(key);
+      return s !== null ? JSON.parse(s) : defaultVal;
+    } catch { return defaultVal; }
+  });
+  const set = React.useCallback(v => {
+    setVal(prev => {
+      const next = typeof v === "function" ? v(prev) : v;
+      try { sessionStorage.setItem(key, JSON.stringify(next)); } catch {}
+      return next;
+    });
+  }, [key]);
+  // clear helper
+  const clear = React.useCallback(() => {
+    try { sessionStorage.removeItem(key); } catch {}
+    setVal(defaultVal);
+  }, [key, defaultVal]);
+  return [val, set, clear];
+}
+
 
 // ─── Command Center Tab ───────────────────────────────────────────────────────
 function CommandCenterTab({ onNavigate, kpis, kpisLoading, trend, topAsins, accountId, agentScanResult, agentScanLoading, onAgentScan, alertsState, dataMode }) {
@@ -6700,14 +6745,14 @@ function DBExplorerTab({ kpis, kpisLoading, alertsState, setActiveTab: setActive
   const [schemas,           setSchemas]           = useState([]);
   const [loading,           setLoading]           = useState(true);
   const [error,             setError]             = useState(null);
-  const [expandedSchemas,   setExpandedSchemas]   = useState({});
+  const [expandedSchemas,   setExpandedSchemas]   = useSessionState("iw_dbExpandedSchemas", {});
   const [preview,           setPreview]           = useState(null);
   const [previewLoading,    setPreviewLoading]    = useState(false);
   const [sql,               setSql]               = useState("");
   const [queryResult,       setQueryResult]       = useState(null);
   const [queryLoading,      setQueryLoading]      = useState(false);
   const [queryError,        setQueryError]        = useState(null);
-  const [view,              setView]              = useState("explorer");
+  const [view,              setView]              = useSessionState("iw_dbView", "explorer");
   const [savedQueries,      setSavedQueries]      = useState([
     { id:"sq-1", name:"Orders last 7 days",  sql:"SELECT amazon_order_id, asin, order_status, item_price, purchase_date\nFROM mws.orders\nWHERE purchase_date >= CURRENT_DATE - 7\nORDER BY purchase_date DESC\nLIMIT 100" },
     { id:"sq-2", name:"Low inventory ASINs", sql:"SELECT asin, product_name, available, days_of_supply\nFROM mws.inventory\nWHERE available < 10\nORDER BY available ASC" },
@@ -6982,7 +7027,7 @@ function DBExplorerTab({ kpis, kpisLoading, alertsState, setActiveTab: setActive
 function DetectTriageRootCause({ alertsState, sevFilter, setSevFilter, search, setSearch,
   resolveAlert, triageAlert, autoFixAlert, openDrill, setAiPanel, aiPanel, dataMode }) {
   const T = useTheme();
-  const [sub, setSub] = useState("triage");
+  const [sub, setSub] = useSessionState("iw_detectSub", "triage");
 
   const liveAlerts = (alertsState || []).filter(a => dataMode === "prod" ? a.id?.startsWith("AGT-") : !a.id?.startsWith("AGT-"));
 
@@ -7543,12 +7588,12 @@ function AIAgentsTab({ agentStates, setAgentStates, setAlertsState, accountId, a
   const [schemaLoading,  setSchemaLoading]  = React.useState(true);
   const [scanningSchema, setScanningSchema] = React.useState({});   // { [schema]: bool }
   const [scanningTable,  setScanningTable]  = React.useState({});   // { "schema.table": bool }
-  const [results,        setResults]        = React.useState({});   // { "schema.table": {issues,summary} }
-  const [schemaResults,  setSchemaResults]  = React.useState({});   // { schema: {summary} }
-  const [expandedSchema, setExpandedSchema] = React.useState({});   // { schema: bool }
-  const [subAgents,      setSubAgents]      = React.useState({});
+  const [results,        setResults]        = useSessionState("iw_agtResults", {});   // { "schema.table": {issues,summary} }
+  const [schemaResults,  setSchemaResults]  = useSessionState("iw_agtSchemaResults", {});   // { schema: {summary} }
+  const [expandedSchema, setExpandedSchema] = useSessionState("iw_agtExpandedSchema", {});   // { schema: bool }
+  const [subAgents,      setSubAgents]      = useSessionState("iw_agtSubAgents", {});
   // { "schema.table": ["nulls","freshness","duplicates","range","schema"] }
-  const [expandedTable,  setExpandedTable]  = React.useState({});   // { "schema.table": bool }
+  const [expandedTable,  setExpandedTable]  = useSessionState("iw_agtExpandedTable", {});   // { "schema.table": bool }
   const [log,            setLog]            = React.useState([]);
 
   const addLog = (msg, level="info") => setLog(p => [...p.slice(-80), {
@@ -7898,21 +7943,21 @@ function AIAgentsTab({ agentStates, setAgentStates, setAlertsState, accountId, a
 
 
 export default function AIOpsMonitor() {
-  const [theme, setTheme] = useState("light");
-  const [dataMode, setDataMode] = useState("prod"); // "demo" | "prod"
+  const [theme, setTheme] = useLocalState("iw_theme", "light");
+  const [dataMode, setDataMode] = useLocalState("iw_dataMode", "prod");
   const T = theme === "dark" ? DARK_THEME : LIGHT_THEME;
   // Keep module-level C in sync for non-hook components
   C = T;
 
   const [aiPanel, setAiPanel]   = useState(null);
   const [drill, setDrill]     = useState(null); // { type, data }
-  const [alertsState, setAlertsState] = useState([]); // live: populated by /api/alerts/detect; demo: ALERTS_RAW
+  const [alertsState, setAlertsState] = useSessionState("iw_alertsState", []);
   const [alertsLoading, setAlertsLoading] = useState(false);
   const [lastScan, setLastScan] = useState(null);
 
   // ── Real data state ──────────────────────────────────────────────────────
   const [accounts,    setAccounts]    = useState([]);
-  const [accountId,   setAccountId]   = useState("all");
+  const [accountId,   setAccountId]   = useLocalState("iw_accountId", "all");
   const [kpis,        setKpis]        = useState(null);
   const [kpisLoading, setKpisLoading] = useState(false);
   const [trend,       setTrend]       = useState([]);
@@ -7922,7 +7967,7 @@ export default function AIOpsMonitor() {
   const [rulesLoading,setRulesLoading]= useState(false);
   const [agentScanResult, setAgentScanResult] = useState(null);
   const [agentScanLoading, setAgentScanLoading] = useState(false);
-  const [agentStates, setAgentStates] = useState({}); // agentId -> { status, lastRun, alertsFiled, log }
+  const [agentStates, setAgentStates] = useSessionState("iw_agentStates", {}); // agentId -> { status, lastRun, alertsFiled, log }
 
   // Load accounts on mount
   useEffect(() => {
@@ -8043,9 +8088,9 @@ export default function AIOpsMonitor() {
   const handleNavigate = (tab, data) => { setActiveTab(tab); setDrill(null); };
   // expose for non-hook components
   useEffect(() => { window._drillFn = openDrill; return () => { delete window._drillFn; }; }, []);
-  const [sevFilter, setSevFilter] = useState("all");
+  const [sevFilter, setSevFilter] = useSessionState("iw_sevFilter", "all");
   const [search, setSearch] = useState("");
-  const [activeTab, setActiveTab] = useState("dashboard");
+  const [activeTab, setActiveTab] = useSessionState("iw_activeTab", "dashboard");
   const [tick,     setTick]     = useState(0);
   const [auditLog, setAuditLog] = useState(RUN_HISTORY);
 

@@ -349,7 +349,7 @@ const RUN_HISTORY = [
   { id:"RH-003", type:"agent",    name:"Ads Download Monitor",              source:"—",             table:"—",                          ts:"09:15 AM", duration:"4.1s",  result:"pass",   detail:"23 profiles checked. 0 missing. All Step Functions healthy." },
   { id:"RH-004", type:"gate",     name:"Data Available Confirmation",       source:"—",             table:"—",                          ts:"09:08 AM", duration:"—",     result:"pending",detail:"Waiting for approval from @Abhishek. Escalates in 18 min." },
   { id:"RH-005", type:"rule",     name:"Keyword report unique rows",        source:"redshift-staging",  table:"tbl_amzn_keyword_report",    ts:"08:55 AM", duration:"3.4s",  result:"fail",   detail:"1,842 duplicate rows found on (report_date, profile_id, keyword_id). Triggered alert A-003." },
-  { id:"RH-006", type:"workflow", name:"Report Status Auto-Triage",         source:"—",             table:"—",                          ts:"08:40 AM", duration:"12.3s", result:"pass",   detail:"8 reports triaged. 5 redriven. 3 new executions started." },
+  { id:"RH-006", type:"workflow", name:"WiziAgent Report Triage",         source:"—",             table:"—",                          ts:"08:40 AM", duration:"12.3s", result:"pass",   detail:"8 reports triaged. 5 redriven. 3 new executions started." },
   { id:"RH-007", type:"rule",     name:"Account perf row count anomaly",    source:"redshift-staging",  table:"account_performance",        ts:"08:44 AM", duration:"2.1s",  result:"fail",   detail:"Row count: 14,203 (vs 7-day avg 21,580). Drop: 34.2%. Triggered alert A-004." },
   { id:"RH-008", type:"agent",    name:"Replication Checker",               source:"redshift-staging",  table:"—",                          ts:"09:14 AM", duration:"1.8s",  result:"pass",   detail:"All 6 GDS copy jobs verified. Redshift latency: 340ms (degraded)." },
   { id:"RH-009", type:"gate",     name:"Mage Pause Approval",               source:"—",             table:"—",                          ts:"Yesterday 4:22 PM", duration:"8m 14s", result:"pass", detail:"Approved by @Zubair at 4:30 PM. Bluewheel + Maryruth paused successfully." },
@@ -1089,40 +1089,64 @@ function ReportTriageTab({ addAuditEvent, accountId }) {
   const addLog = (msg, level="info") =>
     setLog(p => [...p.slice(-60), { ts: new Date().toLocaleTimeString(), msg, level }]);
 
-  // ── LangGraph agent run ───────────────────────────────────────────────────
+  // ── WiziAgent run ──────────────────────────────────────────────────────────
   const runAgent = async () => {
     setAgentRunning(true); setAgentResult(null); setAgentTrace([]);
-    addLog("🤖 Starting LangGraph WF-002 agent…");
+    addLog("✨ WiziAgent starting…");
     try {
-      const res  = await fetch(`${API}/api/report/triage-agent`, {
+      const res  = await fetch(`${API}/api/wizi-agent/run`, {
         method:"POST", headers:{"Content-Type":"application/json"},
         body: JSON.stringify({
-          account: accountId !== "all" ? accountId : undefined,
-          dry_run: false,
+          account:   accountId !== "all" ? accountId : undefined,
+          dry_run:   false,
+          threshold: 50,
         })
       });
       const data = await res.json();
       if (data.error) throw new Error(data.error);
       setAgentResult(data);
       setAgentTrace(data.trace || []);
-      // Also update the triage result panel with fresh scan data
+      (data.trace || []).forEach(t => addLog(`[${t.node}] ${t.msg}`, t.level));
       if (data.issues !== undefined) {
         setTriageResult({
-          table: "mws.report",
-          total_rows: data.total_rows,
-          issues: data.issues,
-          clean: data.issues.length === 0,
-          scanned_at: new Date().toISOString(),
+          table:"mws.report", total_rows:data.total_rows,
+          issues:data.issues, clean:data.issues.length===0,
+          scanned_at:new Date().toISOString(),
         });
       }
-      // Push fix results to log
-      (data.trace || []).forEach(t => addLog(`[${t.node}] ${t.msg}`, t.level));
-      addLog(`🤖 Agent complete — status: ${data.status}`, data.status === "fixed" ? "success" : "info");
+      if (data.status === "awaiting_approval") {
+        addLog(`⚠ Approval required — token: ${data.approval_token}`, "warning");
+        addLog("Use the approval panel below to proceed", "warning");
+      } else {
+        addLog(`✨ WiziAgent complete — ${data.status}`,
+          data.status==="fixed" ? "success" : "info");
+      }
     } catch(e) {
       setError(e.message);
       addLog(`✗ Agent failed: ${e.message}`, "error");
     }
     setAgentRunning(false);
+  };
+
+  const submitApproval = async (decision) => {
+    const token = agentResult?.approval_token;
+    if (!token) return;
+    addLog(`${decision==="approve"?"✅":"❌"} Submitting ${decision}…`);
+    try {
+      const res  = await fetch(`${API}/api/wizi-agent/approve`, {
+        method:"POST", headers:{"Content-Type":"application/json"},
+        body: JSON.stringify({ token, decision })
+      });
+      const data = await res.json();
+      if (data.error) throw new Error(data.error);
+      addLog(`✓ ${decision} sent — agent will ${decision==="approve"?"proceed":"skip"}`,
+        decision==="approve" ? "success" : "warning");
+      setAgentResult(p => ({...p, approval_status:
+        decision==="approve" ? "approved" : "rejected",
+        status: decision==="approve" ? "running" : "escalated"}));
+    } catch(e) {
+      addLog(`✗ Failed: ${e.message}`, "error");
+    }
   };
 
   const SEV = { critical: T.red, high: T.orange, medium: T.yellow, low: T.cyan };
@@ -1234,7 +1258,7 @@ function ReportTriageTab({ addAuditEvent, accountId }) {
               color:"white", border:"none", borderRadius:7, fontWeight:700, fontSize:12,
               cursor: agentRunning ? "not-allowed" : "pointer", display:"flex", alignItems:"center", gap:6,
               opacity: agentRunning ? 0.7 : 1 }}>
-            {agentRunning ? "🤖 Agent running…" : "🤖 Run LangGraph Agent"}
+            {agentRunning ? "✨ WiziAgent running…" : "✨ Run WiziAgent"}
           </button>
         </div>
       </div>
@@ -1403,7 +1427,7 @@ function ReportTriageTab({ addAuditEvent, accountId }) {
                             agentResult.status==="escalated" ? `${T.yellow}08` : `${T.accent}08` }}>
                 <div>
                   <div style={{ fontSize:13, fontWeight:700, color:T.text }}>
-                    🤖 LangGraph Agent — {agentResult.status?.toUpperCase()}
+                    ✨ WiziAgent — {agentResult.status?.toUpperCase()}
                   </div>
                   <div style={{ fontSize:11, color:T.muted, marginTop:2 }}>
                     {agentResult.classification?.summary || "Run complete"}
@@ -1414,6 +1438,47 @@ function ReportTriageTab({ addAuditEvent, accountId }) {
                   style={{ background:"none", border:"none", color:T.muted,
                     cursor:"pointer", fontSize:16 }}>✕</button>
               </div>
+              {/* Approval gate panel */}
+              {agentResult.status === "awaiting_approval" && agentResult.approval_status === "pending" && (
+                <div style={{ padding:"14px 18px", background:`${T.yellow}10`,
+                  borderBottom:`1px solid ${T.yellow}30` }}>
+                  <div style={{ fontSize:12, fontWeight:700, color:T.yellow, marginBottom:8 }}>
+                    ⚠ High-risk fix — Human Approval Required
+                  </div>
+                  <div style={{ fontSize:11, color:T.muted, marginBottom:12 }}>
+                    {agentResult.classification?.risk_reason || "Fix affects >= threshold rows"}
+                    {" "}Token: <code style={{fontFamily:"Consolas,monospace",color:T.cyan}}>{agentResult.approval_token}</code>
+                  </div>
+                  <div style={{ display:"flex", gap:8 }}>
+                    <button onClick={() => submitApproval("approve")}
+                      style={{ padding:"7px 20px", background:T.green, color:"white",
+                        border:"none", borderRadius:7, fontWeight:700, fontSize:12, cursor:"pointer" }}>
+                      ✅ Approve Fix
+                    </button>
+                    <button onClick={() => submitApproval("reject")}
+                      style={{ padding:"7px 20px", background:T.red, color:"white",
+                        border:"none", borderRadius:7, fontWeight:700, fontSize:12, cursor:"pointer" }}>
+                      ❌ Reject
+                    </button>
+                    <span style={{ fontSize:11, color:T.muted, alignSelf:"center" }}>
+                      Agent is waiting — times out in 10 min
+                    </span>
+                  </div>
+                </div>
+              )}
+              {agentResult.approval_status === "approved" && (
+                <div style={{ padding:"8px 18px", background:`${T.green}10`,
+                  borderBottom:`1px solid ${T.green}30`, fontSize:11, color:T.green }}>
+                  ✅ Approved — fix is executing…
+                </div>
+              )}
+              {agentResult.approval_status === "rejected" && (
+                <div style={{ padding:"8px 18px", background:`${T.red}10`,
+                  borderBottom:`1px solid ${T.red}30`, fontSize:11, color:T.red }}>
+                  ❌ Rejected — no changes were made to mws.report
+                </div>
+              )}
+
               {/* Fix results */}
               {(agentResult.fix_results||[]).length > 0 && (
                 <div style={{ padding:"10px 18px", borderBottom:`1px solid ${T.border}`,
@@ -4701,8 +4766,27 @@ function AlertRow({ alert, onAIClick, onDrill, onResolve, onAutoFix, onTriage, s
   const handleAutoFix = async (e) => {
     e.stopPropagation();
     setFixing(true);
-    await new Promise(r => setTimeout(r, 1800)); // simulate fix running
-    onAutoFix && onAutoFix(alert.id);
+    // Parse schema.table from alert.table (e.g. "mws.orders")
+    const parts  = (alert.table || "").split(".");
+    const schema = parts.length > 1 ? parts[0] : "mws";
+    const table  = parts.length > 1 ? parts[1] : parts[0];
+    if (schema && table) {
+      try {
+        const res  = await fetch("https://intentwise-backend-production.up.railway.app/api/wizi-agent/run-table", {
+          method:"POST", headers:{"Content-Type":"application/json"},
+          body: JSON.stringify({ schema, table, threshold:50, dry_run:false })
+        });
+        const data = await res.json();
+        if (data.status === "fixed" || data.status === "clean") {
+          onAutoFix && onAutoFix(alert.id);
+        }
+      } catch(err) {
+        // fallback to manual resolve
+        onAutoFix && onAutoFix(alert.id);
+      }
+    } else {
+      onAutoFix && onAutoFix(alert.id);
+    }
     setFixing(false);
   };
 
@@ -7942,6 +8026,34 @@ function AIAgentsTab({ agentStates, setAgentStates, setAlertsState, accountId, a
                               disabled={isScanningT}
                               style={{ padding:"4px 10px", background: isScanningT ? C.border : `${C.accent}20`, color: isScanningT ? C.muted : C.accentL, border:`1px solid ${C.accent}30`, borderRadius:6, fontSize:10, fontWeight:600, cursor: isScanningT ? "not-allowed" : "pointer" }}>
                               {isScanningT ? "…" : "Scan"}
+                            </button>
+                            {/* WiziAgent */}
+                            <button
+                              onClick={() => {
+                                const agentKey = `wizi_${key}`;
+                                setResults(p => ({...p, [agentKey]: "running"}));
+                                fetch(`https://intentwise-backend-production.up.railway.app/api/wizi-agent/run-table`, {
+                                  method:"POST", headers:{"Content-Type":"application/json"},
+                                  body: JSON.stringify({ schema: schemaName, table: t.name, threshold: 50, dry_run: false })
+                                })
+                                .then(r => r.json())
+                                .then(data => {
+                                  setResults(p => ({...p, [agentKey]: data, [key]: data}));
+                                  if (data.alerts?.length && setAlertsState)
+                                    setAlertsState(p => [...p, ...data.alerts]);
+                                  if (addAuditEvent) addAuditEvent({
+                                    type:"agent", name:`WiziAgent — ${key}`,
+                                    table:key, source:"redshift-staging",
+                                    result: data.status === "fixed" ? "pass" : data.status === "clean" ? "pass" : "fail",
+                                    detail: data.trace?.slice(-1)[0]?.msg || data.status
+                                  });
+                                })
+                                .catch(e => setResults(p => ({...p, [agentKey]: {error: e.message}})));
+                              }}
+                              style={{ padding:"4px 10px", background:`${C.purple}20`,
+                                color:C.purple, border:`1px solid ${C.purple}40`,
+                                borderRadius:6, fontSize:10, fontWeight:700, cursor:"pointer" }}>
+                              ✨ WiziAgent
                             </button>
                             {/* Expand sub-agents */}
                             <button

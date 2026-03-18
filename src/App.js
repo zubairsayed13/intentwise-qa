@@ -1068,6 +1068,366 @@ function WorkflowDetailDrawer({ workflow: wf, onClose, onEdit }) {
 }
 
 // ─── Workflow Builder Tab ─────────────────────────────────────────────────────
+// ─── Remediation Flow Tab ────────────────────────────────────────────────────
+function RemediationFlowTab({ addAuditEvent }) {
+  const T = useTheme();
+  const API = "https://intentwise-backend-production.up.railway.app";
+
+  // ── state ─────────────────────────────────────────────────────────────────
+  const [step,         setStep]         = React.useState(0);
+  // 0=idle 1=scanning 2=scanned 3=confirming 4=fixing 5=fixed 6=notifying 7=done
+  const [scanResult,   setScanResult]   = React.useState(null);
+  const [selectedFix,  setSelectedFix]  = React.useState(null); // issue id
+  const [dryRunResult, setDryRunResult] = React.useState(null);
+  const [fixResult,    setFixResult]    = React.useState(null);
+  const [notifyResult, setNotifyResult] = React.useState(null);
+  const [error,        setError]        = React.useState(null);
+  const [log,          setLog]          = React.useState([]);
+  const [slackMsg,     setSlackMsg]     = React.useState("");
+
+  const addLog = (msg, level="info") => setLog(p => [...p, {
+    ts: new Date().toLocaleTimeString(), msg, level
+  }]);
+
+  const sev = { critical: T.red, high: T.orange, medium: T.yellow, low: T.cyan };
+
+  // ── STEP 1: Scan ──────────────────────────────────────────────────────────
+  const runScan = async () => {
+    setStep(1); setError(null); setScanResult(null);
+    setSelectedFix(null); setDryRunResult(null); setFixResult(null);
+    setNotifyResult(null); setLog([]);
+    addLog("▶ Starting scan on mws.orders…");
+    try {
+      const res  = await fetch(`${API}/api/remediation/scan`);
+      const data = await res.json();
+      if (data.error) throw new Error(data.error);
+      setScanResult(data);
+      const issueCount = data.issues.filter(i => i.count > 0).length;
+      addLog(`✓ Scan complete — ${data.total_rows.toLocaleString()} total rows, ${issueCount} issue type(s) found`, "success");
+      data.issues.forEach(i => {
+        if (i.count > 0) addLog(`  ⚠ ${i.title}: ${i.count.toLocaleString()} rows affected`, "warning");
+        else addLog(`  ✓ ${i.title}: clean`, "success");
+      });
+      setStep(2);
+      if (addAuditEvent) addAuditEvent({ type:"workflow", name:"Remediation scan — mws.orders", table:"mws.orders", source:"redshift-staging", result: issueCount > 0 ? "fail" : "pass", detail:`${issueCount} issues found across ${data.total_rows} rows` });
+    } catch(e) { setError(e.message); addLog(`✗ Scan failed: ${e.message}`, "error"); setStep(0); }
+  };
+
+  // ── STEP 2: Dry run ───────────────────────────────────────────────────────
+  const runDryRun = async (issue) => {
+    setSelectedFix(issue.id); setStep(3); setDryRunResult(null);
+    addLog(`▶ Dry run: ${issue.title}…`);
+    try {
+      const res  = await fetch(`${API}/api/remediation/fix`, {
+        method:"POST", headers:{"Content-Type":"application/json"},
+        body: JSON.stringify({ fix_type: issue.fix_type, dry_run: true })
+      });
+      const data = await res.json();
+      if (data.error) throw new Error(data.error);
+      setDryRunResult(data);
+      addLog(`✓ Dry run complete — ${data.rows_affected.toLocaleString()} rows would be affected (total: ${data.before.toLocaleString()})`, "success");
+      setStep(3);
+    } catch(e) { setError(e.message); addLog(`✗ Dry run failed: ${e.message}`, "error"); setStep(2); }
+  };
+
+  // ── STEP 3: Execute fix ───────────────────────────────────────────────────
+  const executeFix = async () => {
+    const issue = scanResult?.issues.find(i => i.id === selectedFix);
+    if (!issue) return;
+    const confirmed = window.confirm(
+      `⚠️ This will run a live fix on mws.orders\n\nFix: ${issue.fix_type}\nRows affected: ${dryRunResult?.rows_affected?.toLocaleString()}\n\nThis cannot be undone. Proceed?`
+    );
+    if (!confirmed) return;
+    setStep(4); setFixResult(null);
+    addLog(`▶ Executing fix: ${issue.fix_type}…`);
+    try {
+      const res  = await fetch(`${API}/api/remediation/fix`, {
+        method:"POST", headers:{"Content-Type":"application/json"},
+        body: JSON.stringify({ fix_type: issue.fix_type, dry_run: false })
+      });
+      const data = await res.json();
+      if (data.error) throw new Error(data.error);
+      setFixResult(data);
+      addLog(`✓ Fix executed — before: ${data.before.toLocaleString()}, after: ${data.after.toLocaleString()}, removed: ${(data.before-data.after).toLocaleString()} rows`, "success");
+      const msg = `✅ *mws.orders remediation complete*\nFix: \`${issue.fix_type}\`\nRows affected: ${data.rows_affected} | Before: ${data.before} → After: ${data.after}`;
+      setSlackMsg(msg);
+      setStep(5);
+      if (addAuditEvent) addAuditEvent({ type:"workflow", name:`Remediation fix — ${issue.fix_type}`, table:"mws.orders", source:"redshift-staging", result:"pass", detail:`Before: ${data.before} → After: ${data.after} (${data.rows_affected} rows affected)`, duration:"live" });
+    } catch(e) { setError(e.message); addLog(`✗ Fix failed: ${e.message}`, "error"); setStep(3); }
+  };
+
+  // ── STEP 4: Re-scan ───────────────────────────────────────────────────────
+  const reScan = async () => {
+    setStep(1); addLog("▶ Re-scanning to verify fix…");
+    try {
+      const res  = await fetch(`${API}/api/remediation/scan`);
+      const data = await res.json();
+      if (data.error) throw new Error(data.error);
+      setScanResult(data);
+      const remaining = data.issues.filter(i => i.count > 0).length;
+      addLog(`✓ Re-scan complete — ${remaining} issue type(s) remaining`, remaining === 0 ? "success" : "warning");
+      setStep(5);
+    } catch(e) { setError(e.message); addLog(`✗ Re-scan failed: ${e.message}`, "error"); }
+  };
+
+  // ── STEP 5: Notify ────────────────────────────────────────────────────────
+  const sendNotification = async () => {
+    setStep(6); addLog("▶ Sending Slack notification…");
+    try {
+      const issue = scanResult?.issues.find(i => i.id === selectedFix);
+      const res   = await fetch(`${API}/api/remediation/notify`, {
+        method:"POST", headers:{"Content-Type":"application/json"},
+        body: JSON.stringify({
+          message: slackMsg,
+          fix_type: issue?.fix_type || "",
+          rows_affected: fixResult?.rows_affected || 0,
+          before: fixResult?.before || 0,
+          after:  fixResult?.after  || 0,
+        })
+      });
+      const data = await res.json();
+      setNotifyResult(data);
+      if (data.sent) {
+        addLog("✓ Slack notification sent", "success");
+        if (addAuditEvent) addAuditEvent({ type:"workflow", name:"Slack notification sent", table:"mws.orders", source:"slack", result:"pass", detail:slackMsg });
+      } else {
+        addLog(`⚠ Slack returned status ${data.status} (check SLACK_WEBHOOK_URL)`, "warning");
+      }
+      setStep(7);
+    } catch(e) { setError(e.message); addLog(`✗ Notify failed: ${e.message}`, "error"); setStep(5); }
+  };
+
+  // ── helpers ───────────────────────────────────────────────────────────────
+  const Btn = ({ onClick, disabled, color, children, small }) => (
+    <button onClick={onClick} disabled={disabled}
+      style={{ display:"flex", alignItems:"center", gap:6, padding: small ? "5px 12px" : "8px 18px",
+        background: disabled ? T.border : color || T.accent,
+        color: disabled ? T.muted : "white", border:"none", borderRadius:7,
+        cursor: disabled ? "not-allowed" : "pointer", fontSize: small ? 11 : 12,
+        fontWeight:600, opacity: disabled ? 0.6 : 1, transition:"all 0.15s" }}>
+      {children}
+    </button>
+  );
+
+  const StepDot = ({ n, label }) => {
+    const done    = step >  n;
+    const active  = step === n;
+    return (
+      <div style={{ display:"flex", flexDirection:"column", alignItems:"center", gap:4, flex:1 }}>
+        <div style={{ width:28, height:28, borderRadius:"50%", display:"flex", alignItems:"center", justifyContent:"center", fontSize:11, fontWeight:700,
+          background: done ? T.green : active ? T.accent : T.border,
+          color: (done||active) ? "white" : T.muted,
+          boxShadow: active ? `0 0 0 3px ${T.accent}30` : "none",
+          transition:"all 0.3s" }}>
+          {done ? "✓" : n}
+        </div>
+        <span style={{ fontSize:9, color: active ? T.accent : done ? T.green : T.muted, fontWeight: active ? 700 : 400, textAlign:"center", lineHeight:1.3 }}>{label}</span>
+      </div>
+    );
+  };
+
+  const isScanning   = step === 1;
+  const hasScanned   = step >= 2;
+  const issue        = scanResult?.issues.find(i => i.id === selectedFix);
+  const activeIssues = (scanResult?.issues || []).filter(i => i.count > 0);
+
+  return (
+    <div style={{ padding:"0 2px" }}>
+      {/* Header */}
+      <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom:20 }}>
+        <div>
+          <div style={{ fontSize:16, fontWeight:700, color:T.text }}>Remediation Flow</div>
+          <div style={{ fontSize:12, color:T.muted, marginTop:2 }}>Live end-to-end fix pipeline · <code style={{ color:T.cyan, fontFamily:"Consolas,monospace", fontSize:11 }}>mws.orders</code></div>
+        </div>
+        <Btn onClick={runScan} disabled={isScanning} color={T.accent}>
+          {isScanning ? "⏳ Scanning…" : step === 0 ? "▶ Run Scan" : "↺ Re-scan"}
+        </Btn>
+      </div>
+
+      {/* Step progress bar */}
+      <div style={{ background:T.card, border:`1px solid ${T.border}`, borderRadius:10, padding:"14px 20px", marginBottom:16, display:"flex", alignItems:"flex-start", gap:0 }}>
+        {[
+          [1,"Scan"],
+          [2,"Issues"],
+          [3,"Dry Run"],
+          [4,"Execute"],
+          [5,"Verify"],
+          [6,"Notify"],
+          [7,"Done"],
+        ].map(([n, label], i, arr) => (
+          <React.Fragment key={n}>
+            <StepDot n={n} label={label} />
+            {i < arr.length-1 && (
+              <div style={{ flex:0.5, height:2, background: step > n ? T.green : T.border, marginTop:13, transition:"background 0.3s" }}/>
+            )}
+          </React.Fragment>
+        ))}
+      </div>
+
+      <div style={{ display:"grid", gridTemplateColumns:"1fr 340px", gap:14 }}>
+        {/* Left — main panel */}
+        <div style={{ display:"flex", flexDirection:"column", gap:12 }}>
+
+          {/* Scan results */}
+          {hasScanned && scanResult && (
+            <div style={{ background:T.card, border:`1px solid ${T.border}`, borderRadius:10, padding:"16px 18px" }}>
+              <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom:12 }}>
+                <span style={{ fontSize:13, fontWeight:700, color:T.text }}>Scan Results — mws.orders</span>
+                <span style={{ fontSize:11, color:T.muted }}>{scanResult.total_rows?.toLocaleString()} total rows</span>
+              </div>
+              <div style={{ display:"flex", flexDirection:"column", gap:8 }}>
+                {scanResult.issues.map(issue => (
+                  <div key={issue.id} style={{
+                    padding:"12px 14px", borderRadius:8, border:`1px solid ${issue.count > 0 ? sev[issue.severity]+"40" : T.border}`,
+                    background: issue.count > 0 ? sev[issue.severity]+"08" : T.surface,
+                    display:"flex", alignItems:"center", gap:12
+                  }}>
+                    <div style={{ width:8, height:8, borderRadius:"50%", background: issue.count > 0 ? sev[issue.severity] : T.green, flexShrink:0 }}/>
+                    <div style={{ flex:1 }}>
+                      <div style={{ fontSize:12, fontWeight:600, color:T.text }}>{issue.title}</div>
+                      <div style={{ fontSize:11, color:T.muted, marginTop:2 }}>{issue.description}</div>
+                    </div>
+                    <div style={{ textAlign:"right", flexShrink:0 }}>
+                      <div style={{ fontSize:15, fontWeight:700, color: issue.count > 0 ? sev[issue.severity] : T.green }}>
+                        {issue.count.toLocaleString()}
+                      </div>
+                      <div style={{ fontSize:9, color:T.muted }}>rows</div>
+                    </div>
+                    {issue.count > 0 && step < 4 && (
+                      <Btn small color={T.accent} onClick={() => runDryRun(issue)}
+                        disabled={isScanning || step === 3 || step === 4}>
+                        Dry Run →
+                      </Btn>
+                    )}
+                    {issue.count > 0 && fixResult && selectedFix === issue.id && (
+                      <span style={{ fontSize:10, fontWeight:700, color:T.green, background:`${T.green}15`, borderRadius:5, padding:"3px 8px" }}>FIXED</span>
+                    )}
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* Dry run result */}
+          {dryRunResult && step >= 3 && !fixResult && (
+            <div style={{ background:T.card, border:`1px solid ${T.orange}40`, borderRadius:10, padding:"16px 18px" }}>
+              <div style={{ fontSize:13, fontWeight:700, color:T.text, marginBottom:10 }}>⚠ Dry Run Preview</div>
+              <div style={{ display:"grid", gridTemplateColumns:"repeat(3,1fr)", gap:10, marginBottom:14 }}>
+                {[
+                  ["Fix type", dryRunResult.fix_type],
+                  ["Rows affected", dryRunResult.rows_affected?.toLocaleString()],
+                  ["Table total before", dryRunResult.before?.toLocaleString()],
+                ].map(([label, val]) => (
+                  <div key={label} style={{ background:T.surface, borderRadius:7, padding:"10px 12px" }}>
+                    <div style={{ fontSize:9, color:T.muted, marginBottom:4, textTransform:"uppercase", letterSpacing:"0.06em" }}>{label}</div>
+                    <div style={{ fontSize:14, fontWeight:700, color:T.text, fontFamily:"Consolas,monospace" }}>{val}</div>
+                  </div>
+                ))}
+              </div>
+              <div style={{ display:"flex", gap:8, alignItems:"center" }}>
+                <Btn onClick={executeFix} color={T.red}>🔧 Execute Fix (Live)</Btn>
+                <span style={{ fontSize:11, color:T.muted }}>This will modify mws.orders</span>
+              </div>
+            </div>
+          )}
+
+          {/* Fix result */}
+          {fixResult && (
+            <div style={{ background:T.card, border:`1px solid ${T.green}40`, borderRadius:10, padding:"16px 18px" }}>
+              <div style={{ fontSize:13, fontWeight:700, color:T.green, marginBottom:10 }}>✅ Fix Executed</div>
+              <div style={{ display:"grid", gridTemplateColumns:"repeat(4,1fr)", gap:10, marginBottom:14 }}>
+                {[
+                  ["Before", fixResult.before?.toLocaleString()],
+                  ["After",  fixResult.after?.toLocaleString()],
+                  ["Removed", (fixResult.before - fixResult.after)?.toLocaleString()],
+                  ["Fix type", fixResult.fix_type],
+                ].map(([label, val]) => (
+                  <div key={label} style={{ background:T.surface, borderRadius:7, padding:"10px 12px" }}>
+                    <div style={{ fontSize:9, color:T.muted, marginBottom:4, textTransform:"uppercase", letterSpacing:"0.06em" }}>{label}</div>
+                    <div style={{ fontSize:14, fontWeight:700, color:T.text, fontFamily:"Consolas,monospace" }}>{val}</div>
+                  </div>
+                ))}
+              </div>
+              <div style={{ display:"flex", gap:8 }}>
+                <Btn small color={T.cyan} onClick={reScan}>↺ Re-scan to Verify</Btn>
+                <Btn small color={T.purple} onClick={sendNotification} disabled={step===6||step===7}>
+                  📣 Notify (optional)
+                </Btn>
+              </div>
+            </div>
+          )}
+
+          {/* Notify result */}
+          {notifyResult && (
+            <div style={{ background:T.card, border:`1px solid ${notifyResult.sent ? T.green : T.yellow}40`, borderRadius:10, padding:"14px 18px" }}>
+              {notifyResult.sent
+                ? <span style={{ fontSize:12, color:T.green }}>✅ Slack notification sent successfully</span>
+                : <span style={{ fontSize:12, color:T.yellow }}>⚠ Slack notification not sent — add SLACK_WEBHOOK_URL to Railway env vars</span>
+              }
+            </div>
+          )}
+
+          {/* Error */}
+          {error && (
+            <div style={{ background:`${T.red}10`, border:`1px solid ${T.red}40`, borderRadius:10, padding:"12px 16px", fontSize:12, color:T.red }}>
+              ✗ {error}
+            </div>
+          )}
+        </div>
+
+        {/* Right — live log */}
+        <div style={{ display:"flex", flexDirection:"column", gap:12 }}>
+          <div style={{ background:T.card, border:`1px solid ${T.border}`, borderRadius:10, padding:"14px 16px" }}>
+            <div style={{ fontSize:12, fontWeight:700, color:T.text, marginBottom:10 }}>📋 Run Log</div>
+            <div style={{ background:T.isDark ? "#0A0C10" : "#F1F5F9", borderRadius:7, padding:"10px 12px",
+              height:320, overflowY:"auto", display:"flex", flexDirection:"column", gap:4 }}>
+              {log.length === 0
+                ? <span style={{ fontSize:11, color:T.muted }}>Waiting to start…</span>
+                : log.map((l,i) => (
+                  <div key={i} style={{ fontFamily:"Consolas,monospace", fontSize:11,
+                    color: l.level==="success" ? T.green : l.level==="error" ? T.red : l.level==="warning" ? T.yellow : T.muted }}>
+                    <span style={{ color:T.muted, marginRight:6 }}>[{l.ts}]</span>{l.msg}
+                  </div>
+                ))
+              }
+            </div>
+          </div>
+
+          {/* Slack preview */}
+          {slackMsg && (
+            <div style={{ background:T.card, border:`1px solid ${T.border}`, borderRadius:10, padding:"14px 16px" }}>
+              <div style={{ fontSize:11, fontWeight:700, color:T.muted, marginBottom:8 }}>SLACK PREVIEW</div>
+              <div style={{ background:"#1A1D21", borderRadius:7, padding:"10px 12px", borderLeft:`4px solid #36C5F0` }}>
+                <div style={{ fontSize:11, color:"#E8E8E8", lineHeight:1.7, fontFamily:"monospace", whiteSpace:"pre-wrap" }}>{slackMsg}</div>
+              </div>
+              <textarea
+                value={slackMsg}
+                onChange={e => setSlackMsg(e.target.value)}
+                style={{ width:"100%", marginTop:8, padding:"8px 10px", background:T.surface, border:`1px solid ${T.border}`,
+                  borderRadius:6, color:T.text, fontSize:11, fontFamily:"Consolas,monospace", resize:"vertical", minHeight:60, boxSizing:"border-box" }}
+              />
+            </div>
+          )}
+
+          {/* Done summary */}
+          {step === 7 && (
+            <div style={{ background:`${T.green}10`, border:`1px solid ${T.green}40`, borderRadius:10, padding:"14px 16px" }}>
+              <div style={{ fontSize:13, fontWeight:700, color:T.green, marginBottom:6 }}>🎉 Flow Complete</div>
+              <div style={{ fontSize:11, color:T.muted, lineHeight:1.6 }}>
+                Fix executed · Re-scan verified · Slack notified · Audit logged
+              </div>
+              <button onClick={() => { setStep(0); setLog([]); setScanResult(null); setFixResult(null); setNotifyResult(null); setDryRunResult(null); setSelectedFix(null); setSlackMsg(""); setError(null); }}
+                style={{ marginTop:10, fontSize:11, color:T.accent, background:"none", border:"none", cursor:"pointer", textDecoration:"underline" }}>
+                Reset flow
+              </button>
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function WorkflowBuilderTab() {
   const [workflows, setWorkflows]   = useState(INIT_WORKFLOWS);
   const [selected, setSelected]     = useState(null);   // workflow id or "new"
@@ -7207,28 +7567,9 @@ export default function AIOpsMonitor() {
           {/* ── Automation & Controls Tab ── */}
           {activeTab === "automation" && (
             <div style={{ paddingBottom:24 }}>
-              <SectionHeader icon={Cpu} title="Automation & Controls" subtitle="QA agents, remediation flows and approval gates — coming soon" />
-              <div style={{ display:"grid", gridTemplateColumns:"repeat(3,1fr)", gap:14, marginTop:4 }}>
-                {[
-                  { icon:Bot,       title:"QA Agents",          desc:"Autonomous agents that scan mws tables, detect anomalies and file alerts.", badge:"Soon" },
-                  { icon:GitBranch, title:"Remediation Flows",  desc:"Automated workflows to fix, requeue or escalate detected data issues.",   badge:"Soon" },
-                  { icon:Lock,      title:"Human-in-the-Loop",  desc:"Approval gates requiring human sign-off before high-risk auto-fixes run.", badge:"Soon" },
-                ].map(({ icon:Icon, title, desc, badge }) => (
-                  <div key={title} style={{ background:T.card, border:`1px solid ${T.border2}`, borderRadius:12, padding:"20px 22px" }}>
-                    <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom:12 }}>
-                      <div style={{ width:36, height:36, borderRadius:10, background:`${T.accent}12`, display:"flex", alignItems:"center", justifyContent:"center" }}>
-                        <Icon size={18} color={T.accent}/>
-                      </div>
-                      <span style={{ fontSize:9, fontWeight:700, letterSpacing:"0.08em", color:T.muted, background:T.border, borderRadius:4, padding:"2px 7px" }}>{badge}</span>
-                    </div>
-                    <div style={{ fontSize:13, fontWeight:700, color:T.text, marginBottom:6 }}>{title}</div>
-                    <div style={{ fontSize:12, color:T.muted, lineHeight:1.6 }}>{desc}</div>
-                  </div>
-                ))}
-              </div>
-              <div style={{ marginTop:20, padding:"16px 20px", background:T.card, border:`1px dashed ${T.border2}`, borderRadius:12, textAlign:"center" }}>
-                <div style={{ fontSize:12, color:T.muted }}>These capabilities will be wired to <code style={{color:T.accentL,fontFamily:"Consolas,monospace"}}>redshift-staging</code> · mws schema in a future release.</div>
-              </div>
+              <SectionHeader icon={GitBranch} title="Automation & Controls"
+                subtitle="Live remediation flows · mws.orders end-to-end" />
+              <RemediationFlowTab addAuditEvent={addAuditEvent} />
             </div>
           )}
 

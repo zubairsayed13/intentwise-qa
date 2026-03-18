@@ -1082,9 +1082,48 @@ function ReportTriageTab({ addAuditEvent, accountId }) {
   const [expandSamples, setExpandSamples] = React.useState({});
   const [log,           setLog]           = useSessionState("iw_triageLog", []);
   const [error,         setError]         = React.useState(null);
+  const [agentRunning, setAgentRunning] = React.useState(false);
+  const [agentResult,  setAgentResult]  = useSessionState("iw_agentResult", null);
+  const [agentTrace,   setAgentTrace]   = useSessionState("iw_agentTrace", []);
 
   const addLog = (msg, level="info") =>
     setLog(p => [...p.slice(-60), { ts: new Date().toLocaleTimeString(), msg, level }]);
+
+  // ── LangGraph agent run ───────────────────────────────────────────────────
+  const runAgent = async () => {
+    setAgentRunning(true); setAgentResult(null); setAgentTrace([]);
+    addLog("🤖 Starting LangGraph WF-002 agent…");
+    try {
+      const res  = await fetch(`${API}/api/report/triage-agent`, {
+        method:"POST", headers:{"Content-Type":"application/json"},
+        body: JSON.stringify({
+          account: accountId !== "all" ? accountId : undefined,
+          dry_run: false,
+        })
+      });
+      const data = await res.json();
+      if (data.error) throw new Error(data.error);
+      setAgentResult(data);
+      setAgentTrace(data.trace || []);
+      // Also update the triage result panel with fresh scan data
+      if (data.issues !== undefined) {
+        setTriageResult({
+          table: "mws.report",
+          total_rows: data.total_rows,
+          issues: data.issues,
+          clean: data.issues.length === 0,
+          scanned_at: new Date().toISOString(),
+        });
+      }
+      // Push fix results to log
+      (data.trace || []).forEach(t => addLog(`[${t.node}] ${t.msg}`, t.level));
+      addLog(`🤖 Agent complete — status: ${data.status}`, data.status === "fixed" ? "success" : "info");
+    } catch(e) {
+      setError(e.message);
+      addLog(`✗ Agent failed: ${e.message}`, "error");
+    }
+    setAgentRunning(false);
+  };
 
   const SEV = { critical: T.red, high: T.orange, medium: T.yellow, low: T.cyan };
 
@@ -1183,12 +1222,21 @@ function ReportTriageTab({ addAuditEvent, accountId }) {
             {triageResult && <span> · {triageResult.total_rows?.toLocaleString()} rows · scanned {new Date(triageResult.scanned_at).toLocaleTimeString()}</span>}
           </div>
         </div>
-        <button onClick={runTriage} disabled={scanning}
-          style={{ padding:"7px 18px", background: scanning ? T.border : T.accent,
-            color:"white", border:"none", borderRadius:7, fontWeight:700, fontSize:12,
-            cursor: scanning ? "not-allowed" : "pointer", display:"flex", alignItems:"center", gap:6 }}>
-          {scanning ? "⏳ Scanning…" : triageResult ? "↺ Re-scan" : "▶ Run Triage"}
-        </button>
+        <div style={{ display:"flex", gap:8 }}>
+          <button onClick={runTriage} disabled={scanning || agentRunning}
+            style={{ padding:"7px 18px", background: scanning ? T.border : T.accent,
+              color:"white", border:"none", borderRadius:7, fontWeight:700, fontSize:12,
+              cursor: scanning ? "not-allowed" : "pointer", display:"flex", alignItems:"center", gap:6 }}>
+            {scanning ? "⏳ Scanning…" : triageResult ? "↺ Re-scan" : "▶ Run Triage"}
+          </button>
+          <button onClick={runAgent} disabled={agentRunning || scanning}
+            style={{ padding:"7px 18px", background: agentRunning ? T.border : T.purple,
+              color:"white", border:"none", borderRadius:7, fontWeight:700, fontSize:12,
+              cursor: agentRunning ? "not-allowed" : "pointer", display:"flex", alignItems:"center", gap:6,
+              opacity: agentRunning ? 0.7 : 1 }}>
+            {agentRunning ? "🤖 Agent running…" : "🤖 Run LangGraph Agent"}
+          </button>
+        </div>
       </div>
 
       {error && (
@@ -1341,6 +1389,78 @@ function ReportTriageTab({ addAuditEvent, accountId }) {
               </div>
             );
           })}
+        {/* Agent run result panel */}
+          {agentResult && (
+            <div style={{ background:T.card, border:`2px solid ${
+              agentResult.status==="fixed" ? T.green :
+              agentResult.status==="escalated" ? T.yellow :
+              agentResult.status==="clean" ? T.green : T.red}`,
+              borderRadius:12, overflow:"hidden", marginTop:4 }}>
+              {/* Header */}
+              <div style={{ padding:"12px 18px", display:"flex", alignItems:"center",
+                justifyContent:"space-between",
+                background: agentResult.status==="fixed" ? `${T.green}08` :
+                            agentResult.status==="escalated" ? `${T.yellow}08` : `${T.accent}08` }}>
+                <div>
+                  <div style={{ fontSize:13, fontWeight:700, color:T.text }}>
+                    🤖 LangGraph Agent — {agentResult.status?.toUpperCase()}
+                  </div>
+                  <div style={{ fontSize:11, color:T.muted, marginTop:2 }}>
+                    {agentResult.classification?.summary || "Run complete"}
+                    {agentResult.notified && " · Slack notified ✓"}
+                  </div>
+                </div>
+                <button onClick={() => { setAgentResult(null); setAgentTrace([]); }}
+                  style={{ background:"none", border:"none", color:T.muted,
+                    cursor:"pointer", fontSize:16 }}>✕</button>
+              </div>
+              {/* Fix results */}
+              {(agentResult.fix_results||[]).length > 0 && (
+                <div style={{ padding:"10px 18px", borderBottom:`1px solid ${T.border}`,
+                  display:"flex", gap:10, flexWrap:"wrap" }}>
+                  {agentResult.fix_results.map((r,i) => (
+                    <div key={i} style={{ background:`${T.green}10`, border:`1px solid ${T.green}30`,
+                      borderRadius:7, padding:"7px 12px", fontSize:11 }}>
+                      <div style={{ fontWeight:700, color:T.green, fontFamily:"Consolas,monospace" }}>
+                        {r.action}
+                      </div>
+                      <div style={{ color:T.muted, marginTop:2 }}>
+                        {r.rows_affected} rows · {r.before} → {r.after}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+              {/* Trace steps */}
+              <div style={{ padding:"10px 18px", display:"flex", flexDirection:"column", gap:3 }}>
+                <div style={{ fontSize:10, fontWeight:700, color:T.muted, marginBottom:4,
+                  textTransform:"uppercase", letterSpacing:"0.06em" }}>Execution Trace</div>
+                {(agentResult.trace||[]).map((t,i) => (
+                  <div key={i} style={{ display:"flex", gap:8, alignItems:"baseline" }}>
+                    <span style={{ fontSize:9, color:T.muted, fontFamily:"Consolas,monospace",
+                      flexShrink:0, width:18, textAlign:"right" }}>{i+1}.</span>
+                    <span style={{ fontSize:10, padding:"2px 7px", borderRadius:4,
+                      background:`${T.accent}10`, color:T.accentL, fontFamily:"Consolas,monospace",
+                      flexShrink:0 }}>{t.node}</span>
+                    <span style={{ fontSize:10, color:T.muted, flexShrink:0 }}>{t.ts}</span>
+                    <span style={{ fontSize:11, color:
+                      t.level==="success" ? T.green :
+                      t.level==="warning" ? T.yellow :
+                      t.level==="error"   ? T.red : T.text }}>
+                      {t.msg}
+                    </span>
+                  </div>
+                ))}
+              </div>
+              {/* Remaining issues warning */}
+              {(agentResult.verify_issues||[]).length > 0 && (
+                <div style={{ padding:"10px 18px", borderTop:`1px solid ${T.border}`,
+                  background:`${T.yellow}08`, fontSize:12, color:T.yellow }}>
+                  ⚠ {agentResult.verify_issues.length} issue(s) remain after fix — manual review required
+                </div>
+              )}
+            </div>
+          )}
         </div>
 
         {/* Right — log */}

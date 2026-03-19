@@ -555,6 +555,29 @@ function MorningBriefTab({ onNavigate, onIssueFound }) {
   );
   const [tableResults,setTableResults]= useSession("wz_monResults", {});
   const [slackUrl]                    = useLocal("wz_slack", "");
+  const [anomalies,    setAnomalies]   = useSession("wz_anomalies", null);
+  const [anomalyLoading, setAnomalyLoading] = React.useState(false);
+
+  const runAnomalyCheck = async () => {
+    setAnomalyLoading(true);
+    try {
+      const res  = await fetch(`${API}/api/anomaly/check`);
+      const data = await res.json();
+      setAnomalies(data);
+    } catch(e) { console.error(e); }
+    setAnomalyLoading(false);
+  };
+
+  const buildBaselines = async () => {
+    setAnomalyLoading(true);
+    try {
+      await fetch(`${API}/api/anomaly/baseline`, { method:"POST",
+        headers:{"Content-Type":"application/json"},
+        body:JSON.stringify({}) });
+      await runAnomalyCheck();
+    } catch(e) { console.error(e); }
+    setAnomalyLoading(false);
+  };
 
   // ── Compute time since last fetch ────────────────────────────────────────
   const [ageSec, setAgeSec] = React.useState(0);
@@ -828,6 +851,93 @@ function MorningBriefTab({ onNavigate, onIssueFound }) {
                 </div>
               </Card>
             )}
+
+            {/* Anomaly Detection */}
+            <Card style={{ padding:"16px 20px",
+              borderColor: anomalies?.tables_with_anomalies > 0 ? `${T.orange}40` : `${T.purple}20`,
+              background: anomalies?.tables_with_anomalies > 0 ? `${T.orange}04` : `${T.purple}03` }}>
+              <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom:10 }}>
+                <div style={{ fontSize:11, fontWeight:700, color:T.muted,
+                  textTransform:"uppercase", letterSpacing:"0.06em" }}>
+                  Anomaly Detection
+                </div>
+                <div style={{ display:"flex", gap:6 }}>
+                  {!anomalies && (
+                    <Btn size="sm" variant="ghost" onClick={buildBaselines} disabled={anomalyLoading}
+                      style={{ fontSize:10, color:T.purple, borderColor:`${T.purple}40` }}>
+                      {anomalyLoading ? <Spinner size={10}/> : null}
+                      {anomalyLoading ? "Building…" : "Build Baselines"}
+                    </Btn>
+                  )}
+                  {anomalies && (
+                    <Btn size="sm" variant="ghost" onClick={runAnomalyCheck} disabled={anomalyLoading}
+                      style={{ fontSize:10 }}>
+                      {anomalyLoading ? <Spinner size={10}/> : <RefreshCw size={10}/>}
+                      Re-check
+                    </Btn>
+                  )}
+                </div>
+              </div>
+
+              {!anomalies && !anomalyLoading && (
+                <div style={{ fontSize:11, color:T.dim }}>
+                  No baselines yet. Click "Build Baselines" to profile all tables and enable statistical anomaly detection.
+                </div>
+              )}
+              {anomalyLoading && !anomalies && (
+                <div style={{ fontSize:11, color:T.muted, display:"flex", alignItems:"center", gap:6 }}>
+                  <Spinner size={11}/> Profiling tables…
+                </div>
+              )}
+              {anomalies && (
+                <>
+                  {anomalies.tables_with_anomalies === 0 ? (
+                    <div style={{ fontSize:12, color:T.green, display:"flex", alignItems:"center", gap:6 }}>
+                      <CheckCircle size={13} color={T.green}/>
+                      All {anomalies.tables_checked} table(s) within normal range
+                    </div>
+                  ) : (
+                    <>
+                      {anomalies.summary && (
+                        <div style={{ fontSize:12, color:T.text2, marginBottom:10,
+                          padding:"8px 12px", borderRadius:6,
+                          background:`${T.orange}08`, border:`1px solid ${T.orange}20` }}>
+                          {anomalies.summary}
+                        </div>
+                      )}
+                      {anomalies.anomalies?.map((ta, i) => (
+                        <div key={i} style={{ marginBottom:8 }}>
+                          <div style={{ fontSize:11, fontWeight:600, color:T.text,
+                            fontFamily:"monospace", marginBottom:4 }}>{ta.table}</div>
+                          {ta.anomalies?.map((a, j) => (
+                            <div key={j} style={{ display:"flex", alignItems:"center", gap:8,
+                              padding:"5px 10px", borderRadius:5, marginBottom:3,
+                              background:`${T.orange}08`, border:`1px solid ${T.orange}20` }}>
+                              <Badge label={a.severity}
+                                color={{critical:T.red,high:T.orange,medium:T.yellow}[a.severity]||T.muted}/>
+                              <span style={{ fontSize:11, color:T.text, flex:1 }}>
+                                {a.column === "_row_count"
+                                  ? `Row count ${a.type==="row_count_spike"?"spike":"drop"}: ${a.baseline_value?.toLocaleString()} → ${a.current_value?.toLocaleString()}`
+                                  : a.type === "null_rate_increase"
+                                    ? `NULLs in \`${a.column}\` up ${a.deviation_pct}pp (${a.baseline_value}% → ${a.current_value}%)`
+                                    : `${a.type} on \`${a.column}\``}
+                              </span>
+                              <span style={{ fontSize:10, fontFamily:"monospace", color:T.orange }}>
+                                +{a.deviation_pct}%
+                              </span>
+                            </div>
+                          ))}
+                        </div>
+                      ))}
+                    </>
+                  )}
+                  <div style={{ fontSize:9, color:T.dim, marginTop:6 }}>
+                    Last checked: {new Date(anomalies.checked_at).toLocaleTimeString()}
+                    {" · "}{anomalies.tables_checked} table(s) checked
+                  </div>
+                </>
+              )}
+            </Card>
 
             {/* Slack preview */}
             {slackPreview && (
@@ -1664,17 +1774,149 @@ function ApprovalQueueTab({ onNavigate }) {
 function FixHistoryTab() {
   const T = useT();
   const [history, setHistory] = useSession("wz_history", []);
+  const [insight,     setInsight]     = React.useState(null);
+  const [insightLoading, setInsightLoading] = React.useState(false);
+  const [insightError,   setInsightError]   = React.useState(null);
+
+  const generateInsight = async () => {
+    if (!history.length) return;
+    setInsightLoading(true); setInsightError(null); setInsight(null);
+    try {
+      const res  = await fetch(`${API}/api/fix-history/summary`, {
+        method:"POST", headers:{"Content-Type":"application/json"},
+        body:JSON.stringify({ history })
+      });
+      const data = await res.json();
+      if (data.error && !data.summary) throw new Error(data.error);
+      setInsight(data);
+    } catch(e) { setInsightError(e.message); }
+    setInsightLoading(false);
+  };
+
+  const healthColor = insight?.health_score >= 80 ? T.green
+    : insight?.health_score >= 50 ? T.yellow : T.red;
 
   return (
     <div className="fade-in" style={{ padding:"28px 32px", maxWidth:900 }}>
-      <div style={{ marginBottom:24 }}>
-        <div style={{ fontSize:22, fontWeight:700, color:T.text, letterSpacing:"-0.02em" }}>
-          Fix History
+      <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom:24 }}>
+        <div>
+          <div style={{ fontSize:22, fontWeight:700, color:T.text, letterSpacing:"-0.02em" }}>
+            Fix History
+          </div>
+          <div style={{ fontSize:13, color:T.muted, marginTop:3 }}>
+            Audit log of all fixes executed by WiziAgent and manually
+          </div>
         </div>
-        <div style={{ fontSize:13, color:T.muted, marginTop:3 }}>
-          Audit log of all fixes executed by WiziAgent and manually
-        </div>
+        {history.length > 0 && (
+          <Btn onClick={generateInsight} disabled={insightLoading} size="sm"
+            style={{ background:`linear-gradient(135deg,${T.accent},${T.purple})`,
+              color:"white", border:"none" }}>
+            {insightLoading ? <Spinner size={11} color="white"/> : <Zap size={11}/>}
+            {insightLoading ? "Analysing…" : "AI Insight"}
+          </Btn>
+        )}
       </div>
+
+      {/* AI Insight panel */}
+      {(insight || insightLoading || insightError) && (
+        <Card style={{ padding:"18px 20px", marginBottom:16,
+          borderColor:`${T.purple}30`, background:`${T.purple}04` }}>
+          <div style={{ display:"flex", alignItems:"center", gap:8, marginBottom:12 }}>
+            <Zap size={13} color={T.purple}/>
+            <span style={{ fontSize:11, fontWeight:700, color:T.purple,
+              textTransform:"uppercase", letterSpacing:"0.06em" }}>AI Weekly Insight</span>
+            {insight?.health_score != null && (
+              <div style={{ marginLeft:"auto", display:"flex", alignItems:"center", gap:6 }}>
+                <span style={{ fontSize:10, color:T.muted }}>Pipeline health</span>
+                <span style={{ fontSize:16, fontWeight:700, color:healthColor,
+                  fontFamily:"monospace" }}>{insight.health_score}</span>
+                <span style={{ fontSize:10, color:T.muted }}>/100</span>
+              </div>
+            )}
+          </div>
+
+          {insightLoading && (
+            <div style={{ fontSize:12, color:T.muted, display:"flex", gap:6, alignItems:"center" }}>
+              <Spinner size={12}/> Analysing {history.length} fix records…
+            </div>
+          )}
+          {insightError && (
+            <div style={{ fontSize:12, color:T.red }}>Error: {insightError}</div>
+          )}
+          {insight && (
+            <div style={{ display:"flex", flexDirection:"column", gap:12 }}>
+              {insight.summary && (
+                <div style={{ fontSize:12, color:T.text2, lineHeight:1.6 }}>{insight.summary}</div>
+              )}
+              {insight.patterns?.length > 0 && (
+                <div>
+                  <div style={{ fontSize:10, fontWeight:700, color:T.muted,
+                    textTransform:"uppercase", letterSpacing:"0.05em", marginBottom:5 }}>
+                    Patterns Detected
+                  </div>
+                  {insight.patterns.map((p,i) => (
+                    <div key={i} style={{ fontSize:11, color:T.text2, marginBottom:3 }}>
+                      · {p}
+                    </div>
+                  ))}
+                </div>
+              )}
+              {insight.hotspots?.length > 0 && (
+                <div>
+                  <div style={{ fontSize:10, fontWeight:700, color:T.muted,
+                    textTransform:"uppercase", letterSpacing:"0.05em", marginBottom:5 }}>
+                    Hotspots
+                  </div>
+                  <div style={{ display:"flex", flexWrap:"wrap", gap:6 }}>
+                    {insight.hotspots.map((h,i) => (
+                      <div key={i} style={{ padding:"4px 10px", borderRadius:5, fontSize:11,
+                        background:`${T.orange}12`, border:`1px solid ${T.orange}25`,
+                        color:T.text }}>
+                        <span style={{ fontFamily:"monospace", color:T.orange }}>{h.table}</span>
+                        {" — "}{h.issue}
+                        {" "}
+                        <Badge label={h.frequency} color={h.frequency==="high"?T.red:T.yellow}/>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+              {insight.recommendations?.length > 0 && (
+                <div>
+                  <div style={{ fontSize:10, fontWeight:700, color:T.muted,
+                    textTransform:"uppercase", letterSpacing:"0.05em", marginBottom:5 }}>
+                    Recommendations
+                  </div>
+                  {insight.recommendations.map((r,i) => (
+                    <div key={i} style={{ fontSize:11, color:T.green, marginBottom:3 }}>
+                      → {r}
+                    </div>
+                  ))}
+                </div>
+              )}
+              {insight.stats && (
+                <div style={{ display:"flex", gap:20, paddingTop:8,
+                  borderTop:`1px solid ${T.border}` }}>
+                  {[
+                    ["Total fixes",    insight.stats.total_fixes],
+                    ["Rows affected",  insight.stats.total_rows_affected?.toLocaleString()],
+                    ["Failures",       insight.stats.failures],
+                    ["Avg duration",   insight.stats.avg_duration_ms ? `${Math.round(insight.stats.avg_duration_ms/1000)}s` : "—"],
+                  ].map(([k,v]) => (
+                    <div key={k}>
+                      <div style={{ fontSize:9, color:T.muted, textTransform:"uppercase",
+                        letterSpacing:"0.05em" }}>{k}</div>
+                      <div style={{ fontSize:14, fontWeight:700, color:T.text,
+                        fontFamily:"monospace" }}>{v}</div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
+        </Card>
+      )}
+
       {history.length === 0 ? (
         <EmptyState icon={Shield} title="No fixes yet"
           desc="Fix history will appear here after you run Triage or WiziAgent"/>

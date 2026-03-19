@@ -1632,7 +1632,7 @@ Rows affected: ${issue.count}
           ].map(tab => (
             <button key={tab.id} onClick={()=>{
                 setActiveView(tab.id);
-                if(tab.id==="data" && !preview) loadPreview(previewLimit);
+                if(tab.id==="data") loadPreview(previewLimit);
               }}
               style={{ padding:"8px 18px", fontSize:12, fontWeight:activeView===tab.id?600:400,
                 color:activeView===tab.id?T.accent:T.muted,
@@ -1870,7 +1870,7 @@ Rows affected: ${issue.count}
                             </Btn>
                           )}
                           <Btn size="sm" variant="ghost"
-                            onClick={()=>{ setActiveView("data"); loadPreview(50); }}
+                            onClick={()=>{ setActiveView("data"); loadPreview(previewLimit); }}
                             style={{ fontSize:10 }}>
                             <Table size={10}/> View Data
                           </Btn>
@@ -1943,7 +1943,7 @@ Rows affected: ${issue.count}
                           Sample rows ({issue.samples.length} shown)
                         </span>
                         <Btn size="sm" variant="ghost"
-                          onClick={()=>{ setActiveView("data"); loadPreview(100); }}
+                          onClick={()=>{ setActiveView("data"); loadPreview(previewLimit); }}
                           style={{ fontSize:10 }}>
                           View full table →
                         </Btn>
@@ -2018,8 +2018,8 @@ Rows affected: ${issue.count}
         {/* DATA PREVIEW VIEW                                                  */}
         {/* ══════════════════════════════════════════════════════════════════ */}
         {activeView==="data" && (
-          <div>
-            <div style={{ display:"flex", alignItems:"center", gap:10, marginBottom:12 }}>
+          <div style={{ minHeight:0 }}>
+            <div style={{ display:"flex", alignItems:"center", gap:10, marginBottom:12, flexWrap:"wrap" }}>
               <span style={{ fontSize:13, fontWeight:600, color:T.text }}>
                 {selectedTable}
               </span>
@@ -2060,7 +2060,8 @@ Rows affected: ${issue.count}
               </div>
             )}
             {!previewLoading && preview?.rows?.length > 0 && (
-              <div style={{ overflowX:"auto", borderRadius:8,
+              <div style={{ overflowX:"auto", overflowY:"auto",
+                maxHeight:"calc(100vh - 280px)", borderRadius:8,
                 border:`1px solid ${T.border}` }}>
                 <table style={{ borderCollapse:"collapse", fontSize:11,
                   fontFamily:T.monoFont, width:"100%", minWidth:600 }}>
@@ -2108,10 +2109,15 @@ Rows affected: ${issue.count}
                 </table>
               </div>
             )}
+            {!previewLoading && preview?.rows?.length === 0 && (
+              <div style={{ textAlign:"center", padding:"48px 0", color:T.muted, fontSize:13 }}>
+                Query returned 0 rows
+              </div>
+            )}
             {!previewLoading && !preview && (
               <div style={{ textAlign:"center", padding:"48px 0", color:T.muted }}>
-                <Database size={32} color={T.border} style={{ margin:"0 auto 10px", display:"block" }}/>
-                <div>Click Refresh to load table data</div>
+                <Spinner size={24} style={{ margin:"0 auto 10px", display:"block" }}/>
+                <div style={{ fontSize:13 }}>Loading…</div>
               </div>
             )}
           </div>

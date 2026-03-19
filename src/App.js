@@ -4419,21 +4419,69 @@ function AdsSopTab() {
     return "idle";
   };
 
+  const [runId,      setRunId]      = React.useState(null);
+  const [gateTimeout,setGateTimeout]= useLocal("wz_sop_gate_timeout", 30);
+  const pollRef = React.useRef(null);
+
+  const pollState = React.useCallback(async (rid) => {
+    try {
+      const res  = await fetch(`${API}/api/workflow/ads-sop/${rid}`);
+      const data = await res.json();
+      if (data.error) return;
+      setResult(data);
+      // Stop polling on terminal states
+      const terminal = ["complete","stopped","error","complete_no_issues","finalizing"];
+      if (terminal.includes(data.status)) {
+        setRunning(false);
+        if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null; }
+      }
+    } catch(e) {}
+  }, []);
+
+  // On mount — check if there is an in-progress SOP run
+  React.useEffect(() => {
+    fetch(`${API}/api/workflow/ads-sop`)
+      .then(r=>r.json())
+      .then(data => {
+        if (data.run) {
+          setResult(data.run);
+          setRunId(data.run.run_id);
+          const terminal = ["complete","stopped","error","complete_no_issues"];
+          if (!terminal.includes(data.run.status)) {
+            setRunning(true);
+            pollRef.current = setInterval(()=>pollState(data.run.run_id), 3000);
+          }
+        }
+      }).catch(()=>{});
+    return () => { if (pollRef.current) clearInterval(pollRef.current); };
+  }, []);
+
   // ── Run SOP ────────────────────────────────────────────────────────────────
   const runSop = async () => {
-    setRunning(true); setResult(null);
+    setRunning(true); setResult(null); setRunId(null);
+    if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null; }
     try {
       const res  = await fetch(`${API}/api/workflow/ads-sop`, {
         method:"POST", headers:{"Content-Type":"application/json"},
-        body:JSON.stringify({})
+        body:JSON.stringify({ gate_timeout_min: Number(gateTimeout) })
       });
       const data = await res.json();
       if (data.error) throw new Error(data.error);
-      setResult(data);
+      setRunId(data.run_id);
+      // Start polling
+      pollRef.current = setInterval(()=>pollState(data.run_id), 3000);
     } catch(e) {
       setResult({ error:e.message, status:"error", trace:[{node:"sop",ts:"",msg:e.message,level:"error"}] });
+      setRunning(false);
     }
-    setRunning(false);
+  };
+
+  const forceAllGates = async () => {
+    if (!runId) return;
+    await fetch(`${API}/api/workflow/sop-gate-force`, {
+      method:"POST", headers:{"Content-Type":"application/json"},
+      body:JSON.stringify({ run_id: runId })
+    });
   };
 
   // ── Submit gate decision ───────────────────────────────────────────────────
@@ -4468,94 +4516,139 @@ function AdsSopTab() {
     const isPending  = decision === "pending";
     const isApproved = decision === "approved";
     const isRejected = decision === "rejected";
+    const isTimeout  = decision === "timeout";
     const busy = submitting[token];
+
+    // Countdown timer for pending gates
+    const [elapsed, setElapsed] = React.useState(0);
+    React.useEffect(() => {
+      if (!isPending) return;
+      const id = setInterval(()=>setElapsed(p=>p+1), 60000);
+      return ()=>clearInterval(id);
+    }, [isPending]);
+
+    const pct = Math.min((elapsed / Number(gateTimeout)) * 100, 100);
+    const remaining = Math.max(Number(gateTimeout) - elapsed, 0);
 
     return (
       <Card style={{ padding:"14px 18px", marginBottom:10,
-        borderColor: isPending?`${T.yellow}50`:isApproved?`${T.green}40`:`${T.red}40`,
-        background:  isPending?`${T.yellow}06`:isApproved?`${T.green}06`:`${T.red}06` }}>
+        borderColor: isPending?`${T.yellow}50`:isApproved?`${T.green}40`:isTimeout?`${T.orange}40`:`${T.red}40`,
+        background:  isPending?`${T.yellow}06`:isApproved?`${T.green}06`:isTimeout?`${T.orange}06`:`${T.red}06` }}>
         <div style={{ display:"flex", alignItems:"center", gap:12 }}>
           <div style={{ width:32, height:32, borderRadius:8, flexShrink:0,
-            background: isPending?`${T.yellow}15`:isApproved?`${T.green}15`:`${T.red}15`,
+            background: isPending?`${T.yellow}15`:isApproved?`${T.green}15`:isTimeout?`${T.orange}15`:`${T.red}15`,
             display:"flex", alignItems:"center", justifyContent:"center",
             fontSize:14, fontWeight:800,
-            color: isPending?T.yellow:isApproved?T.green:T.red }}>
-            {gateNum}
+            color: isPending?T.yellow:isApproved?T.green:isTimeout?T.orange:T.red }}>
+            {isPending?<Spinner size={14}/>:gateNum}
           </div>
           <div style={{ flex:1 }}>
             <div style={{ fontSize:12, fontWeight:700,
-              color: isPending?T.yellow:isApproved?T.green:T.red }}>
+              color: isPending?T.yellow:isApproved?T.green:isTimeout?T.orange:T.red }}>
               🔒 Gate {gateNum}: {label}
+              {isApproved&&" ✓"}{isRejected&&" — stopped"}{isTimeout&&" — timed out, force-proceeded"}
             </div>
-            <div style={{ fontSize:11, color:T.muted, marginTop:2, fontFamily:T.monoFont }}>
-              token: {token}
-              {isApproved && " · approved"}
-              {isRejected && " · rejected — SOP stopped"}
-            </div>
+            {isPending && (
+              <>
+                <div style={{ fontSize:10, color:T.muted, marginTop:2 }}>
+                  Waiting for approval · {remaining}m remaining
+                </div>
+                <div style={{ height:3, background:T.border, borderRadius:99, marginTop:5 }}>
+                  <div style={{ height:"100%", borderRadius:99, width:`${pct}%`,
+                    background:pct>80?T.orange:T.yellow, transition:"width 0.5s" }}/>
+                </div>
+              </>
+            )}
+            {!isPending && (
+              <div style={{ fontSize:10, color:T.muted, marginTop:2, fontFamily:"monospace" }}>
+                token: {token}
+              </div>
+            )}
           </div>
           {isPending && (
-            <div style={{ display:"flex", gap:6, flexShrink:0 }}>
-              <Btn onClick={()=>submitGate(token,"approve")} variant="success" size="sm"
-                disabled={busy}>
-                {busy?<Spinner size={11} color="white"/>:<Check size={11}/>} Approve
-              </Btn>
-              <Btn onClick={()=>submitGate(token,"reject")} variant="danger" size="sm"
-                disabled={busy}>
-                <X size={11}/> Reject
+            <div style={{ display:"flex", flexDirection:"column", gap:5, flexShrink:0 }}>
+              <div style={{ display:"flex", gap:5 }}>
+                <Btn onClick={()=>submitGate(token,"approve")} variant="success" size="sm" disabled={busy}>
+                  {busy?<Spinner size={10} color="white"/>:<Check size={10}/>} Approve
+                </Btn>
+                <Btn onClick={()=>submitGate(token,"reject")} variant="danger" size="sm" disabled={busy}>
+                  <X size={10}/> Reject
+                </Btn>
+              </div>
+              <Btn onClick={()=>submitGate(token,"force")} variant="ghost" size="sm"
+                style={{ fontSize:10, color:T.orange, borderColor:`${T.orange}30` }}>
+                ⚡ Force Proceed
               </Btn>
             </div>
           )}
           {isApproved && <Badge label="approved" color={T.green}/>}
           {isRejected && <Badge label="rejected" color={T.red}/>}
+          {isTimeout  && <Badge label="timed out" color={T.orange}/>}
         </div>
       </Card>
     );
   };
 
-  const Checklist = ({ title, items, icon }) => {
+  const Checklist = ({ title, items, icon, type }) => {
     const [checked, setChecked] = React.useState({});
     if (!items?.length) return null;
-    const done = Object.values(checked).filter(Boolean).length;
+    // Auto-check items that were triggered by the backend
+    const autoChecked = items.filter(i=>i.paused||i.triggered).length;
+    const manualDone  = Object.values(checked).filter(Boolean).length;
+    const done        = Math.max(autoChecked, manualDone);
+
     return (
       <Card style={{ padding:"14px 18px", marginBottom:10 }}>
         <div style={{ display:"flex", alignItems:"center", gap:8, marginBottom:10 }}>
           <span style={{ fontSize:16 }}>{icon}</span>
           <span style={{ fontSize:12, fontWeight:700, color:T.text }}>{title}</span>
+          {autoChecked > 0 && (
+            <Badge label="auto-triggered (dummy)" color={T.purple}/>
+          )}
           <span style={{ fontSize:11, color:T.muted, marginLeft:"auto" }}>
             {done}/{items.length} done
           </span>
         </div>
         <div style={{ display:"flex", flexDirection:"column", gap:5 }}>
           {items.map((item, i) => {
-            const key  = item.name || item;
-            const isDone = checked[i];
+            const isAutoTriggered = item.paused || item.triggered;
+            const isDone = isAutoTriggered || checked[i];
             return (
-              <div key={i} onClick={()=>setChecked(p=>({...p,[i]:!p[i]}))}
-                style={{ display:"flex", alignItems:"flex-start", gap:10, cursor:"pointer",
-                  padding:"6px 8px", borderRadius:6, transition:"background 0.1s",
-                  background: isDone?`${T.green}08`:"transparent" }}
-                onMouseEnter={e=>e.currentTarget.style.background=isDone?`${T.green}10`:`${T.accent}06`}
+              <div key={i} onClick={()=>!isAutoTriggered&&setChecked(p=>({...p,[i]:!p[i]}))}
+                style={{ display:"flex", alignItems:"flex-start", gap:10,
+                  cursor:isAutoTriggered?"default":"pointer",
+                  padding:"8px 10px", borderRadius:6, transition:"background 0.1s",
+                  background:isDone?`${T.green}08`:"transparent" }}
+                onMouseEnter={e=>{ if(!isAutoTriggered) e.currentTarget.style.background=isDone?`${T.green}10`:`${T.accent}06`; }}
                 onMouseLeave={e=>e.currentTarget.style.background=isDone?`${T.green}08`:"transparent"}>
                 <div style={{ width:16, height:16, borderRadius:4, flexShrink:0, marginTop:1,
                   border:`1.5px solid ${isDone?T.green:T.border2}`,
-                  background: isDone?T.green:"transparent",
+                  background:isDone?T.green:"transparent",
                   display:"flex", alignItems:"center", justifyContent:"center",
                   transition:"all 0.15s" }}>
                   {isDone && <Check size={10} color="white" strokeWidth={3}/>}
                 </div>
                 <div style={{ flex:1 }}>
-                  <div style={{ fontSize:12, color:isDone?T.muted:T.text,
-                    textDecoration:isDone?"line-through":"none" }}>
-                    {item.name || item}
+                  <div style={{ display:"flex", alignItems:"center", gap:8 }}>
+                    <span style={{ fontSize:12, color:isDone?T.muted:T.text,
+                      textDecoration:isDone?"line-through":"none" }}>
+                      {item.name}
+                    </span>
+                    {item.org && <Badge label={item.org} color={item.org==="Bluewheel"?T.cyan:T.purple}/>}
+                    {isAutoTriggered && item.dummy && (
+                      <span style={{ fontSize:9, color:T.orange }}>(dummy API)</span>
+                    )}
                   </div>
-                  {item.org && (
-                    <div style={{ fontSize:10, color:T.dim }}>
-                      {item.org} · Pause by: {item.pauseBy}
-                    </div>
-                  )}
-                  {item.duration && (
-                    <div style={{ fontSize:10, color:T.dim }}>Duration: {item.duration}</div>
-                  )}
+                  <div style={{ fontSize:10, color:T.dim, marginTop:2, display:"flex", gap:12, flexWrap:"wrap" }}>
+                    {item.expected    && <span>Expected: {item.expected}</span>}
+                    {item.pause_by    && <span style={{color:T.orange}}>Pause by: {item.pause_by}</span>}
+                    {item.type        && <span>Type: {item.type}</span>}
+                    {item.region      && <span>Region: {item.region}</span>}
+                    {item.destination && <span>→ {item.destination}</span>}
+                    {item.paused_at   && <span style={{color:T.green}}>Paused at: {item.paused_at}</span>}
+                    {item.triggered_at&& <span style={{color:T.green}}>Triggered at: {item.triggered_at}</span>}
+                    {item.note        && <span style={{color:T.dim,fontStyle:"italic"}}>{item.note}</span>}
+                  </div>
                 </div>
               </div>
             );
@@ -4567,15 +4660,20 @@ function AdsSopTab() {
 
   const ValidationTable = ({ results }) => {
     if (!results?.length) return null;
+    const allPass = results.every(r=>r.status==="PASS");
     return (
-      <Card style={{ padding:"14px 18px", marginBottom:10 }}>
-        <div style={{ fontSize:12, fontWeight:700, color:T.text, marginBottom:10 }}>
-          🔬 Validation Results
+      <Card style={{ padding:"14px 18px", marginBottom:10,
+        borderColor:allPass?`${T.green}30`:`${T.orange}40`,
+        background:allPass?`${T.green}04`:`${T.orange}04` }}>
+        <div style={{ display:"flex", alignItems:"center", gap:8, marginBottom:10 }}>
+          <span style={{ fontSize:14 }}>🔬</span>
+          <span style={{ fontSize:12, fontWeight:700, color:T.text }}>Validation Results</span>
+          <Badge label={allPass?"ALL PASS":"ISSUES"} color={allPass?T.green:T.orange}/>
         </div>
         <table style={{ width:"100%", borderCollapse:"collapse", fontSize:11 }}>
           <thead>
             <tr style={{ borderBottom:`1px solid ${T.border}` }}>
-              {["Table","Status","Profiles Today","Recent Dates"].map(h => (
+              {["Table","Status","Accounts (n-1)","5-day Baseline","Coverage %","Error"].map(h=>(
                 <th key={h} style={{ padding:"4px 10px", textAlign:"left",
                   fontSize:9, fontWeight:700, color:T.muted,
                   textTransform:"uppercase", letterSpacing:"0.05em" }}>{h}</th>
@@ -4583,21 +4681,27 @@ function AdsSopTab() {
             </tr>
           </thead>
           <tbody>
-            {results.map((r,i) => (
+            {results.map((r,i)=>(
               <tr key={i} style={{ borderBottom:`1px solid ${T.border}30` }}>
-                <td style={{ padding:"6px 10px", fontFamily:T.monoFont,
-                  fontSize:10, color:T.text2 }}>{r.name}</td>
+                <td style={{ padding:"6px 10px", fontFamily:"monospace",
+                  fontSize:10, color:T.text2 }}>{r.short || r.name?.split("tbl_amzn_")[1]?.replace("_report","") || r.name}</td>
                 <td style={{ padding:"6px 10px" }}>
                   <Badge label={r.status}
                     color={r.status==="PASS"?T.green:r.status==="FAIL"?T.red:T.yellow}/>
                 </td>
-                <td style={{ padding:"6px 10px", fontFamily:T.monoFont,
-                  color:r.has_today?T.green:T.red }}>
-                  {r.profile_count || (r.has_today?"✓":"—")}
+                <td style={{ padding:"6px 10px", fontFamily:"monospace",
+                  fontWeight:700, color:r.today_count>0?T.green:T.red }}>
+                  {r.today_count ?? "—"}
                 </td>
-                <td style={{ padding:"6px 10px", fontFamily:T.monoFont,
-                  fontSize:10, color:T.muted }}>
-                  {r.recent_dates?.join(", ") || "—"}
+                <td style={{ padding:"6px 10px", fontFamily:"monospace", color:T.muted }}>
+                  {r.baseline_avg ?? "—"}
+                </td>
+                <td style={{ padding:"6px 10px", fontFamily:"monospace",
+                  color:r.coverage_pct>=80?T.green:r.coverage_pct>0?T.orange:T.red }}>
+                  {r.coverage_pct!=null ? `${r.coverage_pct}%` : "—"}
+                </td>
+                <td style={{ padding:"6px 10px", fontSize:9, color:T.red }}>
+                  {r.error||""}
                 </td>
               </tr>
             ))}
@@ -4619,12 +4723,32 @@ function AdsSopTab() {
             6 agents · 5 approval gates · Triggered when ads data download fails
           </div>
         </div>
-        <Btn onClick={runSop} disabled={running} size="sm"
-          style={{ background:running?T.border:`linear-gradient(135deg,${T.accent},${T.purple})`,
-            color:"white", border:"none" }}>
-          {running?<Spinner size={12} color="white"/>:<Play size={12}/>}
-          {running?"Running SOP…":"▶ Trigger SOP"}
-        </Btn>
+        <div style={{ display:"flex", gap:8, alignItems:"center" }}>
+          <div style={{ display:"flex", alignItems:"center", gap:5 }}>
+            <span style={{ fontSize:10, color:T.muted }}>Gate timeout:</span>
+            <select value={gateTimeout} onChange={e=>setGateTimeout(Number(e.target.value))}
+              style={{ fontSize:11, padding:"3px 6px", borderRadius:5,
+                border:`1px solid ${T.border}`, background:T.surface, color:T.text }}>
+              <option value={1}>1 min (test)</option>
+              <option value={5}>5 min</option>
+              <option value={15}>15 min</option>
+              <option value={30}>30 min</option>
+              <option value={60}>60 min</option>
+            </select>
+          </div>
+          {running && runId && (
+            <Btn onClick={forceAllGates} variant="ghost" size="sm"
+              style={{ color:T.orange, borderColor:`${T.orange}40`, fontSize:10 }}>
+              ⚡ Force All Gates
+            </Btn>
+          )}
+          <Btn onClick={running?undefined:runSop} disabled={running} size="sm"
+            style={{ background:running?T.border:`linear-gradient(135deg,${T.accent},${T.purple})`,
+              color:"white", border:"none" }}>
+            {running?<Spinner size={12} color="white"/>:<Play size={12}/>}
+            {running?"SOP Running…":"▶ Trigger SOP"}
+          </Btn>
+        </div>
       </div>
 
       {/* Timeline bar */}
@@ -4684,16 +4808,29 @@ function AdsSopTab() {
         />
       )}
 
-      {/* Running state */}
-      {running && (
+      {/* Running state banner */}
+      {running && result && (
+        <Card style={{ padding:"12px 18px", marginBottom:14,
+          borderColor:`${T.accent}40`, background:`${T.accent}06` }}>
+          <div style={{ display:"flex", alignItems:"center", gap:10 }}>
+            <Spinner size={14} color={T.accent}/>
+            <div>
+              <span style={{ fontSize:13, fontWeight:700, color:T.accent }}>
+                SOP Running — {result.status?.replace(/_/g," ").replace("awaiting","⏳ awaiting")}
+              </span>
+              {runId && (
+                <span style={{ fontSize:10, color:T.muted, fontFamily:"monospace", marginLeft:8 }}>
+                  {runId}
+                </span>
+              )}
+            </div>
+          </div>
+        </Card>
+      )}
+      {running && !result && (
         <Card style={{ padding:"20px 24px", textAlign:"center" }}>
-          <Spinner size={32} style={{ margin:"0 auto 12px" }}/>
-          <div style={{ fontSize:14, fontWeight:700, color:T.text }}>
-            Detection agent running…
-          </div>
-          <div style={{ fontSize:12, color:T.muted, marginTop:4 }}>
-            Checking mws.report and public.tbl_amzn_campaign_report
-          </div>
+          <Spinner size={28} style={{ margin:"0 auto 10px" }}/>
+          <div style={{ fontSize:13, fontWeight:700, color:T.text }}>Starting SOP…</div>
         </Card>
       )}
 

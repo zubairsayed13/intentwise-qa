@@ -3398,8 +3398,29 @@ function WorkflowsTab() {
   const [runHistory,    setRunHistory]    = useSession("wz_wfHistory", []);
   const [selected,      setSelected]      = React.useState(null);
 
-  // Custom workflows stored in localStorage
-  const [customWfs,     setCustomWfs]     = useLocal("wz_customWorkflows", []);
+  // Custom workflows — local state, synced to backend
+  const [customWfs,     setCustomWfs]     = React.useState([]);
+  const [cwfLoading,    setCwfLoading]    = React.useState(false);
+  const [cwfRunning,    setCwfRunning]    = React.useState({}); // { [id]: bool }
+  const [cwfResults,    setCwfResults]    = React.useState({}); // { [id]: result }
+
+  // Load custom workflows from backend on mount
+  React.useEffect(() => {
+    const load = async () => {
+      try {
+        const res  = await fetch(`${API}/api/custom-workflows`);
+        const data = await res.json();
+        if (Array.isArray(data)) setCustomWfs(data);
+      } catch(e) {
+        // Fallback: try localStorage
+        try {
+          const local = JSON.parse(localStorage.getItem("wz_customWorkflows") || "[]");
+          setCustomWfs(local);
+        } catch(_) {}
+      }
+    };
+    load();
+  }, []);
 
   // AI suggestions
   const [aiLoading,     setAiLoading]     = React.useState(false);
@@ -3499,32 +3520,69 @@ Respond ONLY with JSON, no markdown:
   };
 
   // ── Add suggested workflow as custom ──────────────────────────────────────
-  const addSuggestion = (s) => {
-    const newWf = {
-      id:`custom-${Date.now()}`, builtin:false,
-      name:s.name, desc:s.desc, trigger:s.trigger,
-      schedule:s.schedule || "On demand",
-      agents:s.agents || [], tables:s.tables || [],
-      endpoint:null, color:T.purple,
-      createdAt: new Date().toISOString(),
-    };
-    setCustomWfs(p => [...p, newWf]);
+  const addSuggestion = async (s) => {
+    const payload = { name:s.name, desc:s.desc, trigger:s.trigger,
+      schedule:s.schedule||"", agents:s.agents||[], tables:s.tables||[], branches:[] };
+    try {
+      const res  = await fetch(`${API}/api/custom-workflows/save`, {
+        method:"POST", headers:{"Content-Type":"application/json"},
+        body:JSON.stringify(payload) });
+      const data = await res.json();
+      if (data.workflow) setCustomWfs(p => [...p, data.workflow]);
+    } catch(e) {
+      setCustomWfs(p => [...p, { ...payload, id:`local-${Date.now()}`, builtin:false }]);
+    }
     setAiSuggestions(p => p.filter(x => x.id !== s.id));
   };
 
   // ── Delete custom workflow ─────────────────────────────────────────────────
-  const deleteWf = (id) => setCustomWfs(p => p.filter(w => w.id !== id));
+  const deleteWf = async (id) => {
+    setCustomWfs(p => p.filter(w => w.id !== id));
+    try { await fetch(`${API}/api/custom-workflows/${id}`, { method:"DELETE" }); }
+    catch(e) {}
+  };
 
   // ── Save workflow from builder ─────────────────────────────────────────────
-  const saveBuilderWf = (wf) => {
-    if (wf.id && customWfs.find(w => w.id === wf.id)) {
-      setCustomWfs(p => p.map(w => w.id === wf.id ? wf : w));
-    } else {
-      setCustomWfs(p => [...p, { ...wf, id:`custom-${Date.now()}`, builtin:false,
-        createdAt:new Date().toISOString() }]);
+  const saveBuilderWf = async (wf) => {
+    const payload = { ...wf, id: wf.id || undefined };
+    try {
+      const res  = await fetch(`${API}/api/custom-workflows/save`, {
+        method:"POST", headers:{"Content-Type":"application/json"},
+        body:JSON.stringify(payload) });
+      const data = await res.json();
+      if (data.workflow) {
+        const saved = data.workflow;
+        setCustomWfs(p => p.find(w => w.id === saved.id)
+          ? p.map(w => w.id === saved.id ? saved : w)
+          : [...p, saved]);
+      }
+    } catch(e) {
+      // Fallback: local only
+      if (wf.id && customWfs.find(w => w.id === wf.id)) {
+        setCustomWfs(p => p.map(w => w.id === wf.id ? wf : w));
+      } else {
+        setCustomWfs(p => [...p, { ...wf, id:`local-${Date.now()}`, builtin:false }]);
+      }
     }
     setView("list");
     setEditingWf(null);
+  };
+
+  // ── Run a custom workflow ──────────────────────────────────────────────────
+  const runCustomWf = async (wf) => {
+    setCwfRunning(p => ({...p, [wf.id]: true}));
+    setCwfResults(p => ({...p, [wf.id]: null}));
+    try {
+      const res  = await fetch(`${API}/api/custom-workflows/${wf.id}/run`, { method:"POST" });
+      const data = await res.json();
+      setCwfResults(p => ({...p, [wf.id]: data}));
+      // Refresh last_run on local state
+      setCustomWfs(p => p.map(w => w.id === wf.id
+        ? {...w, last_run: data.started_at, run_count:(w.run_count||0)+1} : w));
+    } catch(e) {
+      setCwfResults(p => ({...p, [wf.id]: { error: e.message, status:"error" }}));
+    }
+    setCwfRunning(p => ({...p, [wf.id]: false}));
   };
 
   const SEV = { critical:T.red, high:T.orange, medium:T.yellow, low:T.cyan };
@@ -3758,15 +3816,56 @@ Respond ONLY with JSON, no markdown:
                     <Play size={10}/> Open
                   </Btn>
                 )}
-                {!wf.builtin && wf.endpoint && (
-                  <Btn size="sm"
-                    style={{ background:`linear-gradient(135deg,${T.accent},${T.purple})`,
+                {!wf.builtin && (
+                  <Btn onClick={()=>runCustomWf(wf)} size="sm"
+                    disabled={!!cwfRunning[wf.id]}
+                    style={{ background:cwfRunning[wf.id]?T.border:`linear-gradient(135deg,${T.accent},${T.purple})`,
                       color:"white", border:"none" }}>
-                    <Play size={10}/> Run
+                    {cwfRunning[wf.id]?<Spinner size={10} color="white"/>:<Play size={10}/>}
+                    {cwfRunning[wf.id]?"Running…":"Run"}
                   </Btn>
                 )}
               </div>
             </div>
+
+            {/* Inline run result for this custom workflow */}
+            {cwfResults[wf.id] && !cwfRunning[wf.id] && (
+              <div style={{ marginTop:10, padding:"8px 12px", borderRadius:6,
+                background: cwfResults[wf.id].error ? `${T.red}10` :
+                  cwfResults[wf.id].total_issues > 0 ? `${T.orange}10` : `${T.green}10`,
+                border:`1px solid ${cwfResults[wf.id].error ? T.red :
+                  cwfResults[wf.id].total_issues > 0 ? T.orange : T.green}30` }}>
+                {cwfResults[wf.id].error ? (
+                  <div style={{ fontSize:11, color:T.red }}>
+                    ✕ {cwfResults[wf.id].error}
+                  </div>
+                ) : (
+                  <>
+                    <div style={{ fontSize:11, fontWeight:600,
+                      color: cwfResults[wf.id].total_issues > 0 ? T.orange : T.green }}>
+                      {cwfResults[wf.id].total_issues > 0
+                        ? `⚠ ${cwfResults[wf.id].total_issues} issue(s) found`
+                        : "✓ All checks passed"}
+                    </div>
+                    {(cwfResults[wf.id].table_results||[]).map((tr,i) => (
+                      <div key={i} style={{ fontSize:10, color:T.muted, marginTop:3 }}>
+                        <span style={{ fontFamily:"monospace" }}>{tr.table}</span>
+                        {" — "}
+                        {tr.skipped ? <span style={{color:T.dim}}>skipped</span>
+                          : tr.issues?.length > 0
+                            ? <span style={{color:T.orange}}>{tr.issues.length} issue(s)</span>
+                            : <span style={{color:T.green}}>clean</span>}
+                        {tr.branch_action && (
+                          <span style={{ marginLeft:6, color:T.purple, fontSize:9 }}>
+                            [{tr.branch_action}]
+                          </span>
+                        )}
+                      </div>
+                    ))}
+                  </>
+                )}
+              </div>
+            )}
           </Card>
         ))}
       </div>
@@ -3896,12 +3995,19 @@ Respond ONLY with JSON, no markdown:
 function WorkflowBuilder({ initial, onSave, onCancel }) {
   const T = useT();
   const blank = { name:"", desc:"", trigger:"manual", schedule:"",
-                  agents:[], tables:[], endpoint:"" };
-  const [wf,       setWf]       = React.useState(initial || blank);
+                  agents:[], tables:[], branches:[], endpoint:"" };
+  const [wf,       setWf]       = React.useState(initial ? {...blank,...initial, branches: initial.branches||[]} : blank);
   const [agentIn,  setAgentIn]  = React.useState("");
   const [tableIn,  setTableIn]  = React.useState("");
   const [aiLoading,setAiLoading]= React.useState(false);
   const [aiHints,  setAiHints]  = React.useState(null);
+
+  const blankBranch = () => ({ id: Date.now(), afterAgent:"", condition:"on_failure", action:"notify", target:"" });
+  const addBranch    = () => setWf(p=>({...p, branches:[...p.branches, blankBranch()]}));
+  const removeBranch = (id) => setWf(p=>({...p, branches:p.branches.filter(b=>b.id!==id)}));
+  const updateBranch = (id, key, val) => setWf(p=>({
+    ...p, branches: p.branches.map(b => b.id===id ? {...b,[key]:val} : b)
+  }));
 
   const field = (key, val) => setWf(p => ({...p, [key]:val}));
 
@@ -4096,6 +4202,106 @@ Respond ONLY with JSON:
               onBlur={e=>e.target.style.borderColor=T.border}/>
             <Btn onClick={addAgent} size="sm"><Plus size={11}/></Btn>
           </div>
+        </Card>
+
+        {/* Branching Rules */}
+        <Card style={{ padding:"18px 20px", borderColor:`${T.orange}30`, background:`${T.orange}04` }}>
+          <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom:12 }}>
+            <div style={{ fontSize:11, fontWeight:700, color:T.muted,
+              textTransform:"uppercase", letterSpacing:"0.06em" }}>Conditional Branching</div>
+            <Btn onClick={addBranch} size="sm" variant="ghost"
+              style={{ fontSize:10, color:T.orange, borderColor:`${T.orange}40` }}>
+              <Plus size={10}/> Add Rule
+            </Btn>
+          </div>
+
+          {wf.branches.length === 0 ? (
+            <div style={{ fontSize:11, color:T.dim, padding:"8px 0" }}>
+              No branching rules — agents run sequentially. Add a rule to control failure routing.
+            </div>
+          ) : (
+            <div style={{ display:"flex", flexDirection:"column", gap:8 }}>
+              {wf.branches.map((b, idx) => (
+                <div key={b.id} style={{
+                  display:"flex", alignItems:"center", gap:6, flexWrap:"wrap",
+                  padding:"10px 12px", borderRadius:7,
+                  background:T.surface, border:`1px solid ${T.border}`,
+                }}>
+                  {/* Rule number */}
+                  <div style={{
+                    minWidth:18, height:18, borderRadius:"50%", display:"flex",
+                    alignItems:"center", justifyContent:"center",
+                    background:`${T.orange}18`, fontSize:10, fontWeight:700, color:T.orange,
+                  }}>{idx+1}</div>
+
+                  <span style={{ fontSize:11, color:T.muted }}>After</span>
+
+                  {/* After which agent */}
+                  <select value={b.afterAgent}
+                    onChange={e=>updateBranch(b.id,"afterAgent",e.target.value)}
+                    style={{ fontSize:11, padding:"3px 6px", borderRadius:5,
+                      border:`1px solid ${T.border}`, background:T.surface, color:T.text,
+                      fontFamily:"inherit", minWidth:120 }}>
+                    <option value="">— any agent —</option>
+                    {wf.agents.map((a,i)=>(
+                      <option key={i} value={a}>{a}</option>
+                    ))}
+                  </select>
+
+                  {/* Condition */}
+                  <select value={b.condition}
+                    onChange={e=>updateBranch(b.id,"condition",e.target.value)}
+                    style={{ fontSize:11, padding:"3px 6px", borderRadius:5,
+                      border:`1px solid ${T.border}`, background:T.surface, color:T.text,
+                      fontFamily:"inherit" }}>
+                    <option value="on_failure">on failure</option>
+                    <option value="on_success">on success</option>
+                    <option value="always">always</option>
+                  </select>
+
+                  <ArrowRight size={11} color={T.muted}/>
+
+                  {/* Action */}
+                  <select value={b.action}
+                    onChange={e=>updateBranch(b.id,"action",e.target.value)}
+                    style={{ fontSize:11, padding:"3px 6px", borderRadius:5,
+                      border:`1px solid ${T.border}`, background:T.surface, color:T.text,
+                      fontFamily:"inherit" }}>
+                    <option value="notify">Notify & continue</option>
+                    <option value="stop">Stop workflow</option>
+                    <option value="skip_remaining">Skip remaining agents</option>
+                    <option value="run_agent">Run specific agent</option>
+                  </select>
+
+                  {/* Target agent (only for run_agent) */}
+                  {b.action === "run_agent" && (
+                    <select value={b.target}
+                      onChange={e=>updateBranch(b.id,"target",e.target.value)}
+                      style={{ fontSize:11, padding:"3px 6px", borderRadius:5,
+                        border:`1px solid ${T.accent}60`, background:`${T.accent}08`,
+                        color:T.text, fontFamily:"inherit", minWidth:120 }}>
+                      <option value="">— pick agent —</option>
+                      {wf.agents.filter(a=>a!==b.afterAgent).map((a,i)=>(
+                        <option key={i} value={a}>{a}</option>
+                      ))}
+                    </select>
+                  )}
+
+                  {/* Remove */}
+                  <button onClick={()=>removeBranch(b.id)}
+                    style={{ marginLeft:"auto", background:"none", border:"none",
+                      cursor:"pointer", color:T.muted, padding:2, lineHeight:1,
+                      fontSize:14, borderRadius:4 }}>×</button>
+                </div>
+              ))}
+            </div>
+          )}
+
+          {wf.branches.length > 0 && wf.agents.length === 0 && (
+            <div style={{ marginTop:8, fontSize:10, color:T.orange }}>
+              ⚠ Add agents above to bind branching rules to specific steps.
+            </div>
+          )}
         </Card>
 
         {/* Tables */}

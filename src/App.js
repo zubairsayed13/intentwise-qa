@@ -2815,7 +2815,7 @@ Keep responses concise. Use markdown. Be direct and practical.`;
         })
       });
       const data = await res.json();
-      const reply = data.content?.[0]?.text || data.error || "No response";
+      const reply = data.content?.[0]?.text || (typeof data.error === "string" ? data.error : data.error ? JSON.stringify(data.error) : null) || "No response";
       const found = parseActions(reply);
       const clean = cleanText(reply);
       setMessages(p => [...p, {

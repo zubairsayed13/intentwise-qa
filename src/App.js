@@ -305,17 +305,167 @@ const NAV = [
   { id:"triage",    label:"Triage",         icon:AlertTriangle,shortcut:"3" },
   { id:"workflows", label:"Workflows",      icon:GitBranch,    shortcut:"4" },
   { id:"approvals", label:"Approvals",       icon:Lock,         shortcut:"A" },
-  { id:"history",   label:"Fix History",    icon:Shield,       shortcut:"5" },
-  { id:"notifs",    label:"Notifications",  icon:Bell,         shortcut:"N" },
+  { id:"activity",  label:"Activity",        icon:Bell,         shortcut:"5" },
   { id:"chat",      label:"Ask WiziAgent",  icon:MessageSquare,shortcut:"6" },
   { id:"config",    label:"Configure",      icon:Settings,     shortcut:"7" },
-  { id:"query",     label:"Data Viewer & Editor", icon:Terminal,     shortcut:"8" },
+  { id:"query",     label:"Data Explorer", icon:Database,     shortcut:"8" },
 ];
 
 // ─── Sidebar ──────────────────────────────────────────────────────────────────
+// ─── HelpTip — inline contextual help ────────────────────────────────────────
+function HelpTip({ children }) {
+  const T = useT();
+  const [open, setOpen] = React.useState(false);
+  return (
+    <span style={{ display:"inline-flex", alignItems:"center" }}>
+      <button onClick={()=>setOpen(p=>!p)}
+        style={{ background:"none", border:`1px solid ${T.border}`, borderRadius:99,
+          width:16, height:16, display:"inline-flex", alignItems:"center",
+          justifyContent:"center", cursor:"pointer", color:T.muted,
+          fontSize:9, fontWeight:700, marginLeft:6, flexShrink:0,
+          transition:"all 0.12s" }}
+        onMouseEnter={e=>{e.currentTarget.style.borderColor=T.accent; e.currentTarget.style.color=T.accent;}}
+        onMouseLeave={e=>{e.currentTarget.style.borderColor=T.border; e.currentTarget.style.color=T.muted;}}>
+        ?
+      </button>
+      {open && (
+        <div style={{ position:"absolute", zIndex:200, marginTop:4,
+          maxWidth:320, padding:"10px 14px", borderRadius:9,
+          background:"#1C2333", border:"1px solid rgba(255,255,255,0.1)",
+          boxShadow:"0 8px 32px rgba(0,0,0,0.3)",
+          fontSize:12, color:"#E2E8F0", lineHeight:1.6 }}>
+          {children}
+          <button onClick={()=>setOpen(false)}
+            style={{ display:"block", marginTop:8, fontSize:10, color:"rgba(255,255,255,0.4)",
+              background:"none", border:"none", cursor:"pointer", padding:0 }}>
+            Close
+          </button>
+        </div>
+      )}
+    </span>
+  );
+}
+
+function CommandPalette({ onNavigate, onClose }) {
+  const T = useT();
+  const [query, setQuery] = React.useState("");
+  const inputRef = React.useRef(null);
+
+  React.useEffect(() => { inputRef.current?.focus(); }, []);
+
+  // Close on Escape
+  React.useEffect(() => {
+    const handler = (e) => { if (e.key === "Escape") onClose(); };
+    window.addEventListener("keydown", handler);
+    return () => window.removeEventListener("keydown", handler);
+  }, [onClose]);
+
+  const COMMANDS = [
+    { label:"Morning Brief",        tab:"brief",     icon:"⚡", desc:"View daily pipeline health" },
+    { label:"Monitor",              tab:"monitor",   icon:"📊", desc:"Watch tables for issues" },
+    { label:"Triage",               tab:"triage",    icon:"🔍", desc:"Scan and fix issues" },
+    { label:"Workflows",            tab:"workflows", icon:"🔀", desc:"Run and manage workflows" },
+    { label:"Approvals",            tab:"approvals", icon:"🔒", desc:"Pending fix approvals" },
+    { label:"Activity",             tab:"activity",  icon:"🔔", desc:"Alerts, fix log + AI insight" },
+    { label:"Ask WiziAgent",        tab:"chat",      icon:"💬", desc:"Chat with WiziAgent" },
+    { label:"Configure",            tab:"config",    icon:"⚙️", desc:"Slack, thresholds, sources" },
+    { label:"Data Explorer", tab:"query",     icon:"🖥", desc:"SQL editor with AI generation" },
+  ];
+
+  const filtered = query.trim()
+    ? COMMANDS.filter(c =>
+        c.label.toLowerCase().includes(query.toLowerCase()) ||
+        c.desc.toLowerCase().includes(query.toLowerCase()))
+    : COMMANDS;
+
+  const [selected, setSelected] = React.useState(0);
+
+  React.useEffect(() => { setSelected(0); }, [query]);
+
+  const execute = (cmd) => { onNavigate(cmd.tab); onClose(); };
+
+  const handleKey = (e) => {
+    if (e.key === "ArrowDown") { e.preventDefault(); setSelected(p => Math.min(p+1, filtered.length-1)); }
+    if (e.key === "ArrowUp")   { e.preventDefault(); setSelected(p => Math.max(p-1, 0)); }
+    if (e.key === "Enter" && filtered[selected]) execute(filtered[selected]);
+  };
+
+  return (
+    <div style={{
+      position:"fixed", inset:0, zIndex:9999,
+      background:"rgba(0,0,0,0.45)", display:"flex",
+      alignItems:"flex-start", justifyContent:"center", paddingTop:120,
+    }} onClick={onClose}>
+      <div style={{
+        width:520, borderRadius:14, overflow:"hidden",
+        background:"#FFFFFF", boxShadow:"0 24px 80px rgba(0,0,0,0.25)",
+        border:"1px solid #E8ECF0",
+      }} onClick={e=>e.stopPropagation()}>
+        {/* Search input */}
+        <div style={{ display:"flex", alignItems:"center", gap:10,
+          padding:"14px 18px", borderBottom:"1px solid #E8ECF0" }}>
+          <Search size={15} color="#9CA3AF"/>
+          <input ref={inputRef}
+            value={query} onChange={e=>setQuery(e.target.value)}
+            onKeyDown={handleKey}
+            placeholder="Jump to tab, search actions…"
+            style={{ flex:1, border:"none", outline:"none", fontSize:14,
+              color:"#0D1117", background:"transparent", fontFamily:"inherit" }}
+          />
+          <kbd style={{ fontSize:10, color:"#9CA3AF", background:"#F3F4F6",
+            border:"1px solid #E5E7EB", borderRadius:4, padding:"2px 6px" }}>
+            ESC
+          </kbd>
+        </div>
+        {/* Results */}
+        <div style={{ maxHeight:360, overflowY:"auto" }}>
+          {filtered.length === 0 && (
+            <div style={{ padding:"20px", textAlign:"center", fontSize:13, color:"#9CA3AF" }}>
+              No results for "{query}"
+            </div>
+          )}
+          {filtered.map((cmd, i) => (
+            <div key={cmd.tab}
+              onClick={() => execute(cmd)}
+              onMouseEnter={() => setSelected(i)}
+              style={{
+                display:"flex", alignItems:"center", gap:12,
+                padding:"10px 18px", cursor:"pointer",
+                background: i===selected ? "#F0F4FF" : "transparent",
+                borderLeft: i===selected ? "3px solid #6366F1" : "3px solid transparent",
+                transition:"background 0.1s",
+              }}>
+              <span style={{ fontSize:16, width:22, textAlign:"center" }}>{cmd.icon}</span>
+              <div style={{ flex:1 }}>
+                <div style={{ fontSize:13, fontWeight:600, color:"#0D1117" }}>{cmd.label}</div>
+                <div style={{ fontSize:11, color:"#6B7280", marginTop:1 }}>{cmd.desc}</div>
+              </div>
+              <kbd style={{ fontSize:9, color:"#9CA3AF", background:"#F3F4F6",
+                border:"1px solid #E5E7EB", borderRadius:4, padding:"2px 5px" }}>
+                ↵
+              </kbd>
+            </div>
+          ))}
+        </div>
+        <div style={{ padding:"8px 18px", borderTop:"1px solid #E8ECF0",
+          display:"flex", gap:16, fontSize:10, color:"#9CA3AF" }}>
+          <span><kbd style={{background:"#F3F4F6",border:"1px solid #E5E7EB",
+            borderRadius:3,padding:"1px 4px",fontSize:9}}>↑↓</kbd> navigate</span>
+          <span><kbd style={{background:"#F3F4F6",border:"1px solid #E5E7EB",
+            borderRadius:3,padding:"1px 4px",fontSize:9}}>↵</kbd> open</span>
+          <span><kbd style={{background:"#F3F4F6",border:"1px solid #E5E7EB",
+            borderRadius:3,padding:"1px 4px",fontSize:9}}>ESC</kbd> close</span>
+          <span style={{marginLeft:"auto"}}>⌘K to open</span>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function Sidebar({ active, setActive, pendingCount, themeKey, setThemeKey }) {
   const T = useT();
   const [showThemes, setShowThemes] = React.useState(false);
+  const [collapsed, setCollapsed]   = useLocal("wz_sidebarCollapsed", false);
 
   const THEME_LIST = [
     { key:"light",  label:"Light",  dot:"#FAFAFA", dot2:"#EAB308" },
@@ -328,34 +478,47 @@ function Sidebar({ active, setActive, pendingCount, themeKey, setThemeKey }) {
 
   return (
     <aside style={{
-      width:220, flexShrink:0,
+      width: collapsed ? 52 : 220, flexShrink:0,
       background: T.sidebarBg || T.surface,
       borderRight:`1px solid ${T.border}`,
       display:"flex", flexDirection:"column",
       height:"100vh", position:"sticky", top:0,
+      transition:"width 0.2s ease", overflow:"hidden",
     }}>
-      {/* Logo */}
-      <div style={{ padding:"20px 16px 14px" }}>
-        <div style={{ display:"flex", alignItems:"center", gap:10 }}>
+      {/* Logo + collapse toggle */}
+      <div style={{ padding: collapsed ? "16px 9px 14px" : "20px 16px 14px" }}>
+        <div style={{ display:"flex", alignItems:"center", gap:10, justifyContent: collapsed ? "center" : "flex-start" }}>
           <div style={{
             width:34, height:34, borderRadius:9, flexShrink:0,
             background:`linear-gradient(135deg, ${T.accent}, ${T.purple})`,
             display:"flex", alignItems:"center", justifyContent:"center",
             boxShadow:`0 4px 12px ${T.accent}40`,
-          }}>
+            cursor:"pointer",
+          }} onClick={() => setCollapsed(p => !p)} title={collapsed ? "Expand sidebar" : "Collapse sidebar"}>
             <Zap size={16} color="white" strokeWidth={2.5}/>
           </div>
-          <div>
-            <div style={{ fontSize:13, fontWeight:700,
-              color: T.isDark ? T.text : "#FFFFFF",
-              letterSpacing:"-0.01em", fontFamily:T.font }}>
-              WiziAgent
+          {!collapsed && (
+            <div style={{ flex:1 }}>
+              <div style={{ fontSize:13, fontWeight:700,
+                color: T.isDark ? T.text : "#FFFFFF",
+                letterSpacing:"-0.01em", fontFamily:T.font }}>
+                WiziAgent
+              </div>
+              <div style={{ fontSize:10, color: T.isDark ? T.dim : "rgba(255,255,255,0.4)",
+                marginTop:1 }}>
+                QA Platform
+              </div>
             </div>
-            <div style={{ fontSize:10, color: T.isDark ? T.dim : "rgba(255,255,255,0.4)",
-              marginTop:1 }}>
-              QA Platform
-            </div>
-          </div>
+          )}
+          {!collapsed && (
+            <button onClick={() => setCollapsed(true)}
+              title="Collapse sidebar"
+              style={{ background:"none", border:"none", cursor:"pointer", padding:3,
+                color:"rgba(255,255,255,0.3)", borderRadius:4,
+                display:"flex", alignItems:"center" }}>
+              <ChevronRight size={13}/>
+            </button>
+          )}
         </div>
       </div>
 
@@ -368,13 +531,37 @@ function Sidebar({ active, setActive, pendingCount, themeKey, setThemeKey }) {
           const Icon = item.icon;
           const isActive = active === item.id;
           const approvalCount = item.id === "approvals" ? pendingCount : 0;
-          const hasBadge = (item.id === "triage" && pendingCount > 0) || (item.id === "approvals" && pendingCount > 0);
+          // Read anomaly + workflow issue counts from session for badge display
+          const anomalyCount = (() => {
+            try {
+              const a = JSON.parse(sessionStorage.getItem("wz_anomalies")||"null");
+              return a?.tables_with_anomalies || 0;
+            } catch { return 0; }
+          })();
+          const cwfIssueCount = (() => {
+            try {
+              const h = JSON.parse(sessionStorage.getItem("wz_cwfHistory")||"[]");
+              return h.filter(r => r.total_issues > 0).length;
+            } catch { return 0; }
+          })();
+          const badgeCount =
+            item.id === "approvals" ? pendingCount :
+            item.id === "triage"    ? pendingCount :
+            item.id === "brief"     ? anomalyCount :
+            item.id === "workflows" ? cwfIssueCount :
+            item.id === "activity"  ? (pendingCount + anomalyCount) :
+            0;
+          const hasBadge = badgeCount > 0;
           return (
             <button key={item.id}
               onClick={() => setActive(item.id)}
+              title={collapsed ? `${item.label} (${item.shortcut})` : ""}
               style={{
-                width:"100%", display:"flex", alignItems:"center", gap:10,
-                padding:"8px 10px", borderRadius:7, border:"none",
+                width:"100%", display:"flex", alignItems:"center",
+                gap: collapsed ? 0 : 10,
+                padding: collapsed ? "8px 0" : "8px 10px",
+                justifyContent: collapsed ? "center" : "flex-start",
+                borderRadius:7, border:"none",
                 background: isActive
                   ? (T.navActiveBg || `${T.accent}18`)
                   : "transparent",
@@ -383,7 +570,7 @@ function Sidebar({ active, setActive, pendingCount, themeKey, setThemeKey }) {
                   : (T.navInactiveText || "rgba(255,255,255,0.35)"),
                 cursor:"pointer", marginBottom:1,
                 transition:"all 0.12s", textAlign:"left",
-                fontFamily:T.font,
+                fontFamily:T.font, position:"relative",
               }}
               onMouseEnter={e => {
                 if(!isActive) e.currentTarget.style.background = "rgba(255,255,255,0.05)";
@@ -394,16 +581,26 @@ function Sidebar({ active, setActive, pendingCount, themeKey, setThemeKey }) {
                 if(!isActive) e.currentTarget.style.color = T.navInactiveText || "rgba(255,255,255,0.35)";
               }}
             >
-              <Icon size={14} strokeWidth={isActive?2.5:1.8}/>
-              <span style={{ fontSize:12, fontWeight:isActive?600:400, flex:1 }}>
-                {item.label}
-              </span>
-              {hasBadge && (
-                <span style={{
-                  minWidth:18, height:18, borderRadius:99, padding:"0 5px",
-                  background:T.red, color:"white", fontSize:9, fontWeight:700,
-                  display:"flex", alignItems:"center", justifyContent:"center"
-                }}>{pendingCount}</span>
+              <div style={{ position:"relative", flexShrink:0 }}>
+                <Icon size={14} strokeWidth={isActive?2.5:1.8}/>
+                {hasBadge && collapsed && (
+                  <div style={{ position:"absolute", top:-4, right:-4,
+                    width:8, height:8, borderRadius:99, background:T.red }}/>
+                )}
+              </div>
+              {!collapsed && (
+                <>
+                  <span style={{ fontSize:12, fontWeight:isActive?600:400, flex:1 }}>
+                    {item.label}
+                  </span>
+                  {hasBadge && (
+                    <span style={{
+                      minWidth:18, height:18, borderRadius:99, padding:"0 5px",
+                      background:T.red, color:"white", fontSize:9, fontWeight:700,
+                      display:"flex", alignItems:"center", justifyContent:"center"
+                    }}>{badgeCount}</span>
+                  )}
+                </>
               )}
             </button>
           );
@@ -412,6 +609,24 @@ function Sidebar({ active, setActive, pendingCount, themeKey, setThemeKey }) {
 
       {/* Divider */}
       <div style={{ height:1, background:"rgba(255,255,255,0.06)", margin:"0 12px 8px" }}/>
+
+      {/* Cmd+K hint */}
+      {!collapsed && (
+        <div style={{ padding:"0 8px 4px" }}>
+          <div style={{ display:"flex", alignItems:"center", gap:6,
+            padding:"5px 10px", borderRadius:6,
+            color:"rgba(255,255,255,0.22)", fontSize:10,
+            cursor:"default" }}>
+            <Search size={10}/>
+            <span style={{ flex:1 }}>Search & navigate</span>
+            <kbd style={{ fontSize:9, background:"rgba(255,255,255,0.08)",
+              border:"1px solid rgba(255,255,255,0.12)",
+              borderRadius:3, padding:"1px 4px", color:"rgba(255,255,255,0.3)" }}>
+              ⌘K
+            </kbd>
+          </div>
+        </div>
+      )}
 
       {/* Theme picker */}
       <div style={{ padding:"4px 8px 16px" }}>
@@ -442,14 +657,14 @@ function Sidebar({ active, setActive, pendingCount, themeKey, setThemeKey }) {
               );
             })()}
           </div>
-          <span style={{ flex:1 }}>{THEMES[themeKey]?.name || "Theme"}</span>
-          <ChevronDown size={12} style={{
+          {!collapsed && <span style={{ flex:1 }}>{THEMES[themeKey]?.name || "Theme"}</span>}
+          {!collapsed && <ChevronDown size={12} style={{
             transform: showThemes ? "rotate(180deg)" : "rotate(0)",
             transition:"transform 0.2s"
-          }}/>
+          }}/>}
         </button>
 
-        {showThemes && (
+        {showThemes && !collapsed && (
           <div style={{
             marginTop:4, padding:"6px",
             background:"rgba(0,0,0,0.25)", borderRadius:8,
@@ -545,12 +760,18 @@ function HealthSparkline({ brief, isHealthy, T }) {
 
 function MorningBriefTab({ onNavigate, onIssueFound }) {
   const T = useT();
+  const [checklist, setChecklist] = useLocal("wz_onboarding", {
+    scanned:false, monitored:false, slack:false, workflow:false, triage:false
+  });
+  const [checklistDismissed, setChecklistDismissed] = useLocal("wz_onboarding_done", false);
+
+  const allDone = Object.values(checklist).every(Boolean);
   const [brief,       setBrief]       = useSession("wz_brief", null);
   const [loading,     setLoading]     = React.useState(!brief);
   const [error,       setError]       = React.useState(null);
   const [lastFetch,   setLastFetch]   = useLocal("wz_briefTs", null);
-  const [fixHistory,  setFixHistory]  = useSession("wz_history", []);
-  const [monTables,   setMonTables]   = useSession("wz_monTables",
+  const [fixHistory,  setFixHistory]  = useLocal("wz_history", []);
+  const [monTables,   setMonTables]   = useLocal("wz_monTables",
     [{ schema:"mws", table:"report", label:"mws.report", primary:true, checks:[] }]
   );
   const [tableResults,setTableResults]= useSession("wz_monResults", {});
@@ -616,6 +837,7 @@ function MorningBriefTab({ onNavigate, onIssueFound }) {
       if (data.error) throw new Error(data.error);
       setBrief(data);
       setLastFetch(new Date().toISOString());
+      setChecklist(p => ({...p, scanned:true}));
       // Save health data point for sparkline
       try {
         const hist = JSON.parse(localStorage.getItem("wz_healthHistory")||"[]");
@@ -667,6 +889,72 @@ function MorningBriefTab({ onNavigate, onIssueFound }) {
           {loading ? "Scanning…" : "Refresh"}
         </Btn>
       </div>
+
+      {/* ── Onboarding checklist ── */}
+      {!checklistDismissed && (
+        <Card style={{ padding:"18px 22px", marginBottom:20,
+          borderColor: allDone ? `${T.green}40` : `${T.accent}30`,
+          background: allDone ? `${T.green}05` : `${T.accent}04` }}>
+          <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom:12 }}>
+            <div style={{ display:"flex", alignItems:"center", gap:8 }}>
+              {allDone
+                ? <CheckCircle size={15} color={T.green}/>
+                : <Zap size={15} color={T.accent}/>}
+              <span style={{ fontSize:13, fontWeight:700, color: allDone ? T.green : T.text }}>
+                {allDone ? "You're all set! 🎉" : "Getting started with WiziAgent"}
+              </span>
+              <span style={{ fontSize:11, color:T.muted }}>
+                {Object.values(checklist).filter(Boolean).length}/{Object.values(checklist).length} done
+              </span>
+            </div>
+            <button onClick={()=>setChecklistDismissed(true)}
+              style={{ background:"none", border:"none", cursor:"pointer",
+                color:T.muted, fontSize:14 }}>×</button>
+          </div>
+          <div style={{ display:"flex", flexDirection:"column", gap:6 }}>
+            {[
+              { key:"scanned",   label:"Run your first scan",          desc:"Click Refresh to scan mws.report",          tab:"brief",     done:checklist.scanned },
+              { key:"monitored", label:"Add a table to Monitor",       desc:"Go to Monitor → Add Table",                  tab:"monitor",   done:checklist.monitored },
+              { key:"slack",     label:"Set up Slack notifications",   desc:"Go to Configure → Slack Notifications",     tab:"config",    done:checklist.slack },
+              { key:"workflow",  label:"Schedule your first workflow", desc:"Go to Workflows → New Workflow",            tab:"workflows", done:checklist.workflow },
+              { key:"triage",    label:"Triage an issue",              desc:"Go to Triage → Scan → fix an issue",        tab:"triage",    done:checklist.triage },
+            ].map(step => (
+              <div key={step.key} style={{ display:"flex", alignItems:"center", gap:10,
+                padding:"7px 10px", borderRadius:7, cursor: step.done ? "default" : "pointer",
+                background: step.done ? `${T.green}08` : T.surface,
+                border:`1px solid ${step.done ? T.green+"30" : T.border}`,
+                opacity: step.done ? 0.7 : 1,
+              }}
+                onClick={() => { if (!step.done) onNavigate(step.tab); }}>
+                <div style={{ width:18, height:18, borderRadius:99, flexShrink:0,
+                  background: step.done ? T.green : T.border,
+                  display:"flex", alignItems:"center", justifyContent:"center" }}>
+                  {step.done
+                    ? <Check size={10} color="white"/>
+                    : <span style={{ width:6, height:6, borderRadius:99,
+                        background:"white", display:"block" }}/>}
+                </div>
+                <div style={{ flex:1 }}>
+                  <div style={{ fontSize:12, fontWeight:600,
+                    color: step.done ? T.green : T.text,
+                    textDecoration: step.done ? "line-through" : "none" }}>
+                    {step.label}
+                  </div>
+                  {!step.done && (
+                    <div style={{ fontSize:10, color:T.muted }}>{step.desc}</div>
+                  )}
+                </div>
+                {!step.done && <ArrowRight size={11} color={T.muted}/>}
+                {step.done && (
+                  <button onClick={e=>{e.stopPropagation(); setChecklist(p=>({...p,[step.key]:false}));}}
+                    style={{ background:"none", border:"none", cursor:"pointer",
+                      fontSize:10, color:T.dim }}>undo</button>
+                )}
+              </div>
+            ))}
+          </div>
+        </Card>
+      )}
 
       {error && (
         <Card style={{ padding:"14px 18px", marginBottom:20,
@@ -992,7 +1280,7 @@ function TriageTab({ initialIssues }) {
   const [agentRunning, setAgentRunning] = React.useState(false);
   const [agentResult,  setAgentResult]  = useSession("wz_agentResult", null);
   const [scanTs,       setScanTs]       = useSession("wz_triageScanTs", null);
-  const [fixHistory,   setFixHistory]   = useSession("wz_history", []);
+  const [fixHistory,   setFixHistory]   = useLocal("wz_history", []);
 
   const addLog = (msg, level="info") =>
     setLog(p => [...p.slice(-80), { ts:new Date().toLocaleTimeString(), msg, level }]);
@@ -1110,6 +1398,7 @@ function TriageTab({ initialIssues }) {
       setFixResults(p => ({...p,[issue.id]:data}));
       const durationMs = Date.now() - fixStart;
       addLog(`✓ Fixed: before ${data.before} → after ${data.after}`, "success");
+      try { const c=JSON.parse(localStorage.getItem("wz_onboarding")||"{}"); localStorage.setItem("wz_onboarding",JSON.stringify({...c,triage:true})); } catch {}
       setFixHistory(p => [...p, {
         action: issue.fix_action, table:"mws.report",
         rows_affected: data.rows_affected, before:data.before, after:data.after,
@@ -1163,350 +1452,704 @@ function TriageTab({ initialIssues }) {
     setAgentResult(p => ({...p, approval_status:decision==="approve"?"approved":"rejected"}));
   };
 
+  const [showLibrary, setShowLibrary] = React.useState(false);
+  const [libraryAdded, setLibraryAdded] = React.useState({});
+  const [explanations, setExplanations] = React.useState({}); // { [issue.id]: { loading, text } }
+
+  const explainIssue = async (issue) => {
+    setExplanations(p => ({...p, [issue.id]: { loading:true, text:null }}));
+    try {
+      const res = await fetch(`${API}/api/ai/chat`, {
+        method:"POST", headers:{"Content-Type":"application/json"},
+        body:JSON.stringify({
+          system:"You are WiziAgent explaining data quality issues to a junior QA engineer. Be clear, concise, and practical. Avoid jargon. Explain: what the issue is, why it matters, whether it is safe to fix, and what the fix does. Keep it under 5 sentences.",
+          messages:[{ role:"user", content:
+            `Explain this issue found in ${selectedTable}:
+` +
+            `ID: ${issue.id}
+Title: ${issue.title}
+Description: ${issue.description}
+` +
+            `Severity: ${issue.severity}
+Rows affected: ${issue.count}
+` +
+            (issue.fix_action ? `Fix action available: ${issue.fix_action}` : "No automatic fix available — informational only.")
+          }],
+          max_tokens:200
+        })
+      });
+      const data = await res.json();
+      const text = data.content?.[0]?.text || "Could not generate explanation.";
+      setExplanations(p => ({...p, [issue.id]: { loading:false, text }}));
+    } catch(e) {
+      setExplanations(p => ({...p, [issue.id]: { loading:false, text:`Error: ${e.message}` }}));
+    }
+  };
+
+  const TEST_LIBRARY = [
+    { id:"LIB-NULL",    icon:"🕳",  label:"Missing values",         desc:"Find columns with unexpected NULLs",                 check:"null_check",   severity:"high" },
+    { id:"LIB-DUPE",    icon:"📋",  label:"Duplicate records",      desc:"Find rows with the same primary key",                check:"dupe_check",   severity:"high" },
+    { id:"LIB-FRESH",   icon:"📅",  label:"Data freshness",         desc:"Check that data arrived within the last 24 hours",   check:"freshness",    severity:"high" },
+    { id:"LIB-ROWDROP", icon:"📉",  label:"Unexpected row drop",    desc:"Alert if row count drops more than 20% vs baseline", check:"row_count",    severity:"critical" },
+    { id:"LIB-STATUS",  icon:"🚦",  label:"Invalid status values",  desc:"Find rows with values outside expected set",         check:"enum_check",   severity:"medium" },
+    { id:"LIB-STUCK",   icon:"⏳",  label:"Stuck pending rows",     desc:"Find rows stuck in 'pending' for more than 4 hours", check:"stale_pending",severity:"high" },
+    { id:"LIB-DATES",   icon:"📆",  label:"Date anomalies",         desc:"Find rows where end date is before start date",      check:"date_anomaly", severity:"medium" },
+    { id:"LIB-RETRIES", icon:"🔁",  label:"High retry count",       desc:"Find rows that have been retried more than 3 times", check:"high_retries", severity:"medium" },
+  ];
+
+  const addFromLibrary = (test) => {
+    setLibraryAdded(p => ({...p, [test.id]: true}));
+    scan();
+    setShowLibrary(false);
+  };
+
+  // ── Data preview ──────────────────────────────────────────────────────────
+  const [preview,        setPreview]        = React.useState(null);
+  const [previewLoading, setPreviewLoading] = React.useState(false);
+  const [previewLimit,   setPreviewLimit]   = React.useState(20);
+  const [previewFilter,  setPreviewFilter]  = React.useState("all"); // all | issues_only
+
+  const loadPreview = async (limit=20) => {
+    setPreviewLoading(true);
+    const [schema, tbl] = selectedTable.includes(".")
+      ? selectedTable.split(".") : ["mws", selectedTable];
+    try {
+      const res  = await fetch(`${API}/api/preview?schema=${schema}&table=${tbl}&limit=${limit}`);
+      const data = await res.json();
+      setPreview(data);
+    } catch(e) { setPreview({ error: e.message }); }
+    setPreviewLoading(false);
+  };
+
+  const [activeView, setActiveView] = React.useState("issues"); // issues | data | log
+
   const issues     = triageResult?.issues || [];
   const SEV_COLOR  = { critical:T.red, high:T.orange, medium:T.yellow, low:T.cyan };
   const lowRiskCount = issues.filter(i =>
     i.fix_action==="recopy" || i.fix_action==="redrive_copy"
   ).length;
 
+  const SEV_ORDER = { critical:0, high:1, medium:2, low:3 };
+  const sortedIssues = [...issues].sort((a,b)=>(SEV_ORDER[a.severity]||9)-(SEV_ORDER[b.severity]||9));
+  const critCount    = issues.filter(i=>i.severity==="critical").length;
+  const highCount    = issues.filter(i=>i.severity==="high").length;
+  const fixableCount = issues.filter(i=>i.fix_action).length;
+
   return (
-    <div className="fade-in" style={{ padding:"28px 32px", maxWidth:1100 }}>
-      {/* Header */}
-      <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom:24 }}>
-        <div>
-          <div style={{ fontSize:22, fontWeight:700, color:T.text, letterSpacing:"-0.02em" }}>Triage</div>
-          <div style={{ fontSize:13, color:T.muted, marginTop:3 }}>
-            {triageResult
-              ? `${triageResult.total_rows?.toLocaleString()} rows scanned · ${issues.length} issue${issues.length!==1?"s":""}`
-              : `Select a table and click Scan — mws.report runs 10 checks, any other table runs generic quality checks`}
+    <div className="fade-in" style={{ display:"flex", flexDirection:"column",
+      height:"calc(100vh - 2px)", overflow:"hidden" }}>
+
+      {/* ── Top bar ────────────────────────────────────────────────────────── */}
+      <div style={{ padding:"20px 28px 0", flexShrink:0 }}>
+        <div style={{ display:"flex", alignItems:"center", gap:14, marginBottom:16 }}>
+          {/* Title + help */}
+          <div style={{ display:"flex", alignItems:"center", gap:8 }}>
+            <div style={{ fontSize:20, fontWeight:700, color:T.text, letterSpacing:"-0.02em" }}>
+              Triage
+            </div>
+            <HelpTip>
+              <strong>Triage</strong> scans a table for data quality issues and lets you fix them safely.<br/><br/>
+              <strong>Scan</strong> — run checks (nulls, dupes, freshness, pipeline errors).<br/>
+              <strong>Dry run</strong> — preview how many rows would change before committing.<br/>
+              <strong>Fix</strong> — execute the fix. Always dry-run first if unsure.<br/>
+              <strong>WiziAgent</strong> — auto-classifies and fixes low-risk issues automatically.
+            </HelpTip>
           </div>
-        </div>
-        <div style={{ display:"flex", gap:8, flexWrap:"wrap", alignItems:"center" }}>
+
           {/* Table selector */}
           <select value={selectedTable} onChange={e => {
               setSelectedTable(e.target.value);
               setTriageResult(null); setFixResults({}); setDryRuns({});
+              setPreview(null); setActiveView("issues");
             }}
-            style={{ fontSize:11, padding:"5px 10px", borderRadius:7,
+            style={{ fontSize:12, padding:"6px 12px", borderRadius:7,
               border:`1px solid ${T.border}`, background:T.surface, color:T.text,
-              fontFamily:"monospace", maxWidth:220 }}>
-            <option value="mws.report">mws.report (full scan)</option>
-            {tableList.filter(t => t !== "mws.report").map(t => (
+              fontFamily:"monospace", flex:"0 0 auto", maxWidth:260 }}>
+            <option value="mws.report">mws.report</option>
+            {tableList.filter(t=>t!=="mws.report").map(t=>(
               <option key={t} value={t}>{t}</option>
             ))}
           </select>
-          {lowRiskCount > 1 && triageResult && selectedTable === "mws.report" && (
-            <Btn onClick={batchApprove} variant="ghost" size="sm">
-              <CheckCircle size={12}/> Batch Fix ({lowRiskCount})
-            </Btn>
+
+          {/* Status pills */}
+          {triageResult && (
+            <div style={{ display:"flex", gap:6, alignItems:"center" }}>
+              <span style={{ fontSize:11, color:T.muted }}>
+                {triageResult.total_rows?.toLocaleString()} rows
+              </span>
+              {critCount > 0 && (
+                <span style={{ fontSize:11, fontWeight:700, padding:"2px 8px",
+                  borderRadius:5, background:`${T.red}15`, color:T.red }}>
+                  {critCount} critical
+                </span>
+              )}
+              {highCount > 0 && (
+                <span style={{ fontSize:11, fontWeight:700, padding:"2px 8px",
+                  borderRadius:5, background:`${T.orange}15`, color:T.orange }}>
+                  {highCount} high
+                </span>
+              )}
+              {issues.length === 0 && (
+                <span style={{ fontSize:11, fontWeight:600, padding:"2px 8px",
+                  borderRadius:5, background:`${T.green}15`, color:T.green }}>
+                  ✓ Clean
+                </span>
+              )}
+            </div>
           )}
-          <Btn onClick={scan} disabled={loading} variant="ghost" size="sm">
-            {loading ? <Spinner size={12}/> : <RefreshCw size={12}/>} Scan
-          </Btn>
-          {selectedTable === "mws.report" && (
-            <Btn onClick={runWiziAgent} disabled={agentRunning} size="sm"
-              style={{ background: agentRunning?T.border:`linear-gradient(135deg,${T.accent},${T.purple})`,
-                color:"white", border:"none" }}>
-              {agentRunning ? <Spinner size={12} color="white"/> : <Zap size={12}/>}
-              {agentRunning ? "WiziAgent running…" : "✨ Run WiziAgent"}
+
+          {/* Actions */}
+          <div style={{ display:"flex", gap:6, marginLeft:"auto", alignItems:"center" }}>
+            {lowRiskCount > 1 && triageResult && selectedTable==="mws.report" && (
+              <Btn onClick={batchApprove} variant="ghost" size="sm">
+                <CheckCircle size={11}/> Batch Fix ({lowRiskCount})
+              </Btn>
+            )}
+            <Btn onClick={()=>setShowLibrary(p=>!p)} size="sm" variant="ghost"
+              style={{ color:T.purple, borderColor:`${T.purple}30` }}>
+              <Plus size={11}/> Add Check
             </Btn>
-          )}
+            <Btn onClick={scan} disabled={loading} variant="ghost" size="sm">
+              {loading ? <Spinner size={11}/> : <RefreshCw size={11}/>} Scan
+            </Btn>
+            {selectedTable==="mws.report" && (
+              <Btn onClick={runWiziAgent} disabled={agentRunning} size="sm"
+                style={{ background:agentRunning?T.border:`linear-gradient(135deg,${T.accent},${T.purple})`,
+                  color:"white", border:"none" }}>
+                {agentRunning?<Spinner size={11} color="white"/>:<Zap size={11}/>}
+                {agentRunning?"Running…":"✨ WiziAgent"}
+              </Btn>
+            )}
+          </div>
+        </div>
+
+        {/* ── View tabs ──────────────────────────────────────────────────────── */}
+        <div style={{ display:"flex", gap:0, borderBottom:`1px solid ${T.border}` }}>
+          {[
+            { id:"issues", label:`Issues${issues.length>0?" ("+issues.length+")":""}` },
+            { id:"data",   label:"Data Preview" },
+            { id:"log",    label:`Log${log.length>0?" ("+log.length+")":""}` },
+          ].map(tab => (
+            <button key={tab.id} onClick={()=>{
+                setActiveView(tab.id);
+                if(tab.id==="data" && !preview) loadPreview(previewLimit);
+              }}
+              style={{ padding:"8px 18px", fontSize:12, fontWeight:activeView===tab.id?600:400,
+                color:activeView===tab.id?T.accent:T.muted,
+                background:"none", border:"none", cursor:"pointer",
+                borderBottom:activeView===tab.id?`2px solid ${T.accent}`:"2px solid transparent",
+                marginBottom:-1, transition:"all 0.12s" }}>
+              {tab.label}
+            </button>
+          ))}
         </div>
       </div>
 
-      <div style={{ display:"grid", gridTemplateColumns:"1fr 280px", gap:16 }}>
-        <div style={{ display:"flex", flexDirection:"column", gap:10 }}>
-          {/* Empty / clean states */}
-          {!triageResult && !loading && (
-            <EmptyState icon={Shield} title="No scan yet"
-              desc={selectedTable==="mws.report" ? "10 checks: pipeline health + data quality" : `Generic quality checks on ${selectedTable}`}
-              action={<Btn onClick={scan} size="sm">Scan Now</Btn>}/>
-          )}
-          {triageResult?.clean && (
-            <Card style={{ padding:"24px", background:`${T.green}06`,
-              borderColor:`${T.green}30`, textAlign:"center" }}>
-              <CheckCircle size={30} color={T.green} strokeWidth={1.5}
-                style={{ margin:"0 auto 10px", display:"block" }}/>
-              <div style={{ fontSize:14, fontWeight:700, color:T.green }}>mws.report is clean</div>
-              <div style={{ fontSize:12, color:T.muted, marginTop:4 }}>
-                All {triageResult.total_rows?.toLocaleString()} rows passed all 3 checks
-              </div>
-            </Card>
-          )}
+      {/* ── Body ────────────────────────────────────────────────────────────── */}
+      <div style={{ flex:1, overflowY:"auto", padding:"16px 28px 28px" }}>
 
-          {/* WiziAgent approval gate */}
-          {agentResult?.status === "awaiting_approval" && agentResult.approval_status === "pending" && (
-            <Card style={{ padding:"16px 20px", borderColor:`${T.yellow}50`,
-              background:`${T.yellow}06` }}>
-              <div style={{ display:"flex", gap:12, alignItems:"flex-start" }}>
-                <Lock size={19} color={T.yellow} style={{ flexShrink:0, marginTop:2 }}/>
-                <div style={{ flex:1 }}>
-                  <div style={{ fontSize:13, fontWeight:700, color:T.yellow, marginBottom:4 }}>
-                    WiziAgent — Approval Required
-                  </div>
-                  <div style={{ fontSize:12, color:T.muted, marginBottom:12 }}>
-                    {agentResult.classification?.risk_reason || "High-risk fix detected"}{" "}
-                    <span style={{ fontFamily:T.monoFont, color:T.cyan, fontSize:11 }}>
-                      token: {agentResult.approval_token}
-                    </span>
-                  </div>
-                  <div style={{ display:"flex", gap:8 }}>
-                    <Btn onClick={()=>approveAgent("approve")} variant="success" size="sm">
-                      <Check size={12}/> Approve Fix
-                    </Btn>
-                    <Btn onClick={()=>approveAgent("reject")} variant="danger" size="sm">
-                      <X size={12}/> Reject
-                    </Btn>
-                    <span style={{ fontSize:11, color:T.dim, alignSelf:"center" }}>
-                      Times out in 10 min
-                    </span>
-                  </div>
+        {/* ── WiziAgent approval gate ──────────────────────────────────────── */}
+        {agentResult?.status==="awaiting_approval" && agentResult.approval_status==="pending" && (
+          <Card style={{ padding:"16px 20px", marginBottom:14,
+            borderColor:`${T.yellow}50`, background:`${T.yellow}06` }}>
+            <div style={{ display:"flex", gap:12, alignItems:"flex-start" }}>
+              <Lock size={18} color={T.yellow} style={{ flexShrink:0, marginTop:2 }}/>
+              <div style={{ flex:1 }}>
+                <div style={{ fontSize:13, fontWeight:700, color:T.yellow, marginBottom:4 }}>
+                  WiziAgent — Approval Required
+                </div>
+                <div style={{ fontSize:12, color:T.muted, marginBottom:12 }}>
+                  {agentResult.classification?.risk_reason||"High-risk fix detected"}
+                  <span style={{ fontFamily:T.monoFont, color:T.cyan, fontSize:11, marginLeft:8 }}>
+                    token: {agentResult.approval_token}
+                  </span>
+                </div>
+                <div style={{ display:"flex", gap:8 }}>
+                  <Btn onClick={()=>approveAgent("approve")} variant="success" size="sm">
+                    <Check size={11}/> Approve Fix
+                  </Btn>
+                  <Btn onClick={()=>approveAgent("reject")} variant="danger" size="sm">
+                    <X size={11}/> Reject
+                  </Btn>
+                  <span style={{ fontSize:11, color:T.dim, alignSelf:"center" }}>Times out in 10 min</span>
                 </div>
               </div>
-            </Card>
-          )}
+            </div>
+          </Card>
+        )}
 
-          {/* WiziAgent result */}
-          {agentResult && agentResult.status !== "awaiting_approval" && (
-            <Card style={{ padding:"14px 18px",
-              borderColor: agentResult.status==="fixed"?`${T.green}40`:`${T.yellow}40`,
-              background:  agentResult.status==="fixed"?`${T.green}06`:`${T.yellow}06` }}>
-              <div style={{ display:"flex", alignItems:"center", gap:10, marginBottom:8 }}>
-                <Zap size={14} color={agentResult.status==="fixed"?T.green:T.yellow}/>
-                <span style={{ fontSize:13, fontWeight:700,
-                  color:agentResult.status==="fixed"?T.green:T.yellow }}>
-                  WiziAgent — {agentResult.status?.toUpperCase()}
+        {/* ── WiziAgent result banner ──────────────────────────────────────── */}
+        {agentResult && agentResult.status!=="awaiting_approval" && (
+          <Card style={{ padding:"12px 16px", marginBottom:14,
+            borderColor:agentResult.status==="fixed"?`${T.green}40`:`${T.yellow}40`,
+            background:agentResult.status==="fixed"?`${T.green}06`:`${T.yellow}06` }}>
+            <div style={{ display:"flex", alignItems:"center", gap:10 }}>
+              <Zap size={13} color={agentResult.status==="fixed"?T.green:T.yellow}/>
+              <span style={{ fontSize:12, fontWeight:700,
+                color:agentResult.status==="fixed"?T.green:T.yellow }}>
+                WiziAgent — {agentResult.status?.toUpperCase()}
+              </span>
+              {(agentResult.fix_results||[]).map((r,i)=>(
+                <span key={i} style={{ fontSize:11, color:T.green, fontFamily:T.monoFont }}>
+                  · {r.action}: {r.rows_affected} rows
                 </span>
-                <button onClick={()=>setAgentResult(null)}
-                  style={{ marginLeft:"auto", background:"none", border:"none",
-                    color:T.muted, cursor:"pointer" }}><X size={13}/></button>
+              ))}
+              <button onClick={()=>setAgentResult(null)}
+                style={{ marginLeft:"auto", background:"none", border:"none",
+                  color:T.muted, cursor:"pointer" }}><X size={12}/></button>
+            </div>
+          </Card>
+        )}
+
+        {/* ── Check Library panel ──────────────────────────────────────────── */}
+        {showLibrary && (
+          <Card style={{ padding:"18px 20px", marginBottom:14,
+            borderColor:`${T.purple}30`, background:`${T.purple}04` }}>
+            <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom:12 }}>
+              <div>
+                <div style={{ fontSize:13, fontWeight:700, color:T.text }}>Check Library</div>
+                <div style={{ fontSize:11, color:T.muted, marginTop:2 }}>Click a check to run it — no SQL needed.</div>
               </div>
-              {(agentResult.fix_results||[]).map((r,i) => (
-                <div key={i} style={{ fontSize:11, color:T.green, fontFamily:T.monoFont, marginBottom:2 }}>
-                  ✓ {r.action}: {r.rows_affected} rows ({r.before} → {r.after})
+              <button onClick={()=>setShowLibrary(false)}
+                style={{ background:"none", border:"none", cursor:"pointer", color:T.muted, fontSize:16 }}>×</button>
+            </div>
+            <div style={{ display:"grid", gridTemplateColumns:"repeat(4,1fr)", gap:7 }}>
+              {TEST_LIBRARY.map(test => {
+                const done = libraryAdded[test.id];
+                return (
+                  <button key={test.id} onClick={()=>addFromLibrary(test)} disabled={done}
+                    style={{ display:"flex", alignItems:"flex-start", gap:8, padding:"10px 12px",
+                      borderRadius:8, textAlign:"left",
+                      border:`1px solid ${done?T.green+"40":T.border}`,
+                      background:done?`${T.green}06`:T.surface,
+                      cursor:done?"default":"pointer", transition:"all 0.12s" }}
+                    onMouseEnter={e=>{if(!done){e.currentTarget.style.borderColor=T.purple; e.currentTarget.style.background=`${T.purple}06`;}}}
+                    onMouseLeave={e=>{if(!done){e.currentTarget.style.borderColor=T.border; e.currentTarget.style.background=T.surface;}}}>
+                    <span style={{ fontSize:16, flexShrink:0 }}>{test.icon}</span>
+                    <div>
+                      <div style={{ fontSize:11, fontWeight:600, color:done?T.green:T.text, marginBottom:2 }}>
+                        {done?"✓ ":""}{test.label}
+                      </div>
+                      <div style={{ fontSize:10, color:T.muted, lineHeight:1.4 }}>{test.desc}</div>
+                      <Badge label={test.severity} color={{critical:T.red,high:T.orange,medium:T.yellow}[test.severity]||T.muted}
+                        style={{ marginTop:4 }}/>
+                    </div>
+                  </button>
+                );
+              })}
+            </div>
+          </Card>
+        )}
+
+        {/* ── From Workflows banner ────────────────────────────────────────── */}
+        {(initialIssues||[]).filter(i=>!i._dismissed).length > 0 && (
+          <Card style={{ padding:"12px 16px", marginBottom:14,
+            borderColor:`${T.purple}30`, background:`${T.purple}04` }}>
+            <div style={{ fontSize:11, fontWeight:700, color:T.purple, marginBottom:8,
+              textTransform:"uppercase", letterSpacing:"0.06em" }}>
+              From Workflows ({(initialIssues||[]).filter(i=>!i._dismissed).length})
+            </div>
+            <div style={{ display:"flex", flexWrap:"wrap", gap:6 }}>
+              {(initialIssues||[]).filter(i=>!i._dismissed).map((iss,i)=>(
+                <div key={iss.id||i} style={{ display:"flex", alignItems:"center", gap:8,
+                  padding:"6px 10px", borderRadius:6, background:T.surface, border:`1px solid ${T.border}` }}>
+                  <Badge label={iss.severity||"medium"}
+                    color={{critical:T.red,high:T.orange,medium:T.yellow,low:T.cyan}[iss.severity]||T.muted}/>
+                  <div>
+                    <div style={{ fontSize:11, fontWeight:600, color:T.text }}>{iss.title}</div>
+                    {iss.table && <div style={{ fontSize:10, color:T.muted, fontFamily:"monospace" }}>{iss.table}</div>}
+                  </div>
+                  <Btn size="sm" variant="ghost" onClick={()=>{ setSelectedTable(iss.table||selectedTable); scan(); }}>
+                    Scan table
+                  </Btn>
                 </div>
               ))}
-              {agentResult.verify_attempts > 0 && (
-                <div style={{ fontSize:11, color:T.muted, marginTop:4 }}>
-                  Verified in {agentResult.verify_attempts} attempt(s)
-                </div>
-              )}
-            </Card>
-          )}
+            </div>
+          </Card>
+        )}
 
-          {/* Issues pushed from Workflows */}
-          {(initialIssues||[]).filter(i => !i._dismissed).length > 0 && (
-            <Card style={{ padding:"14px 18px",
-              borderColor:`${T.purple}30`, background:`${T.purple}04` }}>
-              <div style={{ fontSize:11, fontWeight:700, color:T.purple, marginBottom:10,
-                textTransform:"uppercase", letterSpacing:"0.06em" }}>
-                From Workflows ({(initialIssues||[]).filter(i => !i._dismissed).length})
+        {/* ══════════════════════════════════════════════════════════════════ */}
+        {/* ISSUES VIEW                                                        */}
+        {/* ══════════════════════════════════════════════════════════════════ */}
+        {activeView==="issues" && (
+          <>
+            {!triageResult && !loading && (
+              <EmptyState icon={Shield} title="No scan yet"
+                desc={selectedTable==="mws.report"?"10 checks: pipeline health + data quality":`Generic quality checks on ${selectedTable}`}
+                action={<Btn onClick={scan} size="sm"><RefreshCw size={11}/> Scan Now</Btn>}/>
+            )}
+            {loading && (
+              <div style={{ display:"flex", alignItems:"center", justifyContent:"center",
+                padding:"60px 0", gap:10, color:T.muted }}>
+                <Spinner size={18}/><span style={{ fontSize:14 }}>Scanning {selectedTable}…</span>
               </div>
-              <div style={{ display:"flex", flexDirection:"column", gap:6 }}>
-                {(initialIssues||[]).filter(i => !i._dismissed).map((iss, i) => (
-                  <div key={iss.id||i} style={{ display:"flex", alignItems:"center", gap:10,
-                    padding:"8px 12px", borderRadius:6,
-                    background:T.surface, border:`1px solid ${T.border}` }}>
-                    <Badge label={iss.severity||"medium"}
-                      color={{critical:T.red,high:T.orange,medium:T.yellow,low:T.cyan}[iss.severity]||T.muted}/>
-                    <div style={{ flex:1, minWidth:0 }}>
-                      <div style={{ fontSize:12, fontWeight:600, color:T.text }}>{iss.title}</div>
-                      <div style={{ fontSize:10, color:T.muted }}>
-                        {iss.table && <span style={{fontFamily:"monospace"}}>{iss.table} · </span>}
-                        {iss.source && <span>from: {iss.source} · </span>}
-                        {iss.description}
-                      </div>
-                    </div>
-                    <Btn size="sm" variant="ghost" onClick={() => {
-                      setSelectedTable(iss.table || selectedTable);
-                      scan();
-                    }}>
-                      <RefreshCw size={10}/> Scan table
-                    </Btn>
-                  </div>
-                ))}
-              </div>
-            </Card>
-          )}
-
-          {/* Issue cards */}
-          {issues.map(issue => {
-            const color  = SEV_COLOR[issue.severity] || T.muted;
-            const dr     = dryRuns[issue.id];
-            const fr     = fixResults[issue.id];
-            const isExp  = expanded[issue.id];
-            const conf   = confidence(issue, dr);
-            const age    = issueAge(issue.id);
-            const isFixed = !!fr;
-
-            return (
-              <Card key={issue.id} style={{ overflow:"hidden" }}>
-                {/* Main row */}
-                <div style={{ padding:"14px 18px", display:"flex", alignItems:"center", gap:12 }}>
-                  <StatusDot status={isFixed?"healthy":issue.severity==="critical"?"critical":"warning"}/>
-                  <div style={{ flex:1, minWidth:0 }}>
-                    <div style={{ display:"flex", alignItems:"center", gap:7, marginBottom:2 }}>
-                      <span style={{ fontSize:10, fontFamily:T.monoFont, fontWeight:700,
-                        color:T.muted }}>{issue.id}</span>
-                      <span style={{ fontSize:13, fontWeight:600,
-                        color:isFixed?T.green:T.text }}>
-                        {isFixed?"✓ Fixed — ":""}{issue.title}
-                      </span>
-                      <Badge label={issue.severity} color={color}/>
-                      {!issue.fix_action && (
-                        <Badge label="data quality" color={T.purple}/>
-                      )}
-                      {age && !isFixed && (
-                        <span style={{ fontSize:10, color:T.dim }}>· {age}</span>
-                      )}
-                    </div>
-                    <div style={{ fontSize:11, color:T.muted }}>{issue.description}</div>
-                  </div>
-                  <div style={{ fontFamily:T.monoFont, fontSize:19, fontWeight:700,
-                    color:isFixed?T.green:color, flexShrink:0 }}>
-                    {isFixed ? `${fr.before}→${fr.after}` : issue.count.toLocaleString()}
-                  </div>
-                  <div style={{ display:"flex", gap:5, flexShrink:0 }}>
-                    {issue.samples?.length > 0 && (
-                      <Btn size="sm" variant="muted"
-                        onClick={()=>setExpanded(p=>({...p,[issue.id]:!p[issue.id]}))}>
-                        <Eye size={11}/> {isExp?"Hide":"Rows"}
-                      </Btn>
-                    )}
-                    {!isFixed && !dr && issue.fix_action && (
-                      <Btn size="sm" variant="ghost" onClick={()=>dryRun(issue)}>
-                        Dry run
-                      </Btn>
-                    )}
-                    {dr && dr!=="loading" && dr!=="error" && !isFixed && issue.fix_action && (
-                      <Btn size="sm" variant="danger"
-                        onClick={()=>fix(issue)} disabled={fixing[issue.id]}>
-                        {fixing[issue.id]?<Spinner size={11} color="white"/>:null}
-                        Fix {dr.rows_affected} rows
-                      </Btn>
-                    )}
-                    {dr==="loading" && <Spinner size={14}/>}
-                    {!issue.fix_action && !isFixed && (
-                      <span style={{ fontSize:10, color:T.muted, fontStyle:"italic" }}>
-                        Informational
-                      </span>
-                    )}
-                  </div>
+            )}
+            {!loading && triageResult && issues.length===0 && (
+              <div style={{ textAlign:"center", padding:"48px 0" }}>
+                <CheckCircle size={40} color={T.green} strokeWidth={1.2}
+                  style={{ margin:"0 auto 12px", display:"block" }}/>
+                <div style={{ fontSize:16, fontWeight:700, color:T.green }}>All clean</div>
+                <div style={{ fontSize:13, color:T.muted, marginTop:4 }}>
+                  {triageResult.total_rows?.toLocaleString()} rows — all {selectedTable==="mws.report"?"10":"quality"} checks passed
                 </div>
+              </div>
+            )}
 
-                {/* Dry run confidence + before/after preview */}
-                {dr && dr!=="loading" && dr!=="error" && !isFixed && (
-                  <div style={{ padding:"10px 18px", borderTop:`1px solid ${T.border}`,
-                    background:T.isDark?`rgba(0,0,0,0.2)`:`${T.accent}04`,
-                    display:"flex", alignItems:"center", gap:16 }}>
-                    {/* Before / After */}
-                    <div style={{ display:"flex", gap:10, alignItems:"center" }}>
-                      <div style={{ textAlign:"center" }}>
-                        <div style={{ fontSize:16, fontWeight:700, color:T.text,
-                          fontFamily:T.monoFont }}>{dr.before?.toLocaleString()}</div>
-                        <div style={{ fontSize:9, color:T.muted, textTransform:"uppercase",
-                          letterSpacing:"0.05em" }}>before</div>
+            {/* Issue cards — sorted by severity */}
+            {sortedIssues.map(issue => {
+              const color   = SEV_COLOR[issue.severity]||T.muted;
+              const dr      = dryRuns[issue.id];
+              const fr      = fixResults[issue.id];
+              const isExp   = expanded[issue.id];
+              const conf    = confidence(issue, dr);
+              const isFixed = !!fr;
+
+              return (
+                <Card key={issue.id} style={{ marginBottom:10, overflow:"hidden",
+                  borderLeft:`3px solid ${isFixed?T.green:color}` }}>
+
+                  {/* ── Issue header ── */}
+                  <div style={{ padding:"14px 18px" }}>
+                    <div style={{ display:"flex", alignItems:"flex-start", gap:12 }}>
+                      {/* Severity indicator */}
+                      <div style={{ width:36, height:36, borderRadius:8, flexShrink:0,
+                        background:`${color}15`, display:"flex", alignItems:"center",
+                        justifyContent:"center", marginTop:1 }}>
+                        {isFixed
+                          ? <CheckCircle size={16} color={T.green}/>
+                          : <AlertTriangle size={16} color={color} strokeWidth={1.8}/>}
                       </div>
-                      <ArrowRight size={14} color={T.muted}/>
-                      <div style={{ textAlign:"center" }}>
-                        <div style={{ fontSize:16, fontWeight:700, color:T.green,
-                          fontFamily:T.monoFont }}>
-                          {(dr.before - dr.rows_affected)?.toLocaleString()}
+
+                      {/* Title + meta */}
+                      <div style={{ flex:1, minWidth:0 }}>
+                        <div style={{ display:"flex", alignItems:"center", gap:8, flexWrap:"wrap", marginBottom:4 }}>
+                          <span style={{ fontSize:14, fontWeight:700,
+                            color:isFixed?T.green:T.text }}>
+                            {isFixed?"✓ Fixed — ":""}{issue.title}
+                          </span>
+                          <Badge label={issue.severity} color={color}/>
+                          {!issue.fix_action && <Badge label="info only" color={T.purple}/>}
+                          <span style={{ fontSize:10, color:T.dim, fontFamily:T.monoFont }}>{issue.id}</span>
                         </div>
-                        <div style={{ fontSize:9, color:T.muted, textTransform:"uppercase",
-                          letterSpacing:"0.05em" }}>after</div>
+                        <div style={{ fontSize:12, color:T.muted, lineHeight:1.5 }}>
+                          {issue.description}
+                        </div>
+
+                        {/* Breakdown pills */}
+                        {issue.breakdown?.length > 0 && (
+                          <div style={{ display:"flex", gap:5, marginTop:8, flexWrap:"wrap" }}>
+                            {issue.breakdown.map(b=>(
+                              <span key={b.status} style={{ fontSize:11, padding:"2px 8px",
+                                background:`${color}10`, color, borderRadius:5, fontFamily:T.monoFont,
+                                border:`1px solid ${color}25` }}>
+                                {b.status}: <strong>{b.count?.toLocaleString()}</strong>
+                              </span>
+                            ))}
+                          </div>
+                        )}
                       </div>
-                      <div style={{ padding:"2px 8px", borderRadius:5,
-                        background:`${color}15`, border:`1px solid ${color}30` }}>
-                        <span style={{ fontSize:11, fontWeight:700, color,
-                          fontFamily:T.monoFont }}>
+
+                      {/* Row count + actions */}
+                      <div style={{ display:"flex", flexDirection:"column", alignItems:"flex-end",
+                        gap:8, flexShrink:0 }}>
+                        <div style={{ textAlign:"right" }}>
+                          <div style={{ fontSize:24, fontWeight:800, fontFamily:T.monoFont,
+                            color:isFixed?T.green:color, lineHeight:1 }}>
+                            {isFixed?`${fr.before}→${fr.after}`:issue.count.toLocaleString()}
+                          </div>
+                          <div style={{ fontSize:9, color:T.muted, textTransform:"uppercase",
+                            letterSpacing:"0.05em" }}>{isFixed?"rows":"affected rows"}</div>
+                        </div>
+
+                        {/* Action buttons */}
+                        <div style={{ display:"flex", gap:5, flexWrap:"wrap", justifyContent:"flex-end" }}>
+                          {issue.samples?.length > 0 && (
+                            <Btn size="sm" variant="muted"
+                              onClick={()=>setExpanded(p=>({...p,[issue.id]:!p[issue.id]}))}>
+                              <Eye size={10}/> {isExp?"Hide":"Samples"}
+                            </Btn>
+                          )}
+                          <Btn size="sm" variant="ghost"
+                            onClick={()=>{ setActiveView("data"); loadPreview(50); }}
+                            style={{ fontSize:10 }}>
+                            <Table size={10}/> View Data
+                          </Btn>
+                          {!isFixed && !dr && issue.fix_action && (
+                            <Btn size="sm" variant="ghost" onClick={()=>dryRun(issue)}>
+                              {dr==="loading"?<Spinner size={10}/>:null} Dry run
+                            </Btn>
+                          )}
+                          {dr && dr!=="loading" && dr!=="error" && !isFixed && issue.fix_action && (
+                            <Btn size="sm" variant="danger" onClick={()=>fix(issue)} disabled={fixing[issue.id]}>
+                              {fixing[issue.id]?<Spinner size={10} color="white"/>:null}
+                              Fix {dr.rows_affected?.toLocaleString()} rows
+                            </Btn>
+                          )}
+                          {dr==="loading" && <Spinner size={13}/>}
+                          <Btn size="sm" variant="ghost"
+                            onClick={()=>explainIssue(issue)}
+                            disabled={explanations[issue.id]?.loading}
+                            style={{ fontSize:10, color:T.purple, borderColor:`${T.purple}30` }}>
+                            {explanations[issue.id]?.loading?<Spinner size={10}/>:"💬"}
+                            {explanations[issue.id]?.loading?"Asking…":"Explain"}
+                          </Btn>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* ── Dry run preview ── */}
+                  {dr && dr!=="loading" && dr!=="error" && !isFixed && (
+                    <div style={{ padding:"10px 18px", borderTop:`1px solid ${T.border}`,
+                      background:`${T.accent}04`, display:"flex", alignItems:"center", gap:20 }}>
+                      <div style={{ display:"flex", gap:10, alignItems:"center" }}>
+                        <div style={{ textAlign:"center" }}>
+                          <div style={{ fontSize:18, fontWeight:700, fontFamily:T.monoFont,
+                            color:T.text }}>{dr.before?.toLocaleString()}</div>
+                          <div style={{ fontSize:9, color:T.muted, textTransform:"uppercase" }}>before</div>
+                        </div>
+                        <ArrowRight size={13} color={T.muted}/>
+                        <div style={{ textAlign:"center" }}>
+                          <div style={{ fontSize:18, fontWeight:700, fontFamily:T.monoFont,
+                            color:T.green }}>{(dr.before-dr.rows_affected)?.toLocaleString()}</div>
+                          <div style={{ fontSize:9, color:T.muted, textTransform:"uppercase" }}>after</div>
+                        </div>
+                        <span style={{ fontSize:12, fontWeight:700, padding:"2px 8px",
+                          borderRadius:5, background:`${color}15`, color }}>
                           -{dr.rows_affected?.toLocaleString()} rows
                         </span>
                       </div>
-                    </div>
-                    {/* Confidence */}
-                    {conf !== null && (
-                      <div style={{ marginLeft:"auto", display:"flex", alignItems:"center", gap:6 }}>
-                        <div style={{ width:48, height:4, borderRadius:99, background:T.border,
-                          overflow:"hidden" }}>
-                          <div style={{ height:"100%", borderRadius:99,
-                            width:`${conf}%`,
-                            background: conf>=90?T.green:conf>=75?T.yellow:T.orange }}/>
+                      {conf!==null && (
+                        <div style={{ marginLeft:"auto", display:"flex", alignItems:"center", gap:8 }}>
+                          <div style={{ width:60, height:5, borderRadius:99, background:T.border, overflow:"hidden" }}>
+                            <div style={{ height:"100%", borderRadius:99, width:`${conf}%`,
+                              background:conf>=90?T.green:conf>=75?T.yellow:T.orange }}/>
+                          </div>
+                          <span style={{ fontSize:12, fontWeight:600,
+                            color:conf>=90?T.green:conf>=75?T.yellow:T.orange }}>
+                            {conf}% safe to fix
+                          </span>
                         </div>
-                        <span style={{ fontSize:11, fontWeight:600,
-                          color:conf>=90?T.green:conf>=75?T.yellow:T.orange }}>
-                          {conf}% safe
+                      )}
+                    </div>
+                  )}
+
+                  {/* ── Sample rows ── */}
+                  {isExp && issue.samples?.length > 0 && (
+                    <div style={{ borderTop:`1px solid ${T.border}` }}>
+                      <div style={{ padding:"8px 18px", background:`${T.accent}04`,
+                        display:"flex", alignItems:"center", gap:8 }}>
+                        <span style={{ fontSize:11, fontWeight:600, color:T.muted }}>
+                          Sample rows ({issue.samples.length} shown)
                         </span>
+                        <Btn size="sm" variant="ghost"
+                          onClick={()=>{ setActiveView("data"); loadPreview(100); }}
+                          style={{ fontSize:10 }}>
+                          View full table →
+                        </Btn>
                       </div>
-                    )}
-                  </div>
-                )}
-
-                {/* Sample rows */}
-                {isExp && issue.samples?.length > 0 && (
-                  <div style={{ borderTop:`1px solid ${T.border}`, overflowX:"auto",
-                    padding:"10px 18px" }}>
-                    <table style={{ borderCollapse:"collapse", fontSize:10,
-                      fontFamily:T.monoFont, width:"100%" }}>
-                      <thead>
-                        <tr>
-                          {Object.keys(issue.samples[0]).map(k => (
-                            <th key={k} style={{ padding:"3px 10px", textAlign:"left",
-                              color:T.muted, fontWeight:600, fontSize:9,
-                              borderBottom:`1px solid ${T.border}`,
-                              textTransform:"uppercase", letterSpacing:"0.04em",
-                              whiteSpace:"nowrap" }}>{k}</th>
-                          ))}
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {issue.samples.map((row,i) => (
-                          <tr key={i} style={{ borderBottom:`1px solid ${T.border}40` }}>
-                            {Object.values(row).map((v,j) => (
-                              <td key={j} style={{ padding:"5px 10px", whiteSpace:"nowrap",
-                                color: v===null?T.red:String(v).includes("fail")?T.orange:T.text2 }}>
-                                {v===null?<span style={{color:T.red,fontWeight:700}}>NULL</span>:String(v)}
-                              </td>
+                      <div style={{ overflowX:"auto", padding:"0 18px 12px" }}>
+                        <table style={{ borderCollapse:"collapse", fontSize:11,
+                          fontFamily:T.monoFont, width:"100%" }}>
+                          <thead>
+                            <tr>
+                              {Object.keys(issue.samples[0]).map(k=>(
+                                <th key={k} style={{ padding:"5px 12px", textAlign:"left",
+                                  color:T.muted, fontWeight:600, fontSize:10,
+                                  borderBottom:`1px solid ${T.border}`,
+                                  textTransform:"uppercase", letterSpacing:"0.04em",
+                                  whiteSpace:"nowrap" }}>{k}</th>
+                              ))}
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {issue.samples.map((row,i)=>(
+                              <tr key={i} style={{ borderBottom:`1px solid ${T.border}30` }}
+                                onMouseEnter={e=>e.currentTarget.style.background=`${T.accent}06`}
+                                onMouseLeave={e=>e.currentTarget.style.background="transparent"}>
+                                {Object.entries(row).map(([k,v],j)=>(
+                                  <td key={j} style={{ padding:"6px 12px", whiteSpace:"nowrap",
+                                    color:v===null?T.red:
+                                      String(v).toLowerCase().includes("fail")||String(v).toLowerCase().includes("error")?T.orange:
+                                      T.text2 }}>
+                                    {v===null
+                                      ? <span style={{ fontWeight:700, color:T.red }}>NULL</span>
+                                      : String(v)}
+                                  </td>
+                                ))}
+                              </tr>
                             ))}
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  </div>
-                )}
-              </Card>
-            );
-          })}
-        </div>
+                          </tbody>
+                        </table>
+                      </div>
+                    </div>
+                  )}
 
-        {/* Log panel */}
-        <div>
-          <Card style={{ padding:"14px 16px" }}>
-            <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between",
-              marginBottom:10 }}>
-              <div style={{ fontSize:11, fontWeight:700, color:T.muted,
-                textTransform:"uppercase", letterSpacing:"0.06em" }}>Activity Log</div>
-              {log.length>0 && (
-                <button onClick={()=>setLog([])}
-                  style={{ background:"none", border:"none", color:T.dim,
-                    cursor:"pointer", fontSize:10 }}>Clear</button>
+                  {/* ── AI Explanation ── */}
+                  {explanations[issue.id]?.text && (
+                    <div style={{ borderTop:`1px solid ${T.border}`, padding:"12px 18px",
+                      background:`${T.purple}05` }}>
+                      <div style={{ display:"flex", alignItems:"flex-start", gap:10 }}>
+                        <div style={{ width:24, height:24, borderRadius:6, flexShrink:0,
+                          background:`linear-gradient(135deg,${T.accent},${T.purple})`,
+                          display:"flex", alignItems:"center", justifyContent:"center" }}>
+                          <Zap size={10} color="white"/>
+                        </div>
+                        <div style={{ flex:1 }}>
+                          <div style={{ fontSize:10, fontWeight:700, color:T.purple, marginBottom:4,
+                            textTransform:"uppercase", letterSpacing:"0.05em" }}>WiziAgent Explanation</div>
+                          <div style={{ fontSize:12, color:T.text2, lineHeight:1.65 }}>
+                            {explanations[issue.id].text}
+                          </div>
+                        </div>
+                        <button onClick={()=>setExplanations(p=>({...p,[issue.id]:null}))}
+                          style={{ background:"none", border:"none", cursor:"pointer",
+                            color:T.dim, fontSize:14 }}>×</button>
+                      </div>
+                    </div>
+                  )}
+                </Card>
+              );
+            })}
+          </>
+        )}
+
+        {/* ══════════════════════════════════════════════════════════════════ */}
+        {/* DATA PREVIEW VIEW                                                  */}
+        {/* ══════════════════════════════════════════════════════════════════ */}
+        {activeView==="data" && (
+          <div>
+            <div style={{ display:"flex", alignItems:"center", gap:10, marginBottom:12 }}>
+              <span style={{ fontSize:13, fontWeight:600, color:T.text }}>
+                {selectedTable}
+              </span>
+              <select value={previewLimit}
+                onChange={e=>{ setPreviewLimit(Number(e.target.value)); loadPreview(Number(e.target.value)); }}
+                style={{ fontSize:11, padding:"4px 8px", borderRadius:6,
+                  border:`1px solid ${T.border}`, background:T.surface, color:T.text }}>
+                <option value={20}>20 rows</option>
+                <option value={50}>50 rows</option>
+                <option value={100}>100 rows</option>
+                <option value={200}>200 rows</option>
+              </select>
+              <Btn size="sm" variant="ghost" onClick={()=>loadPreview(previewLimit)}
+                disabled={previewLoading}>
+                {previewLoading?<Spinner size={10}/>:<RefreshCw size={10}/>} Refresh
+              </Btn>
+              <Btn size="sm" variant="ghost"
+                onClick={()=>{ const [s,t]=selectedTable.split("."); window.open(`${API}/api/preview?schema=${s}&table=${t}&limit=200`,"_blank"); }}
+                style={{ fontSize:10 }}>
+                Open raw JSON ↗
+              </Btn>
+              {preview?.rows?.length > 0 && (
+                <span style={{ fontSize:11, color:T.muted, marginLeft:"auto" }}>
+                  {preview.rows.length} rows · {preview.columns?.length} columns
+                </span>
               )}
             </div>
-            <div style={{ height:420, overflowY:"auto", display:"flex",
-              flexDirection:"column", gap:2 }}>
-              {log.length === 0
-                ? <div style={{ fontSize:11, color:T.dim }}>No activity yet</div>
-                : log.map((l,i) => (
-                  <div key={i} style={{ fontFamily:T.monoFont, fontSize:10, lineHeight:1.6,
-                    color: l.level==="success"?T.green:l.level==="error"?T.red:
-                           l.level==="warning"?T.yellow:T.muted }}>
-                    <span style={{ color:T.dim, marginRight:5 }}>{l.ts}</span>{l.msg}
-                  </div>
-                ))
-              }
+
+            {previewLoading && (
+              <div style={{ display:"flex", alignItems:"center", gap:10,
+                padding:"40px 0", justifyContent:"center", color:T.muted }}>
+                <Spinner size={16}/><span>Loading data…</span>
+              </div>
+            )}
+            {!previewLoading && preview?.error && (
+              <div style={{ padding:"20px", color:T.red, fontSize:13 }}>
+                Error: {preview.error}
+              </div>
+            )}
+            {!previewLoading && preview?.rows?.length > 0 && (
+              <div style={{ overflowX:"auto", borderRadius:8,
+                border:`1px solid ${T.border}` }}>
+                <table style={{ borderCollapse:"collapse", fontSize:11,
+                  fontFamily:T.monoFont, width:"100%", minWidth:600 }}>
+                  <thead>
+                    <tr style={{ background:`${T.accent}08` }}>
+                      {(preview.columns||Object.keys(preview.rows[0])).map(col=>(
+                        <th key={col} style={{ padding:"8px 14px", textAlign:"left",
+                          fontWeight:700, fontSize:10, color:T.muted,
+                          borderBottom:`1px solid ${T.border}`, whiteSpace:"nowrap",
+                          textTransform:"uppercase", letterSpacing:"0.04em",
+                          position:"sticky", top:0, background:"#FAFBFF" }}>
+                          {col}
+                        </th>
+                      ))}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {preview.rows.map((row,i)=>(
+                      <tr key={i}
+                        onMouseEnter={e=>e.currentTarget.style.background=`${T.accent}06`}
+                        onMouseLeave={e=>e.currentTarget.style.background=i%2===0?"transparent":"#FAFBFF"}>
+                        {(preview.columns||Object.keys(row)).map((col,j)=>{
+                          const v = row[col];
+                          const isNull = v===null||v===undefined;
+                          const isBad  = !isNull && (
+                            String(v).toLowerCase()==="failed"||
+                            String(v).toLowerCase()==="error"||
+                            String(v)==="NOT_REPLICATED"||
+                            String(v)==="pending"
+                          );
+                          return (
+                            <td key={j} style={{ padding:"6px 14px", whiteSpace:"nowrap",
+                              borderBottom:`1px solid ${T.border}20`,
+                              color:isNull?T.red:isBad?T.orange:T.text2,
+                              background:i%2===1?"#FAFBFF":"transparent" }}>
+                              {isNull
+                                ? <span style={{ fontWeight:700, color:T.red, fontSize:10 }}>NULL</span>
+                                : String(v)}
+                            </td>
+                          );
+                        })}
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+            {!previewLoading && !preview && (
+              <div style={{ textAlign:"center", padding:"48px 0", color:T.muted }}>
+                <Database size={32} color={T.border} style={{ margin:"0 auto 10px", display:"block" }}/>
+                <div>Click Refresh to load table data</div>
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* ══════════════════════════════════════════════════════════════════ */}
+        {/* LOG VIEW                                                           */}
+        {/* ══════════════════════════════════════════════════════════════════ */}
+        {activeView==="log" && (
+          <div>
+            <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom:10 }}>
+              <span style={{ fontSize:13, fontWeight:600, color:T.text }}>Activity Log</span>
+              {log.length > 0 && (
+                <Btn size="sm" variant="ghost" onClick={()=>setLog([])}>Clear</Btn>
+              )}
             </div>
-          </Card>
-        </div>
+            {log.length===0
+              ? <div style={{ textAlign:"center", padding:"48px 0", color:T.muted, fontSize:13 }}>
+                  No activity yet — run a scan to get started.
+                </div>
+              : <div style={{ display:"flex", flexDirection:"column", gap:2 }}>
+                  {[...log].reverse().map((l,i)=>(
+                    <div key={i} style={{ display:"flex", gap:12, padding:"6px 12px",
+                      borderRadius:6, background:i===0?`${T.accent}05`:"transparent",
+                      alignItems:"flex-start" }}>
+                      <span style={{ fontSize:10, color:T.dim, flexShrink:0, marginTop:1,
+                        fontFamily:T.monoFont }}>{l.ts}</span>
+                      <span style={{ fontSize:12, lineHeight:1.5,
+                        color:l.level==="success"?T.green:l.level==="error"?T.red:
+                          l.level==="warning"?T.orange:T.text2 }}>
+                        {l.msg}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+            }
+          </div>
+        )}
       </div>
     </div>
   );
@@ -1514,202 +2157,52 @@ function TriageTab({ initialIssues }) {
 
 // ─── Notification Center ──────────────────────────────────────────────────────
 // Persistent unified activity feed — every WiziAgent action, fix, gate, Slack msg
-function NotificationCenterTab() {
-  const T = useT();
-  const [feed,     setFeed]     = useSession("wz_notifFeed", []);
-  const [filter,   setFilter]   = React.useState("all");
-  const [unread,   setUnread]   = useSession("wz_notifUnread", 0);
-
-  // Mark all read on open
-  React.useEffect(() => { setUnread(0); }, []);
-
-  const FILTERS = ["all","fix","gate","workflow","slack","error"];
-  const ICONS = {
-    fix:"🔧", gate:"🔒", workflow:"⚡", slack:"💬", error:"🔴", info:"ℹ️"
-  };
-
-  // Pull from existing session states to populate feed
-  React.useEffect(() => {
-    const triageLog = (() => {
-      try { return JSON.parse(sessionStorage.getItem("wz_triageLog")||"[]"); } catch { return []; }
-    })();
-    const wfHistory = (() => {
-      try { return JSON.parse(sessionStorage.getItem("wz_wfHistory")||"[]"); } catch { return []; }
-    })();
-    const fixHistory = (() => {
-      try { return JSON.parse(sessionStorage.getItem("wz_history")||"[]"); } catch { return []; }
-    })();
-
-    const events = [];
-
-    // From fix history
-    fixHistory.forEach(h => events.push({
-      id:`fix-${h.ts}`, type:"fix", level:h.success?"success":"error",
-      title:`Fix: ${h.action}`,
-      detail:`${h.table} · ${h.rows_affected} rows (${h.before}→${h.after})`,
-      ts:h.ts, ts_raw: h.ts,
-    }));
-
-    // From workflow runs
-    wfHistory.forEach(r => events.push({
-      id:`wf-${r.run_id}`, type:"workflow",
-      level:r.status==="clean"?"success":r.status==="error"?"error":"warning",
-      title:`Workflow: Daily Brief #${r.run_id}`,
-      detail:`${r.status?.toUpperCase()} · ${r.issues?.length||0} issue(s) · ${r.started_at}`,
-      ts:r.started_at, ts_raw: r.started_at,
-    }));
-
-    // From triage log
-    triageLog.forEach(l => events.push({
-      id:`triage-${l.ts}-${Math.random()}`,
-      type: l.msg?.includes("Gate")?"gate": l.msg?.includes("fix")?"fix":"info",
-      level: l.level,
-      title: l.msg,
-      detail: `Triage · ${l.ts}`,
-      ts: l.ts, ts_raw: l.ts,
-    }));
-
-    if (events.length > 0) {
-      setFeed(events.sort((a,b) => b.ts_raw?.localeCompare(a.ts_raw||"")));
-    }
-  }, []);
-
-  const filtered = filter==="all" ? feed : feed.filter(e => e.type===filter);
-
-  const levelColor = { success:T.green, error:T.red, warning:T.yellow, info:T.muted };
-
-  return (
-    <div className="fade-in" style={{ padding:"28px 32px", maxWidth:840 }}>
-      <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom:20 }}>
-        <div>
-          <div style={{ fontSize:22, fontWeight:700, color:T.text, letterSpacing:"-0.02em" }}>
-            Notifications
-          </div>
-          <div style={{ fontSize:13, color:T.muted, marginTop:3 }}>
-            Unified activity feed — all WiziAgent actions, fixes, gates, and alerts
-          </div>
-        </div>
-        <div style={{ display:"flex", gap:6 }}>
-          <Btn onClick={()=>setFeed([])} variant="muted" size="sm">Clear</Btn>
-        </div>
-      </div>
-
-      {/* Filter pills */}
-      <div style={{ display:"flex", gap:6, marginBottom:16, flexWrap:"wrap" }}>
-        {FILTERS.map(f => (
-          <button key={f} onClick={()=>setFilter(f)}
-            style={{ padding:"4px 12px", borderRadius:99, fontSize:11, fontWeight:600,
-              cursor:"pointer", border:"none", transition:"all 0.12s",
-              background: filter===f?T.accent:`${T.accent}10`,
-              color: filter===f?"white":T.muted }}>
-            {f.charAt(0).toUpperCase()+f.slice(1)}
-            {f==="all" && feed.length>0 && (
-              <span style={{ marginLeft:5, fontSize:10,
-                background:"rgba(255,255,255,0.25)", padding:"0 5px",
-                borderRadius:99 }}>{feed.length}</span>
-            )}
-          </button>
-        ))}
-      </div>
-
-      {filtered.length === 0
-        ? <EmptyState icon={Bell} title="No notifications yet"
-            desc="Activity from WiziAgent runs, fixes, gate approvals, and workflows will appear here"/>
-        : (
-          <div style={{ display:"flex", flexDirection:"column", gap:6 }}>
-            {filtered.map(event => (
-              <Card key={event.id} style={{ padding:"12px 16px" }}>
-                <div style={{ display:"flex", alignItems:"flex-start", gap:12 }}>
-                  <div style={{ width:32, height:32, borderRadius:8, flexShrink:0,
-                    background:`${levelColor[event.level]||T.muted}14`,
-                    display:"flex", alignItems:"center", justifyContent:"center",
-                    fontSize:15 }}>
-                    {ICONS[event.type]||"ℹ️"}
-                  </div>
-                  <div style={{ flex:1, minWidth:0 }}>
-                    <div style={{ display:"flex", alignItems:"center", gap:8, marginBottom:2 }}>
-                      <span style={{ fontSize:12, fontWeight:600, color:T.text }}>
-                        {event.title}
-                      </span>
-                      <Badge label={event.type} color={levelColor[event.level]||T.muted}/>
-                    </div>
-                    <div style={{ fontSize:11, color:T.muted }}>{event.detail}</div>
-                  </div>
-                  <span style={{ fontSize:10, color:T.dim, flexShrink:0, fontFamily:T.monoFont }}>
-                    {event.ts}
-                  </span>
-                </div>
-              </Card>
-            ))}
-          </div>
-        )
-      }
-    </div>
-  );
-}
-
-// ─── Approval Queue Tab ───────────────────────────────────────────────────────
-// All pending approvals across all workflows in one place
 function ApprovalQueueTab({ onNavigate }) {
   const T = useT();
-
-  // Read pending approvals from all sources
   const [sopResult]    = useSession("wz_sopResult", null);
   const [agentResult]  = useSession("wz_agentResult", null);
   const [triageResult] = useSession("wz_triage", null);
 
   const approvals = React.useMemo(() => {
     const items = [];
-
-    // SOP gates
     if (sopResult) {
-      for (let i = 1; i <= 5; i++) {
-        const token    = sopResult[`gate${i}_token`];
-        const decision = sopResult[`gate${i}_decision`];
-        if (token && decision === "pending") {
+      for (let i=1; i<=5; i++) {
+        const token = sopResult[`gate${i}_token`];
+        const dec   = sopResult[`gate${i}_decision`];
+        if (token && dec==="pending") {
           items.push({
             id:`sop-gate${i}`, type:"sop_gate",
             title:`Ads SOP — Gate ${i}`,
-            detail: ["Pause Mage Jobs","Data Available","Proceed with Refreshes",
-                     "Run Product Summary","Resume Mage & GDS Copies"][i-1],
-            token, source:"ads-sop", urgency:"high",
+            detail:["Pause Mage Jobs","Data Available","Proceed with Refreshes",
+                    "Run Product Summary","Resume Mage & GDS Copies"][i-1],
+            token, source:"workflows", urgency:"high",
           });
         }
       }
     }
-
-    // WiziAgent approval
-    if (agentResult?.status === "awaiting_approval" &&
-        agentResult?.approval_status === "pending") {
+    if (agentResult?.status==="awaiting_approval" && agentResult?.approval_status==="pending") {
       items.push({
         id:"wizi-approval", type:"wizi_agent",
         title:"WiziAgent — Fix Approval",
-        detail: agentResult.classification?.risk_reason || "High-risk fix awaiting approval",
-        token: agentResult.approval_token, source:"triage", urgency:"critical",
+        detail:agentResult.classification?.risk_reason||"High-risk fix awaiting approval",
+        token:agentResult.approval_token, source:"triage", urgency:"critical",
       });
     }
-
-    // Triage manual fixes (dry run done, not yet fixed)
     if (triageResult?.issues?.length > 0) {
-      const dryRuns = (() => {
-        try { return JSON.parse(sessionStorage.getItem("wz_dryRuns")||"{}"); } catch { return {}; }
-      })();
-      const fixResults = (() => {
-        try { return JSON.parse(sessionStorage.getItem("wz_fixResults")||"{}"); } catch { return {}; }
-      })();
+      const dryRuns    = (() => { try { return JSON.parse(sessionStorage.getItem("wz_dryRuns")||"{}"); } catch { return {}; } })();
+      const fixResults = (() => { try { return JSON.parse(sessionStorage.getItem("wz_fixResults")||"{}"); } catch { return {}; } })();
       triageResult.issues.forEach(issue => {
         const dr = dryRuns[issue.id];
-        if (dr && dr !== "loading" && dr !== "error" && !fixResults[issue.id]) {
+        if (dr && dr!=="loading" && dr!=="error" && !fixResults[issue.id]) {
           items.push({
             id:`triage-${issue.id}`, type:"triage_fix",
             title:`Triage Fix Ready — ${issue.title}`,
-            detail:`${dr.rows_affected} rows · ${issue.fix_action} · confidence pending`,
+            detail:`${dr.rows_affected} rows · ${issue.fix_action}`,
             token:null, source:"triage", urgency:issue.severity,
           });
         }
       });
     }
-
     return items;
   }, [sopResult, agentResult, triageResult]);
 
@@ -1718,41 +2211,31 @@ function ApprovalQueueTab({ onNavigate }) {
   return (
     <div className="fade-in" style={{ padding:"28px 32px", maxWidth:800 }}>
       <div style={{ marginBottom:20 }}>
-        <div style={{ fontSize:22, fontWeight:700, color:T.text, letterSpacing:"-0.02em" }}>
-          Approval Queue
-        </div>
-        <div style={{ fontSize:13, color:T.muted, marginTop:3 }}>
-          All pending approvals across workflows, triage fixes, and WiziAgent runs
-        </div>
+        <div style={{ fontSize:22, fontWeight:700, color:T.text, letterSpacing:"-0.02em" }}>Approval Queue</div>
+        <div style={{ fontSize:13, color:T.muted, marginTop:3 }}>Pending approvals across workflows, triage fixes, and WiziAgent runs</div>
       </div>
-
-      {approvals.length === 0
-        ? <EmptyState icon={CheckCircle} title="Queue is clear"
-            desc="No approvals pending — all gates resolved, no dry runs waiting"/>
+      {approvals.length===0
+        ? <EmptyState icon={CheckCircle} title="Queue is clear" desc="No approvals pending — all gates resolved"/>
         : (
           <div style={{ display:"flex", flexDirection:"column", gap:10 }}>
-            {approvals.map(item => (
+            {approvals.map(item=>(
               <Card key={item.id} style={{ padding:"16px 20px",
                 borderColor:`${urgencyColor[item.urgency]||T.muted}40`,
                 background:`${urgencyColor[item.urgency]||T.muted}06` }}>
                 <div style={{ display:"flex", alignItems:"center", gap:12 }}>
                   <div style={{ width:36, height:36, borderRadius:9, flexShrink:0,
                     background:`${urgencyColor[item.urgency]||T.muted}15`,
-                    display:"flex", alignItems:"center", justifyContent:"center",
-                    fontSize:16 }}>
+                    display:"flex", alignItems:"center", justifyContent:"center", fontSize:16 }}>
                     {item.type==="sop_gate"?"🔒":item.type==="wizi_agent"?"⚡":"🔧"}
                   </div>
                   <div style={{ flex:1 }}>
                     <div style={{ display:"flex", alignItems:"center", gap:8, marginBottom:3 }}>
-                      <span style={{ fontSize:13, fontWeight:700, color:T.text }}>
-                        {item.title}
-                      </span>
+                      <span style={{ fontSize:13, fontWeight:700, color:T.text }}>{item.title}</span>
                       <Badge label={item.urgency} color={urgencyColor[item.urgency]||T.muted}/>
-                      <Badge label={item.type.replace("_"," ")} color={T.muted}/>
                     </div>
                     <div style={{ fontSize:11, color:T.muted }}>{item.detail}</div>
                     {item.token && (
-                      <div style={{ fontSize:10, color:T.dim, fontFamily:T.monoFont, marginTop:3 }}>
+                      <div style={{ fontSize:10, color:T.dim, fontFamily:T.monoFont, marginTop:2 }}>
                         token: {item.token}
                       </div>
                     )}
@@ -1770,19 +2253,125 @@ function ApprovalQueueTab({ onNavigate }) {
   );
 }
 
-
-function FixHistoryTab() {
+function ActivityTab({ onNavigate }) {
   const T = useT();
-  const [history, setHistory] = useSession("wz_history", []);
-  const [insight,     setInsight]     = React.useState(null);
+  const [activeView,   setActiveView]   = React.useState("alerts");
+  const [history,      setHistory]      = useLocal("wz_history", []);
+  const [filter,       setFilter]       = React.useState("all");
+  const [search,       setSearch]       = React.useState("");
+  const [insight,      setInsight]      = React.useState(null);
   const [insightLoading, setInsightLoading] = React.useState(false);
   const [insightError,   setInsightError]   = React.useState(null);
 
+  // ── Sources for Alerts ────────────────────────────────────────────────────
+  const [sopResult]    = useSession("wz_sopResult", null);
+  const [agentResult]  = useSession("wz_agentResult", null);
+  const [triageResult] = useSession("wz_triage", null);
+  const [cwfHistory,   setCwfHistory]   = React.useState([]);
+  const [anomalies]    = useSession("wz_anomalies", null);
+
+  React.useEffect(() => {
+    fetch(`${API}/api/custom-workflows/history`)
+      .then(r=>r.json()).then(d=>{ if(Array.isArray(d)) setCwfHistory(d); }).catch(()=>{});
+  }, []);
+
+  const alerts = React.useMemo(() => {
+    const items = [];
+
+    // Pending WiziAgent approval
+    if (agentResult?.status==="awaiting_approval" && agentResult?.approval_status==="pending") {
+      items.push({
+        id:"wizi-approval", urgency:"critical", icon:"⚡",
+        title:"WiziAgent Fix — Approval Required",
+        detail: agentResult.classification?.risk_reason || "High-risk fix awaiting approval",
+        token: agentResult.approval_token,
+        action:{ label:"Go to Triage", tab:"triage" },
+      });
+    }
+
+    // Pending SOP gates
+    if (sopResult) {
+      for (let i=1; i<=5; i++) {
+        if (sopResult[`gate${i}_token`] && sopResult[`gate${i}_decision`]==="pending") {
+          items.push({
+            id:`sop-gate${i}`, urgency:"high", icon:"🔒",
+            title:`Ads SOP — Gate ${i} Pending`,
+            detail:["Pause Mage Jobs","Data Available","Proceed with Refreshes",
+                    "Run Product Summary","Resume Mage & GDS Copies"][i-1],
+            token: sopResult[`gate${i}_token`],
+            action:{ label:"Go to Workflows", tab:"workflows" },
+          });
+        }
+      }
+    }
+
+    // Triage dry-runs ready to fix
+    if (triageResult?.issues?.length > 0) {
+      const dryRuns = (() => { try { return JSON.parse(sessionStorage.getItem("wz_dryRuns")||"{}"); } catch { return {}; } })();
+      const fixResults = (() => { try { return JSON.parse(sessionStorage.getItem("wz_fixResults")||"{}"); } catch { return {}; } })();
+      triageResult.issues.forEach(issue => {
+        const dr = dryRuns[issue.id];
+        if (dr && dr!=="loading" && dr!=="error" && !fixResults[issue.id]) {
+          items.push({
+            id:`dry-${issue.id}`, urgency:issue.severity, icon:"🔧",
+            title:`Fix Ready — ${issue.title}`,
+            detail:`${dr.rows_affected} rows · ${issue.fix_action} · dry run complete`,
+            action:{ label:"Go to Triage", tab:"triage" },
+          });
+        }
+      });
+    }
+
+    // Anomaly alerts
+    if (anomalies?.anomalies?.length > 0) {
+      anomalies.anomalies.forEach(ta => {
+        const worst = ta.anomalies?.sort((a,b)=>
+          ({critical:0,high:1,medium:2,low:3}[a.severity]||9) -
+          ({critical:0,high:1,medium:2,low:3}[b.severity]||9))[0];
+        if (worst) {
+          items.push({
+            id:`anomaly-${ta.table}`, urgency:worst.severity, icon:"📊",
+            title:`Anomaly — ${ta.table}`,
+            detail: worst.column==="_row_count"
+              ? `Row ${worst.type==="row_count_spike"?"spike":"drop"}: ${worst.baseline_value?.toLocaleString()} → ${worst.current_value?.toLocaleString()}`
+              : `NULLs in ${worst.column} up ${worst.deviation_pct}pp`,
+            action:{ label:"Go to Brief", tab:"brief" },
+          });
+        }
+      });
+    }
+
+    // Custom workflow runs with issues
+    cwfHistory.filter(r=>r.total_issues>0 && r.status!=="error").slice(0,3).forEach(r => {
+      items.push({
+        id:`cwf-${r.run_id}`, urgency:"medium", icon:"🔀",
+        title:`Workflow Issues — ${r.workflow_name}`,
+        detail:`${r.total_issues} issue(s) found · ${r.triggered_by} · ${r.started_at?.slice(11,16)} UTC`,
+        action:{ label:"Go to Workflows", tab:"workflows" },
+      });
+    });
+
+    // Sort by urgency
+    const RANK = {critical:0,high:1,medium:2,low:3};
+    return items.sort((a,b)=>(RANK[a.urgency]||9)-(RANK[b.urgency]||9));
+  }, [sopResult, agentResult, triageResult, anomalies, cwfHistory]);
+
+  const urgencyColor = { critical:T.red, high:T.orange, medium:T.yellow, low:T.cyan };
+
+  // ── Fix log filter + search ───────────────────────────────────────────────
+  const ACTION_TYPES = [...new Set(history.map(h=>h.action).filter(Boolean))];
+  const filteredHistory = history.filter(h => {
+    if (filter!=="all" && h.action!==filter) return false;
+    if (search && !`${h.action} ${h.table}`.toLowerCase().includes(search.toLowerCase())) return false;
+    return true;
+  });
+
+  // ── AI Insight ────────────────────────────────────────────────────────────
   const generateInsight = async () => {
     if (!history.length) return;
     setInsightLoading(true); setInsightError(null); setInsight(null);
     try {
-      const res  = await fetch(`${API}/api/fix-history/summary`, {
+      const res = await fetch(`${API}/api/fix-history/summary`, {
         method:"POST", headers:{"Content-Type":"application/json"},
         body:JSON.stringify({ history })
       });
@@ -1793,156 +2382,276 @@ function FixHistoryTab() {
     setInsightLoading(false);
   };
 
-  const healthColor = insight?.health_score >= 80 ? T.green
-    : insight?.health_score >= 50 ? T.yellow : T.red;
+  const healthColor = insight?.health_score>=80?T.green:insight?.health_score>=50?T.yellow:T.red;
 
   return (
-    <div className="fade-in" style={{ padding:"28px 32px", maxWidth:900 }}>
-      <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom:24 }}>
+    <div className="fade-in" style={{ padding:"28px 32px", maxWidth:920 }}>
+      {/* Header */}
+      <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom:20 }}>
         <div>
           <div style={{ fontSize:22, fontWeight:700, color:T.text, letterSpacing:"-0.02em" }}>
-            Fix History
+            Activity
           </div>
           <div style={{ fontSize:13, color:T.muted, marginTop:3 }}>
-            Audit log of all fixes executed by WiziAgent and manually
+            Live alerts · fix log · AI pipeline insight
           </div>
         </div>
-        {history.length > 0 && (
+        {activeView==="log" && history.length > 0 && (
           <Btn onClick={generateInsight} disabled={insightLoading} size="sm"
             style={{ background:`linear-gradient(135deg,${T.accent},${T.purple})`,
               color:"white", border:"none" }}>
-            {insightLoading ? <Spinner size={11} color="white"/> : <Zap size={11}/>}
-            {insightLoading ? "Analysing…" : "AI Insight"}
+            {insightLoading?<Spinner size={11} color="white"/>:<Zap size={11}/>}
+            {insightLoading?"Analysing…":"AI Insight"}
           </Btn>
         )}
       </div>
 
-      {/* AI Insight panel */}
-      {(insight || insightLoading || insightError) && (
-        <Card style={{ padding:"18px 20px", marginBottom:16,
-          borderColor:`${T.purple}30`, background:`${T.purple}04` }}>
-          <div style={{ display:"flex", alignItems:"center", gap:8, marginBottom:12 }}>
-            <Zap size={13} color={T.purple}/>
-            <span style={{ fontSize:11, fontWeight:700, color:T.purple,
-              textTransform:"uppercase", letterSpacing:"0.06em" }}>AI Weekly Insight</span>
-            {insight?.health_score != null && (
-              <div style={{ marginLeft:"auto", display:"flex", alignItems:"center", gap:6 }}>
-                <span style={{ fontSize:10, color:T.muted }}>Pipeline health</span>
-                <span style={{ fontSize:16, fontWeight:700, color:healthColor,
-                  fontFamily:"monospace" }}>{insight.health_score}</span>
-                <span style={{ fontSize:10, color:T.muted }}>/100</span>
-              </div>
-            )}
-          </div>
+      {/* View tabs */}
+      <div style={{ display:"flex", gap:0, borderBottom:`1px solid ${T.border}`, marginBottom:20 }}>
+        {[
+          { id:"alerts", label:`Alerts${alerts.length>0?" ("+alerts.length+")":""}` },
+          { id:"log",    label:`Fix Log${history.length>0?" ("+history.length+")":""}` },
+        ].map(tab => (
+          <button key={tab.id} onClick={()=>setActiveView(tab.id)}
+            style={{ padding:"8px 20px", fontSize:12, fontWeight:activeView===tab.id?600:400,
+              color:activeView===tab.id?T.accent:T.muted,
+              background:"none", border:"none", cursor:"pointer",
+              borderBottom:activeView===tab.id?`2px solid ${T.accent}`:"2px solid transparent",
+              marginBottom:-1, transition:"all 0.12s" }}>
+            {tab.label}
+          </button>
+        ))}
+      </div>
 
-          {insightLoading && (
-            <div style={{ fontSize:12, color:T.muted, display:"flex", gap:6, alignItems:"center" }}>
-              <Spinner size={12}/> Analysing {history.length} fix records…
+      {/* ── ALERTS VIEW ─────────────────────────────────────────────────────── */}
+      {activeView==="alerts" && (
+        <>
+          {alerts.length===0 ? (
+            <div style={{ textAlign:"center", padding:"56px 0" }}>
+              <CheckCircle size={40} color={T.green} strokeWidth={1.2}
+                style={{ margin:"0 auto 12px", display:"block" }}/>
+              <div style={{ fontSize:16, fontWeight:700, color:T.green }}>All clear</div>
+              <div style={{ fontSize:13, color:T.muted, marginTop:4 }}>
+                No pending approvals, anomalies, or issues requiring attention
+              </div>
             </div>
-          )}
-          {insightError && (
-            <div style={{ fontSize:12, color:T.red }}>Error: {insightError}</div>
-          )}
-          {insight && (
-            <div style={{ display:"flex", flexDirection:"column", gap:12 }}>
-              {insight.summary && (
-                <div style={{ fontSize:12, color:T.text2, lineHeight:1.6 }}>{insight.summary}</div>
-              )}
-              {insight.patterns?.length > 0 && (
-                <div>
-                  <div style={{ fontSize:10, fontWeight:700, color:T.muted,
-                    textTransform:"uppercase", letterSpacing:"0.05em", marginBottom:5 }}>
-                    Patterns Detected
-                  </div>
-                  {insight.patterns.map((p,i) => (
-                    <div key={i} style={{ fontSize:11, color:T.text2, marginBottom:3 }}>
-                      · {p}
+          ) : (
+            <div style={{ display:"flex", flexDirection:"column", gap:10 }}>
+              {alerts.map(item => (
+                <Card key={item.id} style={{ padding:"16px 20px",
+                  borderLeft:`3px solid ${urgencyColor[item.urgency]||T.muted}` }}>
+                  <div style={{ display:"flex", alignItems:"center", gap:12 }}>
+                    <div style={{ width:38, height:38, borderRadius:9, flexShrink:0,
+                      background:`${urgencyColor[item.urgency]||T.muted}12`,
+                      display:"flex", alignItems:"center", justifyContent:"center",
+                      fontSize:17 }}>
+                      {item.icon}
                     </div>
-                  ))}
-                </div>
-              )}
-              {insight.hotspots?.length > 0 && (
-                <div>
-                  <div style={{ fontSize:10, fontWeight:700, color:T.muted,
-                    textTransform:"uppercase", letterSpacing:"0.05em", marginBottom:5 }}>
-                    Hotspots
-                  </div>
-                  <div style={{ display:"flex", flexWrap:"wrap", gap:6 }}>
-                    {insight.hotspots.map((h,i) => (
-                      <div key={i} style={{ padding:"4px 10px", borderRadius:5, fontSize:11,
-                        background:`${T.orange}12`, border:`1px solid ${T.orange}25`,
-                        color:T.text }}>
-                        <span style={{ fontFamily:"monospace", color:T.orange }}>{h.table}</span>
-                        {" — "}{h.issue}
-                        {" "}
-                        <Badge label={h.frequency} color={h.frequency==="high"?T.red:T.yellow}/>
+                    <div style={{ flex:1, minWidth:0 }}>
+                      <div style={{ display:"flex", alignItems:"center", gap:8, marginBottom:3 }}>
+                        <span style={{ fontSize:13, fontWeight:700, color:T.text }}>
+                          {item.title}
+                        </span>
+                        <Badge label={item.urgency} color={urgencyColor[item.urgency]||T.muted}/>
                       </div>
-                    ))}
-                  </div>
-                </div>
-              )}
-              {insight.recommendations?.length > 0 && (
-                <div>
-                  <div style={{ fontSize:10, fontWeight:700, color:T.muted,
-                    textTransform:"uppercase", letterSpacing:"0.05em", marginBottom:5 }}>
-                    Recommendations
-                  </div>
-                  {insight.recommendations.map((r,i) => (
-                    <div key={i} style={{ fontSize:11, color:T.green, marginBottom:3 }}>
-                      → {r}
+                      <div style={{ fontSize:11, color:T.muted }}>{item.detail}</div>
+                      {item.token && (
+                        <div style={{ fontSize:10, color:T.dim, fontFamily:T.monoFont, marginTop:2 }}>
+                          token: {item.token}
+                        </div>
+                      )}
                     </div>
-                  ))}
-                </div>
-              )}
-              {insight.stats && (
-                <div style={{ display:"flex", gap:20, paddingTop:8,
-                  borderTop:`1px solid ${T.border}` }}>
-                  {[
-                    ["Total fixes",    insight.stats.total_fixes],
-                    ["Rows affected",  insight.stats.total_rows_affected?.toLocaleString()],
-                    ["Failures",       insight.stats.failures],
-                    ["Avg duration",   insight.stats.avg_duration_ms ? `${Math.round(insight.stats.avg_duration_ms/1000)}s` : "—"],
-                  ].map(([k,v]) => (
-                    <div key={k}>
-                      <div style={{ fontSize:9, color:T.muted, textTransform:"uppercase",
-                        letterSpacing:"0.05em" }}>{k}</div>
-                      <div style={{ fontSize:14, fontWeight:700, color:T.text,
-                        fontFamily:"monospace" }}>{v}</div>
-                    </div>
-                  ))}
-                </div>
-              )}
+                    {item.action && (
+                      <Btn onClick={()=>onNavigate(item.action.tab)} size="sm">
+                        {item.action.label} <ArrowRight size={11}/>
+                      </Btn>
+                    )}
+                  </div>
+                </Card>
+              ))}
             </div>
           )}
-        </Card>
+        </>
       )}
 
-      {history.length === 0 ? (
-        <EmptyState icon={Shield} title="No fixes yet"
-          desc="Fix history will appear here after you run Triage or WiziAgent"/>
-      ) : (
-        <div style={{ display:"flex", flexDirection:"column", gap:8 }}>
-          {[...history].reverse().map((h,i) => (
-            <Card key={i} style={{ padding:"12px 18px" }}>
-              <div style={{ display:"flex", alignItems:"center", gap:12 }}>
-                <StatusDot status={h.success?"healthy":"error"}/>
-                <div style={{ flex:1 }}>
-                  <div style={{ fontSize:12, fontWeight:600, color:T.text }}>{h.action}</div>
-                  <div style={{ fontSize:11, color:T.muted, marginTop:2 }}>
-                    {h.table} · {h.rows_affected} rows · {h.ts}
+      {/* ── FIX LOG VIEW ────────────────────────────────────────────────────── */}
+      {activeView==="log" && (
+        <>
+          {/* AI Insight panel */}
+          {(insight||insightLoading||insightError) && (
+            <Card style={{ padding:"18px 20px", marginBottom:16,
+              borderColor:`${T.purple}30`, background:`${T.purple}04` }}>
+              <div style={{ display:"flex", alignItems:"center", gap:8, marginBottom:10 }}>
+                <Zap size={13} color={T.purple}/>
+                <span style={{ fontSize:11, fontWeight:700, color:T.purple,
+                  textTransform:"uppercase", letterSpacing:"0.06em" }}>AI Insight</span>
+                {insight?.health_score!=null && (
+                  <div style={{ marginLeft:"auto", display:"flex", alignItems:"center", gap:6 }}>
+                    <span style={{ fontSize:10, color:T.muted }}>Pipeline health</span>
+                    <span style={{ fontSize:18, fontWeight:800, color:healthColor,
+                      fontFamily:"monospace" }}>{insight.health_score}</span>
+                    <span style={{ fontSize:10, color:T.muted }}>/100</span>
                   </div>
-                </div>
-                <div className="mono" style={{ fontSize:11, color:T.muted }}>
-                  {h.before} → {h.after}
-                </div>
+                )}
               </div>
+              {insightLoading && (
+                <div style={{ fontSize:12, color:T.muted, display:"flex", gap:6, alignItems:"center" }}>
+                  <Spinner size={11}/> Analysing {history.length} fix records…
+                </div>
+              )}
+              {insightError && <div style={{ fontSize:12, color:T.red }}>Error: {insightError}</div>}
+              {insight && (
+                <div style={{ display:"flex", flexDirection:"column", gap:10 }}>
+                  {insight.summary && (
+                    <div style={{ fontSize:12, color:T.text2, lineHeight:1.6 }}>{insight.summary}</div>
+                  )}
+                  <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:10 }}>
+                    {insight.patterns?.length>0 && (
+                      <div>
+                        <div style={{ fontSize:10, fontWeight:700, color:T.muted,
+                          textTransform:"uppercase", letterSpacing:"0.05em", marginBottom:5 }}>
+                          Patterns
+                        </div>
+                        {insight.patterns.map((p,i)=>(
+                          <div key={i} style={{ fontSize:11, color:T.text2, marginBottom:2 }}>· {p}</div>
+                        ))}
+                      </div>
+                    )}
+                    {insight.hotspots?.length>0 && (
+                      <div>
+                        <div style={{ fontSize:10, fontWeight:700, color:T.muted,
+                          textTransform:"uppercase", letterSpacing:"0.05em", marginBottom:5 }}>
+                          Hotspots
+                        </div>
+                        {insight.hotspots.map((h,i)=>(
+                          <div key={i} style={{ fontSize:11, color:T.text2, marginBottom:2 }}>
+                            <span style={{ fontFamily:"monospace", color:T.orange }}>{h.table}</span>
+                            {" — "}{h.issue}{" "}
+                            <Badge label={h.frequency} color={h.frequency==="high"?T.red:T.yellow}/>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                  {insight.recommendations?.length>0 && (
+                    <div>
+                      <div style={{ fontSize:10, fontWeight:700, color:T.muted,
+                        textTransform:"uppercase", letterSpacing:"0.05em", marginBottom:5 }}>
+                        Recommendations
+                      </div>
+                      {insight.recommendations.map((r,i)=>(
+                        <div key={i} style={{ fontSize:11, color:T.green, marginBottom:2 }}>→ {r}</div>
+                      ))}
+                    </div>
+                  )}
+                  {insight.stats && (
+                    <div style={{ display:"flex", gap:24, paddingTop:8,
+                      borderTop:`1px solid ${T.border}` }}>
+                      {[["Total fixes",insight.stats.total_fixes],
+                        ["Rows affected",insight.stats.total_rows_affected?.toLocaleString()],
+                        ["Failures",insight.stats.failures],
+                        ["Avg time",insight.stats.avg_duration_ms?`${Math.round(insight.stats.avg_duration_ms/1000)}s`:"—"]
+                      ].map(([k,v])=>(
+                        <div key={k}>
+                          <div style={{ fontSize:9, color:T.muted, textTransform:"uppercase",
+                            letterSpacing:"0.05em" }}>{k}</div>
+                          <div style={{ fontSize:16, fontWeight:700, color:T.text,
+                            fontFamily:"monospace" }}>{v}</div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              )}
             </Card>
-          ))}
-        </div>
+          )}
+
+          {/* Filter + search row */}
+          {history.length > 0 && (
+            <div style={{ display:"flex", gap:8, marginBottom:14, alignItems:"center", flexWrap:"wrap" }}>
+              <input value={search} onChange={e=>setSearch(e.target.value)}
+                placeholder="Search fixes…"
+                style={{ padding:"5px 10px", borderRadius:6, fontSize:11,
+                  border:`1px solid ${T.border}`, background:T.surface, color:T.text,
+                  fontFamily:"inherit", outline:"none", width:160 }}
+                onFocus={e=>e.target.style.borderColor=T.accent}
+                onBlur={e=>e.target.style.borderColor=T.border}
+              />
+              <button onClick={()=>setFilter("all")}
+                style={{ padding:"4px 10px", borderRadius:99, fontSize:11, cursor:"pointer",
+                  border:"none", fontWeight:600,
+                  background:filter==="all"?T.accent:`${T.accent}10`,
+                  color:filter==="all"?"white":T.muted }}>
+                All ({history.length})
+              </button>
+              {ACTION_TYPES.map(a=>(
+                <button key={a} onClick={()=>setFilter(a)}
+                  style={{ padding:"4px 10px", borderRadius:99, fontSize:11, cursor:"pointer",
+                    border:"none", fontWeight:600,
+                    background:filter===a?T.accent:`${T.accent}10`,
+                    color:filter===a?"white":T.muted }}>
+                  {a}
+                </button>
+              ))}
+              {(filter!=="all"||search) && (
+                <button onClick={()=>{ setFilter("all"); setSearch(""); }}
+                  style={{ fontSize:11, color:T.muted, background:"none", border:"none",
+                    cursor:"pointer" }}>Clear</button>
+              )}
+              <span style={{ marginLeft:"auto", fontSize:11, color:T.dim }}>
+                {filteredHistory.length} of {history.length}
+              </span>
+            </div>
+          )}
+
+          {history.length===0 ? (
+            <EmptyState icon={Shield} title="No fixes yet"
+              desc="Fix history appears here after running Triage or WiziAgent"/>
+          ) : filteredHistory.length===0 ? (
+            <div style={{ textAlign:"center", padding:"32px 0", color:T.muted, fontSize:13 }}>
+              No fixes match your filter
+            </div>
+          ) : (
+            <div style={{ display:"flex", flexDirection:"column", gap:6 }}>
+              {[...filteredHistory].reverse().map((h,i)=>(
+                <Card key={i} style={{ padding:"12px 18px",
+                  borderLeft:`3px solid ${h.success?T.green:T.red}` }}>
+                  <div style={{ display:"flex", alignItems:"center", gap:12 }}>
+                    <div style={{ width:32, height:32, borderRadius:7, flexShrink:0,
+                      background:h.success?`${T.green}12`:`${T.red}12`,
+                      display:"flex", alignItems:"center", justifyContent:"center",
+                      fontSize:14 }}>
+                      {h.success?"✅":"❌"}
+                    </div>
+                    <div style={{ flex:1 }}>
+                      <div style={{ fontSize:12, fontWeight:700, color:T.text,
+                        textTransform:"capitalize" }}>{h.action?.replace(/_/g," ")}</div>
+                      <div style={{ fontSize:11, color:T.muted, marginTop:1 }}>
+                        <span style={{ fontFamily:"monospace" }}>{h.table}</span>
+                        {" · "}{h.rows_affected?.toLocaleString()} rows
+                        {h.durationMs && ` · ${Math.round(h.durationMs/1000)}s`}
+                        {" · "}{h.ts}
+                      </div>
+                    </div>
+                    <div style={{ textAlign:"right", flexShrink:0 }}>
+                      <div style={{ fontSize:13, fontWeight:700, fontFamily:"monospace",
+                        color:h.success?T.green:T.red }}>
+                        {h.before?.toLocaleString()} → {h.after?.toLocaleString()}
+                      </div>
+                      <div style={{ fontSize:9, color:T.muted, textTransform:"uppercase",
+                        letterSpacing:"0.04em" }}>before → after</div>
+                    </div>
+                  </div>
+                </Card>
+              ))}
+            </div>
+          )}
+        </>
       )}
     </div>
   );
 }
+
 
 // ─── Ask WiziAgent Tab ────────────────────────────────────────────────────────
 // WiziAgent can DO things from chat — not just answer.
@@ -1958,10 +2667,10 @@ function AskWiziTab({ onAddMonitor, onSaveRule }) {
   const [input,     setInput]     = React.useState("");
   const [loading,   setLoading]   = React.useState(false);
   const [actions,   setActions]   = React.useState([]);  // pending action confirmations
-  const [monTables, setMonTables] = useSession("wz_monTables",
+  const [monTables, setMonTables] = useLocal("wz_monTables",
     [{ schema:"mws", table:"report", label:"mws.report", primary:true, checks:[] }]
   );
-  const [customRules, setCustomRules] = useSession("wz_customRules", []);
+  const [customRules, setCustomRules] = useLocal("wz_customRules", []);
   const bottomRef = React.useRef(null);
 
   React.useEffect(() => {
@@ -2320,139 +3029,413 @@ Keep responses concise. Use markdown. Be direct and practical.`;
 }
 
 // ─── Monitor Tab ──────────────────────────────────────────────────────────────
+function CheckSetBuilder({ table, initial, onSave, onCancel }) {
+  const T = useT();
+  const dbSchema = useSchema();
+  const blank = { id:`cs-${Date.now()}`, name:"", desc:"", checks:[] };
+  const [cs, setCs] = React.useState(initial || blank);
+  const [checkIn, setCheckIn] = React.useState({ name:"", sql:"", pass_condition:"rows > 0" });
+  const [aiLoading, setAiLoading] = React.useState(false);
+  const [aiDesc, setAiDesc] = React.useState("");
+
+  const inp = { width:"100%", padding:"7px 10px", borderRadius:6, fontSize:11,
+    border:`1px solid ${T.border}`, background:T.surface, color:T.text,
+    fontFamily:"inherit", outline:"none", boxSizing:"border-box" };
+  const mono = { ...inp, fontFamily:"monospace" };
+
+  const addCheck = () => {
+    if (!checkIn.name.trim() || !checkIn.sql.trim()) return;
+    setCs(p => ({...p, checks:[...p.checks,
+      { id:`chk-${Date.now()}`, ...checkIn }]}));
+    setCheckIn({ name:"", sql:"", pass_condition:"rows > 0" });
+  };
+
+  const removeCheck = (id) => setCs(p=>({...p, checks:p.checks.filter(c=>c.id!==id)}));
+
+  const aiSuggest = async () => {
+    if (!aiDesc.trim()) return;
+    setAiLoading(true);
+    try {
+      const res = await fetch(`${API}/api/ai/chat`, {
+        method:"POST", headers:{"Content-Type":"application/json"},
+        body: JSON.stringify({
+          system: `You are WiziAgent helping a data engineer write SQL checks for Redshift.
+Table: ${table}
+${dbSchema ? "Schema context: " + dbSchema.split(";").find(s=>s.includes(table)) || "" : ""}
+User describes a check they want. Return ONLY JSON array (no markdown):
+[{"name":"Check name","sql":"SELECT ... FROM ${table} ...","pass_condition":"rows > 0"}]
+Rules: only SELECT queries, use exact table name, pass_condition is one of: "rows > N", "value > N", "value = N"`,
+          messages:[{role:"user", content: aiDesc}], max_tokens:600
+        })
+      });
+      const data = await res.json();
+      const text = data.content?.[0]?.text || "[]";
+      const arr  = JSON.parse(text.replace(/```json|```/g,"").trim());
+      if (Array.isArray(arr)) {
+        setCs(p => ({...p, checks:[...p.checks,
+          ...arr.map(c=>({id:`chk-${Date.now()}-${Math.random().toString(36).slice(2)}`, ...c}))]}));
+        setAiDesc("");
+      }
+    } catch(e) { console.error(e); }
+    setAiLoading(false);
+  };
+
+  return (
+    <div style={{ padding:"20px 24px", maxWidth:740 }}>
+      <div style={{ display:"flex", alignItems:"center", gap:10, marginBottom:20 }}>
+        <Btn onClick={onCancel} variant="ghost" size="sm">← Back</Btn>
+        <div style={{ fontSize:16, fontWeight:700, color:T.text }}>
+          {initial ? "Edit Check Set" : "New Check Set"}
+          <span style={{ fontSize:12, fontWeight:400, color:T.muted, marginLeft:8 }}>
+            on {table}
+          </span>
+        </div>
+      </div>
+
+      <div style={{ display:"flex", flexDirection:"column", gap:14 }}>
+        {/* Name + desc */}
+        <Card style={{ padding:"16px 20px" }}>
+          <div style={{ fontSize:11, fontWeight:700, color:T.muted, marginBottom:10,
+            textTransform:"uppercase", letterSpacing:"0.06em" }}>Check Set Info</div>
+          <div style={{ display:"flex", flexDirection:"column", gap:8 }}>
+            <div>
+              <label style={{ fontSize:11, fontWeight:600, color:T.text2,
+                display:"block", marginBottom:3 }}>Name *</label>
+              <input value={cs.name} onChange={e=>setCs(p=>({...p,name:e.target.value}))}
+                placeholder="e.g. Daily Download Coverage"
+                style={inp}
+                onFocus={e=>e.target.style.borderColor=T.accent}
+                onBlur={e=>e.target.style.borderColor=T.border}/>
+            </div>
+            <div>
+              <label style={{ fontSize:11, fontWeight:600, color:T.text2,
+                display:"block", marginBottom:3 }}>Description</label>
+              <input value={cs.desc} onChange={e=>setCs(p=>({...p,desc:e.target.value}))}
+                placeholder="What does this check set verify?"
+                style={inp}
+                onFocus={e=>e.target.style.borderColor=T.accent}
+                onBlur={e=>e.target.style.borderColor=T.border}/>
+            </div>
+          </div>
+        </Card>
+
+        {/* AI suggest */}
+        <Card style={{ padding:"16px 20px", borderColor:`${T.purple}30`, background:`${T.purple}04` }}>
+          <div style={{ display:"flex", alignItems:"center", gap:8, marginBottom:10 }}>
+            <Zap size={12} color={T.purple}/>
+            <span style={{ fontSize:11, fontWeight:700, color:T.purple }}>AI Check Suggester</span>
+          </div>
+          <div style={{ display:"flex", gap:8 }}>
+            <input value={aiDesc} onChange={e=>setAiDesc(e.target.value)}
+              onKeyDown={e=>e.key==="Enter"&&aiSuggest()}
+              placeholder="Describe what you want to check, e.g. 'show download count by report type for today'"
+              style={{...inp, flex:1}}
+              onFocus={e=>e.target.style.borderColor=T.purple}
+              onBlur={e=>e.target.style.borderColor=T.border}/>
+            <Btn onClick={aiSuggest} disabled={aiLoading||!aiDesc.trim()} size="sm"
+              style={{ color:T.purple, borderColor:`${T.purple}40` }} variant="ghost">
+              {aiLoading?<Spinner size={10}/>:<Zap size={10}/>}
+              {aiLoading?"Generating…":"Suggest SQL"}
+            </Btn>
+          </div>
+          <div style={{ fontSize:10, color:T.dim, marginTop:6 }}>
+            Describe in plain English — AI will write the SQL queries and add them below.
+          </div>
+        </Card>
+
+        {/* Existing sub-checks */}
+        {cs.checks.length > 0 && (
+          <Card style={{ padding:"16px 20px" }}>
+            <div style={{ fontSize:11, fontWeight:700, color:T.muted, marginBottom:10,
+              textTransform:"uppercase", letterSpacing:"0.06em" }}>
+              Sub-checks ({cs.checks.length})
+            </div>
+            <div style={{ display:"flex", flexDirection:"column", gap:8 }}>
+              {cs.checks.map((c,i) => (
+                <div key={c.id} style={{ padding:"10px 14px", borderRadius:8,
+                  background:T.surface, border:`1px solid ${T.border}` }}>
+                  <div style={{ display:"flex", alignItems:"center", gap:8, marginBottom:6 }}>
+                    <span style={{ fontSize:11, fontWeight:600, color:T.text }}>{i+1}. {c.name}</span>
+                    <span style={{ fontSize:10, padding:"1px 7px", borderRadius:4,
+                      background:`${T.cyan}12`, color:T.cyan, fontFamily:"monospace" }}>
+                      {c.pass_condition}
+                    </span>
+                    <button onClick={()=>removeCheck(c.id)}
+                      style={{ marginLeft:"auto", background:"none", border:"none",
+                        cursor:"pointer", color:T.muted, fontSize:13 }}>×</button>
+                  </div>
+                  <div style={{ fontSize:10, color:T.dim, fontFamily:"monospace",
+                    background:"#F8FAFC", padding:"6px 10px", borderRadius:5,
+                    border:`1px solid ${T.border}`, lineHeight:1.5 }}>
+                    {c.sql}
+                  </div>
+                </div>
+              ))}
+            </div>
+          </Card>
+        )}
+
+        {/* Add sub-check manually */}
+        <Card style={{ padding:"16px 20px" }}>
+          <div style={{ fontSize:11, fontWeight:700, color:T.muted, marginBottom:10,
+            textTransform:"uppercase", letterSpacing:"0.06em" }}>Add Sub-Check Manually</div>
+          <div style={{ display:"flex", flexDirection:"column", gap:8 }}>
+            <div style={{ display:"flex", gap:8 }}>
+              <div style={{ flex:1 }}>
+                <label style={{ fontSize:11, fontWeight:600, color:T.text2,
+                  display:"block", marginBottom:3 }}>Check name</label>
+                <input value={checkIn.name} onChange={e=>setCheckIn(p=>({...p,name:e.target.value}))}
+                  placeholder="e.g. Downloads by report type"
+                  style={inp}
+                  onFocus={e=>e.target.style.borderColor=T.accent}
+                  onBlur={e=>e.target.style.borderColor=T.border}/>
+              </div>
+              <div style={{ width:160 }}>
+                <label style={{ fontSize:11, fontWeight:600, color:T.text2,
+                  display:"block", marginBottom:3 }}>Pass condition</label>
+                <select value={checkIn.pass_condition}
+                  onChange={e=>setCheckIn(p=>({...p,pass_condition:e.target.value}))}
+                  style={{...inp, fontFamily:"monospace"}}>
+                  <option value="rows > 0">rows &gt; 0 (has data)</option>
+                  <option value="rows > 1">rows &gt; 1 (multiple)</option>
+                  <option value="value > 0">value &gt; 0</option>
+                  <option value="value = 0">value = 0 (expect empty)</option>
+                </select>
+              </div>
+            </div>
+            <div>
+              <label style={{ fontSize:11, fontWeight:600, color:T.text2,
+                display:"block", marginBottom:3 }}>SQL query</label>
+              <textarea value={checkIn.sql} rows={3}
+                onChange={e=>setCheckIn(p=>({...p,sql:e.target.value}))}
+                placeholder={`SELECT report_type, COUNT(*) AS cnt\nFROM ${table}\nWHERE requested_date::date = CURRENT_DATE\nGROUP BY report_type`}
+                style={{...mono, resize:"vertical"}}
+                onFocus={e=>e.target.style.borderColor=T.accent}
+                onBlur={e=>e.target.style.borderColor=T.border}/>
+            </div>
+            <Btn onClick={addCheck}
+              disabled={!checkIn.name.trim()||!checkIn.sql.trim()} size="sm">
+              <Plus size={11}/> Add Sub-check
+            </Btn>
+          </div>
+        </Card>
+
+        {/* Save */}
+        <div style={{ display:"flex", gap:8, justifyContent:"flex-end" }}>
+          <Btn onClick={onCancel} variant="muted" size="sm">Cancel</Btn>
+          <Btn onClick={()=>onSave(cs)} disabled={!cs.name.trim()||cs.checks.length===0} size="sm">
+            <Check size={11}/> Save Check Set
+          </Btn>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function MonitorTab() {
   const T = useT();
-  const [tables,   setTables]   = useSession("wz_monTables",
+  const [tables,      setTables]      = useLocal("wz_monTables",
     [{ schema:"mws", table:"report", label:"mws.report", primary:true,
-       checks:["status='processed'","copy_status='REPLICATED'","no stuck >2h"] }]
+       checkSets:[], checks:["status='processed'","copy_status='REPLICATED'","no stuck >2h"] }]
   );
-  const [results,  setResults]  = useSession("wz_monResults", {});
-  const [scanning, setScanning] = React.useState({});
-  const [addOpen,  setAddOpen]  = React.useState(false);
-  const [newTable, setNewTable] = React.useState({ schema:"mws", table:"" });
+  const [results,     setResults]     = useSession("wz_monResults", {});
+  const [csResults,   setCsResults]   = React.useState({}); // { [csId]: run result }
+  const [scanning,    setScanning]    = React.useState({});
+  const [csRunning,   setCsRunning]   = React.useState({}); // { [csId]: bool }
+  const [expanded,    setExpanded]    = React.useState({}); // { [key]: bool } table expand
+  const [csExpanded,  setCsExpanded]  = React.useState({}); // { [csId]: bool } check result expand
+  const [addOpen,     setAddOpen]     = React.useState(false);
+  const [newTable,    setNewTable]    = React.useState({ schema:"mws", table:"" });
+  const [builderFor,  setBuilderFor]  = React.useState(null); // { tableKey, initial }
 
   const scan = async (t) => {
     const key = `${t.schema}.${t.table}`;
     setScanning(p => ({...p,[key]:true}));
     try {
-      const res  = await fetch(`${API}/api/wizi-agent/run-table`, {
+      const res = await fetch(`${API}/api/wizi-agent/run-table`, {
         method:"POST", headers:{"Content-Type":"application/json"},
         body:JSON.stringify({ schema:t.schema, table:t.table, dry_run:true })
       });
       const data = await res.json();
       setResults(p => ({...p,[key]:data}));
-    } catch(e) {
-      setResults(p => ({...p,[key]:{error:e.message}}));
-    }
+    } catch(e) { setResults(p => ({...p,[key]:{error:e.message}})); }
     setScanning(p => ({...p,[key]:false}));
+  };
+
+  const runCheckSet = async (cs) => {
+    setCsRunning(p=>({...p,[cs.id]:true}));
+    try {
+      const res = await fetch(`${API}/api/monitor/run-checks`, {
+        method:"POST", headers:{"Content-Type":"application/json"},
+        body:JSON.stringify({ checks: cs.checks })
+      });
+      const data = await res.json();
+      setCsResults(p=>({...p,[cs.id]:data}));
+    } catch(e) {
+      setCsResults(p=>({...p,[cs.id]:{overall:"error",results:[],error:e.message}}));
+    }
+    setCsRunning(p=>({...p,[cs.id]:false}));
+    setCsExpanded(p=>({...p,[cs.id]:true}));
   };
 
   const addTable = () => {
     if (!newTable.table.trim()) return;
     setTables(p => [...p, {
       schema:newTable.schema, table:newTable.table,
-      label:`${newTable.schema}.${newTable.table}`, primary:false, checks:[]
+      label:`${newTable.schema}.${newTable.table}`,
+      primary:false, checkSets:[], checks:[]
     }]);
     setNewTable({ schema:"mws", table:"" });
     setAddOpen(false);
+    try { const c=JSON.parse(localStorage.getItem("wz_onboarding")||"{}"); localStorage.setItem("wz_onboarding",JSON.stringify({...c,monitored:true})); } catch {}
   };
 
   const removeTable = (key) => {
-    setTables(p => p.filter(t => `${t.schema}.${t.table}` !== key));
+    setTables(p => p.filter(t=>`${t.schema}.${t.table}`!==key));
     setResults(p => { const n={...p}; delete n[key]; return n; });
   };
 
+  const saveCheckSet = (tableKey, cs) => {
+    setTables(p => p.map(t => {
+      if (`${t.schema}.${t.table}` !== tableKey) return t;
+      const existing = (t.checkSets||[]).findIndex(c=>c.id===cs.id);
+      const newSets  = existing>=0
+        ? t.checkSets.map((c,i)=>i===existing?cs:c)
+        : [...(t.checkSets||[]), cs];
+      return {...t, checkSets:newSets};
+    }));
+    setBuilderFor(null);
+  };
+
+  const removeCheckSet = (tableKey, csId) => {
+    setTables(p => p.map(t => {
+      if (`${t.schema}.${t.table}` !== tableKey) return t;
+      return {...t, checkSets:(t.checkSets||[]).filter(c=>c.id!==csId)};
+    }));
+  };
+
+  const STATUS_COLOR = { pass:T.green, fail:T.orange, error:T.red };
+  const STATUS_ICON  = { pass:"✓", fail:"✗", error:"!" };
+
+  // Builder view
+  if (builderFor) {
+    return (
+      <div className="fade-in" style={{ padding:"28px 32px" }}>
+        <CheckSetBuilder
+          table={builderFor.tableKey}
+          initial={builderFor.initial||null}
+          onSave={(cs) => saveCheckSet(builderFor.tableKey, cs)}
+          onCancel={() => setBuilderFor(null)}
+        />
+      </div>
+    );
+  }
+
   return (
-    <div className="fade-in" style={{ padding:"28px 32px", maxWidth:900 }}>
+    <div className="fade-in" style={{ padding:"28px 32px", maxWidth:960 }}>
+      {/* Header */}
       <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom:24 }}>
         <div>
-          <div style={{ fontSize:22, fontWeight:700, color:T.text, letterSpacing:"-0.02em" }}>Monitor</div>
+          <div style={{ fontSize:22, fontWeight:700, color:T.text, letterSpacing:"-0.02em",
+            display:"flex", alignItems:"center" }}>
+            Monitor
+            <HelpTip>
+              <strong>Monitor</strong> watches tables with custom check sets.<br/><br/>
+              <strong>Check Set</strong> — a named group of SQL queries on one table. Each query is a sub-check with its own pass condition.<br/>
+              <strong>AI Suggester</strong> — describe what you want to check in plain English, AI writes the SQL.<br/>
+              <strong>Run</strong> — executes all sub-checks and shows results inline.
+            </HelpTip>
+          </div>
           <div style={{ fontSize:13, color:T.muted, marginTop:3 }}>
-            Tables under active monitoring — add any schema.table
+            {tables.length} table{tables.length!==1?"s":""} · {tables.reduce((n,t)=>n+(t.checkSets?.length||0),0)} check sets
           </div>
         </div>
         <Btn onClick={()=>setAddOpen(true)} size="sm"><Plus size={12}/> Add Table</Btn>
       </div>
 
+      {/* Add table form */}
       {addOpen && (
-        <Card style={{ padding:"16px 20px", marginBottom:16,
-          borderColor:T.accent, background:`${T.accent}06` }}>
-          <div style={{ fontSize:12, fontWeight:700, color:T.text, marginBottom:12 }}>
-            Add table to monitoring
-          </div>
+        <Card style={{ padding:"16px 20px", marginBottom:16, borderColor:T.accent, background:`${T.accent}06` }}>
+          <div style={{ fontSize:12, fontWeight:700, color:T.text, marginBottom:10 }}>Add table to monitoring</div>
           <div style={{ display:"flex", gap:8, alignItems:"center" }}>
-            <input value={newTable.schema}
-              onChange={e=>setNewTable(p=>({...p,schema:e.target.value}))}
-              placeholder="schema"
-              style={{ width:90, padding:"6px 10px", borderRadius:6,
+            <input value={newTable.schema} onChange={e=>setNewTable(p=>({...p,schema:e.target.value}))}
+              placeholder="schema" style={{ width:90, padding:"6px 10px", borderRadius:6,
                 border:`1px solid ${T.border}`, background:T.surface, color:T.text,
-                fontSize:12, fontFamily:T.monoFont }}/>
+                fontSize:12, fontFamily:"monospace" }}/>
             <span style={{ color:T.muted }}>.</span>
-            <input value={newTable.table}
-              onChange={e=>setNewTable(p=>({...p,table:e.target.value}))}
-              placeholder="table_name"
-              style={{ flex:1, padding:"6px 10px", borderRadius:6,
+            <input value={newTable.table} onChange={e=>setNewTable(p=>({...p,table:e.target.value}))}
+              onKeyDown={e=>e.key==="Enter"&&addTable()}
+              placeholder="table_name" style={{ flex:1, padding:"6px 10px", borderRadius:6,
                 border:`1px solid ${T.border}`, background:T.surface, color:T.text,
-                fontSize:12, fontFamily:T.monoFont }}/>
-            <Btn onClick={addTable} size="sm"><Check size={12}/> Add</Btn>
-            <Btn onClick={()=>setAddOpen(false)} size="sm" variant="muted"><X size={12}/></Btn>
+                fontSize:12, fontFamily:"monospace" }}/>
+            <Btn onClick={addTable} size="sm"><Check size={11}/> Add</Btn>
+            <Btn onClick={()=>setAddOpen(false)} size="sm" variant="muted"><X size={11}/></Btn>
           </div>
         </Card>
       )}
 
-      <div style={{ display:"flex", flexDirection:"column", gap:10 }}>
+      {/* Table cards */}
+      <div style={{ display:"flex", flexDirection:"column", gap:14 }}>
         {tables.map(t => {
-          const key    = `${t.schema}.${t.table}`;
-          const res    = results[key];
-          const busy   = scanning[key];
-          const alerts = res?.alerts || [];
-          const score  = res?.quality_score;
-          const status = !res ? "idle" : res.error ? "error" :
-                         alerts.length > 0 ? "warning" : "healthy";
+          const key     = `${t.schema}.${t.table}`;
+          const res     = results[key];
+          const busy    = scanning[key];
+          const alerts  = res?.alerts||[];
+          const isExp   = expanded[key];
+          const checkSets = t.checkSets||[];
+
+          // Overall status for the table
+          const csStatuses = checkSets.map(cs=>csResults[cs.id]?.overall);
+          const tableStatus = !res && !csStatuses.length ? "idle"
+            : csStatuses.includes("fail")||csStatuses.includes("error") ? "warning"
+            : csStatuses.length && csStatuses.every(s=>s==="pass") ? "healthy"
+            : res?.error ? "error"
+            : alerts.length>0 ? "warning" : res ? "healthy" : "idle";
 
           return (
-            <Card key={key} style={{ padding:"16px 20px" }}>
-              <div style={{ display:"flex", alignItems:"center", gap:12 }}>
-                <StatusDot status={status}/>
+            <Card key={key} style={{ overflow:"hidden" }}>
+              {/* Table header */}
+              <div style={{ padding:"16px 20px", display:"flex", alignItems:"center", gap:12 }}>
+                <StatusDot status={tableStatus}/>
                 <div style={{ flex:1, minWidth:0 }}>
-                  <div style={{ display:"flex", alignItems:"center", gap:8, marginBottom:3 }}>
-                    <span style={{ fontSize:13, fontWeight:600, color:T.text,
-                      fontFamily:T.monoFont }}>{key}</span>
+                  <div style={{ display:"flex", alignItems:"center", gap:8, marginBottom:2 }}>
+                    <span style={{ fontSize:13, fontWeight:700, color:T.text,
+                      fontFamily:"monospace" }}>{key}</span>
                     {t.primary && <Badge label="primary" color={T.accent}/>}
-                    {score !== undefined && (
-                      <span style={{ fontSize:11, color:score>=80?T.green:T.yellow }}>
-                        quality: {score}/100
-                      </span>
-                    )}
+                    <Badge label={`${checkSets.length} check set${checkSets.length!==1?"s":""}`}
+                      color={T.purple}/>
                   </div>
-                  {t.checks.length > 0 && (
-                    <div style={{ display:"flex", gap:4, flexWrap:"wrap" }}>
-                      {t.checks.map(c => (
-                        <span key={c} style={{ fontSize:9, padding:"1px 6px",
-                          background:T.border, color:T.muted, borderRadius:3,
-                          fontFamily:T.monoFont }}>{c}</span>
-                      ))}
+                  {/* Check set status summary */}
+                  {checkSets.length > 0 && (
+                    <div style={{ display:"flex", gap:5, flexWrap:"wrap", marginTop:3 }}>
+                      {checkSets.map(cs => {
+                        const r = csResults[cs.id];
+                        const col = r ? STATUS_COLOR[r.overall]||T.muted : T.dim;
+                        return (
+                          <span key={cs.id} style={{ fontSize:10, padding:"1px 8px", borderRadius:4,
+                            background:`${col}12`, color:col, border:`1px solid ${col}25` }}>
+                            {r ? STATUS_ICON[r.overall] : "○"} {cs.name}
+                          </span>
+                        );
+                      })}
                     </div>
                   )}
-                  {alerts.length > 0 && (
-                    <div style={{ marginTop:5, display:"flex", gap:5, flexWrap:"wrap" }}>
-                      {alerts.slice(0,3).map(a => (
-                        <Badge key={a.id} label={a.title} color={T.orange}/>
-                      ))}
-                      {alerts.length>3 && <span style={{fontSize:10,color:T.muted}}>+{alerts.length-3} more</span>}
-                    </div>
-                  )}
-                  {res?.error && <div style={{ fontSize:11, color:T.red, marginTop:3 }}>{res.error}</div>}
-                  {res?.total_rows !== undefined && (
-                    <div style={{ fontSize:11, color:T.dim, marginTop:3 }}>
-                      {res.total_rows.toLocaleString()} rows scanned
+                  {checkSets.length === 0 && (
+                    <div style={{ fontSize:11, color:T.dim, marginTop:2 }}>
+                      No check sets yet — add one to define custom SQL checks
                     </div>
                   )}
                 </div>
                 <div style={{ display:"flex", gap:6, flexShrink:0 }}>
+                  <Btn onClick={()=>setExpanded(p=>({...p,[key]:!p[key]}))} size="sm" variant="ghost">
+                    <Eye size={11}/> {isExp?"Hide":"Details"}
+                  </Btn>
+                  <Btn onClick={()=>setBuilderFor({tableKey:key})} size="sm" variant="ghost"
+                    style={{ color:T.purple, borderColor:`${T.purple}30` }}>
+                    <Plus size={11}/> Add Check Set
+                  </Btn>
                   <Btn onClick={()=>scan(t)} disabled={busy} size="sm" variant="ghost">
-                    {busy ? <Spinner size={11}/> : <RefreshCw size={11}/>}
-                    {busy ? "Scanning…" : "Scan"}
+                    {busy?<Spinner size={11}/>:<RefreshCw size={11}/>} Quick Scan
                   </Btn>
                   {!t.primary && (
                     <Btn onClick={()=>removeTable(key)} size="sm" variant="muted">
@@ -2461,6 +3444,190 @@ function MonitorTab() {
                   )}
                 </div>
               </div>
+
+              {/* Expanded: check sets + quick scan results */}
+              {isExp && (
+                <div style={{ borderTop:`1px solid ${T.border}`, padding:"14px 20px",
+                  display:"flex", flexDirection:"column", gap:12 }}>
+
+                  {/* Quick scan result */}
+                  {res && (
+                    <div>
+                      <div style={{ fontSize:10, fontWeight:700, color:T.muted,
+                        textTransform:"uppercase", letterSpacing:"0.06em", marginBottom:6 }}>
+                        Quick Scan Result
+                      </div>
+                      {res.error ? (
+                        <div style={{ fontSize:11, color:T.red }}>{res.error}</div>
+                      ) : (
+                        <div style={{ display:"flex", gap:12, flexWrap:"wrap" }}>
+                          <span style={{ fontSize:11, color:T.muted }}>
+                            {res.total_rows?.toLocaleString()} rows scanned
+                          </span>
+                          {alerts.length===0
+                            ? <span style={{ fontSize:11, color:T.green }}>✓ No issues</span>
+                            : alerts.slice(0,4).map(a=>(
+                                <Badge key={a.id} label={a.title||a.check} color={T.orange}/>
+                              ))}
+                        </div>
+                      )}
+                    </div>
+                  )}
+
+                  {/* Check sets */}
+                  {checkSets.length === 0 ? (
+                    <div style={{ textAlign:"center", padding:"20px 0" }}>
+                      <div style={{ fontSize:12, color:T.muted, marginBottom:8 }}>
+                        No check sets yet. Add a check set to define custom SQL checks with sub-queries.
+                      </div>
+                      <Btn onClick={()=>setBuilderFor({tableKey:key})} size="sm"
+                        style={{ color:T.purple, borderColor:`${T.purple}30` }} variant="ghost">
+                        <Plus size={11}/> Add Check Set
+                      </Btn>
+                    </div>
+                  ) : (
+                    checkSets.map(cs => {
+                      const csr       = csResults[cs.id];
+                      const isRunning = csRunning[cs.id];
+                      const isCsExp   = csExpanded[cs.id];
+                      const overallColor = csr ? STATUS_COLOR[csr.overall]||T.muted : T.muted;
+
+                      return (
+                        <div key={cs.id} style={{ borderRadius:8,
+                          border:`1px solid ${csr ? overallColor+"40" : T.border}`,
+                          background: csr ? `${overallColor}04` : T.surface,
+                          overflow:"hidden" }}>
+
+                          {/* Check set header */}
+                          <div style={{ padding:"12px 16px", display:"flex", alignItems:"center", gap:10 }}>
+                            <div style={{ width:28, height:28, borderRadius:6, flexShrink:0,
+                              background:`${overallColor}14`,
+                              display:"flex", alignItems:"center", justifyContent:"center",
+                              fontSize:13, fontWeight:700, color:overallColor }}>
+                              {isRunning ? <Spinner size={12}/> : (csr ? STATUS_ICON[csr.overall] : "○")}
+                            </div>
+                            <div style={{ flex:1, minWidth:0 }}>
+                              <div style={{ fontSize:12, fontWeight:700, color:T.text }}>
+                                {cs.name}
+                              </div>
+                              {cs.desc && (
+                                <div style={{ fontSize:11, color:T.muted, marginTop:1 }}>{cs.desc}</div>
+                              )}
+                              <div style={{ fontSize:10, color:T.dim, marginTop:1 }}>
+                                {cs.checks.length} sub-check{cs.checks.length!==1?"s":""}
+                                {csr && ` · ran ${csr.ran_at ? new Date(csr.ran_at).toLocaleTimeString() : ""}`}
+                              </div>
+                            </div>
+                            <div style={{ display:"flex", gap:5, flexShrink:0 }}>
+                              {csr && (
+                                <Btn size="sm" variant="ghost"
+                                  onClick={()=>setCsExpanded(p=>({...p,[cs.id]:!p[cs.id]}))}>
+                                  <Eye size={10}/> {isCsExp?"Hide":"Results"}
+                                </Btn>
+                              )}
+                              <Btn size="sm" variant="ghost"
+                                onClick={()=>setBuilderFor({tableKey:key, initial:cs})}
+                                style={{ fontSize:10 }}>Edit</Btn>
+                              <Btn size="sm" onClick={()=>runCheckSet(cs)} disabled={isRunning}
+                                style={{ background:isRunning?T.border:`linear-gradient(135deg,${T.accent},${T.purple})`,
+                                  color:"white", border:"none" }}>
+                                {isRunning?<Spinner size={10} color="white"/>:<Play size={10}/>}
+                                {isRunning?"Running…":"Run"}
+                              </Btn>
+                              <Btn size="sm" variant="muted"
+                                onClick={()=>removeCheckSet(key,cs.id)}>
+                                <Trash2 size={10}/>
+                              </Btn>
+                            </div>
+                          </div>
+
+                          {/* Sub-check results */}
+                          {isCsExp && csr && (
+                            <div style={{ borderTop:`1px solid ${T.border}`,
+                              padding:"10px 16px",
+                              display:"flex", flexDirection:"column", gap:10 }}>
+                              {csr.error && (
+                                <div style={{ fontSize:12, color:T.red }}>Error: {csr.error}</div>
+                              )}
+                              {csr.results?.map((r,i) => (
+                                <div key={r.id||i}>
+                                  {/* Sub-check header */}
+                                  <div style={{ display:"flex", alignItems:"center", gap:8,
+                                    marginBottom:6 }}>
+                                    <span style={{ fontSize:11, fontWeight:700,
+                                      color:STATUS_COLOR[r.status]||T.muted }}>
+                                      {STATUS_ICON[r.status]||"?"} {r.name}
+                                    </span>
+                                    <Badge label={r.status}
+                                      color={STATUS_COLOR[r.status]||T.muted}/>
+                                    <span style={{ fontSize:10, color:T.dim }}>
+                                      {r.row_count} row{r.row_count!==1?"s":""}
+                                      {r.duration_ms ? ` · ${r.duration_ms}ms` : ""}
+                                    </span>
+                                  </div>
+
+                                  {/* Error */}
+                                  {r.error && (
+                                    <div style={{ fontSize:11, color:T.red, marginBottom:6,
+                                      padding:"5px 10px", background:`${T.red}08`,
+                                      borderRadius:5, fontFamily:"monospace" }}>
+                                      {r.error}
+                                    </div>
+                                  )}
+
+                                  {/* Result table */}
+                                  {r.rows?.length > 0 && (
+                                    <div style={{ overflowX:"auto", borderRadius:6,
+                                      border:`1px solid ${T.border}` }}>
+                                      <table style={{ borderCollapse:"collapse", fontSize:11,
+                                        fontFamily:"monospace", width:"100%" }}>
+                                        <thead>
+                                          <tr style={{ background:`${T.accent}08` }}>
+                                            {r.columns.map(col=>(
+                                              <th key={col} style={{ padding:"6px 12px",
+                                                textAlign:"left", fontWeight:700, fontSize:10,
+                                                color:T.muted, borderBottom:`1px solid ${T.border}`,
+                                                whiteSpace:"nowrap", textTransform:"uppercase",
+                                                letterSpacing:"0.04em" }}>
+                                                {col}
+                                              </th>
+                                            ))}
+                                          </tr>
+                                        </thead>
+                                        <tbody>
+                                          {r.rows.map((row,ri)=>(
+                                            <tr key={ri}
+                                              onMouseEnter={e=>e.currentTarget.style.background=`${T.accent}06`}
+                                              onMouseLeave={e=>e.currentTarget.style.background="transparent"}>
+                                              {r.columns.map((col,ci)=>{
+                                                const v=row[col];
+                                                return (
+                                                  <td key={ci} style={{ padding:"5px 12px",
+                                                    borderBottom:`1px solid ${T.border}20`,
+                                                    whiteSpace:"nowrap",
+                                                    color:v===null?T.red:T.text2 }}>
+                                                    {v===null
+                                                      ? <span style={{color:T.red,fontWeight:700}}>NULL</span>
+                                                      : String(v)}
+                                                  </td>
+                                                );
+                                              })}
+                                            </tr>
+                                          ))}
+                                        </tbody>
+                                      </table>
+                                    </div>
+                                  )}
+                                </div>
+                              ))}
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })
+                  )}
+                </div>
+              )}
             </Card>
           );
         })}
@@ -2469,6 +3636,7 @@ function MonitorTab() {
   );
 }
 
+
 // ─── Configure Tab ────────────────────────────────────────────────────────────
 function ConfigureTab() {
   const T = useT();
@@ -2476,12 +3644,23 @@ function ConfigureTab() {
   const [saved,    setSaved]    = React.useState(false);
   const [threshold,setThreshold]= useLocal("wz_threshold", "50");
 
-  const save = () => { setSaved(true); setTimeout(()=>setSaved(false), 2000); };
+  const save = () => {
+    setSaved(true); setTimeout(()=>setSaved(false), 2000);
+    if (slackUrl) { try { const c=JSON.parse(localStorage.getItem("wz_onboarding")||"{}"); localStorage.setItem("wz_onboarding",JSON.stringify({...c,slack:true})); } catch {} }
+  };
 
   return (
     <div className="fade-in" style={{ padding:"28px 32px", maxWidth:680 }}>
       <div style={{ marginBottom:28 }}>
-        <div style={{ fontSize:22, fontWeight:700, color:T.text, letterSpacing:"-0.02em" }}>Configure</div>
+        <div style={{ fontSize:22, fontWeight:700, color:T.text, letterSpacing:"-0.02em", display:"flex", alignItems:"center" }}>
+          Configure
+          <HelpTip>
+            <strong>Configure</strong> sets up your connections and notification preferences.<br/><br/>
+            <strong>Redshift</strong> — connection is managed via Railway environment variables. No changes needed here unless you're moving environments.<br/>
+            <strong>Slack</strong> — paste your Slack Incoming Webhook URL to receive WiziAgent notifications and approval requests.<br/>
+            <strong>Approval threshold</strong> — fixes affecting more rows than this number require a human to click Approve before executing.
+          </HelpTip>
+        </div>
         <div style={{ fontSize:13, color:T.muted, marginTop:3 }}>Data sources, notifications and WiziAgent settings</div>
       </div>
 
@@ -2589,15 +3768,78 @@ function QueryTab() {
   const [aiValidating, setAiValidating] = React.useState(false);
   const [sqlGrounding, setSqlGrounding] = React.useState(null); // { valid, error, confidence, tables_referenced }
   const [runBlocked,   setRunBlocked]   = React.useState(false);
-  const [expandedSchema, setExpandedSchema] = useSession("wz_queryExpandedSchema", {});
+  const [expandedSchema,  setExpandedSchema]  = useSession("wz_queryExpandedSchema", {});
+  const [leftMode,        setLeftMode]        = React.useState("schema"); // "schema" | "queries"
+  const [richSchema,      setRichSchema]      = React.useState([]); // [{table_schema, table_name, columns}]
+  const [richLoading,     setRichLoading]     = React.useState(false);
+  const [schemaSearch,    setSchemaSearch]    = React.useState("");
+  const [expandedTables,  setExpandedTables]  = React.useState({}); // {schema.table: bool}
+  const [tableStats,      setTableStats]      = React.useState({}); // {schema.table: {row_count, scanned_at}}
+  const [statsLoading,    setStatsLoading]    = React.useState({});
 
-  // Load schema on first visit
+  // Load rich schema (with columns) on mount
+  React.useEffect(() => {
+    if (richSchema.length > 0) return;
+    setRichLoading(true);
+    fetch(`${API}/api/schema`).then(r=>r.json()).then(data => {
+      if (Array.isArray(data)) setRichSchema(data);
+    }).catch(()=>{}).finally(()=>setRichLoading(false));
+  }, []);
+
+  // Also load flat schema for backwards compat
   React.useEffect(() => {
     if (schema.length > 0) return;
     fetch(`${API}/api/tables`).then(r=>r.json()).then(data => {
       if (Array.isArray(data)) setSchema(data);
     }).catch(()=>{});
   }, []);
+
+  const loadTableStats = async (schemaName, tableName) => {
+    const key = `${schemaName}.${tableName}`;
+    setStatsLoading(p=>({...p,[key]:true}));
+    try {
+      const res  = await fetch(`${API}/api/preview?schema=${schemaName}&table=${tableName}&limit=3`);
+      const data = await res.json();
+      // Also get row count
+      const cres = await fetch(`${API}/api/query?sql=${encodeURIComponent(`SELECT COUNT(*) AS cnt FROM ${key}`)}`);
+      const cdata = await cres.json();
+      const cnt = cdata.rows?.[0]?.cnt ?? "?";
+      setTableStats(p=>({...p,[key]:{
+        sample:data.rows||[], columns:data.columns||[],
+        row_count:cnt, scanned_at:new Date().toLocaleTimeString()
+      }}));
+      setExpandedTables(p=>({...p,[key]:true}));
+    } catch(e){}
+    setStatsLoading(p=>({...p,[key]:false}));
+  };
+
+  // Group rich schema
+  const groupedRich = React.useMemo(() => {
+    const search = schemaSearch.toLowerCase();
+    const result = {};
+    for (const t of richSchema) {
+      const key = `${t.table_schema}.${t.table_name}`;
+      if (search && !key.toLowerCase().includes(search) &&
+          !t.columns?.some(c=>c.column_name.toLowerCase().includes(search))) continue;
+      if (!result[t.table_schema]) result[t.table_schema] = [];
+      result[t.table_schema].push(t);
+    }
+    return result;
+  }, [richSchema, schemaSearch]);
+
+  const TYPE_COLOR = {
+    "character varying":T.cyan, "varchar":T.cyan, "text":T.cyan,
+    "integer":T.orange, "bigint":T.orange, "numeric":T.orange,
+    "double precision":T.orange, "real":T.orange, "decimal":T.orange,
+    "boolean":T.green, "date":T.purple, "timestamp":T.purple,
+    "timestamp without time zone":T.purple, "timestamp with time zone":T.purple,
+  };
+  const typeAbbr = (dt) => {
+    const m = {"character varying":"varchar","timestamp without time zone":"timestamp",
+      "timestamp with time zone":"timestamptz","double precision":"float8",
+      "integer":"int","bigint":"int8"};
+    return m[dt] || dt;
+  };
 
   const run = async (sqlToRun) => {
     const q = sqlToRun || sql;
@@ -2703,111 +3945,219 @@ Return ONLY valid Redshift SQL, no explanation, no markdown, no backticks.`,
 
   return (
     <div className="fade-in" style={{ display:"flex", height:"calc(100vh - 1px)", overflow:"hidden" }}>
-      {/* Left panel: schema tree + saved queries */}
-      <div style={{ width:220, flexShrink:0, borderRight:`1px solid ${T.border}`,
-        overflowY:"auto", display:"flex", flexDirection:"column" }}>
-        {/* Schema tree */}
-        <div style={{ padding:"14px 8px 8px" }}>
-          <div style={{ fontSize:9, fontWeight:700, color:T.dim, marginBottom:8,
-            paddingLeft:8, textTransform:"uppercase", letterSpacing:"0.08em" }}>Schema</div>
-          {Object.entries(grouped).map(([sc, tables]) => {
-            const isExp = expandedSchema[sc] !== false; // expanded by default
-            return (
-              <div key={sc} style={{ marginBottom:4 }}>
-                <button onClick={()=>setExpandedSchema(p=>({...p,[sc]:!isExp}))}
-                  style={{ width:"100%", display:"flex", alignItems:"center", gap:6,
-                    padding:"3px 8px", background:"none", border:"none", cursor:"pointer",
-                    borderRadius:5, textAlign:"left" }}>
-                  <span style={{ fontSize:9, color:T.dim }}>{isExp?"▾":"▸"}</span>
-                  <span style={{ fontSize:10, fontWeight:700, color:T.accent,
-                    fontFamily:T.monoFont }}>{sc}</span>
-                  <span style={{ fontSize:9, color:T.dim, marginLeft:"auto" }}>
-                    {tables.length}
-                  </span>
-                </button>
-                {isExp && tables.map(t => (
-                  <button key={t.name}
-                    onClick={()=>setSql(`SELECT * FROM ${sc}.${t.name} LIMIT 20`)}
-                    style={{ width:"100%", display:"flex", alignItems:"center", gap:0,
-                      padding:"2px 8px 2px 20px", background:"none", border:"none",
-                      cursor:"pointer", borderRadius:4, textAlign:"left",
-                      transition:"background 0.1s" }}
-                    onMouseEnter={e=>e.currentTarget.style.background=`${T.accent}10`}
-                    onMouseLeave={e=>e.currentTarget.style.background="none"}>
-                    <span style={{ fontSize:11, color:T.muted, fontFamily:T.monoFont,
-                      flex:1 }}>{t.name}</span>
-                    {t.cols > 0 && (
-                      <span style={{ fontSize:9, color:T.dim }}>{t.cols}c</span>
-                    )}
-                  </button>
-                ))}
-              </div>
-            );
-          })}
-          {Object.keys(grouped).length === 0 && (
-            <div style={{ fontSize:11, color:T.dim, padding:"4px 8px" }}>Loading…</div>
-          )}
-        </div>
+      {/* Left panel: Schema Explorer + Queries */}
+      <div style={{ width:260, flexShrink:0, borderRight:`1px solid ${T.border}`,
+        display:"flex", flexDirection:"column", overflow:"hidden" }}>
 
-        {/* Divider */}
-        <div style={{ height:1, background:T.border, margin:"4px 0" }}/>
-
-        {/* Saved queries */}
-        <div style={{ padding:"8px 8px 12px", flex:1 }}>
-          <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between",
-            paddingLeft:8, marginBottom:6 }}>
-            <span style={{ fontSize:9, fontWeight:700, color:T.dim,
-              textTransform:"uppercase", letterSpacing:"0.08em" }}>Saved Queries</span>
-            <button onClick={()=>setSaveModal(true)}
-              style={{ background:"none", border:"none", cursor:"pointer",
-                color:T.accent, fontSize:16, lineHeight:1, padding:"0 4px" }}>+</button>
-          </div>
-          {savedQueries.map(q => (
-            <div key={q.id} style={{ display:"flex", alignItems:"center", gap:0,
-              borderRadius:5, transition:"background 0.1s" }}
-              onMouseEnter={e=>e.currentTarget.style.background=`${T.accent}10`}
-              onMouseLeave={e=>e.currentTarget.style.background="none"}>
-              <button onClick={()=>setSql(q.sql)}
-                style={{ flex:1, padding:"4px 8px 4px 12px", background:"none",
-                  border:"none", cursor:"pointer", textAlign:"left",
-                  fontSize:11, color:T.text2, fontFamily:"inherit",
-                  overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>
-                {q.name}
-              </button>
-              <button onClick={()=>deleteQuery(q.id)}
-                style={{ background:"none", border:"none", cursor:"pointer",
-                  color:T.dim, padding:"4px 8px", fontSize:12, flexShrink:0 }}>×</button>
-            </div>
-          ))}
-        </div>
-
-        {/* Divider */}
-        <div style={{ height:1, background:T.border }}/>
-
-        {/* Query history */}
-        <div style={{ padding:"8px 8px 12px" }}>
-          <div style={{ fontSize:9, fontWeight:700, color:T.dim, marginBottom:6,
-            paddingLeft:8, textTransform:"uppercase", letterSpacing:"0.08em" }}>
-            History
-          </div>
-          {history.slice(0,8).map((h,i) => (
-            <button key={i} onClick={()=>setSql(h.sql)}
-              style={{ width:"100%", padding:"3px 8px 3px 12px", background:"none",
-                border:"none", cursor:"pointer", textAlign:"left", borderRadius:4,
-                transition:"background 0.1s" }}
-              onMouseEnter={e=>e.currentTarget.style.background=`${T.accent}10`}
-              onMouseLeave={e=>e.currentTarget.style.background="none"}>
-              <div style={{ fontSize:10, color:T.muted, fontFamily:T.monoFont,
-                overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>
-                {h.sql.slice(0,40)}…
-              </div>
-              <div style={{ fontSize:9, color:T.dim }}>{h.ts} · {h.rows} rows</div>
+        {/* Mode toggle */}
+        <div style={{ display:"flex", borderBottom:`1px solid ${T.border}`, flexShrink:0 }}>
+          {[["schema","Schema"],["queries","Queries"]].map(([m,label])=>(
+            <button key={m} onClick={()=>setLeftMode(m)}
+              style={{ flex:1, padding:"8px 0", fontSize:11, fontWeight:leftMode===m?700:400,
+                color:leftMode===m?T.accent:T.muted, background:"none", border:"none",
+                cursor:"pointer", borderBottom:leftMode===m?`2px solid ${T.accent}`:"2px solid transparent",
+                transition:"all 0.12s" }}>
+              {label}
             </button>
           ))}
-          {history.length === 0 && (
-            <div style={{ fontSize:11, color:T.dim, paddingLeft:12 }}>No history yet</div>
-          )}
         </div>
+
+        {/* SCHEMA MODE */}
+        {leftMode==="schema" && (
+          <div style={{ flex:1, overflowY:"auto", display:"flex", flexDirection:"column" }}>
+            <div style={{ padding:"8px 8px 4px", flexShrink:0 }}>
+              <input value={schemaSearch} onChange={e=>setSchemaSearch(e.target.value)}
+                placeholder="Search tables & columns…"
+                style={{ width:"100%", padding:"5px 8px", borderRadius:5, fontSize:11,
+                  border:`1px solid ${T.border}`, background:T.surface, color:T.text,
+                  fontFamily:"inherit", outline:"none", boxSizing:"border-box" }}
+                onFocus={e=>e.target.style.borderColor=T.accent}
+                onBlur={e=>e.target.style.borderColor=T.border}/>
+            </div>
+            {richLoading && (
+              <div style={{ padding:"20px", textAlign:"center", color:T.muted, fontSize:11 }}>
+                <Spinner size={14}/><div style={{marginTop:6}}>Loading schema…</div>
+              </div>
+            )}
+            {Object.entries(groupedRich).map(([sc, tables])=>{
+              const isScExp = expandedSchema[sc] !== false;
+              return (
+                <div key={sc}>
+                  <button onClick={()=>setExpandedSchema(p=>({...p,[sc]:!isScExp}))}
+                    style={{ width:"100%", display:"flex", alignItems:"center", gap:5,
+                      padding:"5px 10px", background:`${T.accent}08`, border:"none",
+                      cursor:"pointer", textAlign:"left", borderBottom:`1px solid ${T.border}` }}>
+                    <span style={{ fontSize:9, color:T.dim }}>{isScExp?"▾":"▸"}</span>
+                    <Database size={10} color={T.accent}/>
+                    <span style={{ fontSize:10, fontWeight:700, color:T.accent,
+                      fontFamily:"monospace", flex:1 }}>{sc}</span>
+                    <span style={{ fontSize:9, color:T.dim }}>{tables.length}</span>
+                  </button>
+                  {isScExp && tables.map(t=>{
+                    const tkey  = `${t.table_schema}.${t.table_name}`;
+                    const isTExp = expandedTables[tkey];
+                    const stats  = tableStats[tkey];
+                    const busy   = statsLoading[tkey];
+                    return (
+                      <div key={tkey} style={{ borderBottom:`1px solid ${T.border}20` }}>
+                        <div style={{ display:"flex", alignItems:"center" }}>
+                          <button onClick={()=>setSql(`SELECT * FROM ${tkey} LIMIT 50`)}
+                            style={{ flex:1, display:"flex", alignItems:"center", gap:6,
+                              padding:"5px 6px 5px 18px", background:"none", border:"none",
+                              cursor:"pointer", textAlign:"left", transition:"background 0.1s" }}
+                            onMouseEnter={e=>e.currentTarget.style.background=`${T.accent}08`}
+                            onMouseLeave={e=>e.currentTarget.style.background="none"}>
+                            <Table size={10} color={T.muted} style={{flexShrink:0}}/>
+                            <span style={{ fontSize:11, color:T.text2, fontFamily:"monospace",
+                              flex:1, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>
+                              {t.table_name}
+                            </span>
+                            <span style={{ fontSize:9, color:T.dim, flexShrink:0 }}>{t.columns?.length}</span>
+                          </button>
+                          <button onClick={()=>{
+                              if (!stats && !busy) loadTableStats(t.table_schema, t.table_name);
+                              else setExpandedTables(p=>({...p,[tkey]:!isTExp}));
+                            }}
+                            style={{ background:"none", border:"none", cursor:"pointer",
+                              padding:"5px 8px", color:T.dim, fontSize:10 }}>
+                            {busy?<Spinner size={9}/>:(isTExp?"▴":"▾")}
+                          </button>
+                        </div>
+                        {isTExp && (
+                          <div style={{ paddingBottom:4 }}>
+                            {stats && (
+                              <div style={{ padding:"2px 18px 2px 32px", fontSize:9,
+                                color:T.dim, fontFamily:"monospace" }}>
+                                {typeof stats.row_count==="number"
+                                  ? stats.row_count.toLocaleString() : stats.row_count} rows · {stats.scanned_at}
+                              </div>
+                            )}
+                            {t.columns?.map((col,ci)=>(
+                              <button key={ci}
+                                onClick={()=>setSql(p=>p+(p.trimEnd().endsWith(",")?" ":", ")+col.column_name)}
+                                style={{ width:"100%", display:"flex", alignItems:"center",
+                                  gap:6, padding:"2px 10px 2px 28px", background:"none",
+                                  border:"none", cursor:"pointer", textAlign:"left",
+                                  transition:"background 0.1s" }}
+                                onMouseEnter={e=>e.currentTarget.style.background=`${T.accent}08`}
+                                onMouseLeave={e=>e.currentTarget.style.background="none"}
+                                title={`Insert: ${col.column_name}`}>
+                                <Columns size={8} color={T.dim} style={{flexShrink:0}}/>
+                                <span style={{ fontSize:10, fontFamily:"monospace", flex:1,
+                                  overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap",
+                                  color:schemaSearch&&col.column_name.toLowerCase().includes(schemaSearch.toLowerCase())?T.accent:T.text2 }}>
+                                  {col.column_name}
+                                </span>
+                                <span style={{ fontSize:9, fontFamily:"monospace", flexShrink:0,
+                                  color:TYPE_COLOR[col.data_type]||T.dim }}>
+                                  {typeAbbr(col.data_type)}
+                                </span>
+                              </button>
+                            ))}
+                            {stats?.sample?.length > 0 && (
+                              <div style={{ margin:"4px 10px 4px 28px", padding:"5px 7px",
+                                background:"#F8FAFC", borderRadius:5,
+                                border:`1px solid ${T.border}`, overflowX:"auto" }}>
+                                <div style={{ fontSize:8, color:T.dim, marginBottom:2,
+                                  textTransform:"uppercase", letterSpacing:"0.06em" }}>Sample</div>
+                                <table style={{ borderCollapse:"collapse", fontSize:9,
+                                  fontFamily:"monospace", whiteSpace:"nowrap" }}>
+                                  <thead><tr>
+                                    {stats.columns.slice(0,4).map(c=>(
+                                      <th key={c} style={{ padding:"1px 5px", color:T.muted,
+                                        fontWeight:600, borderBottom:`1px solid ${T.border}` }}>{c}</th>
+                                    ))}
+                                    {stats.columns.length>4&&<th style={{padding:"1px 5px",color:T.dim}}>+{stats.columns.length-4}</th>}
+                                  </tr></thead>
+                                  <tbody>
+                                    {stats.sample.slice(0,3).map((row,ri)=>(
+                                      <tr key={ri}>
+                                        {stats.columns.slice(0,4).map(c=>(
+                                          <td key={c} style={{ padding:"1px 5px",
+                                            color:row[c]===null?T.red:T.text2 }}>
+                                            {row[c]===null?"NULL":String(row[c]).slice(0,18)}
+                                          </td>
+                                        ))}
+                                        {stats.columns.length>4&&<td style={{color:T.dim}}>…</td>}
+                                      </tr>
+                                    ))}
+                                  </tbody>
+                                </table>
+                              </div>
+                            )}
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              );
+            })}
+            {Object.keys(groupedRich).length===0 && !richLoading && (
+              <div style={{ padding:"20px 12px", fontSize:11, color:T.dim, textAlign:"center" }}>
+                {schemaSearch?`No tables matching "${schemaSearch}"`:"No schema loaded"}
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* QUERIES MODE */}
+        {leftMode==="queries" && (
+          <div style={{ flex:1, overflowY:"auto", display:"flex", flexDirection:"column" }}>
+            <div style={{ padding:"10px 8px 8px" }}>
+              <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between",
+                paddingLeft:8, marginBottom:6 }}>
+                <div style={{ fontSize:9, fontWeight:700, color:T.dim,
+                  textTransform:"uppercase", letterSpacing:"0.08em" }}>Saved</div>
+                <button onClick={()=>setSaveModal(true)}
+                  style={{ background:"none", border:"none", cursor:"pointer",
+                    color:T.accent, fontSize:16, lineHeight:1, padding:"0 4px" }}>+</button>
+              </div>
+              {savedQueries.map(q=>(
+                <div key={q.id} style={{ display:"flex", alignItems:"center", borderRadius:5,
+                  transition:"background 0.1s" }}
+                  onMouseEnter={e=>e.currentTarget.style.background=`${T.accent}10`}
+                  onMouseLeave={e=>e.currentTarget.style.background="none"}>
+                  <button onClick={()=>setSql(q.sql)}
+                    style={{ flex:1, padding:"4px 8px 4px 12px", background:"none",
+                      border:"none", cursor:"pointer", textAlign:"left",
+                      fontSize:11, color:T.text2, fontFamily:"inherit",
+                      overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>
+                    {q.name}
+                  </button>
+                  <button onClick={()=>deleteQuery(q.id)}
+                    style={{ background:"none", border:"none", cursor:"pointer",
+                      color:T.dim, padding:"4px 8px", fontSize:12 }}>×</button>
+                </div>
+              ))}
+              {savedQueries.length===0&&(
+                <div style={{ fontSize:11, color:T.dim, paddingLeft:12 }}>No saved queries</div>
+              )}
+            </div>
+            <div style={{ height:1, background:T.border }}/>
+            <div style={{ padding:"8px 8px 12px" }}>
+              <div style={{ fontSize:9, fontWeight:700, color:T.dim, marginBottom:6,
+                paddingLeft:8, textTransform:"uppercase", letterSpacing:"0.08em" }}>History</div>
+              {history.slice(0,10).map((h,i)=>(
+                <button key={i} onClick={()=>setSql(h.sql)}
+                  style={{ width:"100%", padding:"3px 8px 3px 12px", background:"none",
+                    border:"none", cursor:"pointer", textAlign:"left", borderRadius:4,
+                    transition:"background 0.1s" }}
+                  onMouseEnter={e=>e.currentTarget.style.background=`${T.accent}10`}
+                  onMouseLeave={e=>e.currentTarget.style.background="none"}>
+                  <div style={{ fontSize:10, color:T.muted, fontFamily:"monospace",
+                    overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>
+                    {h.sql.slice(0,42)}…
+                  </div>
+                  <div style={{ fontSize:9, color:T.dim }}>{h.ts} · {h.rows} rows</div>
+                </button>
+              ))}
+              {history.length===0&&(
+                <div style={{ fontSize:11, color:T.dim, paddingLeft:12 }}>No history yet</div>
+              )}
+            </div>
+          </div>
+        )}
       </div>
 
       {/* Right: editor + results */}
@@ -4029,6 +5379,7 @@ Respond ONLY with JSON, no markdown:
     }
     setView("list");
     setEditingWf(null);
+    try { const c=JSON.parse(localStorage.getItem("wz_onboarding")||"{}"); localStorage.setItem("wz_onboarding",JSON.stringify({...c,workflow:true})); } catch {}
   };
 
   // ── Run a custom workflow ──────────────────────────────────────────────────
@@ -4129,8 +5480,14 @@ Respond ONLY with JSON, no markdown:
       {/* Header */}
       <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom:24 }}>
         <div>
-          <div style={{ fontSize:22, fontWeight:700, color:T.text, letterSpacing:"-0.02em" }}>
+          <div style={{ fontSize:22, fontWeight:700, color:T.text, letterSpacing:"-0.02em", display:"flex", alignItems:"center" }}>
             Workflows
+            <HelpTip>
+              <strong>Workflows</strong> are automated pipelines that run a sequence of checks across tables.<br/><br/>
+              <strong>Daily Data Brief</strong> — runs every day at 4:30 PM IST, checks mws.report and sends a Slack digest.<br/>
+              <strong>Ads Download SOP</strong> — step-by-step runbook for handling Ads download failures with 5 approval gates.<br/><br/>
+              Click <strong>New Workflow</strong> to create your own. Pick a scenario template or describe what you want to check and let the AI suggest agents and tables.
+            </HelpTip>
           </div>
           <div style={{ fontSize:13, color:T.muted, marginTop:3 }}>
             {allWorkflows.length} workflow{allWorkflows.length!==1?"s":""} · {customWfs.length} custom
@@ -4700,6 +6057,31 @@ function WorkflowBuilder({ initial, onSave, onCancel }) {
   const [tableIn,  setTableIn]  = React.useState("");
   const [aiLoading,setAiLoading]= React.useState(false);
   const [aiHints,  setAiHints]  = React.useState(null);
+  const [showScenarios, setShowScenarios] = React.useState(!initial);
+
+  const SCENARIOS = [
+    { icon:"🌅", label:"Daily freshness check", desc:"Check that data arrived today for key tables",
+      name:"Daily Freshness Check", trigger:"scheduled", schedule:"8:00 AM IST",
+      agents:["Freshness Agent"], tables:["mws.report","mws.orders"] },
+    { icon:"📥", label:"Post-download validation", desc:"Validate data quality after a download pipeline runs",
+      name:"Post-Download Validation", trigger:"event", schedule:"",
+      agents:["Null Check Agent","Dupe Check Agent","Row Count Agent"], tables:["mws.report"] },
+    { icon:"⚠️", label:"Alert on failed downloads", desc:"Detect and notify when report downloads fail",
+      name:"Download Failure Monitor", trigger:"scheduled", schedule:"Every 2 hours",
+      agents:["Download Monitor","Failure Classifier"], tables:["mws.report"] },
+    { icon:"📊", label:"Weekly data integrity scan", desc:"Deep integrity checks across all key tables",
+      name:"Weekly Integrity Scan", trigger:"scheduled", schedule:"Monday 9:00 AM IST",
+      agents:["Null Check Agent","Dupe Check Agent","Freshness Agent","Integrity Agent"], tables:["mws.report","mws.orders","mws.inventory"] },
+    { icon:"🔁", label:"Replication health check", desc:"Monitor Redshift replication status",
+      name:"Replication Health Check", trigger:"scheduled", schedule:"6:00 AM IST",
+      agents:["Copy Status Monitor","Stuck Copy Detector"], tables:["mws.report"] },
+  ];
+
+  const applyScenario = (s) => {
+    setWf(p => ({...p, name:s.name, desc:s.desc, trigger:s.trigger,
+      schedule:s.schedule, agents:[...s.agents], tables:[...s.tables]}));
+    setShowScenarios(false);
+  };
 
   const blankBranch = () => ({ id: Date.now(), afterAgent:"", condition:"on_failure", action:"notify", target:"" });
   const addBranch    = () => setWf(p=>({...p, branches:[...p.branches, blankBranch()]}));
@@ -4776,6 +6158,44 @@ Respond ONLY with JSON:
       </div>
 
       <div style={{ display:"flex", flexDirection:"column", gap:14 }}>
+        {/* Scenario picker — shown when blank */}
+        {showScenarios && !wf.name && (
+          <Card style={{ padding:"18px 20px",
+            borderColor:`${T.accent}30`, background:`${T.accent}04` }}>
+            <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom:14 }}>
+              <div>
+                <div style={{ fontSize:13, fontWeight:700, color:T.text }}>
+                  Start from a common scenario
+                </div>
+                <div style={{ fontSize:11, color:T.muted, marginTop:2 }}>
+                  Pick one to pre-fill the form, or skip and build from scratch below.
+                </div>
+              </div>
+              <Btn size="sm" variant="ghost" onClick={()=>setShowScenarios(false)}>
+                Skip →
+              </Btn>
+            </div>
+            <div style={{ display:"flex", flexDirection:"column", gap:7 }}>
+              {SCENARIOS.map((s,i) => (
+                <button key={i} onClick={()=>applyScenario(s)}
+                  style={{ display:"flex", alignItems:"center", gap:12,
+                    padding:"10px 14px", borderRadius:8, border:`1px solid ${T.border}`,
+                    background:T.surface, cursor:"pointer", textAlign:"left",
+                    transition:"all 0.12s" }}
+                  onMouseEnter={e=>{e.currentTarget.style.borderColor=T.accent; e.currentTarget.style.background=`${T.accent}06`;}}
+                  onMouseLeave={e=>{e.currentTarget.style.borderColor=T.border; e.currentTarget.style.background=T.surface;}}>
+                  <span style={{ fontSize:20, flexShrink:0 }}>{s.icon}</span>
+                  <div style={{ flex:1 }}>
+                    <div style={{ fontSize:12, fontWeight:600, color:T.text }}>{s.label}</div>
+                    <div style={{ fontSize:11, color:T.muted, marginTop:1 }}>{s.desc}</div>
+                  </div>
+                  <ArrowRight size={12} color={T.muted}/>
+                </button>
+              ))}
+            </div>
+          </Card>
+        )}
+
         {/* Name + desc */}
         <Card style={{ padding:"18px 20px" }}>
           <div style={{ fontSize:11, fontWeight:700, color:T.muted, marginBottom:12,
@@ -5045,8 +6465,107 @@ Respond ONLY with JSON:
 export default function WiziAgentApp() {
   const [themeKey,  setThemeKey]  = useLocal("wz_theme", "light");
   const [activeTab, setActiveTab] = useLocal("wz_tab",   "brief");
+
+  // ── Keyboard shortcuts ────────────────────────────────────────────────────
+  React.useEffect(() => {
+    const SHORTCUT_MAP = {
+      "1":"brief", "2":"monitor", "3":"triage", "4":"workflows",
+      "5":"activity", "6":"chat", "7":"config", "8":"query",
+      "a":"approvals",
+    };
+    const handler = (e) => {
+      // Skip if user is typing in an input/textarea
+      const tag = document.activeElement?.tagName?.toLowerCase();
+      if (tag === "input" || tag === "textarea" || tag === "select") return;
+      // Cmd+K / Ctrl+K — open command palette
+      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "k") {
+        e.preventDefault(); setPaletteOpen(p => !p); return;
+      }
+      if (e.metaKey || e.ctrlKey || e.altKey) return;
+      const tab = SHORTCUT_MAP[e.key.toLowerCase()];
+      if (tab) { e.preventDefault(); setActiveTab(tab); }
+    };
+    window.addEventListener("keydown", handler);
+    return () => window.removeEventListener("keydown", handler);
+  }, []);
   const [issues,    setIssues]    = useSession("wz_pendingIssues", []);
   const [schemaStr, setSchemaStr] = React.useState("");
+  const [globalStatus, setGlobalStatus] = React.useState(null); // { type, message, runId }
+  const [paletteOpen, setPaletteOpen]   = React.useState(false);
+  const [tabHistory,  setTabHistory]    = React.useState([]); // last 5 tabs
+
+  // Track tab history for back navigation + URL hash sync
+  const navigateTo = React.useCallback((tab) => {
+    setTabHistory(prev => {
+      const filtered = prev.filter(t => t !== tab);
+      return [...filtered, activeTab].slice(-5);
+    });
+    setActiveTab(tab);
+    window.location.hash = tab;
+  }, [activeTab]);
+
+  // Restore tab from URL hash on mount
+  React.useEffect(() => {
+    const hash = window.location.hash.replace("#","").trim();
+    const valid = NAV.map(n=>n.id);
+    if (hash && valid.includes(hash)) setActiveTab(hash);
+  }, []);
+
+  // Sync hash when activeTab changes externally (localStorage restore)
+  React.useEffect(() => {
+    const hash = window.location.hash.replace("#","").trim();
+    if (hash !== activeTab) window.location.hash = activeTab;
+  }, [activeTab]);
+
+  const goBack = React.useCallback(() => {
+    if (!tabHistory.length) return;
+    const prev = tabHistory[tabHistory.length - 1];
+    setTabHistory(h => h.slice(0,-1));
+    setActiveTab(prev);
+  }, [tabHistory]);
+
+  // Wire back shortcut: Backspace or Alt+Left (when not in input)
+  React.useEffect(() => {
+    const handler = (e) => {
+      const tag = document.activeElement?.tagName?.toLowerCase();
+      if (tag === "input" || tag === "textarea" || tag === "select") return;
+      if ((e.altKey && e.key === "ArrowLeft") || e.key === "Backspace") {
+        if (tabHistory.length > 0) { e.preventDefault(); goBack(); }
+      }
+    };
+    window.addEventListener("keydown", handler);
+    return () => window.removeEventListener("keydown", handler);
+  }, [goBack, tabHistory]);
+
+  // ── Global status bar — poll active runs every 15s ────────────────────────
+  React.useEffect(() => {
+    const poll = async () => {
+      try {
+        const res  = await fetch(`${API}/api/workflow/history`);
+        const data = await res.json();
+        if (!Array.isArray(data)) return;
+        const active = data.find(r => r.status === "running");
+        if (active) {
+          setGlobalStatus({ type:"running", message:`Workflow running: ${active.name||active.run_id}`, runId:active.run_id });
+        } else {
+          // Check custom workflow history too
+          const res2 = await fetch(`${API}/api/custom-workflows/history`);
+          const data2 = await res2.json();
+          if (Array.isArray(data2)) {
+            const active2 = data2.find(r => r.status === "running");
+            if (active2) {
+              setGlobalStatus({ type:"running", message:`Workflow running: ${active2.workflow_name}`, runId:active2.run_id });
+              return;
+            }
+          }
+          setGlobalStatus(null);
+        }
+      } catch(e) {}
+    };
+    poll();
+    const id = setInterval(poll, 15000);
+    return () => clearInterval(id);
+  }, []);
 
   // Fetch live schema once on mount — used by all AI system prompts
   React.useEffect(() => {
@@ -5096,6 +6615,12 @@ export default function WiziAgentApp() {
   return (
     <SchemaCtx.Provider value={schemaStr}>
     <ThemeCtx.Provider value={T}>
+      {paletteOpen && (
+        <CommandPalette
+          onNavigate={setActiveTab}
+          onClose={() => setPaletteOpen(false)}
+        />
+      )}
       <style>{GLOBAL_CSS}</style>
       <div style={{
         display:"flex", minHeight:"100vh",
@@ -5104,7 +6629,7 @@ export default function WiziAgentApp() {
       }}>
         <Sidebar
           active={activeTab}
-          setActive={setActiveTab}
+          setActive={navigateTo}
           pendingCount={pendingCount}
           themeKey={themeKey}
           setThemeKey={setThemeKey}
@@ -5119,13 +6644,76 @@ export default function WiziAgentApp() {
           backgroundAttachment: "local",
           backgroundSize: "auto",
         }}>
-          {activeTab==="brief"     && <MorningBriefTab onNavigate={setActiveTab} onIssueFound={setIssues}/>}
+          {/* Back button + breadcrumb */}
+          {tabHistory.length > 0 && (
+            <div style={{ display:"flex", alignItems:"center", gap:8,
+              padding:"5px 16px", borderBottom:`1px solid ${TC.border}`,
+              background:TC.surface }}>
+              <button onClick={goBack}
+                style={{ display:"flex", alignItems:"center", gap:5, background:"none",
+                  border:"none", cursor:"pointer", color:TC.muted, fontSize:11,
+                  padding:"3px 6px", borderRadius:5 }}
+                onMouseEnter={e=>e.currentTarget.style.background=TC.border}
+                onMouseLeave={e=>e.currentTarget.style.background="none"}>
+                <ChevronRight size={11} style={{transform:"rotate(180deg)"}}/> Back
+              </button>
+              <span style={{ fontSize:10, color:TC.dim }}>
+                {tabHistory.slice(-3).map((t,i) => (
+                  <span key={t}>
+                    {i > 0 && <span style={{margin:"0 4px",opacity:0.4}}>/</span>}
+                    <span style={{cursor:"pointer", textTransform:"capitalize"}}
+                      onClick={() => {
+                        const idx = tabHistory.lastIndexOf(t);
+                        setTabHistory(h => h.slice(0, idx));
+                        setActiveTab(t);
+                      }}>
+                      {NAV.find(n=>n.id===t)?.label || t}
+                    </span>
+                  </span>
+                ))}
+                <span style={{margin:"0 4px",opacity:0.4}}>/</span>
+                <span style={{fontWeight:600, color:TC.text2}}>
+                  {NAV.find(n=>n.id===activeTab)?.label || activeTab}
+                </span>
+              </span>
+            </div>
+          )}
+
+          {/* Global status bar */}
+          {globalStatus && (
+            <div style={{
+              display:"flex", alignItems:"center", gap:10,
+              padding:"7px 20px",
+              background: globalStatus.type==="running"
+                ? `linear-gradient(90deg,${TC.accent}18,${TC.purple}18)`
+                : `${TC.orange}12`,
+              borderBottom:`1px solid ${TC.border}`,
+              fontSize:12,
+            }}>
+              {globalStatus.type==="running"
+                ? <Spinner size={12} color={TC.accent}/>
+                : <AlertTriangle size={12} color={TC.orange}/>}
+              <span style={{ color:TC.text, fontWeight:500 }}>{globalStatus.message}</span>
+              {globalStatus.type==="running" && (
+                <Btn size="sm" variant="ghost" onClick={()=>navigateTo("workflows")}
+                  style={{ marginLeft:"auto", fontSize:10 }}>
+                  View <ArrowRight size={10}/>
+                </Btn>
+              )}
+              <button onClick={()=>setGlobalStatus(null)}
+                style={{ background:"none", border:"none", cursor:"pointer",
+                  color:TC.muted, fontSize:14, lineHeight:1, marginLeft: globalStatus.type==="running" ? 0 : "auto" }}>
+                ×
+              </button>
+            </div>
+          )}
+
+          {activeTab==="brief"     && <MorningBriefTab onNavigate={navigateTo} onIssueFound={setIssues}/>}
           {activeTab==="monitor"   && <MonitorTab/>}
           {activeTab==="triage"    && <TriageTab initialIssues={issues}/>}
           {activeTab==="workflows" && <WorkflowsTab/>}
-          {activeTab==="approvals" && <ApprovalQueueTab onNavigate={setActiveTab}/>}
-          {activeTab==="history"   && <FixHistoryTab/>}
-          {activeTab==="notifs"    && <NotificationCenterTab/>}
+          {activeTab==="approvals" && <ApprovalQueueTab onNavigate={navigateTo}/>}
+          {activeTab==="activity"  && <ActivityTab onNavigate={navigateTo}/>}
           {activeTab==="chat"      && <AskWiziTab onAddMonitor={()=>{}} onSaveRule={()=>{}}/>}
           {activeTab==="config"    && <ConfigureTab/>}
           {activeTab==="query"     && <QueryTab/>}

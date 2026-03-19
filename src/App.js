@@ -147,6 +147,25 @@ function useSession(key, def) {
 const ThemeCtx = React.createContext(LIGHT);
 const useT = () => React.useContext(ThemeCtx);
 
+// ─── Live schema context (fetched once from /api/tables) ─────────────────────
+const SchemaCtx = React.createContext("");
+const useSchema = () => React.useContext(SchemaCtx);
+
+// Compact schema string: "schema.table(col1,col2,...); ..."  — max 120 cols total
+function buildSchemaStr(tables) {
+  if (!tables || tables.length === 0) return "";
+  // Group by schema.table
+  const grouped = {};
+  for (const row of tables) {
+    const key = `${row.table_schema}.${row.table_name}`;
+    if (!grouped[key]) grouped[key] = [];
+    if (row.column_name) grouped[key].push(row.column_name);
+  }
+  return Object.entries(grouped)
+    .map(([tbl, cols]) => cols.length ? `${tbl}(${cols.join(",")})` : tbl)
+    .join("; ");
+}
+
 // ─── Shared UI atoms ──────────────────────────────────────────────────────────
 function Badge({ label, color, pulse }) {
   const T = useT();
@@ -839,8 +858,22 @@ function MorningBriefTab({ onNavigate, onIssueFound }) {
 
 function TriageTab({ initialIssues }) {
   const T = useT();
+  const dbSchema = useSchema();
+  const [selectedTable, setSelectedTable] = React.useState("mws.report");
+  const [tableList,     setTableList]     = React.useState([]);
   const [triageResult, setTriageResult] = useSession("wz_triage", null);
   const [loading,      setLoading]      = React.useState(false);
+
+  // Load table list for selector
+  React.useEffect(() => {
+    fetch(`${API}/api/tables`)
+      .then(r => r.json())
+      .then(data => {
+        if (Array.isArray(data)) {
+          setTableList(data.map(t => `${t.table_schema}.${t.table_name}`));
+        }
+      }).catch(() => {});
+  }, []);
   const [dryRuns,      setDryRuns]      = useSession("wz_dryRuns", {});
   const [fixResults,   setFixResults]   = useSession("wz_fixResults", {});
   const [fixing,       setFixing]       = React.useState({});
@@ -873,24 +906,56 @@ function TriageTab({ initialIssues }) {
     return `${Math.floor(secs/3600)}h ago`;
   };
 
+  // Build scan URL based on selected table
+  const fetchTriage = async (table) => {
+    if (table === "mws.report") {
+      const res  = await fetch(`${API}/api/report/triage`);
+      return res.json();
+    }
+    // Generic table agent for any other table
+    const [schema, tbl] = table.includes(".") ? table.split(".") : ["mws", table];
+    const res = await fetch(`${API}/api/wizi-agent/run-table`, {
+      method:"POST", headers:{"Content-Type":"application/json"},
+      body:JSON.stringify({ schema, table:tbl, dry_run:true })
+    });
+    const data = await res.json();
+    if (data.error) throw new Error(data.error);
+    // Normalise run-table response → triage shape
+    return {
+      table,
+      total_rows: data.total_rows || 0,
+      scanned_at: new Date().toISOString(),
+      issues: (data.alerts || []).map((a, i) => ({
+        id: a.id || `CHK-${i+1}`,
+        title: a.check || a.type || "Data quality issue",
+        severity: a.severity || "medium",
+        count: a.count || 0,
+        description: a.description || a.msg || "",
+        fix_action: a.fix_sql ? "custom_fix" : null,
+        fix_sql: a.fix_sql || null,
+        samples: a.samples || [],
+        breakdown: [],
+      })),
+      clean: !data.alerts?.length,
+    };
+  };
+
   const scan = async () => {
     setLoading(true);
     try {
-      const res  = await fetch(`${API}/api/report/triage`);
-      const data = await res.json();
+      const data = await fetchTriage(selectedTable);
       if (data.error) throw new Error(data.error);
       setTriageResult(data);
       setScanTs(new Date().toISOString());
       setFixResults({}); setDryRuns({});
-      addLog(`Scanned — ${data.total_rows?.toLocaleString()} rows, ${data.issues?.length||0} issue(s)`, "info");
+      addLog(`Scanned ${selectedTable} — ${data.total_rows?.toLocaleString()} rows, ${data.issues?.length||0} issue(s)`, "info");
     } catch(e) { addLog(`Scan failed: ${e.message}`, "error"); }
     setLoading(false);
   };
 
   const reScan = async () => {
     try {
-      const res  = await fetch(`${API}/api/report/triage`);
-      const data = await res.json();
+      const data = await fetchTriage(selectedTable);
       if (data.error) throw new Error(data.error);
       setTriageResult(data);
       setScanTs(new Date().toISOString());
@@ -1003,11 +1068,24 @@ function TriageTab({ initialIssues }) {
           <div style={{ fontSize:13, color:T.muted, marginTop:3 }}>
             {triageResult
               ? `${triageResult.total_rows?.toLocaleString()} rows scanned · ${issues.length} issue${issues.length!==1?"s":""}`
-              : "Review issues, approve fixes, run WiziAgent"}
+              : `Select a table and click Scan — mws.report runs 10 checks, any other table runs generic quality checks`}
           </div>
         </div>
-        <div style={{ display:"flex", gap:8, flexWrap:"wrap" }}>
-          {lowRiskCount > 1 && triageResult && (
+        <div style={{ display:"flex", gap:8, flexWrap:"wrap", alignItems:"center" }}>
+          {/* Table selector */}
+          <select value={selectedTable} onChange={e => {
+              setSelectedTable(e.target.value);
+              setTriageResult(null); setFixResults({}); setDryRuns({});
+            }}
+            style={{ fontSize:11, padding:"5px 10px", borderRadius:7,
+              border:`1px solid ${T.border}`, background:T.surface, color:T.text,
+              fontFamily:"monospace", maxWidth:220 }}>
+            <option value="mws.report">mws.report (full scan)</option>
+            {tableList.filter(t => t !== "mws.report").map(t => (
+              <option key={t} value={t}>{t}</option>
+            ))}
+          </select>
+          {lowRiskCount > 1 && triageResult && selectedTable === "mws.report" && (
             <Btn onClick={batchApprove} variant="ghost" size="sm">
               <CheckCircle size={12}/> Batch Fix ({lowRiskCount})
             </Btn>
@@ -1015,12 +1093,14 @@ function TriageTab({ initialIssues }) {
           <Btn onClick={scan} disabled={loading} variant="ghost" size="sm">
             {loading ? <Spinner size={12}/> : <RefreshCw size={12}/>} Scan
           </Btn>
-          <Btn onClick={runWiziAgent} disabled={agentRunning} size="sm"
-            style={{ background: agentRunning?T.border:`linear-gradient(135deg,${T.accent},${T.purple})`,
-              color:"white", border:"none" }}>
-            {agentRunning ? <Spinner size={12} color="white"/> : <Zap size={12}/>}
-            {agentRunning ? "WiziAgent running…" : "✨ Run WiziAgent"}
-          </Btn>
+          {selectedTable === "mws.report" && (
+            <Btn onClick={runWiziAgent} disabled={agentRunning} size="sm"
+              style={{ background: agentRunning?T.border:`linear-gradient(135deg,${T.accent},${T.purple})`,
+                color:"white", border:"none" }}>
+              {agentRunning ? <Spinner size={12} color="white"/> : <Zap size={12}/>}
+              {agentRunning ? "WiziAgent running…" : "✨ Run WiziAgent"}
+            </Btn>
+          )}
         </div>
       </div>
 
@@ -1029,7 +1109,7 @@ function TriageTab({ initialIssues }) {
           {/* Empty / clean states */}
           {!triageResult && !loading && (
             <EmptyState icon={Shield} title="No scan yet"
-              desc="Click Scan or Run WiziAgent to check mws.report"
+              desc={selectedTable==="mws.report" ? "10 checks: pipeline health + data quality" : `Generic quality checks on ${selectedTable}`}
               action={<Btn onClick={scan} size="sm">Scan Now</Btn>}/>
           )}
           {triageResult?.clean && (
@@ -1104,6 +1184,41 @@ function TriageTab({ initialIssues }) {
             </Card>
           )}
 
+          {/* Issues pushed from Workflows */}
+          {(initialIssues||[]).filter(i => !i._dismissed).length > 0 && (
+            <Card style={{ padding:"14px 18px",
+              borderColor:`${T.purple}30`, background:`${T.purple}04` }}>
+              <div style={{ fontSize:11, fontWeight:700, color:T.purple, marginBottom:10,
+                textTransform:"uppercase", letterSpacing:"0.06em" }}>
+                From Workflows ({(initialIssues||[]).filter(i => !i._dismissed).length})
+              </div>
+              <div style={{ display:"flex", flexDirection:"column", gap:6 }}>
+                {(initialIssues||[]).filter(i => !i._dismissed).map((iss, i) => (
+                  <div key={iss.id||i} style={{ display:"flex", alignItems:"center", gap:10,
+                    padding:"8px 12px", borderRadius:6,
+                    background:T.surface, border:`1px solid ${T.border}` }}>
+                    <Badge label={iss.severity||"medium"}
+                      color={{critical:T.red,high:T.orange,medium:T.yellow,low:T.cyan}[iss.severity]||T.muted}/>
+                    <div style={{ flex:1, minWidth:0 }}>
+                      <div style={{ fontSize:12, fontWeight:600, color:T.text }}>{iss.title}</div>
+                      <div style={{ fontSize:10, color:T.muted }}>
+                        {iss.table && <span style={{fontFamily:"monospace"}}>{iss.table} · </span>}
+                        {iss.source && <span>from: {iss.source} · </span>}
+                        {iss.description}
+                      </div>
+                    </div>
+                    <Btn size="sm" variant="ghost" onClick={() => {
+                      setSelectedTable(iss.table || selectedTable);
+                      scan();
+                    }}>
+                      <RefreshCw size={10}/> Scan table
+                    </Btn>
+                  </div>
+                ))}
+              </div>
+            </Card>
+          )}
+
           {/* Issue cards */}
           {issues.map(issue => {
             const color  = SEV_COLOR[issue.severity] || T.muted;
@@ -1121,11 +1236,16 @@ function TriageTab({ initialIssues }) {
                   <StatusDot status={isFixed?"healthy":issue.severity==="critical"?"critical":"warning"}/>
                   <div style={{ flex:1, minWidth:0 }}>
                     <div style={{ display:"flex", alignItems:"center", gap:7, marginBottom:2 }}>
+                      <span style={{ fontSize:10, fontFamily:T.monoFont, fontWeight:700,
+                        color:T.muted }}>{issue.id}</span>
                       <span style={{ fontSize:13, fontWeight:600,
                         color:isFixed?T.green:T.text }}>
                         {isFixed?"✓ Fixed — ":""}{issue.title}
                       </span>
                       <Badge label={issue.severity} color={color}/>
+                      {!issue.fix_action && (
+                        <Badge label="data quality" color={T.purple}/>
+                      )}
                       {age && !isFixed && (
                         <span style={{ fontSize:10, color:T.dim }}>· {age}</span>
                       )}
@@ -1143,12 +1263,12 @@ function TriageTab({ initialIssues }) {
                         <Eye size={11}/> {isExp?"Hide":"Rows"}
                       </Btn>
                     )}
-                    {!isFixed && !dr && (
+                    {!isFixed && !dr && issue.fix_action && (
                       <Btn size="sm" variant="ghost" onClick={()=>dryRun(issue)}>
                         Dry run
                       </Btn>
                     )}
-                    {dr && dr!=="loading" && dr!=="error" && !isFixed && (
+                    {dr && dr!=="loading" && dr!=="error" && !isFixed && issue.fix_action && (
                       <Btn size="sm" variant="danger"
                         onClick={()=>fix(issue)} disabled={fixing[issue.id]}>
                         {fixing[issue.id]?<Spinner size={11} color="white"/>:null}
@@ -1156,6 +1276,11 @@ function TriageTab({ initialIssues }) {
                       </Btn>
                     )}
                     {dr==="loading" && <Spinner size={14}/>}
+                    {!issue.fix_action && !isFixed && (
+                      <span style={{ fontSize:10, color:T.muted, fontStyle:"italic" }}>
+                        Informational
+                      </span>
+                    )}
                   </div>
                 </div>
 
@@ -1586,6 +1711,7 @@ function FixHistoryTab() {
 //   ACTION:SAVE_RULE:{json_rule}         → saves to custom rules
 function AskWiziTab({ onAddMonitor, onSaveRule }) {
   const T = useT();
+  const dbSchema = useSchema();
   const [messages,  setMessages]  = useSession("wz_chat", []);
   const [input,     setInput]     = React.useState("");
   const [loading,   setLoading]   = React.useState(false);
@@ -1691,18 +1817,17 @@ function AskWiziTab({ onAddMonitor, onSaveRule }) {
     setMessages(p => [...p, userMsg]);
     setLoading(true);
 
+    const schemaSection = dbSchema
+      ? `DATABASE SCHEMA (all tables and columns):\n${dbSchema}`
+      : `KNOWN TABLES: mws.report, mws.orders, mws.inventory, mws.sales_and_traffic_by_date, mws.sales_and_traffic_by_asin, public.tbl_amzn_campaign_report, public.tbl_amzn_keyword_report, public.tbl_amzn_product_ad_report, public.tbl_amzn_targets_report`;
+
     const system = `You are WiziAgent, an autonomous data quality and pipeline operations agent for Intentwise.
 
-SCHEMA — mws.report columns:
-request_id, report_id, report_type, period_start_date, period_end_date,
-requested_date, download_date, report_processing_time, tries, status,
-account, period_start_time, period_end_time, precheck_status, copy_status
+${schemaSection}
 
-STATUS values: pending | processed | failed
-COPY_STATUS values: REPLICATED | NOT_REPLICATED | null
-HEALTHY = status='processed' AND copy_status='REPLICATED' AND not stuck >2h
-
-OTHER mws TABLES: orders, inventory, sales_and_traffic_by_date, sales_and_traffic_by_asin
+mws.report STATUS values: pending | processed | failed
+mws.report COPY_STATUS values: REPLICATED | NOT_REPLICATED | null
+HEALTHY row = status='processed' AND copy_status='REPLICATED' AND not stuck >2h
 
 FIX ACTIONS available:
 - redrive: reset failed downloads (status=failed → pending, tries=0)
@@ -1711,9 +1836,9 @@ FIX ACTIONS available:
 
 IMPORTANT — when you decide to DO something, embed action tags IN your response:
 - To run a fix:              ACTION:RUN_FIX:redrive (or recopy or redrive_copy)
-- To show sample rows:       ACTION:SHOW_ROWS:mws.report (or any schema.table)
-- To add a table to monitor: ACTION:ADD_MONITOR:mws.orders
-- To save a custom rule:     ACTION:SAVE_RULE:{"name":"rule name","table":"mws.report","check":"SQL check","severity":"high"}
+- To show sample rows:       ACTION:SHOW_ROWS:schema.table
+- To add a table to monitor: ACTION:ADD_MONITOR:schema.table
+- To save a custom rule:     ACTION:SAVE_RULE:{"name":"rule name","table":"schema.table","check":"SQL check","severity":"high"}
 
 The user will see action buttons to confirm before anything executes.
 Always explain what you're doing and why before embedding an action tag.
@@ -2202,6 +2327,7 @@ function ConfigureTab() {
 // ─── Query Tab ────────────────────────────────────────────────────────────────
 function QueryTab() {
   const T = useT();
+  const dbSchema = useSchema();
   const [sql,          setSql]          = useSession("wz_sql", "SELECT * FROM mws.report LIMIT 20");
   const [results,      setResults]      = useSession("wz_sqlResults", null);
   const [running,      setRunning]      = React.useState(false);
@@ -2218,6 +2344,9 @@ function QueryTab() {
   const [saveName,     setSaveName]     = React.useState("");
   const [aiLoading,    setAiLoading]    = React.useState(false);
   const [aiInput,      setAiInput]      = React.useState("");
+  const [aiValidating, setAiValidating] = React.useState(false);
+  const [sqlGrounding, setSqlGrounding] = React.useState(null); // { valid, error, confidence, tables_referenced }
+  const [runBlocked,   setRunBlocked]   = React.useState(false);
   const [expandedSchema, setExpandedSchema] = useSession("wz_queryExpandedSchema", {});
 
   // Load schema on first visit
@@ -2264,17 +2393,37 @@ function QueryTab() {
     URL.revokeObjectURL(url);
   };
 
+  const validateSql = async (sqlStr) => {
+    if (!sqlStr.trim()) return;
+    setAiValidating(true);
+    setSqlGrounding(null);
+    setRunBlocked(false);
+    try {
+      const res  = await fetch(`${API}/api/ai/validate-sql`, {
+        method:"POST", headers:{"Content-Type":"application/json"},
+        body:JSON.stringify({ sql: sqlStr })
+      });
+      const data = await res.json();
+      setSqlGrounding(data);
+      setRunBlocked(!data.valid);
+    } catch(e) {
+      setSqlGrounding({ valid:false, error:"Validation unavailable", confidence:50, tables_referenced:[] });
+      setRunBlocked(false); // don't block if validator itself is down
+    }
+    setAiValidating(false);
+  };
+
   const aiGenerateSql = async () => {
     if (!aiInput.trim() || aiLoading) return;
     setAiLoading(true);
+    setSqlGrounding(null);
     try {
       const res  = await fetch(`${API}/api/ai/chat`, {
         method:"POST", headers:{"Content-Type":"application/json"},
         body:JSON.stringify({
-          system:`You are a Redshift SQL expert for Intentwise. 
-Schema: mws.report (request_id, report_id, report_type, period_start_date, period_end_date, requested_date, download_date, report_processing_time, tries, status, account, period_start_time, period_end_time, precheck_status, copy_status).
-Status values: pending | processed | failed. Copy_status: REPLICATED | NOT_REPLICATED | NULL.
-Other tables: mws.orders, mws.inventory, mws.sales_and_traffic_by_date, mws.sales_and_traffic_by_asin.
+          system:`You are a Redshift SQL expert for Intentwise.
+${dbSchema ? "DATABASE SCHEMA:\n" + dbSchema : "Known tables: mws.report, mws.orders, mws.inventory, public.tbl_amzn_campaign_report, public.tbl_amzn_keyword_report, public.tbl_amzn_product_ad_report, public.tbl_amzn_targets_report."}
+mws.report status: pending|processed|failed. copy_status: REPLICATED|NOT_REPLICATED|NULL.
 Return ONLY valid Redshift SQL, no explanation, no markdown, no backticks.`,
           messages:[{ role:"user", content:aiInput }],
           max_tokens:400
@@ -2285,6 +2434,8 @@ Return ONLY valid Redshift SQL, no explanation, no markdown, no backticks.`,
       if (generatedSql) {
         setSql(generatedSql);
         setAiInput("");
+        // Auto-validate the generated SQL against live schema
+        await validateSql(generatedSql);
       }
     } catch(e) { console.error(e); }
     setAiLoading(false);
@@ -2438,21 +2589,77 @@ Return ONLY valid Redshift SQL, no explanation, no markdown, no backticks.`,
           </Btn>
         </div>
 
+        {/* SQL validation banner */}
+        {(aiValidating || sqlGrounding) && (
+          <div style={{ padding:"7px 16px", borderBottom:`1px solid ${T.border}`,
+            background: aiValidating ? `${T.accent}06`
+              : sqlGrounding?.valid ? `${T.green}08` : `${T.red}08`,
+            display:"flex", alignItems:"center", gap:8 }}>
+            {aiValidating && (
+              <><Spinner size={11}/><span style={{ fontSize:11, color:T.muted }}>Validating SQL against live schema…</span></>
+            )}
+            {!aiValidating && sqlGrounding?.valid && (
+              <>
+                <Check size={12} color={T.green}/>
+                <span style={{ fontSize:11, color:T.green, fontWeight:600 }}>
+                  SQL verified · {sqlGrounding.confidence}% confidence
+                </span>
+                {sqlGrounding.tables_referenced?.length > 0 && (
+                  <span style={{ fontSize:10, color:T.muted, fontFamily:"monospace" }}>
+                    · tables: {sqlGrounding.tables_referenced.join(", ")}
+                  </span>
+                )}
+                <button onClick={()=>{ setSqlGrounding(null); setRunBlocked(false); }}
+                  style={{ marginLeft:"auto", background:"none", border:"none",
+                    cursor:"pointer", color:T.dim, fontSize:13 }}>×</button>
+              </>
+            )}
+            {!aiValidating && sqlGrounding && !sqlGrounding.valid && (
+              <>
+                <AlertTriangle size={12} color={T.red}/>
+                <div style={{ flex:1 }}>
+                  <span style={{ fontSize:11, color:T.red, fontWeight:600 }}>
+                    SQL validation failed —{" "}
+                  </span>
+                  <span style={{ fontSize:11, color:T.red, fontFamily:"monospace" }}>
+                    {sqlGrounding.error}
+                  </span>
+                </div>
+                <Btn size="sm" variant="ghost"
+                  style={{ fontSize:10, color:T.orange, borderColor:`${T.orange}40` }}
+                  onClick={() => setRunBlocked(false)}>
+                  Run anyway
+                </Btn>
+                <button onClick={()=>{ setSqlGrounding(null); setRunBlocked(false); }}
+                  style={{ background:"none", border:"none", cursor:"pointer",
+                    color:T.dim, fontSize:13 }}>×</button>
+              </>
+            )}
+          </div>
+        )}
+
         {/* SQL editor */}
         <div style={{ padding:"12px 16px", borderBottom:`1px solid ${T.border}` }}>
-          <textarea value={sql} onChange={e=>setSql(e.target.value)}
+          <textarea value={sql}
+            onChange={e=>{ setSql(e.target.value); setSqlGrounding(null); setRunBlocked(false); }}
             onKeyDown={e=>{ if((e.ctrlKey||e.metaKey)&&e.key==="Enter"){e.preventDefault();run();} }}
             rows={5}
             style={{ width:"100%", padding:"10px 14px", borderRadius:8, resize:"vertical",
-              border:`1px solid ${T.border}`, background:T.surface, color:T.text,
+              border:`1px solid ${sqlGrounding && !sqlGrounding.valid ? T.red : sqlGrounding?.valid ? T.green : T.border}`,
+              background:T.surface, color:T.text,
               fontSize:12, fontFamily:T.monoFont, outline:"none", lineHeight:1.6 }}
             onFocus={e=>e.target.style.borderColor=T.accent}
-            onBlur={e=>e.target.style.borderColor=T.border}
+            onBlur={e=>e.target.style.borderColor= sqlGrounding && !sqlGrounding.valid ? T.red : sqlGrounding?.valid ? T.green : T.border}
           />
           <div style={{ display:"flex", gap:8, marginTop:8, alignItems:"center" }}>
-            <Btn onClick={()=>run()} disabled={running} size="sm">
+            <Btn onClick={()=>run()} disabled={running || runBlocked} size="sm"
+              style={{ opacity: runBlocked ? 0.5 : 1 }}>
               {running?<Spinner size={12} color="white"/>:<Play size={12}/>}
-              {running?"Running…":"Run (Ctrl+↵)"}
+              {running?"Running…":runBlocked?"Blocked (invalid SQL)":"Run (Ctrl+↵)"}
+            </Btn>
+            <Btn onClick={()=>validateSql(sql)} disabled={aiValidating||!sql.trim()} size="sm" variant="ghost">
+              {aiValidating?<Spinner size={11}/>:<Check size={11}/>}
+              Validate
             </Btn>
             <Btn onClick={()=>setSaveModal(true)} size="sm" variant="ghost">
               Save
@@ -3386,6 +3593,7 @@ function WorkflowLiveStatus({ onViewRun }) {
 
 function WorkflowsTab() {
   const T = useT();
+  const dbSchema = useSchema();
 
   // view: "list" | "sop" | "builder" | "edit" | "timeline" | "templates"
   const [view,          setView]          = React.useState("list");
@@ -3403,6 +3611,19 @@ function WorkflowsTab() {
   const [cwfLoading,    setCwfLoading]    = React.useState(false);
   const [cwfRunning,    setCwfRunning]    = React.useState({}); // { [id]: bool }
   const [cwfResults,    setCwfResults]    = React.useState({}); // { [id]: result }
+  const [detailWf,      setDetailWf]     = React.useState(null); // wf being inspected
+  const [cwfHistory,    setCwfHistory]   = React.useState([]); // runs from backend
+  const [pendingIssues, setPendingIssues] = useSession("wz_pendingIssues", []);
+
+  // Load run history from backend
+  const loadCwfHistory = async () => {
+    try {
+      const res  = await fetch(`${API}/api/custom-workflows/history`);
+      const data = await res.json();
+      if (Array.isArray(data)) setCwfHistory(data);
+    } catch(e) {}
+  };
+  React.useEffect(() => { loadCwfHistory(); }, []);
 
   // Load custom workflows from backend on mount
   React.useEffect(() => {
@@ -3479,7 +3700,7 @@ function WorkflowsTab() {
         body:JSON.stringify({
           system:`You are WiziAgent, a data pipeline automation expert for Intentwise.
 The user has these existing workflows: ${existingNames}.
-Available tables: mws.report, mws.orders, mws.inventory, mws.sales_and_traffic_by_date, mws.sales_and_traffic_by_asin, public.tbl_amzn_campaign_report, public.tbl_amzn_keyword_report, public.tbl_amzn_product_ad_report, public.tbl_amzn_targets_report.
+${dbSchema ? "Available tables: " + dbSchema.split(";").map(t=>t.split("(")[0].trim()).filter(Boolean).join(", ") : "Available tables: mws.report, mws.orders, mws.inventory, public.tbl_amzn_campaign_report, public.tbl_amzn_keyword_report, public.tbl_amzn_product_ad_report"}.
 Suggest 3 NEW workflows that would automate common Intentwise data quality or ops tasks not already covered.
 Respond ONLY with JSON array, no markdown:
 [{"name":"...","desc":"...","trigger":"scheduled|manual|event","schedule":"...","agents":["agent1","agent2"],"tables":["schema.table"],"why":"one sentence on the value this adds"}]`,
@@ -3579,10 +3800,31 @@ Respond ONLY with JSON, no markdown:
       // Refresh last_run on local state
       setCustomWfs(p => p.map(w => w.id === wf.id
         ? {...w, last_run: data.started_at, run_count:(w.run_count||0)+1} : w));
+      loadCwfHistory();
     } catch(e) {
       setCwfResults(p => ({...p, [wf.id]: { error: e.message, status:"error" }}));
     }
     setCwfRunning(p => ({...p, [wf.id]: false}));
+  };
+
+  // ── Send workflow issues to Triage ────────────────────────────────────────
+  const sendToTriage = (tableResult, wfName) => {
+    const newIssues = (tableResult.issues || []).map((iss, i) => ({
+      id: `WF-${Date.now()}-${i}`,
+      title: iss.type ? `${iss.type} issue in ${tableResult.table}` : `Issue in ${tableResult.table}`,
+      description: iss.msg || `${iss.type}: ${iss.count || ''} rows affected`,
+      severity: iss.severity || "medium",
+      count: iss.count || 1,
+      table: tableResult.table,
+      fix_action: null,
+      source: wfName,
+      samples: [],
+      breakdown: [],
+    }));
+    setPendingIssues(p => {
+      const existing = new Set(p.map(x => x.id));
+      return [...p, ...newIssues.filter(x => !existing.has(x.id))];
+    });
   };
 
   const SEV = { critical:T.red, high:T.orange, medium:T.yellow, low:T.cyan };
@@ -3615,6 +3857,20 @@ Respond ONLY with JSON, no markdown:
       </Btn>
       <AdsSopTab/>
     </div>
+  );
+
+  if (view === "detail") return (
+    <WorkflowRunDetail
+      wf={detailWf}
+      results={cwfResults[detailWf?.id] || null}
+      history={cwfHistory}
+      onClose={() => { setView("list"); setDetailWf(null); }}
+      onSendToTriage={(tr, wfName) => {
+        sendToTriage(tr, wfName);
+        setView("list");
+        setDetailWf(null);
+      }}
+    />
   );
 
   if (view === "builder" || view === "edit") return (
@@ -3817,13 +4073,21 @@ Respond ONLY with JSON, no markdown:
                   </Btn>
                 )}
                 {!wf.builtin && (
-                  <Btn onClick={()=>runCustomWf(wf)} size="sm"
-                    disabled={!!cwfRunning[wf.id]}
-                    style={{ background:cwfRunning[wf.id]?T.border:`linear-gradient(135deg,${T.accent},${T.purple})`,
-                      color:"white", border:"none" }}>
-                    {cwfRunning[wf.id]?<Spinner size={10} color="white"/>:<Play size={10}/>}
-                    {cwfRunning[wf.id]?"Running…":"Run"}
-                  </Btn>
+                  <>
+                    {(cwfResults[wf.id] || cwfHistory.some(h => h.workflow_id === wf.id)) && (
+                      <Btn size="sm" variant="ghost"
+                        onClick={() => { setDetailWf(wf); setView("detail"); }}>
+                        <Eye size={10}/> Results
+                      </Btn>
+                    )}
+                    <Btn onClick={()=>runCustomWf(wf)} size="sm"
+                      disabled={!!cwfRunning[wf.id]}
+                      style={{ background:cwfRunning[wf.id]?T.border:`linear-gradient(135deg,${T.accent},${T.purple})`,
+                        color:"white", border:"none" }}>
+                      {cwfRunning[wf.id]?<Spinner size={10} color="white"/>:<Play size={10}/>}
+                      {cwfRunning[wf.id]?"Running…":"Run"}
+                    </Btn>
+                  </>
                 )}
               </div>
             </div>
@@ -3992,8 +4256,201 @@ Respond ONLY with JSON, no markdown:
 }
 
 // ─── Workflow Builder ─────────────────────────────────────────────────────────
+function WorkflowRunDetail({ wf, results, history, onClose, onSendToTriage }) {
+  const T = useT();
+  const [expanded, setExpanded] = React.useState({});
+  const toggle = (k) => setExpanded(p => ({...p, [k]: !p[k]}));
+
+  // Merge: live result + latest from history
+  const runs = React.useMemo(() => {
+    const all = [...(history || []).filter(h => h.workflow_id === wf.id)];
+    if (results && !all.find(r => r.run_id === results.run_id)) {
+      all.unshift(results);
+    }
+    return all.slice(0, 10);
+  }, [results, history, wf.id]);
+
+  const [selectedRun, setSelectedRun] = React.useState(runs[0] || null);
+  const tableResults = selectedRun?.table_results || [];
+  const SEV = { critical: T.red, high: T.orange, medium: T.yellow, low: T.cyan };
+
+  return (
+    <div className="fade-in" style={{ padding:"28px 32px", maxWidth:1000 }}>
+      {/* Header */}
+      <div style={{ display:"flex", alignItems:"center", gap:12, marginBottom:20 }}>
+        <Btn onClick={onClose} variant="ghost" size="sm">← Back</Btn>
+        <div>
+          <div style={{ fontSize:18, fontWeight:700, color:T.text }}>{wf.name}</div>
+          <div style={{ fontSize:12, color:T.muted, marginTop:2 }}>
+            {runs.length} run{runs.length!==1?"s":""} recorded
+          </div>
+        </div>
+      </div>
+
+      <div style={{ display:"grid", gridTemplateColumns:"180px 1fr", gap:16 }}>
+        {/* Run selector */}
+        <div style={{ display:"flex", flexDirection:"column", gap:5 }}>
+          <div style={{ fontSize:10, fontWeight:700, color:T.muted, textTransform:"uppercase",
+            letterSpacing:"0.06em", marginBottom:4 }}>Runs</div>
+          {runs.length === 0 && (
+            <div style={{ fontSize:11, color:T.dim }}>No runs yet</div>
+          )}
+          {runs.map(r => (
+            <button key={r.run_id} onClick={() => setSelectedRun(r)}
+              style={{ textAlign:"left", padding:"8px 10px", borderRadius:7, cursor:"pointer",
+                border:`1px solid ${selectedRun?.run_id===r.run_id ? T.accent : T.border}`,
+                background: selectedRun?.run_id===r.run_id ? `${T.accent}10` : T.surface,
+                color: T.text }}>
+              <div style={{ fontSize:10, fontWeight:600,
+                color: r.status==="clean" ? T.green : r.status==="error" ? T.red : T.orange }}>
+                {r.status==="clean" ? "✓ Clean" : r.status==="error" ? "✗ Error" : `⚠ ${r.total_issues} issue(s)`}
+              </div>
+              <div style={{ fontSize:9, color:T.muted, marginTop:2 }}>
+                {r.triggered_by} · {r.started_at?.slice(11,16)} UTC
+              </div>
+            </button>
+          ))}
+        </div>
+
+        {/* Run detail */}
+        <div style={{ display:"flex", flexDirection:"column", gap:10 }}>
+          {!selectedRun && (
+            <div style={{ fontSize:13, color:T.muted, padding:20 }}>Select a run to view results</div>
+          )}
+          {selectedRun && (
+            <>
+              {/* Run summary bar */}
+              <Card style={{ padding:"12px 16px" }}>
+                <div style={{ display:"flex", gap:24, flexWrap:"wrap" }}>
+                  {[
+                    ["Run ID",     selectedRun.run_id],
+                    ["Triggered",  selectedRun.triggered_by],
+                    ["Started",    selectedRun.started_at?.slice(0,19).replace("T"," ")+" UTC"],
+                    ["Tables",     (selectedRun.table_results||[]).length],
+                    ["Issues",     selectedRun.total_issues || 0],
+                  ].map(([k,v]) => (
+                    <div key={k}>
+                      <div style={{ fontSize:9, fontWeight:700, color:T.muted,
+                        textTransform:"uppercase", letterSpacing:"0.05em" }}>{k}</div>
+                      <div style={{ fontSize:12, fontWeight:600, color:T.text,
+                        fontFamily: k==="Run ID" ? "monospace" : "inherit" }}>{v}</div>
+                    </div>
+                  ))}
+                </div>
+              </Card>
+
+              {/* Per-table results */}
+              {tableResults.length === 0 && (
+                <div style={{ fontSize:12, color:T.muted, padding:"12px 0" }}>No table results recorded.</div>
+              )}
+              {tableResults.map((tr, i) => {
+                const hasIssues = tr.issues?.length > 0;
+                const isExp = expanded[i];
+                return (
+                  <Card key={i} style={{ overflow:"hidden",
+                    borderColor: tr.skipped ? T.border : hasIssues ? `${T.orange}40` : `${T.green}30` }}>
+                    {/* Table header row */}
+                    <div style={{ padding:"12px 16px", display:"flex", alignItems:"center", gap:10 }}>
+                      <StatusDot status={tr.skipped?"muted":hasIssues?"warning":"healthy"}/>
+                      <div style={{ flex:1 }}>
+                        <div style={{ display:"flex", alignItems:"center", gap:8 }}>
+                          <span style={{ fontFamily:"monospace", fontSize:12, fontWeight:600,
+                            color:T.text }}>{tr.table}</span>
+                          {tr.agent && (
+                            <span style={{ fontSize:10, color:T.muted }}>via {tr.agent}</span>
+                          )}
+                          {tr.branch_action && (
+                            <Badge label={tr.branch_action} color={T.purple}/>
+                          )}
+                        </div>
+                        <div style={{ fontSize:11, color:T.muted, marginTop:2 }}>
+                          {tr.skipped ? "Skipped by branching rule"
+                            : hasIssues ? `${tr.issues.length} issue(s) found`
+                            : "All checks passed"}
+                        </div>
+                      </div>
+                      <div style={{ display:"flex", gap:6 }}>
+                        {hasIssues && (
+                          <>
+                            <Btn size="sm" variant="muted" onClick={() => toggle(i)}>
+                              <Eye size={10}/> {isExp ? "Hide" : "Details"}
+                            </Btn>
+                            <Btn size="sm" variant="ghost"
+                              onClick={() => onSendToTriage(tr, wf.name)}
+                              style={{ color:T.accent, borderColor:`${T.accent}40` }}>
+                              <ArrowRight size={10}/> Send to Triage
+                            </Btn>
+                          </>
+                        )}
+                      </div>
+                    </div>
+
+                    {/* Issue details */}
+                    {isExp && hasIssues && (
+                      <div style={{ borderTop:`1px solid ${T.border}`,
+                        padding:"10px 16px", display:"flex", flexDirection:"column", gap:8 }}>
+                        {tr.issues.map((iss, j) => (
+                          <div key={j} style={{ padding:"8px 12px", borderRadius:6,
+                            background:`${SEV[iss.severity]||T.orange}08`,
+                            border:`1px solid ${SEV[iss.severity]||T.orange}25` }}>
+                            <div style={{ display:"flex", alignItems:"center", gap:8, marginBottom:4 }}>
+                              <Badge label={iss.severity||"medium"} color={SEV[iss.severity]||T.orange}/>
+                              <span style={{ fontSize:11, fontWeight:600, color:T.text,
+                                textTransform:"capitalize" }}>
+                                {iss.type?.replace(/_/g," ") || "Issue"}
+                              </span>
+                              {iss.count != null && (
+                                <span style={{ fontSize:11, fontFamily:"monospace",
+                                  color:T.muted }}>· {iss.count} row(s)</span>
+                              )}
+                              {iss.column && (
+                                <span style={{ fontSize:10, fontFamily:"monospace",
+                                  color:T.cyan }}>col: {iss.column}</span>
+                              )}
+                            </div>
+                            {iss.msg && (
+                              <div style={{ fontSize:11, color:T.text2 }}>{iss.msg}</div>
+                            )}
+                            {iss.age_hours != null && (
+                              <div style={{ fontSize:11, color:T.orange }}>
+                                {iss.age_hours}h since last update
+                              </div>
+                            )}
+                          </div>
+                        ))}
+
+                        {/* Trace log */}
+                        {tr.trace?.length > 0 && (
+                          <details style={{ marginTop:4 }}>
+                            <summary style={{ fontSize:10, color:T.muted, cursor:"pointer" }}>
+                              Agent trace ({tr.trace.length} steps)
+                            </summary>
+                            <div style={{ marginTop:6, display:"flex", flexDirection:"column", gap:3 }}>
+                              {tr.trace.map((t,k) => (
+                                <div key={k} style={{ fontSize:10, fontFamily:"monospace",
+                                  color: t.level==="error"?T.red:t.level==="warning"?T.orange:T.muted }}>
+                                  [{t.node}] {t.msg}
+                                </div>
+                              ))}
+                            </div>
+                          </details>
+                        )}
+                      </div>
+                    )}
+                  </Card>
+                );
+              })}
+            </>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function WorkflowBuilder({ initial, onSave, onCancel }) {
   const T = useT();
+  const dbSchema = useSchema();
   const blank = { name:"", desc:"", trigger:"manual", schedule:"",
                   agents:[], tables:[], branches:[], endpoint:"" };
   const [wf,       setWf]       = React.useState(initial ? {...blank,...initial, branches: initial.branches||[]} : blank);
@@ -4033,7 +4490,7 @@ function WorkflowBuilder({ initial, onSave, onCancel }) {
         method:"POST", headers:{"Content-Type":"application/json"},
         body:JSON.stringify({
           system:`You are WiziAgent helping a user design a new data workflow for Intentwise.
-Available mws tables: mws.report, mws.orders, mws.inventory, mws.sales_and_traffic_by_date, mws.sales_and_traffic_by_asin, public.tbl_amzn_campaign_report, public.tbl_amzn_keyword_report, public.tbl_amzn_product_ad_report, public.tbl_amzn_targets_report.
+${dbSchema ? "Available tables: " + dbSchema.split(";").map(t=>t.split("(")[0].trim()).filter(Boolean).join(", ") : "Available tables: mws.report, mws.orders, mws.inventory, public.tbl_amzn_campaign_report, public.tbl_amzn_keyword_report"}.
 Based on the workflow name/desc, suggest agents, tables, and schedule.
 Respond ONLY with JSON:
 {"suggested_agents":["agent1","agent2"],"suggested_tables":["mws.report"],"suggested_schedule":"4:30 PM IST","suggested_trigger":"scheduled|manual|event","tips":["tip1","tip2"]}`,
@@ -4347,6 +4804,25 @@ export default function WiziAgentApp() {
   const [themeKey,  setThemeKey]  = useLocal("wz_theme", "light");
   const [activeTab, setActiveTab] = useLocal("wz_tab",   "brief");
   const [issues,    setIssues]    = useSession("wz_pendingIssues", []);
+  const [schemaStr, setSchemaStr] = React.useState("");
+
+  // Fetch live schema once on mount — used by all AI system prompts
+  React.useEffect(() => {
+    fetch(`${API}/api/schema`)
+      .then(r => r.json())
+      .then(data => {
+        if (Array.isArray(data)) {
+          // Build compact string: "schema.table(col:type,...); ..."
+          const str = data.map(t =>
+            `${t.table_schema}.${t.table_name}(${
+              (t.columns||[]).map(c => c.column_name).join(",")
+            })`
+          ).join("; ");
+          setSchemaStr(str);
+        }
+      })
+      .catch(() => {});
+  }, []);
 
   const T = THEMES[themeKey] || THEMES.light;
   // Content area always bright white for readability — only left nav is themed
@@ -4376,6 +4852,7 @@ export default function WiziAgentApp() {
   ).length;
 
   return (
+    <SchemaCtx.Provider value={schemaStr}>
     <ThemeCtx.Provider value={T}>
       <style>{GLOBAL_CSS}</style>
       <div style={{
@@ -4414,5 +4891,6 @@ export default function WiziAgentApp() {
         </ThemeCtx.Provider>
       </div>
     </ThemeCtx.Provider>
+    </SchemaCtx.Provider>
   );
 }

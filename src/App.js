@@ -3012,12 +3012,385 @@ function AdsSopTab() {
   );
 }
 
+
+// ─── Workflow Run Timeline ────────────────────────────────────────────────────
+// Gantt-style view of a single workflow run's trace nodes
+function WorkflowRunTimeline({ run, onClose }) {
+  const T = useT();
+  if (!run) return null;
+
+  const trace = run.trace || [];
+
+  // Parse trace into nodes with durations
+  const nodes = React.useMemo(() => {
+    const result = [];
+    trace.forEach((t, i) => {
+      const prev = trace[i - 1];
+      // Parse HH:MM:SS into seconds
+      const toSec = (ts) => {
+        if (!ts) return 0;
+        const parts = ts.split(":").map(Number);
+        return parts[0] * 3600 + parts[1] * 60 + (parts[2] || 0);
+      };
+      const startSec = prev ? toSec(prev.ts) : toSec(t.ts);
+      const endSec   = toSec(t.ts);
+      const duration = Math.max(endSec - startSec, 1);
+      result.push({ ...t, startSec, endSec, duration });
+    });
+    return result;
+  }, [trace]);
+
+  const totalDuration = nodes.length
+    ? nodes[nodes.length - 1].endSec - nodes[0].startSec || 1
+    : 1;
+
+  const levelColor = {
+    success: T.green, error: T.red, warning: T.yellow, info: T.accent
+  };
+
+  const statusColor = {
+    clean: T.green, fixed: T.green, error: T.red,
+    escalated: T.yellow, running: T.accent,
+  };
+
+  return (
+    <div className="fade-in" style={{ padding:"28px 32px", maxWidth:960 }}>
+      <div style={{ display:"flex", alignItems:"center", gap:12, marginBottom:24 }}>
+        <Btn onClick={onClose} variant="ghost" size="sm">← Back</Btn>
+        <div>
+          <div style={{ fontSize:18, fontWeight:700, color:T.text }}>
+            Run #{run.run_id} — Timeline
+          </div>
+          <div style={{ fontSize:12, color:T.muted, marginTop:2 }}>
+            {run.started_at} ·{" "}
+            <span style={{ color: statusColor[run.status] || T.muted,
+              fontWeight:600 }}>
+              {run.status?.toUpperCase()}
+            </span>
+            {run.notified && <span style={{ marginLeft:8,
+              color:T.green, fontSize:11 }}>· Slack notified</span>}
+          </div>
+        </div>
+      </div>
+
+      {trace.length === 0 ? (
+        <div style={{ fontSize:13, color:T.muted, padding:"24px 0" }}>
+          No trace data available for this run.
+        </div>
+      ) : (
+        <div style={{ display:"flex", flexDirection:"column", gap:0 }}>
+          {/* Header */}
+          <div style={{ display:"grid", gridTemplateColumns:"140px 1fr 80px 70px",
+            gap:8, padding:"6px 10px", borderBottom:`1px solid ${T.border}`,
+            fontSize:9, fontWeight:700, color:T.dim,
+            textTransform:"uppercase", letterSpacing:"0.06em" }}>
+            <span>Node</span><span>Timeline</span><span>Status</span><span>Time</span>
+          </div>
+
+          {nodes.map((node, i) => {
+            const barLeft  = totalDuration > 0
+              ? ((node.startSec - nodes[0].startSec) / totalDuration) * 100
+              : 0;
+            const barWidth = Math.max((node.duration / totalDuration) * 100, 1.5);
+            const color    = levelColor[node.level] || T.muted;
+
+            return (
+              <div key={i} style={{
+                display:"grid", gridTemplateColumns:"140px 1fr 80px 70px",
+                gap:8, padding:"8px 10px", alignItems:"center",
+                borderBottom:`1px solid ${T.border}30`,
+                background: i % 2 === 0 ? "transparent" : `${T.accent}03`,
+                transition:"background 0.1s",
+              }}
+              onMouseEnter={e => e.currentTarget.style.background = `${T.accent}06`}
+              onMouseLeave={e => e.currentTarget.style.background = i%2===0?"transparent":`${T.accent}03`}
+              >
+                {/* Node name */}
+                <div style={{ display:"flex", alignItems:"center", gap:6 }}>
+                  <div style={{ width:7, height:7, borderRadius:"50%",
+                    background:color, flexShrink:0 }}/>
+                  <span style={{ fontSize:11, fontWeight:600, color:T.text,
+                    fontFamily:T.monoFont, overflow:"hidden",
+                    textOverflow:"ellipsis", whiteSpace:"nowrap" }}>
+                    {node.node}
+                  </span>
+                </div>
+
+                {/* Bar */}
+                <div style={{ position:"relative", height:22,
+                  background:T.border, borderRadius:4, overflow:"hidden" }}>
+                  <div style={{
+                    position:"absolute", top:2, bottom:2,
+                    left:`${barLeft}%`, width:`${barWidth}%`,
+                    background:`${color}90`, borderRadius:3,
+                    minWidth:4,
+                  }}/>
+                  {/* Message label inside bar */}
+                  <div style={{ position:"absolute", inset:0, display:"flex",
+                    alignItems:"center", paddingLeft:`calc(${barLeft}% + 8px)`,
+                    fontSize:9, color:T.text, overflow:"hidden",
+                    whiteSpace:"nowrap", textOverflow:"ellipsis" }}>
+                    {node.msg}
+                  </div>
+                </div>
+
+                {/* Level badge */}
+                <div>
+                  <Badge label={node.level} color={color}/>
+                </div>
+
+                {/* Timestamp */}
+                <span style={{ fontSize:10, color:T.dim,
+                  fontFamily:T.monoFont }}>{node.ts}</span>
+              </div>
+            );
+          })}
+        </div>
+      )}
+
+      {/* Summary footer */}
+      {run.root_cause_analysis?.root_cause &&
+       run.root_cause_analysis.root_cause !== "none" && (
+        <div style={{ marginTop:20, padding:"12px 16px", borderRadius:8,
+          background:`${T.yellow}08`, border:`1px solid ${T.yellow}30` }}>
+          <span style={{ fontSize:12, fontWeight:700, color:T.yellow }}>
+            Root cause:{" "}
+          </span>
+          <span style={{ fontSize:12, color:T.text2 }}>
+            {run.root_cause_analysis.root_cause}
+          </span>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ─── Workflow Templates Library ───────────────────────────────────────────────
+const WF_TEMPLATES = [
+  {
+    id:"tpl-freshness", name:"Daily Table Freshness Check",
+    desc:"Checks that today's data is present in all selected tables. Alerts if any table is stale.",
+    trigger:"scheduled", schedule:"8:00 AM IST",
+    agents:["Freshness Agent","Notification Agent"],
+    tables:["mws.report","mws.orders","mws.inventory"],
+    category:"monitoring",
+  },
+  {
+    id:"tpl-post-download", name:"Post-Download Validation",
+    desc:"Runs after ads data downloads — validates row counts, profile coverage, and date completeness across all report tables.",
+    trigger:"event", schedule:"After download completes",
+    agents:["Download Monitor","Validation Agent","Pipeline Analyst"],
+    tables:["public.tbl_amzn_campaign_report","public.tbl_amzn_keyword_report",
+            "public.tbl_amzn_product_ad_report","public.tbl_amzn_targets_report"],
+    category:"validation",
+  },
+  {
+    id:"tpl-integrity", name:"Weekly Integrity Scan",
+    desc:"Full NULL, duplicate, and range check across all mws tables. Runs weekly to catch accumulating data quality issues.",
+    trigger:"scheduled", schedule:"Monday 7:00 AM IST",
+    agents:["Integrity Agent","Root Cause Analyst","Notification Agent"],
+    tables:["mws.orders","mws.inventory","mws.sales_and_traffic_by_date"],
+    category:"quality",
+  },
+  {
+    id:"tpl-sla", name:"Custom SLA Monitor",
+    desc:"Alerts if row count in any monitored table falls below a configurable threshold — catches partial loads before they reach downstream.",
+    trigger:"scheduled", schedule:"Every 2 hours",
+    agents:["Row Count Monitor","Threshold Checker","Alert Agent"],
+    tables:["mws.report"],
+    category:"monitoring",
+  },
+  {
+    id:"tpl-replication", name:"Replication Health Check",
+    desc:"Verifies that Redshift data matches expected counts from the source system. Flags replication lag or missed jobs.",
+    trigger:"scheduled", schedule:"5:00 PM IST",
+    agents:["Replication Monitor","Lag Detector","Notification Agent"],
+    tables:["mws.report","mws.orders"],
+    category:"pipeline",
+  },
+  {
+    id:"tpl-anomaly", name:"Statistical Anomaly Detector",
+    desc:"Establishes a 14-day baseline per table and flags any metric that deviates by more than 2 standard deviations — catches unusual drops or spikes.",
+    trigger:"scheduled", schedule:"9:00 AM IST",
+    agents:["Baseline Builder","Anomaly Detector","Pipeline Analyst (LLM)"],
+    tables:["mws.report","mws.orders","mws.sales_and_traffic_by_date"],
+    category:"analytics",
+  },
+];
+
+const TPL_CATEGORY_COLOR = {
+  monitoring:"#3B82F6", validation:"#10B981",
+  quality:"#F59E0B", pipeline:"#F97316",
+  analytics:"#8B5CF6",
+};
+
+function WorkflowTemplatesView({ onSelect, onCancel }) {
+  const T = useT();
+  const [filter, setFilter] = React.useState("all");
+  const categories = ["all","monitoring","validation","quality","pipeline","analytics"];
+
+  const filtered = filter === "all"
+    ? WF_TEMPLATES
+    : WF_TEMPLATES.filter(t => t.category === filter);
+
+  return (
+    <div className="fade-in" style={{ padding:"28px 32px", maxWidth:1000 }}>
+      <div style={{ display:"flex", alignItems:"center", gap:12, marginBottom:20 }}>
+        <Btn onClick={onCancel} variant="ghost" size="sm">← Back</Btn>
+        <div>
+          <div style={{ fontSize:20, fontWeight:700, color:T.text,
+            letterSpacing:"-0.02em" }}>Workflow Templates</div>
+          <div style={{ fontSize:12, color:T.muted, marginTop:2 }}>
+            Pick a template to get started — customise agents, tables, and schedule
+          </div>
+        </div>
+      </div>
+
+      {/* Category filter */}
+      <div style={{ display:"flex", gap:6, marginBottom:20, flexWrap:"wrap" }}>
+        {categories.map(cat => (
+          <button key={cat} onClick={() => setFilter(cat)}
+            style={{ padding:"4px 14px", borderRadius:99, fontSize:11,
+              fontWeight:600, cursor:"pointer", border:"none",
+              background: filter===cat ? T.accent : `${T.accent}12`,
+              color: filter===cat ? "white" : T.muted,
+              transition:"all 0.12s" }}>
+            {cat.charAt(0).toUpperCase() + cat.slice(1)}
+          </button>
+        ))}
+      </div>
+
+      <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:12 }}>
+        {filtered.map(tpl => {
+          const catColor = TPL_CATEGORY_COLOR[tpl.category] || T.accent;
+          return (
+            <Card key={tpl.id} hoverable style={{ padding:"18px 20px",
+              cursor:"pointer" }} onClick={() => onSelect(tpl)}>
+              <div style={{ display:"flex", alignItems:"flex-start",
+                justifyContent:"space-between", marginBottom:8 }}>
+                <div style={{ flex:1 }}>
+                  <div style={{ display:"flex", alignItems:"center",
+                    gap:7, marginBottom:4 }}>
+                    <span style={{ fontSize:13, fontWeight:700,
+                      color:T.text }}>{tpl.name}</span>
+                    <Badge label={tpl.category} color={catColor}/>
+                  </div>
+                  <div style={{ fontSize:11, color:T.muted,
+                    lineHeight:1.5 }}>{tpl.desc}</div>
+                </div>
+              </div>
+              <div style={{ display:"flex", flexWrap:"wrap", gap:4,
+                marginBottom:8 }}>
+                {tpl.agents.map((a,i) => (
+                  <span key={a} style={{ fontSize:9, padding:"2px 7px",
+                    background:`${catColor}12`, color:catColor,
+                    borderRadius:3, border:`1px solid ${catColor}20` }}>
+                    {i+1}. {a}
+                  </span>
+                ))}
+              </div>
+              <div style={{ display:"flex", alignItems:"center",
+                justifyContent:"space-between" }}>
+                <span style={{ fontSize:10, color:T.muted }}>
+                  <Clock size={10} style={{ marginRight:3,
+                    verticalAlign:"middle" }}/>
+                  {tpl.schedule}
+                </span>
+                <Btn size="sm" style={{ background:catColor,
+                  color:"white", border:"none" }}>
+                  Use Template →
+                </Btn>
+              </div>
+            </Card>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+// ─── Real-time Workflow Status ────────────────────────────────────────────────
+// Polls /api/workflow/history every 30s to detect running workflows
+function WorkflowLiveStatus({ onViewRun }) {
+  const T = useT();
+  const [liveRun,  setLiveRun]  = React.useState(null);
+  const [polling,  setPolling]  = React.useState(false);
+  const [lastPoll, setLastPoll] = React.useState(null);
+  const [nextIn,   setNextIn]   = React.useState(30);
+
+  // Poll every 30 seconds
+  React.useEffect(() => {
+    let interval, countdown;
+    const poll = async () => {
+      setPolling(true);
+      try {
+        const res  = await fetch(`${API}/api/workflow/history`);
+        const data = await res.json();
+        const runs = data.runs || [];
+        // Find any run in the last 5 minutes that's still running
+        const recent = runs.find(r => {
+          if (r.status !== "running") return false;
+          const ts = new Date(r.started_at);
+          return (Date.now() - ts) < 5 * 60 * 1000;
+        });
+        setLiveRun(recent || null);
+        setLastPoll(new Date().toLocaleTimeString());
+        setNextIn(30);
+      } catch {}
+      setPolling(false);
+    };
+    poll();
+    interval = setInterval(poll, 30000);
+    countdown = setInterval(() => setNextIn(p => Math.max(0, p - 1)), 1000);
+    return () => { clearInterval(interval); clearInterval(countdown); };
+  }, []);
+
+  if (!liveRun) {
+    return (
+      <div style={{ display:"flex", alignItems:"center", gap:8,
+        padding:"8px 12px", borderRadius:8,
+        background:T.border, fontSize:11, color:T.muted }}>
+        <div style={{ width:6, height:6, borderRadius:"50%",
+          background:T.green }}/>
+        No workflow running
+        {lastPoll && (
+          <span style={{ marginLeft:4, color:T.dim }}>
+            · polled {lastPoll} · next in {nextIn}s
+          </span>
+        )}
+        {polling && <Spinner size={10}/>}
+      </div>
+    );
+  }
+
+  return (
+    <div style={{ padding:"10px 14px", borderRadius:8,
+      background:`${T.accent}08`, border:`1px solid ${T.accent}30`,
+      display:"flex", alignItems:"center", gap:10 }}>
+      <Spinner size={13} color={T.accent}/>
+      <div style={{ flex:1 }}>
+        <div style={{ fontSize:12, fontWeight:700, color:T.accent }}>
+          Workflow running — #{liveRun.run_id}
+        </div>
+        <div style={{ fontSize:10, color:T.muted }}>
+          Started {liveRun.started_at}
+          {lastPoll && ` · last checked ${lastPoll}`}
+        </div>
+      </div>
+      <Btn onClick={() => onViewRun(liveRun)} size="sm" variant="ghost">
+        View <ArrowRight size={11}/>
+      </Btn>
+    </div>
+  );
+}
+
 function WorkflowsTab() {
   const T = useT();
 
-  // view: "list" | "sop" | "builder" | "edit"
+  // view: "list" | "sop" | "builder" | "edit" | "timeline" | "templates"
   const [view,          setView]          = React.useState("list");
-  const [editingWf,     setEditingWf]     = React.useState(null);  // workflow being edited/built
+  const [editingWf,     setEditingWf]     = React.useState(null);
+  const [timelineRun,   setTimelineRun]   = React.useState(null);   // run to show in timeline
 
   // Daily run state
   const [running,       setRunning]       = React.useState(false);
@@ -3157,6 +3530,26 @@ Respond ONLY with JSON, no markdown:
   const SEV = { critical:T.red, high:T.orange, medium:T.yellow, low:T.cyan };
 
   // ── Views ──────────────────────────────────────────────────────────────────
+  if (view === "timeline") return (
+    <WorkflowRunTimeline
+      run={timelineRun}
+      onClose={()=>{ setView("list"); setTimelineRun(null); }}
+    />
+  );
+
+  if (view === "templates") return (
+    <WorkflowTemplatesView
+      onSelect={(tpl) => {
+        setEditingWf({
+          name:tpl.name, desc:tpl.desc, trigger:tpl.trigger,
+          schedule:tpl.schedule, agents:[...tpl.agents], tables:[...tpl.tables]
+        });
+        setView("builder");
+      }}
+      onCancel={() => setView("list")}
+    />
+  );
+
   if (view === "sop") return (
     <div className="fade-in" style={{ padding:"16px 32px 0" }}>
       <Btn onClick={()=>setView("list")} variant="ghost" size="sm" style={{ marginBottom:16 }}>
@@ -3192,10 +3585,20 @@ Respond ONLY with JSON, no markdown:
             {aiLoading?<Spinner size={11}/>:<Zap size={11}/>}
             {aiLoading?"Thinking…":"✨ AI Suggest"}
           </Btn>
+          <Btn onClick={()=>setView("templates")} variant="ghost" size="sm">
+            <FileText size={12}/> Templates
+          </Btn>
           <Btn onClick={()=>{ setEditingWf(null); setView("builder"); }} size="sm">
             <Plus size={12}/> New Workflow
           </Btn>
         </div>
+      </div>
+
+      {/* Live status polling banner */}
+      <div style={{ marginBottom:16 }}>
+        <WorkflowLiveStatus
+          onViewRun={(run) => { setTimelineRun(run); setView("timeline"); }}
+        />
       </div>
 
       {/* AI Suggestions */}
@@ -3388,8 +3791,16 @@ Respond ONLY with JSON, no markdown:
                     </div>
                     <div style={{ fontSize:9, color:T.muted }}>{r.started_at}</div>
                   </div>
-                  <Badge label={r.status}
-                    color={r.status==="clean"?T.green:r.status==="critical"?T.red:T.orange}/>
+                  <div style={{ display:"flex", alignItems:"center", gap:5 }}>
+                    <Badge label={r.status}
+                      color={r.status==="clean"?T.green:r.status==="critical"?T.red:T.orange}/>
+                    <button onClick={(e)=>{ e.stopPropagation(); setTimelineRun(r); setView("timeline"); }}
+                      title="View timeline"
+                      style={{ background:"none", border:"none", cursor:"pointer",
+                        color:T.dim, padding:"1px 3px", fontSize:12, lineHeight:1 }}>
+                      ▤
+                    </button>
+                  </div>
                 </button>
               ))}
             </div>

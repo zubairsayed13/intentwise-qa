@@ -3264,7 +3264,7 @@ function MonitorTab() {
   const [csRunning,  setCsRunning]  = React.useState({});
   const [scanning,   setScanning]   = React.useState({});
   const [addOpen,    setAddOpen]    = React.useState(false);
-  const [newTable,   setNewTable]   = React.useState({ schema:"mws", table:"" });
+  const [newTable,   setNewTable]   = React.useState({ schema:"mws", table:"", schema_group:"", slack_channel:"" });
   const [builderFor, setBuilderFor] = React.useState(null);
   const [subExpanded,setSubExpanded]= React.useState({}); // {checkId: bool} — expand sub-check results
 
@@ -3328,9 +3328,11 @@ function MonitorTab() {
     if (!newTable.table.trim()) return;
     setTables(p=>[...p, {
       schema:newTable.schema, table:newTable.table,
-      label:`${newTable.schema}.${newTable.table}`, primary:false, checkSets:[], checks:[]
+      label:`${newTable.schema}.${newTable.table}`,
+      schema_group:newTable.schema_group, slack_channel:newTable.slack_channel,
+      primary:false, checkSets:[], checks:[]
     }]);
-    setNewTable({ schema:"mws", table:"" });
+    setNewTable({ schema:"mws", table:"", schema_group:"", slack_channel:"" });
     setAddOpen(false);
     try { const c=JSON.parse(localStorage.getItem("wz_onboarding")||"{}"); localStorage.setItem("wz_onboarding",JSON.stringify({...c,monitored:true})); } catch {}
   };
@@ -3405,19 +3407,39 @@ function MonitorTab() {
         <Card style={{ padding:"14px 18px", marginBottom:16,
           borderColor:T.accent, background:`${T.accent}05` }}>
           <div style={{ fontSize:12, fontWeight:700, color:T.text, marginBottom:10 }}>Add table</div>
-          <div style={{ display:"flex", gap:8, alignItems:"center" }}>
-            <input value={newTable.schema} onChange={e=>setNewTable(p=>({...p,schema:e.target.value}))}
-              placeholder="schema" style={{ width:100, padding:"6px 10px", borderRadius:6,
-                border:`1px solid ${T.border}`, background:T.surface, color:T.text,
-                fontSize:12, fontFamily:"monospace" }}/>
-            <span style={{ color:T.muted, fontWeight:700 }}>.</span>
-            <input value={newTable.table} onChange={e=>setNewTable(p=>({...p,table:e.target.value}))}
-              onKeyDown={e=>e.key==="Enter"&&addTable()}
-              placeholder="table_name" style={{ flex:1, padding:"6px 10px", borderRadius:6,
-                border:`1px solid ${T.border}`, background:T.surface, color:T.text,
-                fontSize:12, fontFamily:"monospace" }}/>
-            <Btn onClick={addTable} size="sm"><Check size={11}/> Add</Btn>
-            <Btn onClick={()=>setAddOpen(false)} size="sm" variant="muted"><X size={11}/></Btn>
+          <div style={{ display:"flex", flexDirection:"column", gap:8 }}>
+            <div style={{ display:"flex", gap:8, alignItems:"center" }}>
+              <input value={newTable.schema} onChange={e=>setNewTable(p=>({...p,schema:e.target.value}))}
+                placeholder="schema" style={{ width:100, padding:"6px 10px", borderRadius:6,
+                  border:`1px solid ${T.border}`, background:T.surface, color:T.text,
+                  fontSize:12, fontFamily:"monospace" }}/>
+              <span style={{ color:T.muted, fontWeight:700 }}>.</span>
+              <input value={newTable.table} onChange={e=>setNewTable(p=>({...p,table:e.target.value}))}
+                onKeyDown={e=>e.key==="Enter"&&addTable()}
+                placeholder="table_name" style={{ flex:1, padding:"6px 10px", borderRadius:6,
+                  border:`1px solid ${T.border}`, background:T.surface, color:T.text,
+                  fontSize:12, fontFamily:"monospace" }}/>
+            </div>
+            <div style={{ display:"flex", gap:8 }}>
+              <select value={newTable.schema_group} onChange={e=>setNewTable(p=>({...p,schema_group:e.target.value}))}
+                style={{ flex:1, padding:"6px 8px", borderRadius:6, fontSize:11,
+                  border:`1px solid ${T.border}`, background:T.surface, color:T.text }}>
+                <option value="">Schema group (optional)</option>
+                {["amazon_source_data","instacart_source_data","walmart_source_data",
+                  "intentwise_ecommerce_graph","tiktok_source_data","meta_source_data",
+                  "google_source_data","mws","public"].map(sg=>(
+                  <option key={sg} value={sg}>{sg}</option>
+                ))}
+              </select>
+              <input value={newTable.slack_channel} onChange={e=>setNewTable(p=>({...p,slack_channel:e.target.value}))}
+                placeholder="Slack webhook (optional)"
+                style={{ flex:1, padding:"6px 10px", borderRadius:6,
+                  border:`1px solid ${T.border}`, background:T.surface, color:T.text, fontSize:11 }}/>
+            </div>
+            <div style={{ display:"flex", gap:8 }}>
+              <Btn onClick={addTable} size="sm"><Check size={11}/> Add</Btn>
+              <Btn onClick={()=>setAddOpen(false)} size="sm" variant="muted"><X size={11}/></Btn>
+            </div>
           </div>
         </Card>
       )}
@@ -3456,6 +3478,7 @@ function MonitorTab() {
                     <span style={{ fontSize:13, fontWeight:700, color:T.text,
                       fontFamily:"monospace" }}>{key}</span>
                     {t.primary && <Badge label="primary" color={T.accent}/>}
+                    {t.schema_group && <Badge label={t.schema_group.replace("_source_data","").replace("_"," ")} color={T.purple}/>}
                     {checkSets.length > 0 && (
                       <span style={{ fontSize:10, color:T.muted }}>
                         {checkSets.length} check set{checkSets.length!==1?"s":""}
@@ -6099,6 +6122,8 @@ Respond ONLY with JSON, no markdown:
                 <div style={{ display:"flex", alignItems:"center", gap:7, marginBottom:3 }}>
                   <span style={{ fontSize:13, fontWeight:700, color:T.text }}>{wf.name}</span>
                   {wf.builtin && <Badge label="built-in" color={T.muted}/>}
+                  {wf.schema_group && <Badge label={wf.schema_group.replace("_source_data","").replace(/_/g," ")} color={T.purple}/>}
+                  {wf.db_key && wf.db_key!=="default" && <Badge label={`db:${wf.db_key}`} color={T.orange}/>}
                   {!wf.builtin && <Badge label="custom" color={T.purple}/>}
                 </div>
                 <div style={{ fontSize:11, color:T.muted, lineHeight:1.5 }}>{wf.desc}</div>
@@ -6552,7 +6577,8 @@ function WorkflowBuilder({ initial, onSave, onCancel }) {
   const T = useT();
   const dbSchema = useSchema();
   const blank = { name:"", desc:"", trigger:"manual", schedule:"",
-                  agents:[], tables:[], branches:[], table_checks:{}, endpoint:"" };
+                  agents:[], tables:[], branches:[], table_checks:{}, endpoint:"",
+                  schema_group:"", db_key:"default", slack_channel:"" };
   const [wf,       setWf]       = React.useState(initial ? {...blank,...initial, branches: initial.branches||[], table_checks: initial.table_checks||{}} : blank);
   const [expandedTableChecks, setExpandedTableChecks] = React.useState({});
   const [tableCheckIn, setTableCheckIn] = React.useState({}); // {tableKey: {name,sql,pass_condition}}
@@ -7088,6 +7114,66 @@ Respond ONLY with JSON:
               Tables without custom checks will run generic NULL/freshness/duplicate checks.
             </div>
           )}
+        </Card>
+
+        {/* Routing — schema group, DB, Slack channel */}
+        <Card style={{ padding:"18px 20px" }}>
+          <div style={{ fontSize:11, fontWeight:700, color:T.muted, marginBottom:12,
+            textTransform:"uppercase", letterSpacing:"0.06em" }}>Routing & Connection</div>
+          <div style={{ display:"flex", flexDirection:"column", gap:10 }}>
+            <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:10 }}>
+              <div>
+                <label style={{ fontSize:11, fontWeight:600, color:T.text2,
+                  display:"block", marginBottom:4 }}>Schema Group</label>
+                <select value={wf.schema_group||""} onChange={e=>field("schema_group",e.target.value)}
+                  style={{...inputStyle}}>
+                  <option value="">— not set —</option>
+                  <option value="amazon_source_data">amazon_source_data</option>
+                  <option value="instacart_source_data">instacart_source_data</option>
+                  <option value="cruteo_source_data">cruteo_source_data</option>
+                  <option value="walmart_source_data">walmart_source_data</option>
+                  <option value="intentwise_ecommerce_graph">intentwise_ecommerce_graph</option>
+                  <option value="tiktok_source_data">tiktok_source_data</option>
+                  <option value="meta_source_data">meta_source_data</option>
+                  <option value="google_source_data">google_source_data</option>
+                  <option value="mws">mws (Amazon MWS)</option>
+                  <option value="public">public</option>
+                  <option value="custom">custom…</option>
+                </select>
+                {wf.schema_group==="custom" && (
+                  <input value={wf._schema_group_custom||""} onChange={e=>field("schema_group",e.target.value)}
+                    placeholder="Enter schema name"
+                    style={{...inputStyle, marginTop:6}}
+                    onFocus={e=>e.target.style.borderColor=T.accent}
+                    onBlur={e=>e.target.style.borderColor=T.border}/>
+                )}
+              </div>
+              <div>
+                <label style={{ fontSize:11, fontWeight:600, color:T.text2,
+                  display:"block", marginBottom:4 }}>Database Connection</label>
+                <input value={wf.db_key||"default"} onChange={e=>field("db_key",e.target.value)}
+                  placeholder="default"
+                  style={{...inputStyle, fontFamily:"monospace"}}
+                  onFocus={e=>e.target.style.borderColor=T.accent}
+                  onBlur={e=>e.target.style.borderColor=T.border}/>
+                <div style={{ fontSize:10, color:T.dim, marginTop:4 }}>
+                  Connection key — use "default" for primary Redshift
+                </div>
+              </div>
+            </div>
+            <div>
+              <label style={{ fontSize:11, fontWeight:600, color:T.text2,
+                display:"block", marginBottom:4 }}>Slack Channel / Webhook</label>
+              <input value={wf.slack_channel||""} onChange={e=>field("slack_channel",e.target.value)}
+                placeholder="https://hooks.slack.com/... or leave blank for default"
+                style={{...inputStyle}}
+                onFocus={e=>e.target.style.borderColor=T.accent}
+                onBlur={e=>e.target.style.borderColor=T.border}/>
+              <div style={{ fontSize:10, color:T.dim, marginTop:4 }}>
+                Override the global webhook — route alerts to a team-specific channel
+              </div>
+            </div>
+          </div>
         </Card>
 
         {/* Save / Cancel */}

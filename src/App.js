@@ -304,8 +304,6 @@ const NAV = [
   { id:"triage",    label:"Triage & Monitor", icon:AlertTriangle,shortcut:"3" },
   { id:"workflows", label:"Workflows",      icon:GitBranch,    shortcut:"4" },
   { id:"approvals", label:"Approvals & Activity", icon:Lock, shortcut:"A" },
-  { id:"viz",       label:"Visualization",   icon:BarChart2,    shortcut:"V" },
-  { id:"chat",      label:"Ask WiziAgent",  icon:MessageSquare,shortcut:"6" },
   { id:"config",    label:"Configure",      icon:Settings,     shortcut:"7" },
   { id:"query",     label:"Data Explorer", icon:Database,     shortcut:"8" },
 ];
@@ -364,8 +362,6 @@ function CommandPalette({ onNavigate, onClose }) {
     { label:"Triage",               tab:"triage",    icon:"🔍", desc:"Scan and fix issues" },
     { label:"Workflows",            tab:"workflows", icon:"🔀", desc:"Run and manage workflows" },
     { label:"Approvals & Activity", tab:"approvals", icon:"🔒", desc:"Pending fix approvals" },
-    { label:"Visualization",         tab:"viz",       icon:"📊", desc:"Build visual dashboards from any table or upload" },
-    { label:"Ask WiziAgent",        tab:"chat",      icon:"💬", desc:"Chat with WiziAgent" },
     { label:"Configure",            tab:"config",    icon:"⚙️", desc:"Slack, thresholds, sources" },
     { label:"Data Explorer", tab:"query",     icon:"🖥", desc:"SQL editor with AI generation" },
   ];
@@ -3609,1600 +3605,12 @@ function ActivityTab({ onNavigate }) {
 //   ACTION:ADD_MONITOR:{schema}.{table}  → adds to Monitor tab
 //   ACTION:SAVE_RULE:{json_rule}         → saves to custom rules
 // ─── Visualization Tab ───────────────────────────────────────────────────────
-function VizTab() {
-  const T = useT();
-  const [view,        setView]       = React.useState("list");   // list | new | edit | show
-  const [dashboards,  setDashboards] = React.useState([]);
-  const [activeDash,  setActiveDash] = React.useState(null);     // dashboard being viewed/edited
-  const [loading,     setLoading]    = React.useState(false);
-
-  React.useEffect(() => {
-    fetch(`${API}/api/viz/dashboards`).then(r=>r.json()).then(d=>{
-      if (d.dashboards) setDashboards(d.dashboards);
-    }).catch(()=>{});
-  }, []);
-
-  const saveDashboard = async (dash) => {
-    try {
-      const res  = await fetch(`${API}/api/viz/dashboards`, {
-        method:"POST", headers:{"Content-Type":"application/json"},
-        body: JSON.stringify(dash)
-      });
-      const data = await res.json();
-      if (data.dashboard) {
-        setDashboards(p=>{
-          const idx = p.findIndex(d=>d.id===data.dashboard.id);
-          return idx>=0 ? p.map((d,i)=>i===idx?data.dashboard:d) : [...p,data.dashboard];
-        });
-        setActiveDash(data.dashboard);
-      }
-    } catch(e) {}
-  };
-
-  const deleteDashboard = async (id) => {
-    if (!confirm("Delete this dashboard?")) return;
-    await fetch(`${API}/api/viz/dashboards/${id}`, {method:"DELETE"}).catch(()=>{});
-    setDashboards(p=>p.filter(d=>d.id!==id));
-    if (activeDash?.id===id) { setActiveDash(null); setView("list"); }
-  };
-
-  // ── Views ─────────────────────────────────────────────────────────────────
-  if (view==="new" || view==="edit") return (
-    <VizBuilder
-      initial={view==="edit" ? activeDash : null}
-      onSave={(dash) => { saveDashboard(dash); setView("show"); }}
-      onCancel={() => setView(activeDash ? "show" : "list")}
-    />
-  );
-
-  if (view==="show" && activeDash) return (
-    <VizDashboardView
-      dashboard={activeDash}
-      onEdit={() => setView("edit")}
-      onBack={() => setView("list")}
-      onDelete={() => deleteDashboard(activeDash.id)}
-      onSave={saveDashboard}
-    />
-  );
-
-  // ── List view ─────────────────────────────────────────────────────────────
-  return (
-    <div className="fade-in" style={{ overflowY:"auto", padding:"28px 32px", maxWidth:1100 }}>
-      <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between",
-        marginBottom:24 }}>
-        <div>
-          <div style={{ fontSize:22, fontWeight:800, color:T.text, letterSpacing:"-0.02em" }}>
-            Visualization
-          </div>
-          <div style={{ fontSize:13, color:T.muted, marginTop:2 }}>
-            Build visual dashboards from any table or uploaded file
-          </div>
-        </div>
-        <Btn onClick={()=>{ setActiveDash(null); setView("new"); }}
-          style={{ background:`linear-gradient(135deg,${T.accent},${T.purple})`,
-            color:"white", border:"none" }}>
-          <Plus size={12}/> New Dashboard
-        </Btn>
-      </div>
-
-      {dashboards.length === 0 ? (
-        <div style={{ textAlign:"center", padding:"80px 0" }}>
-          <BarChart2 size={48} color={T.border} style={{ margin:"0 auto 16px", display:"block" }}/>
-          <div style={{ fontSize:18, fontWeight:700, color:T.text, marginBottom:6 }}>
-            No dashboards yet
-          </div>
-          <div style={{ fontSize:13, color:T.muted, marginBottom:20 }}>
-            Pick a table or upload a file — the system will profile your data and suggest charts automatically
-          </div>
-          <Btn onClick={()=>setView("new")}
-            style={{ background:`linear-gradient(135deg,${T.accent},${T.purple})`,
-              color:"white", border:"none" }}>
-            <Plus size={12}/> Create your first dashboard
-          </Btn>
-        </div>
-      ) : (
-        <div style={{ display:"grid", gridTemplateColumns:"repeat(3,1fr)", gap:16 }}>
-          {dashboards.map(d=>(
-            <div key={d.id}
-              onClick={()=>{ setActiveDash(d); setView("show"); }}
-              style={{ background:T.card, border:`1px solid ${T.border}`, borderRadius:12,
-                padding:"20px", cursor:"pointer", transition:"all 0.15s",
-                boxShadow:"0 1px 4px rgba(0,0,0,0.06)" }}
-              onMouseEnter={e=>{ e.currentTarget.style.transform="translateY(-2px)"; e.currentTarget.style.boxShadow="0 6px 16px rgba(0,0,0,0.1)"; }}
-              onMouseLeave={e=>{ e.currentTarget.style.transform=""; e.currentTarget.style.boxShadow="0 1px 4px rgba(0,0,0,0.06)"; }}>
-              <div style={{ display:"flex", alignItems:"flex-start",
-                justifyContent:"space-between", marginBottom:10 }}>
-                <div style={{ width:40, height:40, borderRadius:10,
-                  background:`linear-gradient(135deg,${T.accent},${T.purple})`,
-                  display:"flex", alignItems:"center", justifyContent:"center", fontSize:18 }}>
-                  📊
-                </div>
-                <button onClick={e=>{ e.stopPropagation(); deleteDashboard(d.id); }}
-                  style={{ background:"none", border:"none", cursor:"pointer",
-                    color:T.dim, fontSize:16, padding:2 }}>×</button>
-              </div>
-              <div style={{ fontSize:14, fontWeight:700, color:T.text, marginBottom:4 }}>
-                {d.name}
-              </div>
-              <div style={{ fontSize:11, color:T.muted, marginBottom:8,
-                fontFamily:"monospace" }}>
-                {d.source_schema}.{d.source_table}
-              </div>
-              <div style={{ display:"flex", gap:8, alignItems:"center" }}>
-                <Badge label={`${d.charts?.length||0} charts`} color={T.accent}/>
-                <span style={{ fontSize:10, color:T.dim }}>
-                  {d.updated_at?.slice(0,10)}
-                </span>
-              </div>
-            </div>
-          ))}
-          {/* New dashboard card */}
-          <div onClick={()=>{ setActiveDash(null); setView("new"); }}
-            style={{ background:"transparent", border:`2px dashed ${T.border}`,
-              borderRadius:12, padding:"20px", cursor:"pointer",
-              display:"flex", flexDirection:"column", alignItems:"center",
-              justifyContent:"center", gap:8, minHeight:140,
-              transition:"border-color 0.15s" }}
-            onMouseEnter={e=>e.currentTarget.style.borderColor=T.accent}
-            onMouseLeave={e=>e.currentTarget.style.borderColor=T.border}>
-            <Plus size={24} color={T.muted}/>
-            <span style={{ fontSize:12, color:T.muted, fontWeight:600 }}>New Dashboard</span>
-          </div>
-        </div>
-      )}
-    </div>
-  );
-}
-
 // ─── Viz Builder ─────────────────────────────────────────────────────────────
-function VizBuilder({ initial, onSave, onCancel }) {
-  const T = useT();
-  const [step,        setStep]       = React.useState(initial ? "charts" : "source"); // source | profile | charts
-  const [name,        setName]       = React.useState(initial?.name || "");
-  const [sourceType,  setSourceType] = React.useState(initial?.source_type || "table"); // table | upload
-  const [schema,      setSchema]     = React.useState(initial?.source_schema || "");
-  const [table,       setTable]      = React.useState(initial?.source_table  || "");
-  const [profile,     setProfile]    = React.useState(null);
-  const [profiling,   setProfiling]  = React.useState(false);
-  const [charts,      setCharts]     = React.useState(initial?.charts || []);
-  const [editingChart,setEditingChart]= React.useState(null);
-  const [uploads,     setUploads]    = React.useState([]);
-  const [richSchema,  setRichSchema] = React.useState([]);
-  const [schemaSearch,setSchemaSearch]=React.useState("");
-
-  React.useEffect(() => {
-    fetch(`${API}/api/uploads`).then(r=>r.json()).then(d=>{ if(d.uploads) setUploads(d.uploads); }).catch(()=>{});
-    fetch(`${API}/api/schema`).then(r=>r.json()).then(d=>{ if(Array.isArray(d)) setRichSchema(d); }).catch(()=>{});
-    if (initial?.source_schema && initial?.source_table) profileTable(initial.source_schema, initial.source_table, true);
-  }, []);
-
-  const profileTable = async (sc, tbl, keepCharts=false) => {
-    setProfiling(true);
-    setStep("profile");
-    try {
-      const res  = await fetch(`${API}/api/viz/profile?schema=${sc}&table=${tbl}`);
-      const data = await res.json();
-      if (!data.error) {
-        setProfile(data);
-        if (!keepCharts) setCharts(data.suggestions || []);
-        setStep("charts");
-      } else {
-        setStep("charts"); // let user proceed manually
-      }
-    } catch(e) { setStep("charts"); }
-    setProfiling(false);
-  };
-
-  const selectSource = (sc, tbl) => {
-    setSchema(sc); setTable(tbl);
-    if (!initial) setCharts([]);
-    profileTable(sc, tbl, !!initial);
-  };
-
-  const addChart = () => {
-    const newChart = {
-      id:`ch_${Date.now()}`, title:"New Chart", type:"bar",
-      sql:`SELECT * FROM ${schema}.${table} LIMIT 20`,
-      x_col:"", y_col:"", color:"#6366f1", size:"medium"
-    };
-    setCharts(p=>[...p, newChart]);
-    setEditingChart(newChart.id);
-  };
-
-  const updateChart = (id, updates) => setCharts(p=>p.map(c=>c.id===id?{...c,...updates}:c));
-  const removeChart  = (id) => { setCharts(p=>p.filter(c=>c.id!==id)); if(editingChart===id) setEditingChart(null); };
-
-  const handleSave = () => {
-    if (!name.trim() || !schema || !table) return;
-    onSave({
-      id: initial?.id || "",
-      name, source_type:sourceType,
-      source_schema:schema, source_table:table,
-      charts, profile_summary: profile ? {
-        row_count: profile.row_count,
-        column_count: profile.column_count,
-      } : null,
-    });
-  };
-
-  const filteredSchema = React.useMemo(() => {
-    const search = schemaSearch.toLowerCase();
-    if (!search) return richSchema;
-    return richSchema.filter(t =>
-      `${t.table_schema}.${t.table_name}`.toLowerCase().includes(search)
-    );
-  }, [richSchema, schemaSearch]);
-
-  const groupedSchema = React.useMemo(() => filteredSchema.reduce((acc,t)=>{
-    if (!acc[t.table_schema]) acc[t.table_schema] = [];
-    acc[t.table_schema].push(t);
-    return acc;
-  }, {}), [filteredSchema]);
-
-  const inp = { width:"100%", padding:"7px 10px", borderRadius:6, fontSize:11,
-    border:`1px solid ${T.border}`, background:T.surface, color:T.text,
-    fontFamily:"inherit", outline:"none", boxSizing:"border-box" };
-
-  const CHART_TYPES = [
-    {id:"kpi","icon":"🔢",label:"KPI"},
-    {id:"bar","icon":"📊",label:"Bar"},
-    {id:"line","icon":"📈",label:"Line"},
-    {id:"area","icon":"🌊",label:"Area"},
-    {id:"donut","icon":"🍩",label:"Donut"},
-    {id:"table","icon":"📋",label:"Table"},
-  ];
-  const SIZES = ["small","medium","large","full"];
-  const COLORS = ["#6366f1","#0ea5e9","#10b981","#f59e0b","#ef4444","#8b5cf6","#06b6d4","#ec4899"];
-
-  return (
-    <div className="fade-in" style={{ display:"flex", height:"calc(100vh - 2px)",
-      overflow:"hidden", flexDirection:"column" }}>
-      {/* Builder header */}
-      <div style={{ padding:"14px 28px", borderBottom:`1px solid ${T.border}`,
-        display:"flex", alignItems:"center", gap:14, flexShrink:0, background:"white" }}>
-        <Btn onClick={onCancel} variant="ghost" size="sm">← Back</Btn>
-        <input value={name} onChange={e=>setName(e.target.value)}
-          placeholder="Dashboard name…"
-          style={{ flex:1, padding:"6px 12px", borderRadius:7, fontSize:14,
-            fontWeight:700, border:`1px solid ${T.border}`, background:T.surface,
-            color:T.text, fontFamily:"inherit", outline:"none", maxWidth:360 }}
-          onFocus={e=>e.target.style.borderColor=T.accent}
-          onBlur={e=>e.target.style.borderColor=T.border}/>
-        {schema && table && (
-          <span style={{ fontSize:11, color:T.muted, fontFamily:"monospace" }}>
-            {schema}.{table}
-            {profile && ` · ${profile.row_count?.toLocaleString()} rows · ${profile.column_count} cols`}
-          </span>
-        )}
-        <Btn onClick={handleSave}
-          disabled={!name.trim()||!schema||!table}
-          style={{ background:`linear-gradient(135deg,${T.accent},${T.purple})`,
-            color:"white", border:"none", marginLeft:"auto" }}>
-          <Check size={11}/> Save Dashboard
-        </Btn>
-      </div>
-
-      {/* Step tabs */}
-      <div style={{ display:"flex", borderBottom:`1px solid ${T.border}`,
-        paddingLeft:28, flexShrink:0, background:"white" }}>
-        {[
-          {id:"source",  label:"1. Data Source"},
-          {id:"profile", label:"2. Data Profile", disabled:!schema},
-          {id:"charts",  label:`3. Charts (${charts.length})`, disabled:!schema},
-        ].map(s=>(
-          <button key={s.id} onClick={()=>!s.disabled&&setStep(s.id)}
-            disabled={s.disabled}
-            style={{ padding:"8px 20px", fontSize:11,
-              fontWeight:step===s.id?700:400,
-              color:s.disabled?T.dim:step===s.id?T.accent:T.muted,
-              background:"none", border:"none", cursor:s.disabled?"default":"pointer",
-              borderBottom:step===s.id?`2px solid ${T.accent}`:"2px solid transparent",
-              marginBottom:-1, transition:"all 0.12s" }}>
-            {s.label}
-          </button>
-        ))}
-      </div>
-
-      <div style={{ flex:1, overflow:"hidden", display:"flex" }}>
-
-        {/* ── STEP 1: Source ──────────────────────────────────────────────── */}
-        {step==="source" && (
-          <div style={{ flex:1, overflowY:"auto", padding:"24px 28px" }}>
-            <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:20, maxWidth:900 }}>
-
-              {/* Uploaded files */}
-              <Card style={{ padding:"18px 20px" }}>
-                <div style={{ fontSize:13, fontWeight:700, color:T.text, marginBottom:12,
-                  display:"flex", alignItems:"center", gap:8 }}>
-                  <Upload size={14} color={T.accent}/> Uploaded Files
-                </div>
-                {uploads.length === 0 ? (
-                  <div style={{ fontSize:11, color:T.dim, padding:"12px 0" }}>
-                    No uploads yet — go to Data Explorer → Uploads to upload a file
-                  </div>
-                ) : (
-                  <div style={{ display:"flex", flexDirection:"column", gap:6 }}>
-                    {uploads.map(u=>(
-                      <button key={u.table_name}
-                        onClick={()=>selectSource("wz_uploads", u.table_name)}
-                        style={{ padding:"10px 14px", borderRadius:8, cursor:"pointer",
-                          border:`1px solid ${schema==="wz_uploads"&&table===u.table_name?T.accent:T.border}`,
-                          background:schema==="wz_uploads"&&table===u.table_name?`${T.accent}08`:"transparent",
-                          textAlign:"left", transition:"all 0.1s" }}
-                        onMouseEnter={e=>e.currentTarget.style.background=`${T.accent}06`}
-                        onMouseLeave={e=>e.currentTarget.style.background=schema==="wz_uploads"&&table===u.table_name?`${T.accent}08`:"transparent"}>
-                        <div style={{ fontSize:12, fontWeight:600, color:T.text }}>{u.filename||u.table_name}</div>
-                        <div style={{ fontSize:10, color:T.muted, marginTop:2 }}>
-                          {Number(u.row_count)?.toLocaleString()} rows · {u.col_count} cols · {u.uploaded_at?.slice(0,10)}
-                        </div>
-                      </button>
-                    ))}
-                  </div>
-                )}
-              </Card>
-
-              {/* Redshift tables */}
-              <Card style={{ padding:"18px 20px" }}>
-                <div style={{ fontSize:13, fontWeight:700, color:T.text, marginBottom:10,
-                  display:"flex", alignItems:"center", gap:8 }}>
-                  <Database size={14} color={T.accent}/> Redshift Tables
-                </div>
-                <input value={schemaSearch} onChange={e=>setSchemaSearch(e.target.value)}
-                  placeholder="Search tables…"
-                  style={{...inp, marginBottom:10, fontSize:11}}
-                  onFocus={e=>e.target.style.borderColor=T.accent}
-                  onBlur={e=>e.target.style.borderColor=T.border}/>
-                <div style={{ overflowY:"auto", maxHeight:320 }}>
-                  {Object.entries(groupedSchema).map(([sc,tables])=>(
-                    <div key={sc} style={{ marginBottom:6 }}>
-                      <div style={{ fontSize:10, fontWeight:700, color:T.accent,
-                        padding:"3px 0", textTransform:"uppercase",
-                        letterSpacing:"0.05em", fontFamily:"monospace" }}>{sc}</div>
-                      {tables.map(t=>(
-                        <button key={t.table_name}
-                          onClick={()=>selectSource(t.table_schema, t.table_name)}
-                          style={{ width:"100%", padding:"5px 8px", borderRadius:5,
-                            cursor:"pointer", border:"none", textAlign:"left",
-                            background:schema===t.table_schema&&table===t.table_name?`${T.accent}10`:"transparent",
-                            color:T.text2, fontSize:11, fontFamily:"monospace",
-                            transition:"background 0.1s" }}
-                          onMouseEnter={e=>e.currentTarget.style.background=`${T.accent}08`}
-                          onMouseLeave={e=>e.currentTarget.style.background=schema===t.table_schema&&table===t.table_name?`${T.accent}10`:"transparent"}>
-                          {t.table_name}
-                          <span style={{ color:T.dim, marginLeft:6, fontSize:9 }}>{t.columns?.length} cols</span>
-                        </button>
-                      ))}
-                    </div>
-                  ))}
-                </div>
-              </Card>
-            </div>
-
-            {profiling && (
-              <div style={{ display:"flex", alignItems:"center", gap:10, marginTop:16,
-                color:T.accent, fontSize:13 }}>
-                <Spinner size={16}/> Profiling {schema}.{table}…
-              </div>
-            )}
-          </div>
-        )}
-
-        {/* ── STEP 2: Profile ─────────────────────────────────────────────── */}
-        {step==="profile" && profiling && (
-          <div style={{ display:"flex", alignItems:"center", gap:12,
-            padding:"48px 0", color:T.accent, fontSize:13 }}>
-            <Spinner size={20}/> Profiling {schema}.{table}…
-          </div>
-        )}
-        {step==="profile" && !profiling && !profile && (
-          <div style={{ padding:"24px 0" }}>
-            <div style={{ fontSize:13, color:T.orange, marginBottom:12 }}>
-              Could not profile table. You can still create charts manually.
-            </div>
-            <Btn onClick={()=>setStep("charts")} size="sm">Continue →</Btn>
-          </div>
-        )}
-        {step==="profile" && !profiling && profile && (
-          <div style={{ flex:1, overflowY:"auto", padding:"24px 28px" }}>
-            <div style={{ maxWidth:900 }}>
-              <div style={{ display:"flex", gap:12, marginBottom:20 }}>
-                {[
-                  {label:"Rows",    value:profile.row_count?.toLocaleString()},
-                  {label:"Columns", value:profile.column_count},
-                  {label:"Numeric", value:profile.columns?.filter(c=>c.kind==="numeric").length},
-                  {label:"Categorical", value:profile.columns?.filter(c=>c.kind==="categorical").length},
-                  {label:"Date cols", value:profile.columns?.filter(c=>c.kind==="date"||c.kind==="datetime").length},
-                ].map(stat=>(
-                  <div key={stat.label} style={{ padding:"12px 16px", background:T.card,
-                    border:`1px solid ${T.border}`, borderRadius:10, textAlign:"center",
-                    minWidth:80 }}>
-                    <div style={{ fontSize:18, fontWeight:800, color:T.accent }}>{stat.value}</div>
-                    <div style={{ fontSize:10, color:T.muted, marginTop:2 }}>{stat.label}</div>
-                  </div>
-                ))}
-              </div>
-
-              <div style={{ display:"grid", gridTemplateColumns:"repeat(3,1fr)", gap:10 }}>
-                {profile.columns?.map(col=>(
-                  <div key={col.name} style={{ padding:"12px 14px", background:T.card,
-                    border:`1px solid ${T.border}`, borderRadius:8 }}>
-                    <div style={{ display:"flex", alignItems:"center", gap:7, marginBottom:6 }}>
-                      <span style={{ fontSize:11, fontWeight:700, color:T.text,
-                        fontFamily:"monospace", flex:1, overflow:"hidden",
-                        textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{col.name}</span>
-                      <Badge label={col.kind} color={
-                        col.kind==="numeric"?T.orange:col.kind==="date"||col.kind==="datetime"?T.purple:T.cyan
-                      }/>
-                    </div>
-                    <div style={{ fontSize:10, color:T.muted, fontFamily:"monospace" }}>
-                      {col.data_type}
-                    </div>
-                    {col.kind==="numeric" && col.min!=null && (
-                      <div style={{ fontSize:10, color:T.dim, marginTop:3 }}>
-                        {col.min?.toLocaleString()} – {col.max?.toLocaleString()} · avg {col.avg?.toLocaleString()}
-                      </div>
-                    )}
-                    {col.kind==="categorical" && (
-                      <div style={{ fontSize:10, color:T.dim, marginTop:3 }}>
-                        {col.distinct} distinct values
-                        {col.null_pct>0 && ` · ${col.null_pct}% null`}
-                      </div>
-                    )}
-                    {(col.kind==="date"||col.kind==="datetime") && col.min_date && (
-                      <div style={{ fontSize:10, color:T.dim, marginTop:3 }}>
-                        {col.min_date?.slice(0,10)} → {col.max_date?.slice(0,10)}
-                      </div>
-                    )}
-                    {col.top_values && (
-                      <div style={{ display:"flex", gap:4, flexWrap:"wrap", marginTop:4 }}>
-                        {col.top_values.slice(0,4).map(v=>(
-                          <span key={v.val} style={{ fontSize:9, padding:"1px 5px",
-                            background:`${T.accent}10`, color:T.accent,
-                            borderRadius:4, fontFamily:"monospace" }}>
-                            {String(v.val).slice(0,12)}
-                          </span>
-                        ))}
-                      </div>
-                    )}
-                  </div>
-                ))}
-              </div>
-
-              <div style={{ marginTop:20, display:"flex", gap:10 }}>
-                <Btn onClick={()=>setStep("charts")}
-                  style={{ background:`linear-gradient(135deg,${T.accent},${T.purple})`,
-                    color:"white", border:"none" }}>
-                  View {charts.length} Suggested Charts →
-                </Btn>
-                <Btn onClick={()=>setStep("source")} variant="ghost" size="sm">
-                  Change Source
-                </Btn>
-              </div>
-            </div>
-          </div>
-        )}
-
-        {/* ── STEP 3: Charts ──────────────────────────────────────────────── */}
-        {step==="charts" && (
-          <div style={{ flex:1, display:"flex", overflow:"hidden" }}>
-            {/* Chart list */}
-            <div style={{ width:260, flexShrink:0, borderRight:`1px solid ${T.border}`,
-              overflowY:"auto", padding:"12px 8px" }}>
-              <div style={{ fontSize:10, fontWeight:700, color:T.muted, marginBottom:8,
-                paddingLeft:8, textTransform:"uppercase", letterSpacing:"0.06em" }}>
-                Charts ({charts.length})
-              </div>
-              {charts.map((c,i)=>(
-                <div key={c.id}
-                  onClick={()=>setEditingChart(c.id)}
-                  style={{ padding:"8px 10px", borderRadius:7, marginBottom:4,
-                    cursor:"pointer", border:`1px solid ${editingChart===c.id?T.accent:T.border}`,
-                    background:editingChart===c.id?`${T.accent}08`:"transparent",
-                    display:"flex", alignItems:"center", gap:8 }}>
-                  <span style={{ fontSize:14 }}>
-                    {c.type==="bar"?"📊":c.type==="line"?"📈":c.type==="area"?"🌊":c.type==="donut"?"🍩":c.type==="kpi"?"🔢":"📋"}
-                  </span>
-                  <div style={{ flex:1, minWidth:0 }}>
-                    <div style={{ fontSize:11, fontWeight:600, color:T.text,
-                      overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>
-                      {c.title}
-                    </div>
-                    <div style={{ fontSize:9, color:T.muted }}>{c.type} · {c.size}</div>
-                  </div>
-                  <button onClick={e=>{e.stopPropagation();removeChart(c.id);}}
-                    style={{ background:"none", border:"none", cursor:"pointer",
-                      color:T.dim, fontSize:13, flexShrink:0 }}>×</button>
-                </div>
-              ))}
-              <Btn onClick={addChart} size="sm" variant="ghost"
-                style={{ width:"100%", marginTop:6, justifyContent:"center" }}>
-                <Plus size={10}/> Add Chart
-              </Btn>
-            </div>
-
-            {/* Chart editor */}
-            {editingChart ? (() => {
-              const c = charts.find(x=>x.id===editingChart);
-              if (!c) return null;
-
-              // Columns: prefer SQL-derived cols, fall back to profile cols
-              const sqlCols   = c._sqlCols || [];
-              const profCols  = (profile?.columns||[]).map(col=>col.name||col);
-              const availCols = sqlCols.length > 0 ? sqlCols : profCols;
-
-              const testChartSql = async () => {
-                if (!c.sql?.trim()) return;
-                try {
-                  const res  = await fetch(`${API}/api/query?sql=${encodeURIComponent(c.sql + " LIMIT 3")}`);
-                  const data = await res.json();
-                  if (data.columns?.length > 0) {
-                    // Store derived cols on chart object, auto-fill x/y if empty
-                    const updates = { _sqlCols: data.columns };
-                    if (!c.x_col && data.columns[0]) updates.x_col = data.columns[0];
-                    if (!c.y_col && data.columns[1]) updates.y_col = data.columns[1];
-                    updateChart(c.id, updates);
-                  }
-                } catch(e) {}
-              };
-
-              // Auto-test SQL when opening a chart that has no cols loaded yet
-              React.useEffect(() => {
-                if (c && c.sql && !c._sqlCols?.length && availCols.length === 0) {
-                  testChartSql();
-                }
-              }, [editingChart]);
-
-              return (
-                <div style={{ flex:1, overflowY:"auto", padding:"20px 24px" }}>
-                  <div style={{ maxWidth:600 }}>
-                    <div style={{ fontSize:13, fontWeight:700, color:T.text, marginBottom:16 }}>
-                      Edit Chart
-                    </div>
-                    <div style={{ display:"flex", flexDirection:"column", gap:12 }}>
-                      {/* Title */}
-                      <div>
-                        <label style={{ fontSize:11, fontWeight:600, color:T.text2, display:"block", marginBottom:3 }}>Title</label>
-                        <input value={c.title} onChange={e=>updateChart(c.id,{title:e.target.value})}
-                          style={inp} onFocus={e=>e.target.style.borderColor=T.accent} onBlur={e=>e.target.style.borderColor=T.border}/>
-                      </div>
-                      {/* Type */}
-                      <div>
-                        <label style={{ fontSize:11, fontWeight:600, color:T.text2, display:"block", marginBottom:6 }}>Type</label>
-                        <div style={{ display:"flex", gap:6, flexWrap:"wrap" }}>
-                          {CHART_TYPES.map(t=>(
-                            <button key={t.id} onClick={()=>updateChart(c.id,{type:t.id})}
-                              style={{ padding:"5px 12px", borderRadius:6, fontSize:11,
-                                cursor:"pointer", border:`1px solid ${c.type===t.id?T.accent:T.border}`,
-                                background:c.type===t.id?`${T.accent}12`:"transparent",
-                                color:c.type===t.id?T.accent:T.muted }}>
-                              {t.icon} {t.label}
-                            </button>
-                          ))}
-                        </div>
-                      </div>
-                      {/* SQL + test button */}
-                      <div>
-                        <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom:3 }}>
-                          <label style={{ fontSize:11, fontWeight:600, color:T.text2 }}>SQL</label>
-                          <button onClick={testChartSql}
-                            style={{ fontSize:10, color:T.accent, background:"none", border:"none",
-                              cursor:"pointer", fontWeight:600 }}>
-                            ↻ Test & load columns
-                          </button>
-                        </div>
-                        <textarea value={c.sql} rows={3}
-                          onChange={e=>updateChart(c.id,{sql:e.target.value, _sqlCols:[]})}
-                          style={{...inp, fontFamily:"monospace", fontSize:11, resize:"vertical"}}
-                          onFocus={e=>e.target.style.borderColor=T.accent} onBlur={e=>e.target.style.borderColor=T.border}/>
-                        {availCols.length === 0 && (
-                          <div style={{ fontSize:10, color:T.orange, marginTop:4 }}>
-                            ↑ Click "Test & load columns" to populate the column dropdowns below
-                          </div>
-                        )}
-                        {availCols.length > 0 && (
-                          <div style={{ fontSize:10, color:T.green, marginTop:4 }}>
-                            ✓ {availCols.length} columns loaded: {availCols.join(", ")}
-                          </div>
-                        )}
-                      </div>
-                      {/* Column mapping */}
-                      <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:10 }}>
-                        <div>
-                          <label style={{ fontSize:11, fontWeight:600, color:T.text2, display:"block", marginBottom:3 }}>X / Label column</label>
-                          <select value={c.x_col} onChange={e=>updateChart(c.id,{x_col:e.target.value})} style={inp}>
-                            <option value="">— select —</option>
-                            {availCols.map(col=><option key={col} value={col}>{col}</option>)}
-                          </select>
-                        </div>
-                        <div>
-                          <label style={{ fontSize:11, fontWeight:600, color:T.text2, display:"block", marginBottom:3 }}>Y / Value column</label>
-                          <select value={c.y_col} onChange={e=>updateChart(c.id,{y_col:e.target.value})} style={inp}>
-                            <option value="">— select —</option>
-                            {availCols.map(col=><option key={col} value={col}>{col}</option>)}
-                          </select>
-                        </div>
-                      </div>
-                      {/* Size + Color */}
-                      <div style={{ display:"grid", gridTemplateColumns:"1fr auto", gap:10, alignItems:"start" }}>
-                        <div>
-                          <label style={{ fontSize:11, fontWeight:600, color:T.text2, display:"block", marginBottom:6 }}>Size</label>
-                          <div style={{ display:"flex", gap:5 }}>
-                            {SIZES.map(s=>(
-                              <button key={s} onClick={()=>updateChart(c.id,{size:s})}
-                                style={{ flex:1, padding:"4px 0", borderRadius:5, fontSize:10,
-                                  cursor:"pointer", border:`1px solid ${c.size===s?T.accent:T.border}`,
-                                  background:c.size===s?`${T.accent}12`:"transparent",
-                                  color:c.size===s?T.accent:T.muted }}>
-                                {s[0].toUpperCase()+s.slice(1)}
-                              </button>
-                            ))}
-                          </div>
-                        </div>
-                        <div>
-                          <label style={{ fontSize:11, fontWeight:600, color:T.text2, display:"block", marginBottom:6 }}>Colour</label>
-                          <div style={{ display:"flex", gap:4 }}>
-                            {COLORS.map(col=>(
-                              <button key={col} onClick={()=>updateChart(c.id,{color:col})}
-                                style={{ width:20, height:20, borderRadius:"50%", background:col,
-                                  border:c.color===col?`2px solid ${T.text}`:`2px solid transparent`,
-                                  cursor:"pointer", padding:0 }}/>
-                            ))}
-                          </div>
-                        </div>
-                      </div>
-                    </div>
-                  </div>
-                </div>
-              );
-            })() : (
-              <div style={{ flex:1, display:"flex", alignItems:"center",
-                justifyContent:"center", color:T.dim, fontSize:13 }}>
-                Select a chart from the left to edit it
-              </div>
-            )}
-          </div>
-        )}
-      </div>
-    </div>
-  );
-}
-
 // ─── Viz Dashboard View ───────────────────────────────────────────────────────
-function VizDashboardView({ dashboard, onEdit, onBack, onDelete, onSave }) {
-  const T   = useT();
-  const RC  = useRecharts();
-  const [chartData,  setChartData]  = React.useState({});
-  const [running,    setRunning]    = React.useState({});
-  const [refreshKey, setRefreshKey] = React.useState(0);
-
-  const ResponsiveContainer = RC?.ResponsiveContainer || (({children,width,height})=><div style={{width:width||"100%",height:height||200}}>{children}</div>);
-  const AreaChart  = RC?.AreaChart  || 'div'; const Area  = RC?.Area  || 'div';
-  const LineChart  = RC?.LineChart  || 'div'; const Line  = RC?.Line  || 'div';
-  const BarChart   = RC?.BarChart   || 'div'; const Bar   = RC?.Bar   || 'div';
-  const PieChart   = RC?.PieChart   || 'div'; const Pie   = RC?.Pie   || 'div';
-  const Cell       = RC?.Cell       || 'div';
-  const XAxis      = RC?.XAxis      || 'div'; const YAxis = RC?.YAxis || 'div';
-  const CartesianGrid = RC?.CartesianGrid || 'div';
-  const Tooltip    = RC?.Tooltip    || 'div'; const Legend = RC?.Legend || 'div';
-
-  const CHART_COLORS = ["#6366f1","#0ea5e9","#10b981","#f59e0b","#ef4444","#8b5cf6"];
-  const SIZE_SPAN = {small:1, medium:2, large:3, full:4};
-
-  const runChart = async (c) => {
-    if (!c.sql?.trim()) return;
-    setRunning(p=>({...p,[c.id]:true}));
-    try {
-      const res  = await fetch(`${API}/api/query?sql=${encodeURIComponent(c.sql)}`);
-      const data = await res.json();
-      setChartData(p=>({...p,[c.id]:data}));
-    } catch(e) { setChartData(p=>({...p,[c.id]:{error:e.message}})); }
-    setRunning(p=>({...p,[c.id]:false}));
-  };
-
-  React.useEffect(() => {
-    dashboard.charts?.forEach(c => runChart(c));
-  }, [dashboard.id, refreshKey]);
-
-  const fmt = (n,pfx="") => {
-    if (n==null) return "—";
-    if (n>=1000000) return `${pfx}${(n/1000000).toFixed(1)}M`;
-    if (n>=1000)    return `${pfx}${(n/1000).toFixed(1)}K`;
-    return `${pfx}${Number(n).toLocaleString()}`;
-  };
-
-  const CustomTooltip = ({active,payload,label}) => {
-    if (!active||!payload?.length) return null;
-    return (
-      <div style={{ background:T.surface, border:`1px solid ${T.border}`,
-        borderRadius:8, padding:"8px 12px", fontSize:11 }}>
-        <div style={{ fontWeight:600, color:T.text, marginBottom:3 }}>{label}</div>
-        {payload.map((p,i)=>(
-          <div key={i} style={{ color:p.color||T.text }}>
-            {p.name}: {typeof p.value==="number"?p.value.toLocaleString():p.value}
-          </div>
-        ))}
-      </div>
-    );
-  };
-
-  const renderChart = (c) => {
-    const data  = chartData[c.id];
-    const color = c.color || "#6366f1";
-    if (running[c.id]) return <div style={{display:"flex",alignItems:"center",justifyContent:"center",height:"100%",gap:8,color:T.muted,fontSize:12}}><Spinner size={14}/>Loading…</div>;
-    if (data?.error)   return <div style={{padding:10,fontSize:11,color:T.red,fontFamily:"monospace"}}>{data.error}</div>;
-    if (!data?.rows?.length) return <div style={{display:"flex",alignItems:"center",justifyContent:"center",height:"100%",color:T.dim,fontSize:12}}>No data</div>;
-
-    if (c.type==="kpi") {
-      const val = data.rows[0]?.[c.y_col||data.columns?.[0]];
-      return (
-        <div style={{display:"flex",flexDirection:"column",height:"100%"}}>
-          <div style={{fontSize:32,fontWeight:800,color,letterSpacing:"-0.02em",lineHeight:1,marginTop:"auto"}}>
-            {val!=null?Number(val).toLocaleString():"—"}
-          </div>
-        </div>
-      );
-    }
-    if (c.type==="bar") return (
-      <ResponsiveContainer width="100%" height="100%">
-        <BarChart data={data.rows} margin={{top:5,right:5,bottom:20,left:0}}>
-          <CartesianGrid strokeDasharray="3 3" stroke={T.border} vertical={false}/>
-          <XAxis dataKey={c.x_col||data.columns?.[0]} tick={{fontSize:9,fill:T.muted}} axisLine={false} tickLine={false}/>
-          <YAxis tick={{fontSize:9,fill:T.dim}} axisLine={false} tickLine={false} tickFormatter={v=>fmt(v)}/>
-          <Tooltip content={<CustomTooltip/>}/>
-          <Bar dataKey={c.y_col||data.columns?.[1]} fill={color} radius={[4,4,0,0]}/>
-        </BarChart>
-      </ResponsiveContainer>
-    );
-    if (c.type==="line") return (
-      <ResponsiveContainer width="100%" height="100%">
-        <LineChart data={data.rows} margin={{top:5,right:5,bottom:0,left:0}}>
-          <CartesianGrid strokeDasharray="3 3" stroke={T.border} vertical={false}/>
-          <XAxis dataKey={c.x_col||data.columns?.[0]} tick={{fontSize:9,fill:T.dim}} axisLine={false} tickLine={false}/>
-          <YAxis tick={{fontSize:9,fill:T.dim}} axisLine={false} tickLine={false} tickFormatter={v=>fmt(v)}/>
-          <Tooltip content={<CustomTooltip/>}/>
-          <Line type="monotone" dataKey={c.y_col||data.columns?.[1]} stroke={color} strokeWidth={2} dot={false}/>
-        </LineChart>
-      </ResponsiveContainer>
-    );
-    if (c.type==="area") {
-      return (
-        <ResponsiveContainer width="100%" height="100%">
-          <AreaChart data={data.rows} margin={{top:5,right:5,bottom:0,left:0}}>
-            <defs>
-              <linearGradient id={`vg_${c.id}`} x1="0" y1="0" x2="0" y2="1">
-                <stop offset="5%"  stopColor={color} stopOpacity={0.2}/>
-                <stop offset="95%" stopColor={color} stopOpacity={0}/>
-              </linearGradient>
-            </defs>
-            <CartesianGrid strokeDasharray="3 3" stroke={T.border} vertical={false}/>
-            <XAxis dataKey={c.x_col||data.columns?.[0]} tick={{fontSize:9,fill:T.dim}} axisLine={false} tickLine={false}/>
-            <YAxis tick={{fontSize:9,fill:T.dim}} axisLine={false} tickLine={false} tickFormatter={v=>fmt(v)}/>
-            <Tooltip content={<CustomTooltip/>}/>
-            <Area type="monotone" dataKey={c.y_col||data.columns?.[1]} stroke={color} strokeWidth={2} fill={`url(#vg_${c.id})`} dot={false}/>
-          </AreaChart>
-        </ResponsiveContainer>
-      );
-    }
-    if (c.type==="donut") {
-      const rows = data.rows.map((r,i)=>({name:String(r[c.x_col||data.columns?.[0]]),value:Number(r[c.y_col||data.columns?.[1]])||0,color:CHART_COLORS[i%CHART_COLORS.length]}));
-      return (
-        <ResponsiveContainer width="100%" height="100%">
-          <PieChart>
-            <Pie data={rows} cx="50%" cy="45%" innerRadius="30%" outerRadius="60%" dataKey="value" paddingAngle={2}>
-              {rows.map((e,i)=><Cell key={i} fill={e.color} stroke="none"/>)}
-            </Pie>
-            <Tooltip content={<CustomTooltip/>}/>
-            <Legend iconSize={8} wrapperStyle={{fontSize:10}}/>
-          </PieChart>
-        </ResponsiveContainer>
-      );
-    }
-    if (c.type==="table") return (
-      <div style={{overflowX:"auto",overflowY:"auto",height:"100%",borderRadius:5,border:`1px solid ${T.border}`}}>
-        <table style={{borderCollapse:"collapse",fontSize:11,fontFamily:"monospace",width:"100%"}}>
-          <thead><tr style={{background:`${T.accent}08`,position:"sticky",top:0}}>
-            {data.columns?.map(col=>(
-              <th key={col} style={{padding:"5px 10px",textAlign:"left",fontWeight:700,fontSize:9,color:T.muted,borderBottom:`1px solid ${T.border}`,whiteSpace:"nowrap",textTransform:"uppercase"}}>{col}</th>
-            ))}
-          </tr></thead>
-          <tbody>
-            {data.rows?.map((row,i)=>(
-              <tr key={i} style={{background:i%2===1?"#FAFBFF":"transparent"}}>
-                {data.columns?.map(col=>(
-                  <td key={col} style={{padding:"4px 10px",borderBottom:`1px solid ${T.border}20`,whiteSpace:"nowrap",color:row[col]===null?T.red:T.text2}}>
-                    {row[col]===null?"NULL":String(row[col]).slice(0,40)}
-                  </td>
-                ))}
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
-    );
-    return null;
-  };
-
-  const HEIGHT = {small:110, medium:220, large:240, full:260};
-
-  return (
-    <div className="fade-in" style={{ display:"flex", flexDirection:"column",
-      height:"calc(100vh - 2px)", overflow:"hidden" }}>
-      {/* Header */}
-      <div style={{ padding:"14px 28px", borderBottom:`1px solid ${T.border}`,
-        display:"flex", alignItems:"center", gap:14, flexShrink:0, background:"white" }}>
-        <Btn onClick={onBack} variant="ghost" size="sm">← Dashboards</Btn>
-        <div style={{ flex:1 }}>
-          <div style={{ fontSize:16, fontWeight:800, color:T.text }}>{dashboard.name}</div>
-          <div style={{ fontSize:11, color:T.muted, fontFamily:"monospace" }}>
-            {dashboard.source_schema}.{dashboard.source_table}
-            {dashboard.profile_summary && ` · ${dashboard.profile_summary.row_count?.toLocaleString()} rows`}
-          </div>
-        </div>
-        <Btn onClick={()=>setRefreshKey(p=>p+1)} size="sm" variant="ghost">
-          <RefreshCw size={10}/> Refresh
-        </Btn>
-        <Btn onClick={onEdit} size="sm" variant="ghost">✏ Edit</Btn>
-        <Btn onClick={onDelete} size="sm" variant="muted">
-          <Trash2 size={10}/>
-        </Btn>
-      </div>
-
-      {/* Chart grid */}
-      <div style={{ flex:1, overflowY:"auto", padding:"20px 24px" }}>
-        <div style={{ display:"grid", gridTemplateColumns:"repeat(4,1fr)", gap:14 }}>
-          {dashboard.charts?.map(c=>(
-            <div key={c.id} style={{ gridColumn:`span ${SIZE_SPAN[c.size]||2}` }}>
-              <div style={{ background:T.card, border:`1px solid ${T.border}`,
-                borderRadius:12, padding:"16px 18px",
-                height:c.type==="kpi"?110:HEIGHT[c.size]||220,
-                boxShadow:"0 1px 4px rgba(0,0,0,0.07)",
-                display:"flex", flexDirection:"column", overflow:"hidden",
-                position:"relative" }}>
-                {c.type!=="kpi" && (
-                  <div style={{ fontSize:11, fontWeight:700, color:T.muted,
-                    textTransform:"uppercase", letterSpacing:"0.05em",
-                    marginBottom:10, flexShrink:0 }}>{c.title}</div>
-                )}
-                {c.type==="kpi" && (
-                  <div style={{ fontSize:10, fontWeight:600, color:T.muted,
-                    textTransform:"uppercase", letterSpacing:"0.06em",
-                    marginBottom:4, flexShrink:0 }}>{c.title}</div>
-                )}
-                <div style={{ flex:1, minHeight:0 }}>{renderChart(c)}</div>
-                <div style={{ position:"absolute", bottom:0, left:0, right:0, height:3,
-                  background:`linear-gradient(90deg,${c.color||T.accent}60,transparent)`,
-                  borderRadius:"0 0 12px 12px" }}/>
-              </div>
-            </div>
-          ))}
-        </div>
-      </div>
-    </div>
-  );
-}
-
 // ── Markdown renderer ────────────────────────────────────────────────────────
 // ── Shared helpers ───────────────────────────────────────────────────────────
 // ── Markdown renderer ─────────────────────────────────────────────────────────
-function renderInline(text) {
-  if (typeof text !== 'string') return String(text ?? '');
-  const parts = text.split(/(\*\*[^*]+\*\*|`[^`]+`|\*[^*]+\*)/g);
-  return parts.map((p, i) => {
-    if (p.startsWith('**') && p.endsWith('**'))
-      return <strong key={i}>{p.slice(2,-2)}</strong>;
-    if (p.startsWith('`') && p.endsWith('`'))
-      return <code key={i} style={{background:'#EEF2FF',padding:'1px 5px',borderRadius:4,fontSize:'0.9em',fontFamily:'monospace',color:'#4f46e5'}}>{p.slice(1,-1)}</code>;
-    if (p.startsWith('*') && p.endsWith('*'))
-      return <em key={i}>{p.slice(1,-1)}</em>;
-    return p;
-  });
-}
-
-function MdText({ text }) {
-  if (!text || typeof text !== 'string') return null;
-  try {
-    const blocks = [];
-    let idx = 0;
-    const parts = text.split(/(```[\s\S]*?```)/g);
-    parts.forEach((part, pi) => {
-      if (part.startsWith('```')) {
-        const code = part.replace(/^```\w*\n?/, '').replace(/\n?```$/, '');
-        blocks.push(
-          <pre key={`code-${pi}`} style={{background:'#F8FAFC',border:'1px solid #E2E8F0',borderRadius:6,padding:'8px 12px',fontSize:11,fontFamily:'monospace',overflowX:'auto',margin:'6px 0',whiteSpace:'pre-wrap',lineHeight:1.6}}>
-            {code}
-          </pre>
-        );
-      } else {
-        part.split('\n').forEach((line, li) => {
-          const k = `l-${pi}-${li}`;
-          if (/^[-*] /.test(line)) {
-            blocks.push(<div key={k} style={{display:'flex',gap:6,marginBottom:3}}><span style={{color:'#6366f1',flexShrink:0,marginTop:1}}>•</span><span>{renderInline(line.slice(2))}</span></div>);
-          } else if (/^\d+\. /.test(line)) {
-            const num = line.match(/^\d+/)[0];
-            blocks.push(<div key={k} style={{display:'flex',gap:6,marginBottom:3}}><span style={{color:'#6366f1',flexShrink:0,fontWeight:700,minWidth:16}}>{num}.</span><span>{renderInline(line.slice(num.length+2))}</span></div>);
-          } else if (/^#{1,3} /.test(line)) {
-            const lvl = line.match(/^#+/)[0].length;
-            blocks.push(<div key={k} style={{fontWeight:700,fontSize:lvl===1?14:12,marginTop:8,marginBottom:3,color:'#1e293b'}}>{renderInline(line.replace(/^#+\s/,''))}</div>);
-          } else if (line.trim() === '') {
-            blocks.push(<div key={k} style={{height:5}}/>);
-          } else {
-            blocks.push(<div key={k} style={{marginBottom:2,lineHeight:1.6}}>{renderInline(line)}</div>);
-          }
-        });
-      }
-    });
-    return <>{blocks}</>;
-  } catch(e) {
-    return <span>{String(text)}</span>;
-  }
-}
-
-function InlineTable({ columns, rows }) {
-  if (!Array.isArray(columns) || !Array.isArray(rows) || !columns.length || !rows.length) return null;
-  return (
-    <div style={{overflowX:'auto',borderRadius:7,border:'1px solid #E2E8F0',marginTop:8,maxHeight:200,overflowY:'auto'}}>
-      <table style={{borderCollapse:'collapse',fontSize:11,fontFamily:'monospace',width:'100%',minWidth:280}}>
-        <thead>
-          <tr style={{background:'#EEF2FF',position:'sticky',top:0}}>
-            {columns.map(c=><th key={c} style={{padding:'5px 10px',textAlign:'left',fontWeight:700,fontSize:9,color:'#6366f1',borderBottom:'1px solid #E2E8F0',whiteSpace:'nowrap',textTransform:'uppercase'}}>{c}</th>)}
-          </tr>
-        </thead>
-        <tbody>
-          {rows.map((row,i)=>(
-            <tr key={i} style={{background:i%2===1?'#F8FAFC':'transparent'}}>
-              {columns.map(c=>{
-                const v = row[c];
-                return <td key={c} style={{padding:'4px 10px',borderBottom:'1px solid rgba(226,232,240,0.5)',whiteSpace:'nowrap',color:v===null||v===undefined?'#ef4444':'#475569'}}>
-                  {v===null||v===undefined ? <span style={{color:'#ef4444',fontWeight:700,fontSize:10}}>NULL</span> : String(v).slice(0,60)}
-                </td>;
-              })}
-            </tr>
-          ))}
-        </tbody>
-      </table>
-    </div>
-  );
-}
-
 // ─── Ask WiziAgent ────────────────────────────────────────────────────────────
-function AskWiziTab({ onNavigate }) {
-  const T = useT();
-  const dbSchema = useSchema();
-
-  const [messages,      setMessages]  = useSession("wz_chat", []);
-  const [input,         setInput]     = React.useState("");
-  const [loading,       setLoading]   = React.useState(false);
-  const [pending,       setPending]   = React.useState([]);
-  const [focusTable,    setFocus]     = React.useState("mws.report");
-  const [showPicker,    setShowPicker]= React.useState(false);
-  const [tableList,     setTableList] = React.useState([]);
-  const [ctx,           setCtx]       = React.useState(null);
-  const [ctxLoading,    setCtxLoad]   = React.useState(false);
-  const [liveOut,       setLiveOut]   = React.useState(null);
-  const [recentScans,   setScans]     = React.useState([]);
-  const [monTables,     setMonTables] = useLocal("wz_monTables", []);
-  const bottomRef = React.useRef(null);
-  const inputRef  = React.useRef(null);
-
-  // Scroll to bottom on new messages
-  React.useEffect(() => {
-    try { bottomRef.current?.scrollIntoView({ behavior:"smooth" }); } catch(e) {}
-  }, [messages, pending]);
-
-  // Load table list
-  React.useEffect(() => {
-    fetch(`${API}/api/tables`).then(r=>r.json()).then(d=>{
-      if (Array.isArray(d)) setTableList(d.map(t=>`${t.table_schema}.${t.table_name}`).filter(Boolean));
-    }).catch(()=>{});
-  }, []);
-
-  // Load context when focus table changes
-  const loadCtx = React.useCallback(async (tbl) => {
-    if (!tbl) return;
-    setCtxLoad(true);
-    setCtx(null);
-    try {
-      const parts = tbl.split('.');
-      const sc = parts[0] || 'mws';
-      const tb = parts[1] || tbl;
-      const preview = await fetch(`${API}/api/preview?schema=${sc}&table=${tb}&limit=5`).then(r=>r.json()).catch(()=>({}));
-      const triage  = tbl === 'mws.report'
-        ? await fetch(`${API}/api/report/triage`).then(r=>r.json()).catch(()=>({}))
-        : {};
-      setCtx({
-        table:   tbl,
-        columns: Array.isArray(preview.columns) ? preview.columns : [],
-        issues:  Array.isArray(triage.issues) ? triage.issues.filter(i=>Number(i.count)>0) : [],
-      });
-    } catch(e) {
-      setCtx({ table:tbl, columns:[], issues:[] });
-    }
-    setCtxLoad(false);
-  }, []);
-
-  React.useEffect(() => { loadCtx(focusTable); }, [focusTable]);
-
-  // ── Helpers ───────────────────────────────────────────────────────────────
-  const addMsg = (role, content, extra) =>
-    setMessages(p => [...p, { role, content:String(content ?? ''), ts:new Date().toLocaleTimeString(), ...extra }]);
-
-  const SEV = { critical:'#ef4444', high:'#f97316', medium:'#eab308', low:'#06b6d4' };
-
-  // ── Direct runners ────────────────────────────────────────────────────────
-  const runScan = async (tbl) => {
-    setLoading(true);
-    setLiveOut({ type:'loading', msg:`Scanning ${tbl}…` });
-    try {
-      const data = await fetch(`${API}/api/report/triage`).then(r=>r.json());
-      const issues = Array.isArray(data.issues) ? data.issues.filter(i=>Number(i.count)>0) : [];
-      setLiveOut({ type:'scan', issues, table:tbl });
-      const summary = issues.length === 0
-        ? `**${tbl}** looks healthy — no issues found ✓`
-        : `Found **${issues.length} issue type${issues.length!==1?'s':''}** in \`${tbl}\`:\n${issues.map(i=>`- **${i.id}**: ${i.title} — ${i.count} rows (${i.severity})`).join('\n')}`;
-      addMsg('assistant', summary);
-      const fixes = [...new Set(issues.filter(i=>i.fix_action).map(i=>i.fix_action))];
-      if (fixes.length > 0)
-        setPending(fixes.map(fa=>({ type:'fix', value:fa, id:Math.random().toString(36).slice(2) })));
-      setScans(p => [{ table:tbl, count:issues.length, ts:new Date().toLocaleTimeString() }, ...p].slice(0,5));
-    } catch(e) {
-      setLiveOut({ type:'error', msg:String(e.message) });
-      addMsg('assistant', `Scan error: ${e.message}`);
-    }
-    setLoading(false);
-  };
-
-  const runPreview = async (tbl) => {
-    setLoading(true);
-    setLiveOut({ type:'loading', msg:`Loading ${tbl}…` });
-    try {
-      const parts = tbl.split('.');
-      const data  = await fetch(`${API}/api/preview?schema=${parts[0]}&table=${parts[1]}&limit=20`).then(r=>r.json());
-      const cols  = Array.isArray(data.columns) ? data.columns : [];
-      const rows  = Array.isArray(data.rows)    ? data.rows    : [];
-      setLiveOut({ type:'table', columns:cols, rows, title:`${tbl} — preview` });
-      addMsg('assistant', `Showing **${rows.length} rows** from \`${tbl}\``);
-    } catch(e) {
-      setLiveOut({ type:'error', msg:String(e.message) });
-    }
-    setLoading(false);
-  };
-
-  const runQuery = async (sql) => {
-    setLoading(true);
-    setLiveOut({ type:'loading', msg:'Running query…' });
-    try {
-      const data = await fetch(`${API}/api/query?sql=${encodeURIComponent(sql)}`).then(r=>r.json());
-      if (data.error) throw new Error(data.error);
-      const cols = Array.isArray(data.columns) ? data.columns : [];
-      const rows = Array.isArray(data.rows)    ? data.rows    : [];
-      setLiveOut({ type:'table', columns:cols, rows, title:'Query result' });
-      addMsg('assistant', `Query returned **${rows.length} rows**`);
-    } catch(e) {
-      setLiveOut({ type:'error', msg:String(e.message) });
-      addMsg('assistant', `Query error: ${e.message}`);
-    }
-    setLoading(false);
-  };
-
-  const runFix = async (action) => {
-    setLoading(true);
-    setLiveOut({ type:'loading', msg:`Executing ${action}…` });
-    try {
-      const data = await fetch(`${API}/api/report/fix`, {
-        method:'POST', headers:{'Content-Type':'application/json'},
-        body:JSON.stringify({ fix_action:action, dry_run:false })
-      }).then(r=>r.json());
-      if (data.error) throw new Error(data.error);
-      setLiveOut({ type:'fix', action, before:data.before, after:data.after, rows:data.rows_affected });
-      addMsg('system', `✓ **${action}** executed — ${data.rows_affected} rows fixed (${data.before}→${data.after})`);
-      loadCtx(focusTable);
-    } catch(e) {
-      setLiveOut(null);
-      addMsg('system', `✗ Fix failed: ${e.message}`);
-    }
-    setLoading(false);
-  };
-
-  const execAction = async (a) => {
-    setPending(p => p.filter(x=>x.id!==a.id));
-    if (a.type==='fix')      { await runFix(a.value); }
-    else if (a.type==='preview' || a.type==='rows') { await runPreview(a.value || focusTable); }
-    else if (a.type==='sql') { await runQuery(a.value); }
-    else if (a.type==='monitor') {
-      const [sc,tb] = (a.value||focusTable).split('.');
-      const key = `${sc}.${tb}`;
-      setMonTables(p => p.find(t=>`${t.schema}.${t.table}`===key) ? p : [...p,{schema:sc,table:tb,label:key,primary:false,checkSets:[],checks:[]}]);
-      addMsg('system', `✓ Added \`${key}\` to Monitor`);
-    }
-    else if (a.type==='navigate') { onNavigate?.(a.value); }
-  };
-
-  // ── Send ──────────────────────────────────────────────────────────────────
-  const send = async (override) => {
-    const text = String(override || input).trim();
-    if (!text || loading) return;
-    setInput('');
-    setLiveOut(null);
-
-    // Slash commands
-    if (text.startsWith('/')) {
-      const [cmd, ...args] = text.slice(1).split(' ');
-      const arg = args.join(' ').trim();
-      addMsg('user', text);
-      if (cmd==='scan')    { await runScan(arg || focusTable); return; }
-      if (cmd==='preview') { await runPreview(arg || focusTable); return; }
-      if (cmd==='query'||cmd==='q') { await runQuery(arg); return; }
-      if (cmd==='fix')     {
-        const fa = arg || 'redrive';
-        setPending([{ type:'fix', value:fa, id:Math.random().toString(36).slice(2) }]);
-        addMsg('assistant', `Ready to execute **${fa}**. Confirm below.`);
-        return;
-      }
-    }
-
-    addMsg('user', text);
-    setLoading(true);
-
-    // Fetch real data for grounding
-    let groundedData = '';
-    let autoOut = null;
-    const tl = text.toLowerCase();
-    try {
-      if (/(scan|check|what.*wrong|issue|problem|fail|error|diagnose)/i.test(tl)) {
-        const d = await fetch(`${API}/api/report/triage`).then(r=>r.json()).catch(()=>({}));
-        const issues = Array.isArray(d.issues) ? d.issues.filter(i=>Number(i.count)>0) : [];
-        groundedData = issues.length===0
-          ? `LIVE SCAN: ${focusTable} is healthy. ${d.total_rows||'?'} rows, no issues.`
-          : `LIVE SCAN RESULTS:\n${issues.map(i=>`- ${i.id}: ${i.title} (${i.count} rows, ${i.severity}), fix=${i.fix_action||'manual'}`).join('\n')}`;
-        autoOut = { type:'scan', issues, table:focusTable };
-      } else if (/(show|preview|sample|rows?\s+(from|in))/i.test(tl)) {
-        const m = text.match(/(?:from|in|of)\s+([\w.]+)/i);
-        const tbl = m?.[1] || focusTable;
-        const parts = tbl.split('.');
-        const d = await fetch(`${API}/api/preview?schema=${parts[0]}&table=${parts[1]}&limit=10`).then(r=>r.json()).catch(()=>({}));
-        const cols = Array.isArray(d.columns)?d.columns:[];
-        const rows = Array.isArray(d.rows)?d.rows:[];
-        groundedData = `PREVIEW of ${tbl}: ${rows.length} rows. Columns: ${cols.join(', ')}.`;
-        autoOut = { type:'table', columns:cols, rows, title:`${tbl}` };
-      } else if (/^select\s/i.test(text)) {
-        const d = await fetch(`${API}/api/query?sql=${encodeURIComponent(text)}`).then(r=>r.json()).catch(()=>({}));
-        if (!d.error) {
-          const cols = Array.isArray(d.columns)?d.columns:[];
-          const rows = Array.isArray(d.rows)?d.rows:[];
-          groundedData = `QUERY RESULT: ${rows.length} rows.`;
-          autoOut = { type:'table', columns:cols, rows, title:'Query result' };
-        }
-      }
-    } catch(e) {}
-
-    if (autoOut) setLiveOut(autoOut);
-
-    const tableNames = dbSchema
-      ? dbSchema.split(';').map(t=>t.split('(')[0].trim()).filter(Boolean).slice(0,20).join(', ')
-      : 'mws.report, mws.orders, mws.inventory';
-
-    const ctxSummary = ctx
-      ? (ctx.issues.length > 0
-          ? `CURRENT ISSUES: ${ctx.issues.map(i=>`${i.id}(${i.count})`).join(', ')}`
-          : `${ctx.table} has no active issues`)
-      : '';
-
-    const system = `You are WiziAgent, a data quality agent for Intentwise (ecommerce analytics).
-Focus table: ${focusTable}
-Tables: ${tableNames}
-${ctxSummary ? ctxSummary+'\n' : ''}${groundedData ? 'REAL-TIME DATA:\n'+groundedData+'\n' : ''}
-mws.report: STATUS(pending|processed|failed), COPY_STATUS(REPLICATED|NOT_REPLICATED|null)
-Healthy = status=processed AND copy_status=REPLICATED AND not stuck >2h
-
-ACTIONS (embed in response, user confirms before execution):
-ACTION:RUN_FIX:redrive — reset failed downloads
-ACTION:RUN_FIX:recopy — re-trigger replication
-ACTION:RUN_FIX:redrive_copy — fix stuck copies
-ACTION:SHOW_ROWS:schema.table — show sample rows
-ACTION:ADD_MONITOR:schema.table — add to monitor
-ACTION:NAVIGATE:tab — go to tab (triage/workflows/viz)
-
-Rules: Use real data above — don't guess. Be concise and direct. Use **bold** and \`code\` formatting.`;
-
-    try {
-      const history = messages.slice(-6).map(m=>({
-        role: m.role==='system'?'assistant':m.role,
-        content: String(m.content||'').slice(0,500)
-      }));
-      const res  = await fetch(`${API}/api/ai/chat`, {
-        method:'POST', headers:{'Content-Type':'application/json'},
-        body:JSON.stringify({ system, messages:[...history,{role:'user',content:text}], max_tokens:600 })
-      });
-      const data = await res.json();
-      const reply = String(data?.content?.[0]?.text || data?.error || 'No response');
-
-      // Parse action tags
-      const newActions = [];
-      const patterns = [
-        { re:/ACTION:RUN_FIX:(\w+)/g,          type:'fix'      },
-        { re:/ACTION:SHOW_ROWS:([\w.]+)/g,      type:'rows'     },
-        { re:/ACTION:ADD_MONITOR:([\w.]+)/g,    type:'monitor'  },
-        { re:/ACTION:NAVIGATE:(\w+)/g,          type:'navigate' },
-      ];
-      for (const {re,type} of patterns) {
-        let m;
-        while ((m=re.exec(reply))!==null)
-          newActions.push({ type, value:m[1], id:Math.random().toString(36).slice(2) });
-      }
-
-      const clean = reply.replace(/ACTION:[A-Z_]+:[^\n]*/g,'').trim();
-      addMsg('assistant', clean);
-      if (newActions.length>0) setPending(newActions);
-
-    } catch(e) {
-      addMsg('assistant', `Error connecting to WiziAgent: ${e.message}`);
-    }
-    setLoading(false);
-  };
-
-  const STARTERS = React.useMemo(() => {
-    const s = [];
-    if (ctx?.issues?.length > 0) s.push(`Explain the ${ctx.issues[0].id} issue`);
-    if (ctx?.issues?.some(i=>i.fix_action)) s.push(`Fix issues in ${focusTable}`);
-    s.push(`Scan ${focusTable} for problems`);
-    s.push(`Show sample rows from ${focusTable}`);
-    if (s.length < 4) s.push(`What does the data in ${focusTable} look like?`);
-    return s.slice(0,4);
-  }, [ctx, focusTable]);
-
-  const ACTION_LABEL = {
-    fix:      v => `Execute fix: ${v}`,
-    rows:     v => `Show rows: ${v}`,
-    monitor:  v => `Add to Monitor: ${v}`,
-    navigate: v => `Go to: ${v}`,
-  };
-
-  return (
-    <div style={{ display:'flex', width:'100%', height:'100%', overflow:'hidden', fontFamily:'inherit' }}>
-
-      {/* LEFT panel */}
-      <div style={{ width:220, flexShrink:0, borderRight:'1px solid #E2E8F0',
-        display:'flex', flexDirection:'column', background:'#F8FAFC', overflowY:'auto' }}>
-
-        {/* Focus table */}
-        <div style={{ padding:'12px 10px', borderBottom:'1px solid #E2E8F0', position:'relative' }}>
-          <div style={{ fontSize:9, fontWeight:700, color:'#94a3b8', textTransform:'uppercase',
-            letterSpacing:'0.07em', marginBottom:5 }}>Focus Table</div>
-          <button onClick={()=>setShowPicker(p=>!p)}
-            style={{ width:'100%', display:'flex', alignItems:'center', gap:5, padding:'6px 9px',
-              borderRadius:7, border:'1px solid rgba(99,102,241,0.3)', background:'rgba(99,102,241,0.06)',
-              color:'#6366f1', fontSize:10, fontWeight:700, fontFamily:'monospace',
-              cursor:'pointer', textAlign:'left' }}>
-            <Database size={10}/><span style={{flex:1,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{focusTable}</span>
-            <ChevronDown size={8}/>
-          </button>
-          {showPicker && (
-            <div style={{ position:'absolute', left:8, top:'100%', zIndex:100,
-              background:'white', border:'1px solid #E2E8F0', borderRadius:10,
-              boxShadow:'0 8px 24px rgba(0,0,0,0.12)', padding:'5px 0',
-              minWidth:200, maxHeight:240, overflowY:'auto' }}>
-              {tableList.length===0
-                ? <div style={{padding:'8px 12px',fontSize:11,color:'#94a3b8'}}>Loading…</div>
-                : tableList.map(t=>(
-                  <button key={t} onClick={()=>{ setFocus(t); setShowPicker(false); }}
-                    style={{ width:'100%', padding:'5px 12px', background:'none', border:'none',
-                      cursor:'pointer', textAlign:'left', fontSize:11, color:'#334155',
-                      fontFamily:'monospace', display:'block' }}
-                    onMouseEnter={e=>e.currentTarget.style.background='rgba(99,102,241,0.07)'}
-                    onMouseLeave={e=>e.currentTarget.style.background='none'}>
-                    {t}
-                  </button>
-                ))}
-            </div>
-          )}
-        </div>
-
-        {/* Context */}
-        <div style={{ flex:1, padding:'10px', display:'flex', flexDirection:'column', gap:12 }}>
-          {ctxLoading && <div style={{fontSize:11,color:'#94a3b8',display:'flex',gap:6,alignItems:'center'}}><Spinner size={10}/>Loading…</div>}
-
-          {ctx && !ctxLoading && (
-            <>
-              {/* Issues */}
-              <div>
-                <div style={{fontSize:9,fontWeight:700,color:'#94a3b8',textTransform:'uppercase',letterSpacing:'0.07em',marginBottom:5}}>Issues</div>
-                {ctx.issues.length===0
-                  ? <div style={{fontSize:11,color:'#10b981',display:'flex',alignItems:'center',gap:4}}><CheckCircle size={11} color="#10b981"/>All clear</div>
-                  : ctx.issues.slice(0,5).map(issue=>(
-                    <div key={issue.id}
-                      onClick={()=>send(`Explain ${issue.id}: ${issue.title}`)}
-                      style={{ padding:'5px 7px', borderRadius:6, marginBottom:3, cursor:'pointer',
-                        background:`${SEV[issue.severity]||'#94a3b8'}10`,
-                        border:`1px solid ${SEV[issue.severity]||'#94a3b8'}25` }}>
-                      <div style={{fontSize:10,fontWeight:700,color:SEV[issue.severity]||'#94a3b8'}}>{issue.id}</div>
-                      <div style={{fontSize:10,color:'#64748b'}}>{issue.count} rows · {issue.severity}</div>
-                    </div>
-                  ))
-                }
-              </div>
-
-              {/* Columns */}
-              {ctx.columns.length > 0 && (
-                <div>
-                  <div style={{fontSize:9,fontWeight:700,color:'#94a3b8',textTransform:'uppercase',letterSpacing:'0.07em',marginBottom:5}}>Columns</div>
-                  <div style={{display:'flex',flexWrap:'wrap',gap:3}}>
-                    {ctx.columns.slice(0,10).map(c=>(
-                      <button key={c} onClick={()=>send(`What's in the ${c} column?`)}
-                        style={{fontSize:9,padding:'2px 5px',borderRadius:4,border:'1px solid #E2E8F0',
-                          background:'white',color:'#64748b',cursor:'pointer',fontFamily:'monospace'}}
-                        onMouseEnter={e=>{e.currentTarget.style.borderColor='#6366f1';e.currentTarget.style.color='#6366f1';}}
-                        onMouseLeave={e=>{e.currentTarget.style.borderColor='#E2E8F0';e.currentTarget.style.color='#64748b';}}>
-                        {c}
-                      </button>
-                    ))}
-                  </div>
-                </div>
-              )}
-
-              {/* Quick actions */}
-              <div>
-                <div style={{fontSize:9,fontWeight:700,color:'#94a3b8',textTransform:'uppercase',letterSpacing:'0.07em',marginBottom:5}}>Quick Actions</div>
-                {[
-                  { label:'Scan table',    icon:<RefreshCw size={9}/>,  action:()=>{ addMsg('user',`/scan ${focusTable}`); runScan(focusTable); } },
-                  { label:'Preview rows',  icon:<Eye size={9}/>,        action:()=>{ addMsg('user',`/preview ${focusTable}`); runPreview(focusTable); } },
-                  { label:'Open Triage',   icon:<ArrowRight size={9}/>, action:()=>onNavigate?.('triage') },
-                ].map(btn=>(
-                  <button key={btn.label} onClick={btn.action}
-                    style={{ width:'100%', padding:'5px 7px', borderRadius:6, fontSize:10,
-                      border:'1px solid #E2E8F0', background:'transparent', color:'#475569',
-                      cursor:'pointer', textAlign:'left', display:'flex', alignItems:'center',
-                      gap:5, marginBottom:3 }}
-                    onMouseEnter={e=>e.currentTarget.style.background='rgba(99,102,241,0.06)'}
-                    onMouseLeave={e=>e.currentTarget.style.background='transparent'}>
-                    <span style={{color:'#6366f1'}}>{btn.icon}</span>{btn.label}
-                  </button>
-                ))}
-                {ctx.issues.some(i=>i.fix_action) && (
-                  <button onClick={()=>{ const fa=ctx.issues.find(i=>i.fix_action)?.fix_action; if(fa){addMsg('user',`/fix ${fa}`);setPending([{type:'fix',value:fa,id:Math.random().toString(36).slice(2)}]);addMsg('assistant',`Ready to execute **${fa}**. Confirm below.`);} }}
-                    style={{ width:'100%', padding:'5px 7px', borderRadius:6, fontSize:10,
-                      border:'1px solid rgba(249,115,22,0.3)', background:'rgba(249,115,22,0.07)',
-                      color:'#f97316', cursor:'pointer', textAlign:'left',
-                      display:'flex', alignItems:'center', gap:5 }}>
-                    <Zap size={9}/>Fix issues
-                  </button>
-                )}
-              </div>
-            </>
-          )}
-
-          {/* Recent scans */}
-          {recentScans.length>0 && (
-            <div>
-              <div style={{fontSize:9,fontWeight:700,color:'#94a3b8',textTransform:'uppercase',letterSpacing:'0.07em',marginBottom:5}}>Recent Scans</div>
-              {recentScans.map((s,i)=>(
-                <div key={i} style={{fontSize:10,color:'#94a3b8',marginBottom:2}}>
-                  <span style={{fontFamily:'monospace',color:'#475569'}}>{s.table.split('.')[1]||s.table}</span>
-                  {' — '}{s.count===0?<span style={{color:'#10b981'}}>clean</span>:<span style={{color:'#f97316'}}>{s.count} issues</span>}
-                </div>
-              ))}
-            </div>
-          )}
-
-          {/* Slash commands */}
-          <div style={{borderTop:'1px solid #E2E8F0',paddingTop:10}}>
-            <div style={{fontSize:9,fontWeight:700,color:'#94a3b8',textTransform:'uppercase',letterSpacing:'0.07em',marginBottom:6}}>Commands</div>
-            {['/scan','/preview','/query SELECT…','/fix redrive'].map(c=>(
-              <div key={c} style={{fontSize:10,color:'#6366f1',fontFamily:'monospace',marginBottom:3}}>{c}</div>
-            ))}
-          </div>
-        </div>
-      </div>
-
-      {/* RIGHT panel */}
-      <div style={{ flex:1, display:'flex', flexDirection:'column', overflow:'hidden', minWidth:0, background:'white' }}>
-
-        {/* Header */}
-        <div style={{ padding:'11px 18px', borderBottom:'1px solid #E2E8F0',
-          flexShrink:0, display:'flex', alignItems:'center', justifyContent:'space-between' }}>
-          <div>
-            <div style={{fontSize:14,fontWeight:700,color:'#1e293b'}}>Ask WiziAgent</div>
-            <div style={{fontSize:10,color:'#94a3b8',marginTop:1}}>
-              Focus: <span style={{fontFamily:'monospace',color:'#6366f1'}}>{focusTable}</span>
-              {ctx && <span style={{marginLeft:6,color:ctx.issues.length>0?'#f97316':'#10b981'}}>
-                {ctx.issues.length>0?`${ctx.issues.length} issues`:'no issues'}
-              </span>}
-            </div>
-          </div>
-          {messages.length>0 && (
-            <button onClick={()=>{setMessages([]);setPending([]);setLiveOut(null);}}
-              style={{fontSize:10,color:'#94a3b8',background:'none',border:'1px solid #E2E8F0',
-                borderRadius:6,padding:'4px 10px',cursor:'pointer',display:'flex',alignItems:'center',gap:4}}>
-              <Trash2 size={10}/>Clear
-            </button>
-          )}
-        </div>
-
-        {/* Live output bar */}
-        {liveOut && (
-          <div style={{ borderBottom:'1px solid #E2E8F0', flexShrink:0, background:'#F8FAFC',
-            padding:'10px 18px', maxHeight:220, overflowY:'auto', position:'relative' }}>
-            <button onClick={()=>setLiveOut(null)}
-              style={{position:'absolute',right:10,top:8,background:'none',border:'none',
-                cursor:'pointer',color:'#94a3b8',fontSize:16,lineHeight:1}}>×</button>
-            {liveOut.type==='loading' && (
-              <div style={{display:'flex',gap:8,alignItems:'center',color:'#94a3b8',fontSize:12}}>
-                <Spinner size={12}/>{liveOut.msg}
-              </div>
-            )}
-            {liveOut.type==='error' && (
-              <div style={{fontSize:12,color:'#ef4444',fontFamily:'monospace'}}>✗ {liveOut.msg}</div>
-            )}
-            {liveOut.type==='table' && (
-              <>
-                {liveOut.title && <div style={{fontSize:10,fontWeight:700,color:'#94a3b8',textTransform:'uppercase',letterSpacing:'0.05em',marginBottom:6}}>{liveOut.title}</div>}
-                <InlineTable columns={liveOut.columns} rows={liveOut.rows}/>
-              </>
-            )}
-            {liveOut.type==='scan' && (
-              <div>
-                <div style={{fontSize:10,fontWeight:700,color:'#94a3b8',textTransform:'uppercase',letterSpacing:'0.05em',marginBottom:6}}>Scan: {liveOut.table}</div>
-                {liveOut.issues.length===0
-                  ? <div style={{display:'flex',gap:6,alignItems:'center',fontSize:12,color:'#10b981'}}><CheckCircle size={14} color="#10b981"/>No issues found</div>
-                  : liveOut.issues.map(issue=>(
-                    <div key={issue.id} style={{display:'flex',alignItems:'center',gap:8,padding:'5px 10px',borderRadius:7,marginBottom:4,
-                      background:`${SEV[issue.severity]||'#94a3b8'}08`,border:`1px solid ${SEV[issue.severity]||'#94a3b8'}20`}}>
-                      <span style={{fontSize:10,fontWeight:700,color:SEV[issue.severity]||'#94a3b8',fontFamily:'monospace',minWidth:60}}>{issue.id}</span>
-                      <span style={{fontSize:11,color:'#334155',flex:1}}>{issue.title}</span>
-                      <span style={{fontSize:11,fontWeight:700,color:SEV[issue.severity]||'#94a3b8',fontFamily:'monospace'}}>{issue.count}</span>
-                      {issue.fix_action && (
-                        <button onClick={()=>setPending(p=>[...p,{type:'fix',value:issue.fix_action,id:Math.random().toString(36).slice(2)}])}
-                          style={{fontSize:10,padding:'2px 8px',borderRadius:5,border:'1px solid #6366f1',
-                            background:'rgba(99,102,241,0.08)',color:'#6366f1',cursor:'pointer'}}>Fix</button>
-                      )}
-                    </div>
-                  ))
-                }
-              </div>
-            )}
-            {liveOut.type==='fix' && (
-              <div style={{display:'flex',alignItems:'center',gap:10,padding:'8px 12px',borderRadius:8,
-                background:'rgba(16,185,129,0.07)',border:'1px solid rgba(16,185,129,0.2)'}}>
-                <CheckCircle size={16} color="#10b981"/>
-                <div>
-                  <div style={{fontSize:12,fontWeight:700,color:'#10b981'}}>{liveOut.action} executed</div>
-                  <div style={{fontSize:11,color:'#64748b'}}>{liveOut.rows} rows · {liveOut.before}→{liveOut.after}</div>
-                </div>
-              </div>
-            )}
-          </div>
-        )}
-
-        {/* Messages area */}
-        <div style={{ flex:1, overflowY:'auto', padding:'14px 18px' }}
-          onClick={()=>showPicker&&setShowPicker(false)}>
-
-          {/* Empty state */}
-          {messages.length===0 && (
-            <div style={{paddingTop:20}}>
-              <div style={{textAlign:'center',marginBottom:18}}>
-                <div style={{width:42,height:42,borderRadius:11,margin:'0 auto 10px',
-                  background:'linear-gradient(135deg,#6366f1,#8b5cf6)',
-                  display:'flex',alignItems:'center',justifyContent:'center'}}>
-                  <Zap size={19} color="white"/>
-                </div>
-                <div style={{fontSize:14,fontWeight:700,color:'#1e293b'}}>WiziAgent</div>
-                <div style={{fontSize:11,color:'#94a3b8',marginTop:3}}>Ask questions · scan · fix · query data</div>
-              </div>
-              <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:7,maxWidth:440,margin:'0 auto'}}>
-                {STARTERS.map((s,i)=>(
-                  <button key={i} onClick={()=>send(s)}
-                    style={{padding:'9px 12px',background:'#F8FAFC',border:'1px solid #E2E8F0',
-                      borderRadius:8,cursor:'pointer',fontSize:11,color:'#475569',
-                      textAlign:'left',fontFamily:'inherit',lineHeight:1.4}}
-                    onMouseEnter={e=>{e.currentTarget.style.borderColor='#6366f1';e.currentTarget.style.color='#6366f1';}}
-                    onMouseLeave={e=>{e.currentTarget.style.borderColor='#E2E8F0';e.currentTarget.style.color='#475569';}}>
-                    {s}
-                  </button>
-                ))}
-              </div>
-            </div>
-          )}
-
-          {/* Message bubbles */}
-          {messages.map((m,i)=>(
-            <div key={i} style={{display:'flex',gap:8,marginBottom:12,
-              justifyContent:m.role==='user'?'flex-end':'flex-start'}}>
-              {m.role!=='user' && (
-                <div style={{width:24,height:24,borderRadius:6,flexShrink:0,marginTop:2,
-                  background:m.role==='system'?'rgba(16,185,129,0.15)':'linear-gradient(135deg,#6366f1,#8b5cf6)',
-                  display:'flex',alignItems:'center',justifyContent:'center'}}>
-                  {m.role==='system'
-                    ? <Check size={11} color="#10b981"/>
-                    : <Zap size={11} color="white"/>}
-                </div>
-              )}
-              <div style={{maxWidth:'76%'}}>
-                <div style={{padding:'9px 13px',borderRadius:10,fontSize:12,lineHeight:1.65,
-                  background:m.role==='user'?'#6366f1':m.role==='system'?'rgba(16,185,129,0.07)':'white',
-                  color:m.role==='user'?'white':'#334155',
-                  border:m.role==='user'?'none':m.role==='system'?'1px solid rgba(16,185,129,0.2)':'1px solid #E2E8F0'}}>
-                  {m.role==='user'
-                    ? <span style={{whiteSpace:'pre-wrap'}}>{m.content}</span>
-                    : <MdText text={m.content}/>
-                  }
-                  <div style={{fontSize:9,marginTop:4,color:m.role==='user'?'rgba(255,255,255,0.45)':'#cbd5e1'}}>{m.ts}</div>
-                </div>
-              </div>
-            </div>
-          ))}
-
-          {/* Pending actions */}
-          {pending.length>0 && (
-            <div style={{marginBottom:10}}>
-              <div style={{fontSize:9,fontWeight:700,color:'#94a3b8',marginBottom:7,textTransform:'uppercase',letterSpacing:'0.05em'}}>Confirm actions:</div>
-              {pending.map(a=>(
-                <div key={a.id} style={{display:'flex',alignItems:'center',gap:8,padding:'8px 12px',
-                  borderRadius:8,marginBottom:5,background:'rgba(234,179,8,0.07)',
-                  border:'1px solid rgba(234,179,8,0.25)'}}>
-                  <Zap size={11} color="#eab308"/>
-                  <span style={{flex:1,fontSize:11,color:'#475569'}}>{ACTION_LABEL[a.type]?.(a.value)||a.value}</span>
-                  <button onClick={()=>execAction(a)}
-                    style={{fontSize:10,padding:'3px 10px',borderRadius:5,border:'none',
-                      background:'#10b981',color:'white',cursor:'pointer',display:'flex',alignItems:'center',gap:4}}>
-                    <Check size={9}/>Run
-                  </button>
-                  <button onClick={()=>setPending(p=>p.filter(x=>x.id!==a.id))}
-                    style={{fontSize:10,padding:'3px 8px',borderRadius:5,border:'1px solid #E2E8F0',
-                      background:'none',color:'#94a3b8',cursor:'pointer'}}>✕</button>
-                </div>
-              ))}
-            </div>
-          )}
-
-          {/* Typing indicator */}
-          {loading && (
-            <div style={{display:'flex',gap:8,marginBottom:10}}>
-              <div style={{width:24,height:24,borderRadius:6,flexShrink:0,
-                background:'linear-gradient(135deg,#6366f1,#8b5cf6)',
-                display:'flex',alignItems:'center',justifyContent:'center'}}>
-                <Zap size={11} color="white"/>
-              </div>
-              <div style={{padding:'9px 13px',background:'white',border:'1px solid #E2E8F0',
-                borderRadius:10,display:'flex',gap:4,alignItems:'center'}}>
-                {[0,1,2].map(d=>(
-                  <div key={d} style={{width:5,height:5,borderRadius:'50%',background:'#cbd5e1',
-                    animation:'pulse 1.2s infinite',animationDelay:`${d*0.2}s`}}/>
-                ))}
-              </div>
-            </div>
-          )}
-          <div ref={bottomRef}/>
-        </div>
-
-        {/* Input */}
-        <div style={{padding:'10px 18px 14px',borderTop:'1px solid #E2E8F0',flexShrink:0,background:'white'}}>
-          <div style={{display:'flex',gap:7,alignItems:'flex-end'}}>
-            <textarea ref={inputRef}
-              value={input}
-              onChange={e=>setInput(e.target.value)}
-              onKeyDown={e=>{ if(e.key==='Enter'&&!e.shiftKey){ e.preventDefault(); send(); } }}
-              placeholder={`Ask about ${focusTable}… or /scan /preview /query /fix`}
-              rows={2}
-              style={{flex:1,padding:'8px 12px',borderRadius:8,resize:'none',
-                border:'1px solid #E2E8F0',background:'#F8FAFC',color:'#334155',
-                fontSize:12,fontFamily:'inherit',outline:'none',lineHeight:1.5}}
-              onFocus={e=>e.target.style.borderColor='#6366f1'}
-              onBlur={e=>e.target.style.borderColor='#E2E8F0'}/>
-            <button onClick={()=>send()} disabled={loading||!input.trim()}
-              style={{alignSelf:'stretch',padding:'0 16px',borderRadius:8,border:'none',
-                background:loading||!input.trim()?'#E2E8F0':'#6366f1',
-                color:loading||!input.trim()?'#94a3b8':'white',cursor:loading||!input.trim()?'default':'pointer',
-                display:'flex',alignItems:'center',justifyContent:'center',minWidth:44}}>
-              {loading?<Spinner size={13} color="white"/>:<ArrowRight size={14}/>}
-            </button>
-          </div>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-
 function CheckSetBuilder({ table, initial, onSave, onCancel }) {
   const T = useT();
   const dbSchema = useSchema();
@@ -8008,293 +6416,942 @@ function AdsSopTab() {
 
 // ─── Workflow Run Timeline ────────────────────────────────────────────────────
 // Gantt-style view of a single workflow run's trace nodes
-function WorkflowRunTimeline({ run, onClose }) {
+// ═══════════════════════════════════════════════════════════════════════════════
+// WORKFLOWS — Redesigned
+// ═══════════════════════════════════════════════════════════════════════════════
+
+// ── Shared schedule options ───────────────────────────────────────────────────
+const BUILTIN_WFS = [
+  {
+    id:"daily-brief", builtin:true,
+    name:"Daily Data Brief",
+    desc:"3 sub-agents scan mws.report (downloads, freshness, integrity), Pipeline Analyst correlates root cause via GPT-4o. All issues flagged — nothing auto-fixes.",
+    schedule:"4:30 PM IST", trigger:"scheduled",
+    agents:["Download Monitor","Freshness Agent","Integrity Agent","Pipeline Analyst (LLM)"],
+    tables:["mws.report"], endpoint:"/api/workflow/daily-run",
+    color:"#6366f1", checks:[],
+  },
+  {
+    id:"ads-sop", builtin:true,
+    name:"Ads Download SOP",
+    desc:"6 agents · 5 approval gates · Full download failure runbook from detection through validation, refresh, and GDS copy jobs.",
+    schedule:"On demand", trigger:"manual",
+    agents:["Detection","Pause Mage","Validation","Refresh","Resume & Copy","Finalize"],
+    tables:["mws.report","public.tbl_amzn_*"], endpoint:"/api/workflow/ads-sop",
+    color:"#f97316", checks:[],
+  },
+];
+
+const SCHEDULE_OPTS = [
+  { value:"every 30 min",  label:"Every 30 minutes" },
+  { value:"every 1 hour",  label:"Every hour" },
+  { value:"every 2 hour",  label:"Every 2 hours" },
+  { value:"every 6 hour",  label:"Every 6 hours" },
+  { value:"every 12 hour", label:"Every 12 hours" },
+  { value:"08:00 IST",     label:"Daily at 8:00 AM IST" },
+  { value:"12:00 IST",     label:"Daily at 12:00 PM IST" },
+  { value:"16:00 IST",     label:"Daily at 4:00 PM IST" },
+  { value:"20:00 IST",     label:"Daily at 8:00 PM IST" },
+  { value:"manual",        label:"Manual only" },
+];
+
+const PASS_CONDITIONS = [
+  { value:"rows = 0",  label:"No rows returned (rows = 0)" },
+  { value:"rows > 0",  label:"At least one row (rows > 0)" },
+  { value:"rows > 1",  label:"More than 1 row" },
+  { value:"value = 0", label:"Returned value equals 0" },
+  { value:"value > 0", label:"Returned value greater than 0" },
+];
+
+const SEV_COLOR = { critical:"#ef4444", high:"#f97316", medium:"#eab308", low:"#06b6d4", info:"#6366f1" };
+const SEV_BG    = { critical:"#fef2f2", high:"#fff7ed", medium:"#fefce8", low:"#ecfeff", info:"#eef2ff" };
+
+// ── WorkflowsTab — main entry point ──────────────────────────────────────────
+function WorkflowsTab() {
   const T = useT();
-  if (!run) return null;
+  const dbSchema = useSchema();
 
-  const trace = run.trace || [];
+  const [view,       setView]    = React.useState("list"); // list | builder | detail | runs
+  const [workflows,  setWfs]     = React.useState([]);
+  const [editingWf,  setEditing] = React.useState(null);
+  const [detailWf,   setDetail]  = React.useState(null);
+  const [loading,    setLoading] = React.useState(false);
+  const [runHistory, setHistory] = React.useState([]); // all runs
+  const [running,    setRunning] = React.useState({}); // {wf_id: bool}
+  const [liveRun,    setLiveRun] = React.useState(null); // latest run result being shown
 
-  // Parse trace into nodes with durations
-  const nodes = React.useMemo(() => {
-    const result = [];
-    trace.forEach((t, i) => {
-      const prev = trace[i - 1];
-      // Parse HH:MM:SS into seconds
-      const toSec = (ts) => {
-        if (!ts) return 0;
-        const parts = ts.split(":").map(Number);
-        return parts[0] * 3600 + parts[1] * 60 + (parts[2] || 0);
-      };
-      const startSec = prev ? toSec(prev.ts) : toSec(t.ts);
-      const endSec   = toSec(t.ts);
-      const duration = Math.max(endSec - startSec, 1);
-      result.push({ ...t, startSec, endSec, duration });
-    });
-    return result;
-  }, [trace]);
-
-  const totalDuration = nodes.length
-    ? nodes[nodes.length - 1].endSec - nodes[0].startSec || 1
-    : 1;
-
-  const levelColor = {
-    success: T.green, error: T.red, warning: T.yellow, info: T.accent
+  // Load workflows + history from backend
+  const load = async (seed=false) => {
+    try {
+      const [wfsRes, histRes] = await Promise.all([
+        fetch(`${API}/api/custom-workflows`).then(r=>r.json()),
+        fetch(`${API}/api/custom-workflows/history/v2?limit=100`).then(r=>r.json()).catch(()=>[]),
+      ]);
+      if (Array.isArray(wfsRes)) {
+        setWfs(wfsRes);
+        if (seed) {
+          const existingIds = wfsRes.map(w=>w.id);
+          await seedBuiltins(existingIds);
+          // Reload after seeding
+          const fresh = await fetch(`${API}/api/custom-workflows`).then(r=>r.json()).catch(()=>[]);
+          if (Array.isArray(fresh)) setWfs(fresh);
+        }
+      }
+      if (Array.isArray(histRes)) setHistory(histRes);
+    } catch(e) {}
   };
 
-  const statusColor = {
-    clean: T.green, fixed: T.green, error: T.red,
-    escalated: T.yellow, running: T.accent,
+  React.useEffect(() => {
+    load(true); // seed on first load
+    const id = setInterval(()=>load(false), 20000);
+    return () => clearInterval(id);
+  }, []);
+
+  const saveWf = async (wf) => {
+    try {
+      const res  = await fetch(`${API}/api/custom-workflows/save/v2`, {
+        method:"POST", headers:{"Content-Type":"application/json"},
+        body:JSON.stringify(wf)
+      });
+      const data = await res.json();
+      if (data.workflow) {
+        setWfs(p => {
+          const idx = p.findIndex(w=>w.id===data.workflow.id);
+          return idx>=0 ? p.map((w,i)=>i===idx?data.workflow:w) : [...p, data.workflow];
+        });
+      }
+    } catch(e) {}
+    setView("list");
+    setEditing(null);
   };
+
+  const deleteWf = async (id) => {
+    if (!confirm("Delete this workflow?")) return;
+    await fetch(`${API}/api/custom-workflows/${id}`, {method:"DELETE"}).catch(()=>{});
+    setWfs(p=>p.filter(w=>w.id!==id));
+  };
+
+  const runWf = async (wf) => {
+    setRunning(p=>({...p,[wf.id]:true}));
+    try {
+      const res  = await fetch(`${API}/api/custom-workflows/${wf.id}/run/v2`, {method:"POST"});
+      const data = await res.json();
+      if (!data.error) {
+        setHistory(p=>[data,...p]);
+        setLiveRun(data);
+        setDetail(wf);
+        setView("detail");
+      }
+    } catch(e) {}
+    setRunning(p=>({...p,[wf.id]:false}));
+  };
+
+  const toggleEnabled = async (wf) => {
+    const updated = {...wf, enabled: !wf.enabled};
+    await fetch(`${API}/api/custom-workflows/save/v2`, {
+      method:"POST", headers:{"Content-Type":"application/json"},
+      body:JSON.stringify(updated)
+    }).catch(()=>{});
+    setWfs(p=>p.map(w=>w.id===wf.id?updated:w));
+  };
+
+  // ── Built-in workflows ──────────────────────────────────────────────────────
+  const [sopRunning,     setSopRunning]     = React.useState(false);
+  const [sopResult,      setSopResult]      = useSession("wz_sopResult", null);
+  const [aiSuggestions,  setAiSuggestions]  = useSession("wz_wfSuggestions", []);
+  const [aiLoading,      setAiLoading]      = React.useState(false);
+  const [showTemplates,  setShowTemplates]  = React.useState(false);
+
+  // Seed built-in workflows into backend on first load if they don't exist yet
+  const BUILTIN_SEEDS = [
+    {
+      id:"daily-brief", builtin_type:"system", enabled:true,
+      name:"Daily Data Brief",
+      desc:"Sub-agents scan mws.report for downloads, freshness, and integrity. Pipeline Analyst correlates root cause via AI.",
+      schedule:"16:30 IST",
+      checks:[
+        {name:"Failed Downloads Today", sql:"SELECT COUNT(*) FROM mws.report WHERE status='failed' AND download_date=CURRENT_DATE", pass_condition:"rows = 0", severity:"critical"},
+        {name:"Pending Downloads", sql:"SELECT COUNT(*) FROM mws.report WHERE status='pending' AND download_date=CURRENT_DATE", pass_condition:"rows = 0", severity:"high"},
+        {name:"Data Freshness", sql:"SELECT COUNT(*) FROM mws.report WHERE download_date=CURRENT_DATE", pass_condition:"rows > 0", severity:"critical"},
+      ],
+      tables:["mws.report"], agents:[], db_key:"default",
+    },
+    {
+      id:"ads-sop", builtin_type:"system", enabled:true,
+      name:"Ads Download SOP",
+      desc:"Full download failure runbook — detection through validation, refresh, and GDS copy jobs. Uses approval gates.",
+      schedule:"manual",
+      checks:[
+        {name:"Amazon Ads Data Available", sql:"SELECT COUNT(*) FROM mws.report WHERE download_date=CURRENT_DATE AND status='processed'", pass_condition:"rows > 0", severity:"critical"},
+        {name:"Stuck Copies", sql:"SELECT COUNT(*) FROM mws.report WHERE status='processed' AND copy_status!='REPLICATED' AND download_date>=CURRENT_DATE-1", pass_condition:"rows = 0", severity:"high"},
+      ],
+      tables:["mws.report"], agents:[], db_key:"default",
+    },
+  ];
+
+  // Seed on mount — save built-ins to backend if not already there
+  const seedBuiltins = async (existingIds) => {
+    for (const seed of BUILTIN_SEEDS) {
+      if (!existingIds.includes(seed.id)) {
+        await fetch(`${API}/api/custom-workflows/save/v2`, {
+          method:"POST", headers:{"Content-Type":"application/json"},
+          body:JSON.stringify(seed)
+        }).catch(()=>{});
+      }
+    }
+  };
+
+  const runBuiltin = async (wf) => {
+    // Ads SOP: if no custom checks configured, use the multi-gate SOP endpoint
+    if (wf.id === "ads-sop" && (!wf.checks || wf.checks.length === 0)) {
+      setSopRunning(true);
+      try {
+        const res  = await fetch(`${API}/api/workflow/ads-sop`, {method:"POST"});
+        const data = await res.json();
+        setSopResult(data);
+      } catch(e) {}
+      setSopRunning(false);
+      return;
+    }
+    // Everything else uses the standard SQL check runner
+    await runWf(wf);
+  };
+
+  const getAiSuggestions = async () => {
+    setAiLoading(true);
+    try {
+      const res  = await fetch(`${API}/api/ai/chat`, {
+        method:"POST", headers:{"Content-Type":"application/json"},
+        body:JSON.stringify({
+          system:`You are WiziAgent. Suggest 3 useful data quality workflows for an ecommerce analytics platform using Redshift.
+Tables available: mws.report, mws.orders, mws.inventory, mws.sales_and_traffic_by_date, public.tbl_amzn_campaign_report
+Respond ONLY with JSON array (no markdown):
+[{"name":"...","desc":"...","schedule":"every 30 min","checks":[{"name":"...","sql":"SELECT COUNT(*) FROM ...","pass_condition":"rows = 0","severity":"high"}]}]`,
+          messages:[{role:"user",content:"Suggest 3 data quality workflows"}],
+          max_tokens:600
+        })
+      });
+      const data = await res.json();
+      const text = data?.content?.[0]?.text || "[]";
+      const arr  = JSON.parse(text.replace(/```json|```/g,"").trim());
+      if (Array.isArray(arr)) setAiSuggestions(arr);
+    } catch(e) {}
+    setAiLoading(false);
+  };
+
+  const applyTemplate = (tmpl) => {
+    setEditing({...tmpl, id:""});
+    setView("builder");
+    setShowTemplates(false);
+  };
+
+  const TEMPLATES = [
+    { name:"Null Check — Orders", desc:"Flag orders with missing ASINs or item prices",
+      schedule:"every 30 min", checks:[
+        {name:"Null ASIN in Orders", sql:"SELECT COUNT(*) FROM mws.orders WHERE asin IS NULL AND download_date=(SELECT MAX(download_date) FROM mws.orders)", pass_condition:"rows = 0", severity:"high"},
+        {name:"Zero/Negative Price Shipped", sql:"SELECT COUNT(*) FROM mws.orders WHERE item_price<=0 AND order_status='Shipped' AND download_date=(SELECT MAX(download_date) FROM mws.orders)", pass_condition:"rows = 0", severity:"medium"},
+      ]},
+    { name:"Freshness Check — Report", desc:"Ensure mws.report has data from today",
+      schedule:"every 30 min", checks:[
+        {name:"Today's Data Present", sql:"SELECT COUNT(*) FROM mws.report WHERE download_date=CURRENT_DATE", pass_condition:"rows > 0", severity:"critical"},
+        {name:"Failed Downloads", sql:"SELECT COUNT(*) FROM mws.report WHERE status='failed' AND download_date=CURRENT_DATE", pass_condition:"rows = 0", severity:"high"},
+      ]},
+    { name:"Replication Health", desc:"Monitor copy status for stuck records",
+      schedule:"every 30 min", checks:[
+        {name:"Stuck Copies", sql:"SELECT COUNT(*) FROM mws.report WHERE status='processed' AND (copy_status IS NULL OR copy_status='NOT_REPLICATED') AND download_date>=CURRENT_DATE-1", pass_condition:"rows = 0", severity:"high"},
+        {name:"Not Replicated Today", sql:"SELECT COUNT(*) FROM mws.report WHERE copy_status!='REPLICATED' AND download_date=CURRENT_DATE", pass_condition:"rows = 0", severity:"medium"},
+      ]},
+    { name:"Inventory Integrity", desc:"Check for negative or missing inventory data",
+      schedule:"every 1 hour", checks:[
+        {name:"Negative Available Units", sql:"SELECT COUNT(*) FROM mws.inventory WHERE available<0 AND download_date=(SELECT MAX(download_date) FROM mws.inventory)", pass_condition:"rows = 0", severity:"high"},
+        {name:"Out of Stock SKUs", sql:"SELECT COUNT(*) FROM mws.inventory WHERE available=0 AND download_date=(SELECT MAX(download_date) FROM mws.inventory)", pass_condition:"rows = 0", severity:"medium"},
+      ]},
+  ];
+
+  if (view==="builder") return (
+    <div style={{ display:"flex", flexDirection:"column", height:"100%", overflow:"hidden" }}>
+      <WorkflowBuilder
+        initial={editingWf}
+        dbSchema={dbSchema}
+        onSave={saveWf}
+        onCancel={()=>{ setView("list"); setEditing(null); }}
+      />
+    </div>
+  );
+
+  if (view==="detail" && detailWf) return (
+    <div style={{ display:"flex", flexDirection:"column", height:"100%", overflow:"hidden" }}>
+      <WorkflowDetail
+        wf={detailWf}
+        history={runHistory.filter(r=>r.workflow_id===detailWf.id)}
+        liveRun={liveRun}
+        onBack={()=>{ setView("list"); setLiveRun(null); }}
+        onEdit={()=>{ setEditing(detailWf); setView("builder"); }}
+        onRun={()=>runWf(detailWf)}
+        running={!!running[detailWf.id]}
+      />
+    </div>
+  );
+
+  if (view==="sop") return (
+    <div style={{ display:"flex", flexDirection:"column", height:"100%", overflow:"hidden" }}>
+      <div style={{ padding:"10px 20px", borderBottom:`1px solid #E2E8F0`, flexShrink:0 }}>
+        <Btn onClick={()=>setView("list")} variant="ghost" size="sm">← Workflows</Btn>
+      </div>
+      <div style={{ flex:1, overflowY:"auto" }}>
+        <AdsSopTab/>
+      </div>
+    </div>
+  );
+
+  if (view==="runs") return (
+    <div style={{ display:"flex", flexDirection:"column", height:"100%", overflow:"hidden" }}>
+      <AllRunsView
+        history={runHistory}
+        workflows={workflows}
+        onBack={()=>setView("list")}
+        onOpenWf={(wf)=>{ setDetail(wf); setView("detail"); }}
+      />
+    </div>
+  );
+
+  // ── List view ─────────────────────────────────────────────────────────────
+  const recentRuns = runHistory.slice(0,20);
 
   return (
-    <div className="fade-in" style={{ padding:"28px 32px", maxWidth:960 }}>
-      <div style={{ display:"flex", alignItems:"center", gap:12, marginBottom:24 }}>
-        <Btn onClick={onClose} variant="ghost" size="sm">← Back</Btn>
+    <div style={{ overflowY:"auto", padding:"24px 28px", maxWidth:1100 }}>
+
+      {/* Header */}
+      <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom:20 }}>
         <div>
-          <div style={{ fontSize:18, fontWeight:700, color:T.text }}>
-            Run #{run.run_id} — Timeline
-          </div>
+          <div style={{ fontSize:22, fontWeight:800, color:T.text, letterSpacing:"-0.02em" }}>Workflows</div>
           <div style={{ fontSize:12, color:T.muted, marginTop:2 }}>
-            {run.started_at} ·{" "}
-            <span style={{ color: statusColor[run.status] || T.muted,
-              fontWeight:600 }}>
-              {run.status?.toUpperCase()}
-            </span>
-            {run.notified && <span style={{ marginLeft:8,
-              color:T.green, fontSize:11 }}>· Slack notified</span>}
+            Custom workflows · {workflows.length} configured
           </div>
+        </div>
+        <div style={{ display:"flex", gap:8 }}>
+          {runHistory.length>0 && (
+            <Btn onClick={()=>setView("runs")} variant="ghost" size="sm">
+              <Clock size={11}/> All Runs ({runHistory.length})
+            </Btn>
+          )}
+          <Btn onClick={()=>setShowTemplates(p=>!p)} variant="ghost" size="sm">
+            📋 Templates
+          </Btn>
+          <Btn onClick={()=>{ setEditing(null); setView("builder"); }}
+            style={{ background:`linear-gradient(135deg,${T.accent},${T.purple})`, color:"white", border:"none" }}>
+            <Plus size={12}/> New Workflow
+          </Btn>
         </div>
       </div>
 
-      {trace.length === 0 ? (
-        <div style={{ fontSize:13, color:T.muted, padding:"24px 0" }}>
-          No trace data available for this run.
-        </div>
-      ) : (
-        <div style={{ display:"flex", flexDirection:"column", gap:0 }}>
-          {/* Header */}
-          <div style={{ display:"grid", gridTemplateColumns:"140px 1fr 80px 70px",
-            gap:8, padding:"6px 10px", borderBottom:`1px solid ${T.border}`,
-            fontSize:9, fontWeight:700, color:T.dim,
-            textTransform:"uppercase", letterSpacing:"0.06em" }}>
-            <span>Node</span><span>Timeline</span><span>Status</span><span>Time</span>
+      {/* Recent activity strip */}
+      {recentRuns.length > 0 && (
+        <div style={{ marginBottom:20, padding:"12px 16px", borderRadius:10,
+          background:T.surface, border:`1px solid ${T.border}` }}>
+          <div style={{ fontSize:10, fontWeight:700, color:T.muted, textTransform:"uppercase",
+            letterSpacing:"0.06em", marginBottom:8 }}>Recent Runs</div>
+          <div style={{ display:"flex", gap:6, flexWrap:"wrap" }}>
+            {recentRuns.slice(0,15).map(run=>(
+              <div key={run.run_id}
+                onClick={()=>{ const wf=workflows.find(w=>w.id===run.workflow_id); if(wf){setDetail(wf);setLiveRun(run);setView("detail");} }}
+                style={{ display:"flex", alignItems:"center", gap:6, padding:"4px 10px",
+                  borderRadius:99, cursor:"pointer", fontSize:10,
+                  background:run.status==="clean"?`${T.green}10`:`${T.red}10`,
+                  border:`1px solid ${run.status==="clean"?T.green:T.red}25` }}>
+                <div style={{ width:6, height:6, borderRadius:"50%",
+                  background:run.status==="clean"?T.green:T.red }}/>
+                <span style={{ fontWeight:600, color:T.text2 }}>{run.workflow_name?.slice(0,18)||"Run"}</span>
+                <span style={{ color:T.dim }}>{run.started_at?.slice(11,16)}</span>
+                {run.failed > 0 && <span style={{ color:T.red, fontWeight:700 }}>{run.failed} fail</span>}
+              </div>
+            ))}
           </div>
+        </div>
+      )}
 
-          {nodes.map((node, i) => {
-            const barLeft  = totalDuration > 0
-              ? ((node.startSec - nodes[0].startSec) / totalDuration) * 100
-              : 0;
-            const barWidth = Math.max((node.duration / totalDuration) * 100, 1.5);
-            const color    = levelColor[node.level] || T.muted;
+      {/* ── BUILT-IN WORKFLOWS — rendered from real backend data ───────────── */}
+      {(() => {
+        const builtins = BUILTIN_WFS;
+        if (!builtins.length) return null;
+        return (
+          <div style={{ marginBottom:20 }}>
+            <div style={{ fontSize:11, fontWeight:700, color:T.muted, textTransform:"uppercase",
+              letterSpacing:"0.06em", marginBottom:10 }}>Built-in Workflows</div>
+            <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:10 }}>
+              {builtins.map(wf=>{
+                const accentColor = wf.id==="ads-sop" ? T.orange : T.accent;
+                const isRunning   = !!running[wf.id] || (wf.id==="ads-sop"&&sopRunning);
+                const wfRuns      = runHistory.filter(r=>r.workflow_id===wf.id);
+                const lastRun     = wfRuns[0];
+                return (
+                  <div key={wf.id} style={{ background:T.card, border:`1px solid ${T.border}`,
+                    borderLeft:`3px solid ${accentColor}`, borderRadius:10, padding:"14px 16px" }}>
+                    <div style={{ display:"flex", alignItems:"flex-start", gap:10, marginBottom:6 }}>
+                      <div style={{ flex:1 }}>
+                        <div style={{ fontSize:13, fontWeight:700, color:T.text }}>{wf.name}</div>
+                        <div style={{ fontSize:11, color:T.muted, marginTop:2, lineHeight:1.4 }}>{wf.desc}</div>
+                      </div>
+                    </div>
+                    {/* Schedule + checks summary */}
+                    <div style={{ display:"flex", gap:6, alignItems:"center", marginBottom:8, flexWrap:"wrap" }}>
+                      <Badge label={wf.schedule||"manual"} color={accentColor}/>
+                      {(wf.checks||[]).length > 0 && (
+                        <span style={{ fontSize:10, color:T.muted }}>
+                          {wf.checks.length} check{wf.checks.length!==1?"s":""}
+                        </span>
+                      )}
+                      {lastRun && (
+                        <span style={{ fontSize:10,
+                          color:lastRun.status==="clean"?T.green:T.red }}>
+                          · last: {lastRun.status==="clean"?"✓":"✗"} {lastRun.started_at?.slice(11,16)}
+                        </span>
+                      )}
+                    </div>
+                    <div style={{ display:"flex", gap:7, flexWrap:"wrap" }}>
+                      <Btn onClick={()=>{ runBuiltin(wf); if(wf.id==="ads-sop") setView("sop"); }} disabled={isRunning} size="sm"
+                        style={{ background:isRunning?T.border:accentColor, color:"white", border:"none" }}>
+                        {isRunning?<Spinner size={10} color="white"/>:<Play size={10}/>}
+                        {wf.id==="ads-sop"?"Start SOP":"Run Now"}
+                      </Btn>
+                      {wf.id==="ads-sop" && (
+                        <Btn size="sm" variant="ghost" onClick={()=>setView("sop")}>
+                          Open SOP
+                        </Btn>
+                      )}
+                      <Btn onClick={()=>{ setEditing(wf); setView("builder"); }}
+                        size="sm" variant="ghost">✏ Edit</Btn>
+                      <Btn onClick={()=>{ setDetail(wf); setLiveRun(null); setView("detail"); }}
+                        size="sm" variant="ghost"><Eye size={10}/> History</Btn>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        );
+      })()}
+
+      {/* ── AI SUGGESTIONS + TEMPLATES ──────────────────────────────────────── */}
+      <div style={{ marginBottom:20 }}>
+        <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom:10 }}>
+          <div style={{ fontSize:11, fontWeight:700, color:T.muted, textTransform:"uppercase",
+            letterSpacing:"0.06em" }}>Quick Start Templates</div>
+          <div style={{ display:"flex", gap:7 }}>
+            <Btn onClick={getAiSuggestions} disabled={aiLoading} size="sm" variant="ghost"
+              style={{ color:T.purple, borderColor:`${T.purple}30` }}>
+              {aiLoading?<Spinner size={10}/>:<Zap size={10}/>} AI Suggest
+            </Btn>
+            <Btn onClick={()=>setShowTemplates(p=>!p)} size="sm" variant="ghost">
+              {showTemplates?"Hide":"Show"} Templates
+            </Btn>
+          </div>
+        </div>
+
+        {/* AI suggestions */}
+        {aiSuggestions.length > 0 && (
+          <div style={{ display:"flex", flexDirection:"column", gap:6, marginBottom:10 }}>
+            {aiSuggestions.map((s,i)=>(
+              <div key={i} style={{ display:"flex", alignItems:"center", gap:10,
+                padding:"10px 14px", borderRadius:8,
+                background:`${T.purple}05`, border:`1px solid ${T.purple}20` }}>
+                <Zap size={12} color={T.purple}/>
+                <div style={{ flex:1 }}>
+                  <div style={{ fontSize:12, fontWeight:600, color:T.text }}>{s.name}</div>
+                  <div style={{ fontSize:11, color:T.muted }}>{s.desc}</div>
+                </div>
+                <Btn size="sm" variant="ghost" onClick={()=>applyTemplate(s)}
+                  style={{ color:T.purple }}>Use this →</Btn>
+              </div>
+            ))}
+          </div>
+        )}
+
+        {/* Templates */}
+        {showTemplates && (
+          <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:8 }}>
+            {TEMPLATES.map((t,i)=>(
+              <div key={i} style={{ padding:"12px 14px", borderRadius:8,
+                background:T.surface, border:`1px solid ${T.border}` }}>
+                <div style={{ fontSize:12, fontWeight:700, color:T.text, marginBottom:2 }}>{t.name}</div>
+                <div style={{ fontSize:11, color:T.muted, marginBottom:8 }}>{t.desc}</div>
+                <div style={{ display:"flex", gap:5, marginBottom:8, flexWrap:"wrap" }}>
+                  {t.checks.map((c,j)=>(
+                    <span key={j} style={{ fontSize:9, padding:"2px 7px", borderRadius:4,
+                      background:`${T.accent}08`, color:T.accent }}>{c.name}</span>
+                  ))}
+                </div>
+                <Btn size="sm" variant="ghost" onClick={()=>applyTemplate(t)}>
+                  <Plus size={9}/> Use template
+                </Btn>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+
+      {/* ── CUSTOM WORKFLOWS ────────────────────────────────────────────────── */}
+      <div>
+        <div style={{ fontSize:11, fontWeight:700, color:T.muted, textTransform:"uppercase",
+          letterSpacing:"0.06em", marginBottom:10 }}>Custom Workflows ({workflows.length})</div>
+        {workflows.length===0 ? (
+          <div style={{ textAlign:"center", padding:"32px 0",
+            border:`1px dashed ${T.border}`, borderRadius:10 }}>
+            <GitBranch size={32} color={T.border} style={{ margin:"0 auto 10px", display:"block" }}/>
+            <div style={{ fontSize:13, fontWeight:600, color:T.text, marginBottom:4 }}>No custom workflows yet</div>
+            <div style={{ fontSize:11, color:T.muted, marginBottom:14 }}>
+              Add SQL checks that run on your schedule
+            </div>
+            <Btn onClick={()=>setView("builder")} size="sm"
+              style={{ background:`linear-gradient(135deg,${T.accent},${T.purple})`, color:"white", border:"none" }}>
+              <Plus size={11}/> New Workflow
+            </Btn>
+          </div>
+        ) : (
+          <div style={{ display:"flex", flexDirection:"column", gap:10 }}>
+            {workflows.map(wf=>{
+            const wfRuns = runHistory.filter(r=>r.workflow_id===wf.id);
+            const lastRun = wfRuns[0];
+            const isRunning = !!running[wf.id];
+            const passRate  = wfRuns.slice(0,10).length > 0
+              ? Math.round(wfRuns.slice(0,10).filter(r=>r.status==="clean").length/Math.min(wfRuns.length,10)*100)
+              : null;
+            const sparkData = wfRuns.slice(0,20).reverse();
 
             return (
-              <div key={i} style={{
-                display:"grid", gridTemplateColumns:"140px 1fr 80px 70px",
-                gap:8, padding:"8px 10px", alignItems:"center",
-                borderBottom:`1px solid ${T.border}30`,
-                background: i % 2 === 0 ? "transparent" : `${T.accent}03`,
-                transition:"background 0.1s",
-              }}
-              onMouseEnter={e => e.currentTarget.style.background = `${T.accent}06`}
-              onMouseLeave={e => e.currentTarget.style.background = i%2===0?"transparent":`${T.accent}03`}
-              >
-                {/* Node name */}
-                <div style={{ display:"flex", alignItems:"center", gap:6 }}>
-                  <div style={{ width:7, height:7, borderRadius:"50%",
-                    background:color, flexShrink:0 }}/>
-                  <span style={{ fontSize:11, fontWeight:600, color:T.text,
-                    fontFamily:T.monoFont, overflow:"hidden",
-                    textOverflow:"ellipsis", whiteSpace:"nowrap" }}>
-                    {node.node}
-                  </span>
-                </div>
+              <div key={wf.id} style={{ background:T.card, border:`1px solid ${T.border}`,
+                borderRadius:12, padding:"16px 20px",
+                borderLeft:`3px solid ${wf.enabled!==false?T.accent:T.border}`,
+                boxShadow:"0 1px 4px rgba(0,0,0,0.06)" }}>
+                <div style={{ display:"flex", alignItems:"flex-start", gap:14 }}>
 
-                {/* Bar */}
-                <div style={{ position:"relative", height:22,
-                  background:T.border, borderRadius:4, overflow:"hidden" }}>
-                  <div style={{
-                    position:"absolute", top:2, bottom:2,
-                    left:`${barLeft}%`, width:`${barWidth}%`,
-                    background:`${color}90`, borderRadius:3,
-                    minWidth:4,
-                  }}/>
-                  {/* Message label inside bar */}
-                  <div style={{ position:"absolute", inset:0, display:"flex",
-                    alignItems:"center", paddingLeft:`calc(${barLeft}% + 8px)`,
-                    fontSize:9, color:T.text, overflow:"hidden",
-                    whiteSpace:"nowrap", textOverflow:"ellipsis" }}>
-                    {node.msg}
+                  {/* Left: info */}
+                  <div style={{ flex:1, minWidth:0 }}>
+                    <div style={{ display:"flex", alignItems:"center", gap:8, marginBottom:4 }}>
+                      <div style={{ fontSize:14, fontWeight:700, color:T.text }}>{wf.name}</div>
+                      <Badge label={wf.schedule||"manual"} color={T.accent}/>
+                      {wf.enabled===false && <Badge label="paused" color={T.muted}/>}
+                      {isRunning && <div style={{ display:"flex", alignItems:"center", gap:4, fontSize:10, color:T.accent }}><Spinner size={9}/> Running…</div>}
+                    </div>
+                    {wf.desc && <div style={{ fontSize:11, color:T.muted, marginBottom:8 }}>{wf.desc}</div>}
+
+                    {/* Check pills */}
+                    <div style={{ display:"flex", gap:5, flexWrap:"wrap", marginBottom:8 }}>
+                      {(wf.checks||[]).slice(0,6).map(chk=>(
+                        <span key={chk.id||chk.name} style={{ fontSize:10, padding:"2px 8px",
+                          borderRadius:4, background:`${T.accent}08`,
+                          border:`1px solid ${T.accent}20`, color:T.accent }}>
+                          {chk.name}
+                        </span>
+                      ))}
+                      {(wf.checks||[]).length > 6 && (
+                        <span style={{ fontSize:10, color:T.dim }}>+{wf.checks.length-6} more</span>
+                      )}
+                      {(!wf.checks || wf.checks.length===0) && (
+                        <span style={{ fontSize:10, color:T.dim, fontStyle:"italic" }}>No checks configured</span>
+                      )}
+                    </div>
+
+                    {/* Stats row */}
+                    <div style={{ display:"flex", gap:16, alignItems:"center" }}>
+                      {lastRun && (
+                        <span style={{ fontSize:10, color:T.muted }}>
+                          Last run: {lastRun.started_at?.slice(0,16)?.replace("T"," ")}
+                          {" · "}
+                          <span style={{ color:lastRun.status==="clean"?T.green:T.red, fontWeight:600 }}>
+                            {lastRun.status==="clean"?"✓ clean":`${lastRun.failed} failed`}
+                          </span>
+                        </span>
+                      )}
+                      {passRate !== null && (
+                        <span style={{ fontSize:10, color:T.muted }}>
+                          Pass rate: <span style={{ fontWeight:700, color:passRate>=80?T.green:passRate>=50?T.orange:T.red }}>{passRate}%</span>
+                        </span>
+                      )}
+                      {wf.run_count > 0 && <span style={{ fontSize:10, color:T.dim }}>{wf.run_count} runs</span>}
+                    </div>
+
+                    {/* Mini sparkline of last 20 runs */}
+                    {sparkData.length > 1 && (
+                      <div style={{ display:"flex", gap:2, marginTop:8, alignItems:"flex-end" }}>
+                        {sparkData.map((r,i)=>(
+                          <div key={i} title={`${r.started_at?.slice(0,16)} — ${r.status}`}
+                            style={{ width:8, height:r.status==="clean"?12:20, borderRadius:2,
+                              background:r.status==="clean"?T.green:T.red, opacity:0.7,
+                              flexShrink:0 }}/>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+
+                  {/* Right: actions */}
+                  <div style={{ display:"flex", flexDirection:"column", gap:6, flexShrink:0 }}>
+                    <Btn onClick={()=>runWf(wf)} disabled={isRunning} size="sm"
+                      style={{ background:`linear-gradient(135deg,${T.accent},${T.purple})`,
+                        color:"white", border:"none" }}>
+                      {isRunning?<Spinner size={10} color="white"/>:<Play size={10}/>} Run
+                    </Btn>
+                    <Btn onClick={()=>{ setDetail(wf); setLiveRun(null); setView("detail"); }}
+                      size="sm" variant="ghost"><Eye size={10}/> History</Btn>
+                    <Btn onClick={()=>{ setEditing(wf); setView("builder"); }}
+                      size="sm" variant="ghost">✏ Edit</Btn>
+                    <Btn onClick={()=>toggleEnabled(wf)} size="sm" variant="muted">
+                      {wf.enabled===false?"▶ Enable":"⏸ Pause"}
+                    </Btn>
+                    <Btn onClick={()=>deleteWf(wf.id)} size="sm" variant="muted">
+                      <Trash2 size={10}/>
+                    </Btn>
                   </div>
                 </div>
-
-                {/* Level badge */}
-                <div>
-                  <Badge label={node.level} color={color}/>
-                </div>
-
-                {/* Timestamp */}
-                <span style={{ fontSize:10, color:T.dim,
-                  fontFamily:T.monoFont }}>{node.ts}</span>
               </div>
             );
           })}
         </div>
       )}
-
-      {/* Summary footer */}
-      {run.root_cause_analysis?.root_cause &&
-       run.root_cause_analysis.root_cause !== "none" && (
-        <div style={{ marginTop:20, padding:"12px 16px", borderRadius:8,
-          background:`${T.yellow}08`, border:`1px solid ${T.yellow}30` }}>
-          <span style={{ fontSize:12, fontWeight:700, color:T.yellow }}>
-            Root cause:{" "}
-          </span>
-          <span style={{ fontSize:12, color:T.text2 }}>
-            {run.root_cause_analysis.root_cause}
-          </span>
-        </div>
-      )}
+      </div>{/* end custom workflows */}
     </div>
   );
 }
 
-// ─── Workflow Templates Library ───────────────────────────────────────────────
-const WF_TEMPLATES = [
-  {
-    id:"tpl-freshness", name:"Daily Table Freshness Check",
-    desc:"Checks that today's data is present in all selected tables. Alerts if any table is stale.",
-    trigger:"scheduled", schedule:"8:00 AM IST",
-    agents:["Freshness Agent","Notification Agent"],
-    tables:["mws.report","mws.orders","mws.inventory"],
-    category:"monitoring",
-  },
-  {
-    id:"tpl-post-download", name:"Post-Download Validation",
-    desc:"Runs after ads data downloads — validates row counts, profile coverage, and date completeness across all report tables.",
-    trigger:"event", schedule:"After download completes",
-    agents:["Download Monitor","Validation Agent","Pipeline Analyst"],
-    tables:["public.tbl_amzn_campaign_report","public.tbl_amzn_keyword_report",
-            "public.tbl_amzn_product_ad_report","public.tbl_amzn_targets_report"],
-    category:"validation",
-  },
-  {
-    id:"tpl-integrity", name:"Weekly Integrity Scan",
-    desc:"Full NULL, duplicate, and range check across all mws tables. Runs weekly to catch accumulating data quality issues.",
-    trigger:"scheduled", schedule:"Monday 7:00 AM IST",
-    agents:["Integrity Agent","Root Cause Analyst","Notification Agent"],
-    tables:["mws.orders","mws.inventory","mws.sales_and_traffic_by_date"],
-    category:"quality",
-  },
-  {
-    id:"tpl-sla", name:"Custom SLA Monitor",
-    desc:"Alerts if row count in any monitored table falls below a configurable threshold — catches partial loads before they reach downstream.",
-    trigger:"scheduled", schedule:"Every 2 hours",
-    agents:["Row Count Monitor","Threshold Checker","Alert Agent"],
-    tables:["mws.report"],
-    category:"monitoring",
-  },
-  {
-    id:"tpl-replication", name:"Replication Health Check",
-    desc:"Verifies that Redshift data matches expected counts from the source system. Flags replication lag or missed jobs.",
-    trigger:"scheduled", schedule:"5:00 PM IST",
-    agents:["Replication Monitor","Lag Detector","Notification Agent"],
-    tables:["mws.report","mws.orders"],
-    category:"pipeline",
-  },
-  {
-    id:"tpl-anomaly", name:"Statistical Anomaly Detector",
-    desc:"Establishes a 14-day baseline per table and flags any metric that deviates by more than 2 standard deviations — catches unusual drops or spikes.",
-    trigger:"scheduled", schedule:"9:00 AM IST",
-    agents:["Baseline Builder","Anomaly Detector","Pipeline Analyst (LLM)"],
-    tables:["mws.report","mws.orders","mws.sales_and_traffic_by_date"],
-    category:"analytics",
-  },
-];
-
-const TPL_CATEGORY_COLOR = {
-  monitoring:"#3B82F6", validation:"#10B981",
-  quality:"#F59E0B", pipeline:"#F97316",
-  analytics:"#8B5CF6",
-};
-
-function WorkflowTemplatesView({ onSelect, onCancel }) {
+// ── WorkflowDetail — runs history + drill-down for one workflow ───────────────
+function WorkflowDetail({ wf, history, liveRun, onBack, onEdit, onRun, running }) {
   const T = useT();
-  const [filter, setFilter] = React.useState("all");
-  const categories = ["all","monitoring","validation","quality","pipeline","analytics"];
+  const [selectedRun, setSelectedRun] = React.useState(liveRun || history[0] || null);
 
-  const filtered = filter === "all"
-    ? WF_TEMPLATES
-    : WF_TEMPLATES.filter(t => t.category === filter);
+  React.useEffect(() => {
+    if (liveRun) setSelectedRun(liveRun);
+  }, [liveRun]);
+
+  const fmt = (iso) => iso?.slice(0,16)?.replace("T"," ") || "—";
+  const dur = (ms) => ms < 1000 ? `${ms}ms` : `${(ms/1000).toFixed(1)}s`;
 
   return (
-    <div className="fade-in" style={{ padding:"28px 32px", maxWidth:1000 }}>
-      <div style={{ display:"flex", alignItems:"center", gap:12, marginBottom:20 }}>
-        <Btn onClick={onCancel} variant="ghost" size="sm">← Back</Btn>
-        <div>
-          <div style={{ fontSize:20, fontWeight:700, color:T.text,
-            letterSpacing:"-0.02em" }}>Workflow Templates</div>
-          <div style={{ fontSize:12, color:T.muted, marginTop:2 }}>
-            Pick a template to get started — customise agents, tables, and schedule
+    <div style={{ display:"flex", flex:1, overflow:"hidden" }}>
+
+      {/* Left: run list */}
+      <div style={{ width:280, flexShrink:0, borderRight:`1px solid ${T.border}`,
+        display:"flex", flexDirection:"column", overflow:"hidden" }}>
+        <div style={{ padding:"14px 16px", borderBottom:`1px solid ${T.border}`, flexShrink:0 }}>
+          <Btn onClick={onBack} variant="ghost" size="sm" style={{ marginBottom:8 }}>← Workflows</Btn>
+          <div style={{ fontSize:14, fontWeight:700, color:T.text }}>{wf.name}</div>
+          <div style={{ fontSize:10, color:T.muted, marginTop:2 }}>{wf.schedule}</div>
+          <div style={{ display:"flex", gap:6, marginTop:10 }}>
+            <Btn onClick={onRun} disabled={running} size="sm"
+              style={{ background:`linear-gradient(135deg,${T.accent},${T.purple})`,
+                color:"white", border:"none", flex:1, justifyContent:"center" }}>
+              {running?<Spinner size={10} color="white"/>:<Play size={10}/>} Run now
+            </Btn>
+            <Btn onClick={onEdit} size="sm" variant="ghost">✏</Btn>
           </div>
+        </div>
+
+        {/* Run list */}
+        <div style={{ flex:1, overflowY:"auto" }}>
+          {history.length===0 ? (
+            <div style={{ padding:"20px 16px", fontSize:11, color:T.dim, textAlign:"center" }}>
+              No runs yet — click Run now
+            </div>
+          ) : (
+            history.map(run=>(
+              <div key={run.run_id}
+                onClick={()=>setSelectedRun(run)}
+                style={{ padding:"10px 16px", borderBottom:`1px solid ${T.border}`,
+                  cursor:"pointer", borderLeft:`3px solid ${run.status==="clean"?T.green:T.red}`,
+                  background:selectedRun?.run_id===run.run_id?`${T.accent}06`:"transparent" }}>
+                <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between",
+                  marginBottom:3 }}>
+                  <div style={{ display:"flex", alignItems:"center", gap:5 }}>
+                    <div style={{ width:7, height:7, borderRadius:"50%", flexShrink:0,
+                      background:run.status==="clean"?T.green:T.red }}/>
+                    <span style={{ fontSize:11, fontWeight:600, color:T.text }}>
+                      {run.status==="clean"?"Clean":`${run.failed||0} Failed`}
+                    </span>
+                  </div>
+                  <span style={{ fontSize:9, color:T.dim }}>
+                    {run.triggered_by==="cron"?"⏰":"▶"} {fmt(run.started_at).slice(5)}
+                  </span>
+                </div>
+                <div style={{ fontSize:10, color:T.muted }}>
+                  {run.passed||0}/{run.total_checks||0} checks passed
+                  {run.duration_ms && ` · ${dur(run.duration_ms)}`}
+                </div>
+              </div>
+            ))
+          )}
         </div>
       </div>
 
-      {/* Category filter */}
-      <div style={{ display:"flex", gap:6, marginBottom:20, flexWrap:"wrap" }}>
-        {categories.map(cat => (
-          <button key={cat} onClick={() => setFilter(cat)}
-            style={{ padding:"4px 14px", borderRadius:99, fontSize:11,
-              fontWeight:600, cursor:"pointer", border:"none",
-              background: filter===cat ? T.accent : `${T.accent}12`,
-              color: filter===cat ? "white" : T.muted,
-              transition:"all 0.12s" }}>
-            {cat.charAt(0).toUpperCase() + cat.slice(1)}
-          </button>
+      {/* Right: run detail */}
+      <div style={{ flex:1, overflowY:"auto", padding:"20px 24px", minWidth:0 }}>
+        {!selectedRun ? (
+          <div style={{ display:"flex", alignItems:"center", justifyContent:"center",
+            height:"100%", color:T.dim, fontSize:13 }}>
+            Select a run to see results
+          </div>
+        ) : (
+          <RunDetail run={selectedRun} T={T} dur={dur} fmt={fmt}/>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ── RunDetail — check-by-check results for one run ───────────────────────────
+function RunDetail({ run, T, dur, fmt }) {
+  const [expanded, setExpanded] = React.useState({});
+  const toggle = (id) => setExpanded(p=>({...p,[id]:!p[id]}));
+
+  const passCount = (run.check_results||[]).filter(c=>c.passed).length;
+  const failCount = (run.check_results||[]).filter(c=>!c.passed).length;
+  const total     = (run.check_results||[]).length;
+
+  return (
+    <div>
+      {/* Run summary */}
+      <div style={{ display:"flex", gap:12, alignItems:"center", marginBottom:18, flexWrap:"wrap" }}>
+        <div style={{ padding:"10px 16px", borderRadius:10,
+          background:run.status==="clean"?`${T.green}10`:`${T.red}10`,
+          border:`1px solid ${run.status==="clean"?T.green:T.red}25` }}>
+          <div style={{ fontSize:20, fontWeight:800,
+            color:run.status==="clean"?T.green:T.red }}>
+            {run.status==="clean"?"✓ Clean":`${failCount} Failed`}
+          </div>
+          <div style={{ fontSize:10, color:T.muted }}>{fmt(run.started_at)}</div>
+        </div>
+        {[
+          { label:"Total checks", value:total },
+          { label:"Passed",       value:passCount, color:T.green },
+          { label:"Failed",       value:failCount, color:failCount>0?T.red:T.muted },
+          { label:"Duration",     value:run.duration_ms?dur(run.duration_ms):"—" },
+          { label:"Triggered by", value:run.triggered_by==="cron"?"Schedule":"Manual" },
+        ].map(s=>(
+          <div key={s.label} style={{ padding:"10px 14px", borderRadius:10,
+            background:T.surface, border:`1px solid ${T.border}`, textAlign:"center", minWidth:80 }}>
+            <div style={{ fontSize:16, fontWeight:800, color:s.color||T.text }}>{s.value}</div>
+            <div style={{ fontSize:10, color:T.muted, marginTop:2 }}>{s.label}</div>
+          </div>
         ))}
       </div>
 
-      <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:12 }}>
-        {filtered.map(tpl => {
-          const catColor = TPL_CATEGORY_COLOR[tpl.category] || T.accent;
-          return (
-            <Card key={tpl.id} hoverable style={{ padding:"18px 20px",
-              cursor:"pointer" }} onClick={() => onSelect(tpl)}>
-              <div style={{ display:"flex", alignItems:"flex-start",
-                justifyContent:"space-between", marginBottom:8 }}>
-                <div style={{ flex:1 }}>
-                  <div style={{ display:"flex", alignItems:"center",
-                    gap:7, marginBottom:4 }}>
-                    <span style={{ fontSize:13, fontWeight:700,
-                      color:T.text }}>{tpl.name}</span>
-                    <Badge label={tpl.category} color={catColor}/>
-                  </div>
-                  <div style={{ fontSize:11, color:T.muted,
-                    lineHeight:1.5 }}>{tpl.desc}</div>
+      {/* Progress bar */}
+      {total > 0 && (
+        <div style={{ marginBottom:16 }}>
+          <div style={{ display:"flex", justifyContent:"space-between", fontSize:10, color:T.muted, marginBottom:4 }}>
+            <span>Check results</span>
+            <span>{passCount}/{total} passed</span>
+          </div>
+          <div style={{ height:6, background:T.border, borderRadius:99, overflow:"hidden" }}>
+            <div style={{ height:"100%", width:`${total>0?passCount/total*100:0}%`,
+              background:failCount===0?T.green:`linear-gradient(90deg,${T.green},${T.orange})`,
+              borderRadius:99, transition:"width 0.5s" }}/>
+          </div>
+        </div>
+      )}
+
+      {/* Per-check results */}
+      <div style={{ display:"flex", flexDirection:"column", gap:8 }}>
+        {(run.check_results||[]).map((chk,i)=>(
+          <div key={chk.id||i} style={{ borderRadius:10, overflow:"hidden",
+            border:`1px solid ${chk.passed?T.green+"30":T.red+"30"}`,
+            background:chk.passed?`${T.green}04`:`${T.red}04` }}>
+
+            {/* Check header */}
+            <div style={{ display:"flex", alignItems:"center", gap:10,
+              padding:"10px 14px", cursor:"pointer" }}
+              onClick={()=>toggle(chk.id||i)}>
+              <div style={{ width:22, height:22, borderRadius:6, flexShrink:0,
+                background:chk.passed?`${T.green}15`:`${T.red}15`,
+                display:"flex", alignItems:"center", justifyContent:"center" }}>
+                {chk.passed
+                  ? <Check size={12} color={T.green}/>
+                  : <X size={12} color={T.red}/>}
+              </div>
+              <div style={{ flex:1 }}>
+                <div style={{ fontSize:12, fontWeight:700, color:T.text }}>{chk.name}</div>
+                <div style={{ fontSize:10, color:T.muted, marginTop:1 }}>
+                  {chk.error
+                    ? <span style={{ color:T.red }}>{chk.error}</span>
+                    : <>
+                        {chk.row_count} rows · condition: <code style={{ fontFamily:"monospace", color:T.accent }}>{chk.pass_condition}</code>
+                        {chk.duration_ms && ` · ${dur(chk.duration_ms)}`}
+                      </>
+                  }
                 </div>
               </div>
-              <div style={{ display:"flex", flexWrap:"wrap", gap:4,
-                marginBottom:8 }}>
-                {tpl.agents.map((a,i) => (
-                  <span key={a} style={{ fontSize:9, padding:"2px 7px",
-                    background:`${catColor}12`, color:catColor,
-                    borderRadius:3, border:`1px solid ${catColor}20` }}>
-                    {i+1}. {a}
-                  </span>
+              <Badge label={chk.severity||"high"} color={SEV_COLOR[chk.severity]||T.muted}/>
+              <span style={{ fontSize:12, color:T.dim }}>{expanded[chk.id||i]?"▴":"▾"}</span>
+            </div>
+
+            {/* Expanded: SQL + sample rows */}
+            {expanded[chk.id||i] && (
+              <div style={{ borderTop:`1px solid ${T.border}20`, padding:"10px 14px" }}>
+                {chk.sql && (
+                  <div style={{ marginBottom:10 }}>
+                    <div style={{ fontSize:10, fontWeight:600, color:T.muted, marginBottom:4 }}>SQL</div>
+                    <pre style={{ margin:0, padding:"8px 10px", background:T.surface,
+                      borderRadius:6, fontSize:11, fontFamily:"monospace",
+                      border:`1px solid ${T.border}`, whiteSpace:"pre-wrap",
+                      overflowX:"auto" }}>{chk.sql}</pre>
+                  </div>
+                )}
+                {chk.sample_rows?.length > 0 && chk.columns?.length > 0 && (
+                  <div>
+                    <div style={{ fontSize:10, fontWeight:600, color:T.muted, marginBottom:4 }}>
+                      Sample rows ({chk.sample_rows.length})
+                    </div>
+                    <div style={{ overflowX:"auto", borderRadius:6,
+                      border:`1px solid ${T.border}` }}>
+                      <table style={{ borderCollapse:"collapse", fontSize:10,
+                        fontFamily:"monospace", width:"100%" }}>
+                        <thead>
+                          <tr style={{ background:`${T.accent}08` }}>
+                            {chk.columns.map(c=>(
+                              <th key={c} style={{ padding:"4px 10px", textAlign:"left",
+                                fontWeight:700, fontSize:9, color:T.muted,
+                                borderBottom:`1px solid ${T.border}`, whiteSpace:"nowrap",
+                                textTransform:"uppercase" }}>{c}</th>
+                            ))}
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {chk.sample_rows.map((row,ri)=>(
+                            <tr key={ri}>
+                              {chk.columns.map(c=>(
+                                <td key={c} style={{ padding:"3px 10px",
+                                  borderBottom:`1px solid ${T.border}20`,
+                                  whiteSpace:"nowrap",
+                                  color:row[c]===null?T.red:T.text2 }}>
+                                  {row[c]===null?"NULL":String(row[c]).slice(0,50)}
+                                </td>
+                              ))}
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+// ── AllRunsView — cross-workflow run history ───────────────────────────────────
+function AllRunsView({ history, workflows, onBack, onOpenWf }) {
+  const T = useT();
+  const [filter, setFilter] = React.useState("all"); // all | failed | clean
+  const [search, setSearch] = React.useState("");
+
+  const wfMap = Object.fromEntries(workflows.map(w=>[w.id,w]));
+  const filtered = history.filter(r=>{
+    if (filter==="failed" && r.status!=="issues_found") return false;
+    if (filter==="clean"  && r.status!=="clean")        return false;
+    if (search && !r.workflow_name?.toLowerCase().includes(search.toLowerCase())) return false;
+    return true;
+  });
+
+  return (
+    <div style={{ overflowY:"auto", padding:"24px 28px", maxWidth:1000 }}>
+      <div style={{ display:"flex", alignItems:"center", gap:12, marginBottom:20 }}>
+        <Btn onClick={onBack} variant="ghost" size="sm">← Workflows</Btn>
+        <div style={{ fontSize:18, fontWeight:700, color:T.text }}>All Runs</div>
+        <div style={{ marginLeft:"auto", display:"flex", gap:8 }}>
+          {["all","failed","clean"].map(f=>(
+            <button key={f} onClick={()=>setFilter(f)}
+              style={{ padding:"4px 12px", borderRadius:99, fontSize:11, cursor:"pointer",
+                border:`1px solid ${filter===f?T.accent:T.border}`,
+                background:filter===f?`${T.accent}10`:"transparent",
+                color:filter===f?T.accent:T.muted, fontWeight:filter===f?700:400 }}>
+              {f==="all"?"All":f==="failed"?"Failed":"Clean"}
+            </button>
+          ))}
+          <input value={search} onChange={e=>setSearch(e.target.value)}
+            placeholder="Filter by workflow…"
+            style={{ padding:"4px 10px", borderRadius:7, fontSize:11,
+              border:`1px solid ${T.border}`, background:T.surface,
+              color:T.text, outline:"none", width:160 }}/>
+        </div>
+      </div>
+
+      {/* Summary stats */}
+      <div style={{ display:"flex", gap:10, marginBottom:16 }}>
+        {[
+          { label:"Total runs", value:history.length },
+          { label:"Clean",  value:history.filter(r=>r.status==="clean").length, color:T.green },
+          { label:"Failed", value:history.filter(r=>r.status!=="clean").length, color:history.some(r=>r.status!=="clean")?T.red:T.muted },
+          { label:"Pass rate", value:history.length>0?Math.round(history.filter(r=>r.status==="clean").length/history.length*100)+"%":"—",
+            color:T.accent },
+        ].map(s=>(
+          <div key={s.label} style={{ padding:"10px 14px", borderRadius:10,
+            background:T.surface, border:`1px solid ${T.border}`, textAlign:"center", minWidth:80 }}>
+            <div style={{ fontSize:18, fontWeight:800, color:s.color||T.text }}>{s.value}</div>
+            <div style={{ fontSize:10, color:T.muted, marginTop:2 }}>{s.label}</div>
+          </div>
+        ))}
+      </div>
+
+      {/* Run rows */}
+      <div style={{ display:"flex", flexDirection:"column", gap:6 }}>
+        {filtered.length===0 && (
+          <div style={{ textAlign:"center", padding:"40px 0", color:T.dim, fontSize:12 }}>No runs match</div>
+        )}
+        {filtered.map(run=>{
+          const wf = wfMap[run.workflow_id];
+          const dur = run.duration_ms ? (run.duration_ms<1000?`${run.duration_ms}ms`:`${(run.duration_ms/1000).toFixed(1)}s`) : null;
+          return (
+            <div key={run.run_id}
+              onClick={()=>wf&&onOpenWf(wf)}
+              style={{ display:"flex", alignItems:"center", gap:12,
+                padding:"10px 16px", borderRadius:10,
+                background:T.card, border:`1px solid ${T.border}`,
+                borderLeft:`3px solid ${run.status==="clean"?T.green:T.red}`,
+                cursor:wf?"pointer":"default",
+                boxShadow:"0 1px 3px rgba(0,0,0,0.04)" }}
+              onMouseEnter={e=>{ if(wf) e.currentTarget.style.background=`${T.accent}04`; }}
+              onMouseLeave={e=>{ e.currentTarget.style.background=T.card; }}>
+
+              <div style={{ width:28, height:28, borderRadius:8, flexShrink:0,
+                background:run.status==="clean"?`${T.green}15`:`${T.red}15`,
+                display:"flex", alignItems:"center", justifyContent:"center" }}>
+                {run.status==="clean"
+                  ? <CheckCircle size={14} color={T.green}/>
+                  : <XCircle size={14} color={T.red}/>}
+              </div>
+
+              <div style={{ flex:1, minWidth:0 }}>
+                <div style={{ fontSize:12, fontWeight:700, color:T.text,
+                  overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>
+                  {run.workflow_name}
+                </div>
+                <div style={{ fontSize:10, color:T.muted, marginTop:1 }}>
+                  {run.started_at?.slice(0,16)?.replace("T"," ")}
+                  {run.triggered_by==="cron" ? " · ⏰ scheduled" : " · ▶ manual"}
+                </div>
+              </div>
+
+              {/* Check result pills */}
+              <div style={{ display:"flex", gap:4, flexWrap:"wrap", maxWidth:240 }}>
+                {(run.check_results||[]).slice(0,8).map((chk,i)=>(
+                  <div key={i} title={chk.name}
+                    style={{ width:10, height:10, borderRadius:2,
+                      background:chk.passed?T.green:T.red, flexShrink:0 }}/>
                 ))}
               </div>
-              <div style={{ display:"flex", alignItems:"center",
-                justifyContent:"space-between" }}>
-                <span style={{ fontSize:10, color:T.muted }}>
-                  <Clock size={10} style={{ marginRight:3,
-                    verticalAlign:"middle" }}/>
-                  {tpl.schedule}
-                </span>
-                <Btn size="sm" style={{ background:catColor,
-                  color:"white", border:"none" }}>
-                  Use Template →
-                </Btn>
+
+              <div style={{ textAlign:"right", flexShrink:0 }}>
+                <div style={{ fontSize:12, fontWeight:700,
+                  color:run.status==="clean"?T.green:T.red }}>
+                  {run.status==="clean"?"Clean":`${run.failed||0} fail`}
+                </div>
+                <div style={{ fontSize:10, color:T.dim }}>
+                  {run.passed||0}/{run.total_checks||0} · {dur||"—"}
+                </div>
               </div>
-            </Card>
+            </div>
           );
         })}
       </div>
@@ -8302,1592 +7359,282 @@ function WorkflowTemplatesView({ onSelect, onCancel }) {
   );
 }
 
-// ─── Real-time Workflow Status ────────────────────────────────────────────────
-// Polls /api/workflow/history every 30s to detect running workflows
-function WorkflowLiveStatus({ onViewRun }) {
+// ── WorkflowBuilder — create / edit workflow with SQL checks ─────────────────
+function WorkflowBuilder({ initial, dbSchema, onSave, onCancel }) {
   const T = useT();
-  const [liveRun,  setLiveRun]  = React.useState(null);
-  const [polling,  setPolling]  = React.useState(false);
-  const [lastPoll, setLastPoll] = React.useState(null);
-  const [nextIn,   setNextIn]   = React.useState(30);
-
-  // Poll every 15s — check both built-in and custom workflow history
-  React.useEffect(() => {
-    let interval, countdown;
-    const poll = async () => {
-      setPolling(true);
-      try {
-        // Check custom workflow history for running jobs
-        const r2  = await fetch(`${API}/api/custom-workflows/history`);
-        const d2  = await r2.json();
-        if (Array.isArray(d2)) {
-          const running = d2.find(r => r.status === "running");
-          if (running) {
-            setLiveRun({ ...running, source:"custom" });
-            setLastPoll(new Date().toLocaleTimeString());
-            setNextIn(15);
-            setPolling(false);
-            return;
-          }
-        }
-        // Fall back to built-in workflow history
-        const res  = await fetch(`${API}/api/workflow/history`);
-        const data = await res.json();
-        const runs = data.runs || [];
-        const recent = runs.find(r => r.status === "running" &&
-          (Date.now() - new Date(r.started_at)) < 5 * 60 * 1000);
-        setLiveRun(recent || null);
-        setLastPoll(new Date().toLocaleTimeString());
-        setNextIn(15);
-      } catch {}
-      setPolling(false);
-    };
-    poll();
-    interval = setInterval(poll, 15000);
-    countdown = setInterval(() => setNextIn(p => Math.max(0, p - 1)), 1000);
-    return () => { clearInterval(interval); clearInterval(countdown); };
-  }, []);
-
-  if (!liveRun) {
-    return (
-      <div style={{ display:"flex", alignItems:"center", gap:8,
-        padding:"8px 12px", borderRadius:8,
-        background:T.border, fontSize:11, color:T.muted }}>
-        <div style={{ width:6, height:6, borderRadius:"50%",
-          background:T.green }}/>
-        No workflow running
-        {lastPoll && (
-          <span style={{ marginLeft:4, color:T.dim }}>
-            · last checked {lastPoll} · refreshes in {nextIn}s
-          </span>
-        )}
-        {polling && <Spinner size={10}/>}
-      </div>
-    );
-  }
-
-  return (
-    <div style={{ padding:"10px 14px", borderRadius:8,
-      background:`${T.accent}08`, border:`1px solid ${T.accent}30`,
-      display:"flex", alignItems:"center", gap:10 }}>
-      <Spinner size={13} color={T.accent}/>
-      <div style={{ flex:1 }}>
-        <div style={{ fontSize:12, fontWeight:700, color:T.accent }}>
-          Workflow running — #{liveRun.run_id}
-        </div>
-        <div style={{ fontSize:10, color:T.muted }}>
-          Started {liveRun.started_at}
-          {lastPoll && ` · last checked ${lastPoll}`}
-        </div>
-      </div>
-      <Btn onClick={() => onViewRun(liveRun)} size="sm" variant="ghost">
-        View <ArrowRight size={11}/>
-      </Btn>
-    </div>
-  );
-}
-
-function WorkflowsTab() {
-  const T = useT();
-  const dbSchema = useSchema();
-
-  // view: "list" | "sop" | "builder" | "edit" | "timeline" | "templates"
-  const [view,          setView]          = React.useState("list");
-  const [editingWf,     setEditingWf]     = React.useState(null);
-  const [timelineRun,   setTimelineRun]   = React.useState(null);   // run to show in timeline
-
-  // Daily run state
-  const [running,       setRunning]       = React.useState(false);
-  const [result,        setResult]        = useSession("wz_wfResult", null);
-  const [runHistory,    setRunHistory]    = useSession("wz_wfHistory", []);
-  const [selected,      setSelected]      = React.useState(null);
-
-  // Custom workflows — local state, synced to backend
-  const [customWfs,     setCustomWfs]     = React.useState([]);
-  const [cwfLoading,    setCwfLoading]    = React.useState(false);
-  const [cwfRunning,    setCwfRunning]    = React.useState({}); // { [id]: bool }
-  const [cwfResults,    setCwfResults]    = React.useState({}); // { [id]: result }
-  const [detailWf,      setDetailWf]     = React.useState(null); // wf being inspected
-  const [cwfHistory,    setCwfHistory]   = React.useState([]); // runs from backend
-  const [pendingIssues, setPendingIssues] = useSession("wz_pendingIssues", []);
-
-  // Load run history from backend
-  const loadCwfHistory = async () => {
-    try {
-      const res  = await fetch(`${API}/api/custom-workflows/history`);
-      const data = await res.json();
-      if (Array.isArray(data)) setCwfHistory(data);
-    } catch(e) {}
+  const blank = {
+    name:"", desc:"", schedule:"every 30 min", enabled:true,
+    checks:[], tables:[], db_key:"default", slack_channel:"", schema_group:""
   };
-  React.useEffect(() => {
-    loadCwfHistory();
-    const id = setInterval(loadCwfHistory, 15000);
-    return () => clearInterval(id);
-  }, []);
+  const [wf,        setWf]        = React.useState(initial ? {...blank,...initial, checks:[...(initial.checks||[])]} : blank);
+  const [checkDraft,setDraft]     = React.useState({ name:"", sql:"", pass_condition:"rows = 0", severity:"high" });
+  const [editing,   setEditingCk] = React.useState(null); // check id being edited
+  const [aiLoading, setAiLoad]    = React.useState(false);
+  const [aiDesc,    setAiDesc]    = React.useState("");
+  const [testResult,setTestResult]= React.useState(null);
+  const [testing,   setTesting]   = React.useState(false);
 
-  // Load custom workflows from backend on mount
-  React.useEffect(() => {
-    const load = async () => {
-      try {
-        const res  = await fetch(`${API}/api/custom-workflows`);
-        const data = await res.json();
-        if (Array.isArray(data)) setCustomWfs(data);
-      } catch(e) {
-        // Fallback: try localStorage
-        try {
-          const local = JSON.parse(localStorage.getItem("wz_customWorkflows") || "[]");
-          setCustomWfs(local);
-        } catch(_) {}
-      }
-    };
-    load();
-  }, []);
-
-  // AI suggestions
-  const [aiLoading,     setAiLoading]     = React.useState(false);
-  const [aiSuggestions, setAiSuggestions] = useSession("wz_wfSuggestions", []);
-  const [aiOptimizing,  setAiOptimizing]  = React.useState(null); // wf id being optimized
-  const [aiOptResult,   setAiOptResult]   = useSession("wz_wfOptResult", null);
-
-  // ── Built-in workflows ─────────────────────────────────────────────────────
-  const BUILTIN_WFS = [
-    {
-      id:"daily-brief", builtin:true,
-      name:"Daily Data Brief",
-      desc:"3 sub-agents scan mws.report (downloads, freshness, integrity), Pipeline Analyst correlates root cause via GPT-4o. All issues flagged — nothing auto-fixes.",
-      schedule:"4:30 PM IST", trigger:"scheduled",
-      agents:["Download Monitor","Freshness Agent","Integrity Agent","Pipeline Analyst (LLM)"],
-      tables:["mws.report"], endpoint:"/api/workflow/daily-run",
-      color:T.accent,
-    },
-    {
-      id:"ads-sop", builtin:true,
-      name:"Ads Download SOP",
-      desc:"6 agents · 5 approval gates · Full download failure runbook from detection through validation, refresh, and GDS copy jobs.",
-      schedule:"On demand", trigger:"manual",
-      agents:["Detection","Pause Mage","Validation","Refresh","Resume & Copy","Finalize"],
-      tables:["mws.report","public.tbl_amzn_*"], endpoint:"/api/workflow/ads-sop",
-      color:T.orange,
-    },
-  ];
-
-  const allWorkflows = [...BUILTIN_WFS, ...customWfs];
-
-  // ── Run daily workflow ─────────────────────────────────────────────────────
-  const runDaily = async () => {
-    setRunning(true); setResult(null);
-    try {
-      const res  = await fetch(`${API}/api/workflow/daily-run`, {
-        method:"POST", headers:{"Content-Type":"application/json"},
-        body:JSON.stringify({ tables_to_check:["mws.report"], threshold:50 })
-      });
-      const data = await res.json();
-      if (data.error) throw new Error(data.error);
-      setResult(data);
-      setRunHistory(p => [data,...p].slice(0,20));
-      setSelected(data.run_id);
-    } catch(e) { setResult({ error:e.message, status:"error" }); }
-    setRunning(false);
+  const field   = (k,v) => setWf(p=>({...p,[k]:v}));
+  const addCheck = () => {
+    if (!checkDraft.name.trim() || !checkDraft.sql.trim()) return;
+    const newChk = {...checkDraft, id:Date.now().toString(36)};
+    setWf(p=>({...p, checks:[...p.checks, newChk]}));
+    setDraft({ name:"", sql:"", pass_condition:"rows = 0", severity:"high" });
+    setTestResult(null);
   };
+  const removeCheck = (id) => setWf(p=>({...p, checks:p.checks.filter(c=>c.id!==id)}));
+  const moveCheck   = (id, dir) => setWf(p=>{
+    const arr = [...p.checks];
+    const i   = arr.findIndex(c=>c.id===id);
+    const j   = i+dir;
+    if (j<0||j>=arr.length) return p;
+    [arr[i],arr[j]] = [arr[j],arr[i]];
+    return {...p, checks:arr};
+  });
 
-  // ── AI: suggest new workflows ──────────────────────────────────────────────
-  const getSuggestions = async () => {
-    setAiLoading(true);
-    const existingNames = allWorkflows.map(w => w.name).join(", ");
+  // AI check generator
+  const aiGenCheck = async () => {
+    if (!aiDesc.trim()) return;
+    setAiLoad(true);
     try {
+      const tables = dbSchema ? dbSchema.split(";").map(t=>t.split("(")[0].trim()).filter(Boolean).slice(0,20).join(", ") : "mws.report, mws.orders";
       const res  = await fetch(`${API}/api/ai/chat`, {
         method:"POST", headers:{"Content-Type":"application/json"},
         body:JSON.stringify({
-          system:`You are WiziAgent, a data pipeline automation expert for Intentwise.
-The user has these existing workflows: ${existingNames}.
-${dbSchema ? "Available tables: " + dbSchema.split(";").map(t=>t.split("(")[0].trim()).filter(Boolean).join(", ") : "Available tables: mws.report, mws.orders, mws.inventory, public.tbl_amzn_campaign_report, public.tbl_amzn_keyword_report, public.tbl_amzn_product_ad_report"}.
-Suggest 3 NEW workflows that would automate common Intentwise data quality or ops tasks not already covered.
-Respond ONLY with JSON array, no markdown:
-[{"name":"...","desc":"...","trigger":"scheduled|manual|event","schedule":"...","agents":["agent1","agent2"],"tables":["schema.table"],"why":"one sentence on the value this adds"}]`,
-          messages:[{ role:"user", content:"Suggest 3 new workflows I should add" }],
-          max_tokens:800
-        })
-      });
-      const data  = await res.json();
-      const text  = data.content?.[0]?.text || "[]";
-      const clean = text.replace(/```json|```/g,"").trim();
-      const suggs = JSON.parse(clean);
-      setAiSuggestions(suggs.map((s,i) => ({...s, id:`ai-suggest-${Date.now()}-${i}`})));
-    } catch(e) { console.error(e); }
-    setAiLoading(false);
-  };
-
-  // ── AI: optimize existing workflow ────────────────────────────────────────
-  const optimizeWorkflow = async (wf) => {
-    setAiOptimizing(wf.id); setAiOptResult(null);
-    try {
-      const res  = await fetch(`${API}/api/ai/chat`, {
-        method:"POST", headers:{"Content-Type":"application/json"},
-        body:JSON.stringify({
-          system:`You are WiziAgent, a workflow optimization expert for Intentwise data pipelines.
-Analyze this workflow and suggest concrete improvements.
-Respond ONLY with JSON, no markdown:
-{"summary":"2 sentence assessment","optimizations":[{"type":"add_agent|remove_step|change_schedule|add_check|add_gate","title":"...","detail":"...","impact":"high|medium|low"}],"suggested_agents":["new agent name if any"],"suggested_schedule":"new schedule if applicable or null"}`,
-          messages:[{ role:"user", content:`Optimize this workflow: ${JSON.stringify(wf)}` }],
-          max_tokens:600
-        })
-      });
-      const data  = await res.json();
-      const text  = data.content?.[0]?.text || "{}";
-      const clean = text.replace(/```json|```/g,"").trim();
-      setAiOptResult({ wfId:wf.id, ...JSON.parse(clean) });
-    } catch(e) { setAiOptResult({ wfId:wf.id, error:e.message }); }
-    setAiOptimizing(null);
-  };
-
-  // ── Add suggested workflow as custom ──────────────────────────────────────
-  const addSuggestion = async (s) => {
-    const payload = { name:s.name, desc:s.desc, trigger:s.trigger,
-      schedule:s.schedule||"", agents:s.agents||[], tables:s.tables||[], branches:[] };
-    try {
-      const res  = await fetch(`${API}/api/custom-workflows/save`, {
-        method:"POST", headers:{"Content-Type":"application/json"},
-        body:JSON.stringify(payload) });
-      const data = await res.json();
-      if (data.workflow) setCustomWfs(p => [...p, data.workflow]);
-    } catch(e) {
-      setCustomWfs(p => [...p, { ...payload, id:`local-${Date.now()}`, builtin:false }]);
-    }
-    setAiSuggestions(p => p.filter(x => x.id !== s.id));
-  };
-
-  // ── Delete custom workflow ─────────────────────────────────────────────────
-  const deleteWf = async (id) => {
-    setCustomWfs(p => p.filter(w => w.id !== id));
-    try { await fetch(`${API}/api/custom-workflows/${id}`, { method:"DELETE" }); }
-    catch(e) {}
-  };
-
-  // ── Save workflow from builder ─────────────────────────────────────────────
-  const saveBuilderWf = async (wf) => {
-    const payload = { ...wf, id: wf.id || undefined };
-    try {
-      const res  = await fetch(`${API}/api/custom-workflows/save`, {
-        method:"POST", headers:{"Content-Type":"application/json"},
-        body:JSON.stringify(payload) });
-      const data = await res.json();
-      if (data.workflow) {
-        const saved = data.workflow;
-        setCustomWfs(p => p.find(w => w.id === saved.id)
-          ? p.map(w => w.id === saved.id ? saved : w)
-          : [...p, saved]);
-      }
-    } catch(e) {
-      // Fallback: local only
-      if (wf.id && customWfs.find(w => w.id === wf.id)) {
-        setCustomWfs(p => p.map(w => w.id === wf.id ? wf : w));
-      } else {
-        setCustomWfs(p => [...p, { ...wf, id:`local-${Date.now()}`, builtin:false }]);
-      }
-    }
-    setView("list");
-    setEditingWf(null);
-    try { const c=JSON.parse(localStorage.getItem("wz_onboarding")||"{}"); localStorage.setItem("wz_onboarding",JSON.stringify({...c,workflow:true})); } catch {}
-  };
-
-  // ── Run a custom workflow ──────────────────────────────────────────────────
-  const runCustomWf = async (wf) => {
-    setCwfRunning(p => ({...p, [wf.id]: true}));
-    setCwfResults(p => ({...p, [wf.id]: null}));
-    try {
-      const res  = await fetch(`${API}/api/custom-workflows/${wf.id}/run`, { method:"POST" });
-      const data = await res.json();
-      setCwfResults(p => ({...p, [wf.id]: data}));
-      // Refresh last_run on local state
-      setCustomWfs(p => p.map(w => w.id === wf.id
-        ? {...w, last_run: data.started_at, run_count:(w.run_count||0)+1} : w));
-      loadCwfHistory();
-    } catch(e) {
-      setCwfResults(p => ({...p, [wf.id]: { error: e.message, status:"error" }}));
-    }
-    setCwfRunning(p => ({...p, [wf.id]: false}));
-  };
-
-  // ── Send workflow issues to Triage ────────────────────────────────────────
-  const sendToTriage = (tableResult, wfName) => {
-    const newIssues = (tableResult.issues || []).map((iss, i) => ({
-      id: `WF-${Date.now()}-${i}`,
-      title: iss.type ? `${iss.type} issue in ${tableResult.table}` : `Issue in ${tableResult.table}`,
-      description: iss.msg || `${iss.type}: ${iss.count || ''} rows affected`,
-      severity: iss.severity || "medium",
-      count: iss.count || 1,
-      table: tableResult.table,
-      fix_action: null,
-      source: wfName,
-      samples: [],
-      breakdown: [],
-    }));
-    setPendingIssues(p => {
-      const existing = new Set(p.map(x => x.id));
-      return [...p, ...newIssues.filter(x => !existing.has(x.id))];
-    });
-  };
-
-  const SEV = { critical:T.red, high:T.orange, medium:T.yellow, low:T.cyan };
-
-  // ── Views ──────────────────────────────────────────────────────────────────
-  if (view === "timeline") return (
-    <WorkflowRunTimeline
-      run={timelineRun}
-      onClose={()=>{ setView("list"); setTimelineRun(null); }}
-    />
-  );
-
-  if (view === "templates") return (
-    <WorkflowTemplatesView
-      onSelect={(tpl) => {
-        setEditingWf({
-          name:tpl.name, desc:tpl.desc, trigger:tpl.trigger,
-          schedule:tpl.schedule, agents:[...tpl.agents], tables:[...tpl.tables]
-        });
-        setView("builder");
-      }}
-      onCancel={() => setView("list")}
-    />
-  );
-
-  if (view === "sop") return (
-    <div className="fade-in" style={{ overflowY:"auto", padding:"16px 32px 0" }}>
-      <Btn onClick={()=>setView("list")} variant="ghost" size="sm" style={{ marginBottom:16 }}>
-        ← Back to Workflows
-      </Btn>
-      <AdsSopTab/>
-    </div>
-  );
-
-  if (view === "detail") return (
-    <WorkflowRunDetail
-      wf={detailWf}
-      results={cwfResults[detailWf?.id] || null}
-      history={cwfHistory}
-      onClose={() => { setView("list"); setDetailWf(null); }}
-      onSendToTriage={(tr, wfName) => {
-        sendToTriage(tr, wfName);
-        setView("list");
-        setDetailWf(null);
-      }}
-    />
-  );
-
-  if (view === "builder" || view === "edit") return (
-    <WorkflowBuilder
-      initial={editingWf}
-      onSave={saveBuilderWf}
-      onCancel={()=>{ setView("list"); setEditingWf(null); }}
-    />
-  );
-
-  // ── List view ──────────────────────────────────────────────────────────────
-  return (
-    <div className="fade-in" style={{ overflowY:"auto", padding:"28px 32px", maxWidth:1100 }}>
-      {/* Header */}
-      <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom:24 }}>
-        <div>
-          <div style={{ fontSize:22, fontWeight:700, color:T.text, letterSpacing:"-0.02em", display:"flex", alignItems:"center" }}>
-            Workflows
-            <HelpTip>
-              <strong>Workflows</strong> are automated pipelines that run a sequence of checks across tables.<br/><br/>
-              <strong>Daily Data Brief</strong> — runs every day at 4:30 PM IST, checks mws.report and sends a Slack digest.<br/>
-              <strong>Ads Download SOP</strong> — step-by-step runbook for handling Ads download failures with 5 approval gates.<br/><br/>
-              Click <strong>New Workflow</strong> to create your own. Pick a scenario template or describe what you want to check and let the AI suggest agents and tables.
-            </HelpTip>
-          </div>
-          <div style={{ fontSize:13, color:T.muted, marginTop:3 }}>
-            {allWorkflows.length} workflow{allWorkflows.length!==1?"s":""} · {customWfs.length} custom
-          </div>
-        </div>
-        <div style={{ display:"flex", gap:8 }}>
-          <Btn onClick={getSuggestions} disabled={aiLoading} variant="ghost" size="sm">
-            {aiLoading?<Spinner size={11}/>:<Zap size={11}/>}
-            {aiLoading?"Thinking…":"✨ AI Suggest"}
-          </Btn>
-          <Btn onClick={()=>setView("templates")} variant="ghost" size="sm">
-            <FileText size={12}/> Templates
-          </Btn>
-          <Btn onClick={()=>{ setEditingWf(null); setView("builder"); }} size="sm">
-            <Plus size={12}/> New Workflow
-          </Btn>
-        </div>
-      </div>
-
-      {/* Live status polling banner */}
-      <div style={{ marginBottom:16 }}>
-        <WorkflowLiveStatus
-          onViewRun={(run) => { setTimelineRun(run); setView("timeline"); }}
-        />
-      </div>
-
-      {/* AI Suggestions */}
-      {aiSuggestions.length > 0 && (
-        <Card style={{ padding:"16px 20px", marginBottom:20,
-          borderColor:`${T.purple}40`, background:`${T.purple}06` }}>
-          <div style={{ display:"flex", alignItems:"center", gap:8, marginBottom:12 }}>
-            <Zap size={14} color={T.purple}/>
-            <span style={{ fontSize:12, fontWeight:700, color:T.purple }}>
-              AI Workflow Suggestions
-            </span>
-            <button onClick={()=>setAiSuggestions([])}
-              style={{ marginLeft:"auto", background:"none", border:"none",
-                color:T.dim, cursor:"pointer" }}><X size={13}/></button>
-          </div>
-          <div style={{ display:"flex", flexDirection:"column", gap:8 }}>
-            {aiSuggestions.map(s => (
-              <div key={s.id} style={{ padding:"10px 14px", borderRadius:8,
-                background:T.surface, border:`1px solid ${T.border}`,
-                display:"flex", alignItems:"flex-start", gap:12 }}>
-                <div style={{ flex:1 }}>
-                  <div style={{ fontSize:12, fontWeight:700, color:T.text }}>{s.name}</div>
-                  <div style={{ fontSize:11, color:T.muted, marginTop:2 }}>{s.desc}</div>
-                  <div style={{ fontSize:10, color:T.purple, marginTop:4,
-                    fontStyle:"italic" }}>💡 {s.why}</div>
-                  <div style={{ display:"flex", gap:4, marginTop:6, flexWrap:"wrap" }}>
-                    {s.agents?.map(a => (
-                      <span key={a} style={{ fontSize:9, padding:"1px 6px",
-                        background:`${T.purple}12`, color:T.purple, borderRadius:3 }}>{a}</span>
-                    ))}
-                  </div>
-                </div>
-                <div style={{ display:"flex", flexDirection:"column", gap:5, flexShrink:0 }}>
-                  <Btn onClick={()=>addSuggestion(s)} size="sm" variant="success">
-                    <Plus size={10}/> Add
-                  </Btn>
-                  <Btn onClick={()=>{
-                    setEditingWf({
-                      name:s.name, desc:s.desc, trigger:s.trigger,
-                      schedule:s.schedule||"", agents:s.agents||[], tables:s.tables||[]
-                    });
-                    setView("builder");
-                  }} size="sm" variant="ghost">
-                    Edit first
-                  </Btn>
-                </div>
-              </div>
-            ))}
-          </div>
-        </Card>
-      )}
-
-      {/* AI Optimization result */}
-      {aiOptResult && (
-        <Card style={{ padding:"16px 20px", marginBottom:20,
-          borderColor:`${T.cyan}40`, background:`${T.cyan}06` }}>
-          <div style={{ display:"flex", alignItems:"center", gap:8, marginBottom:10 }}>
-            <Zap size={14} color={T.cyan}/>
-            <span style={{ fontSize:12, fontWeight:700, color:T.cyan }}>
-              Optimization Suggestions
-            </span>
-            <button onClick={()=>setAiOptResult(null)}
-              style={{ marginLeft:"auto", background:"none", border:"none",
-                color:T.dim, cursor:"pointer" }}><X size={13}/></button>
-          </div>
-          {aiOptResult.error
-            ? <div style={{ fontSize:12, color:T.red }}>{aiOptResult.error}</div>
-            : <>
-              <div style={{ fontSize:12, color:T.text2, marginBottom:10 }}>
-                {aiOptResult.summary}
-              </div>
-              <div style={{ display:"flex", flexDirection:"column", gap:6 }}>
-                {(aiOptResult.optimizations||[]).map((o,i) => (
-                  <div key={i} style={{ display:"flex", gap:10, padding:"7px 10px",
-                    borderRadius:6, background:T.surface, border:`1px solid ${T.border}` }}>
-                    <Badge label={o.impact} color={o.impact==="high"?T.red:o.impact==="medium"?T.yellow:T.cyan}/>
-                    <div style={{ flex:1 }}>
-                      <div style={{ fontSize:11, fontWeight:600, color:T.text }}>{o.title}</div>
-                      <div style={{ fontSize:10, color:T.muted }}>{o.detail}</div>
-                    </div>
-                  </div>
-                ))}
-              </div>
-              {aiOptResult.suggested_schedule && (
-                <div style={{ fontSize:11, color:T.cyan, marginTop:8 }}>
-                  💡 Suggested schedule: {aiOptResult.suggested_schedule}
-                </div>
-              )}
-            </>
-          }
-        </Card>
-      )}
-
-      <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:12, marginBottom:24 }}>
-        {/* Built-in + custom workflow cards */}
-        {allWorkflows.map(wf => (
-          <Card key={wf.id} style={{ padding:"18px 20px" }}>
-            <div style={{ display:"flex", alignItems:"flex-start",
-              justifyContent:"space-between", marginBottom:10 }}>
-              <div style={{ flex:1, minWidth:0 }}>
-                <div style={{ display:"flex", alignItems:"center", gap:7, marginBottom:3 }}>
-                  <span style={{ fontSize:13, fontWeight:700, color:T.text }}>{wf.name}</span>
-                  {wf.builtin && <Badge label="built-in" color={T.muted}/>}
-                  {wf.schema_group && <Badge label={wf.schema_group.replace("_source_data","").replace(/_/g," ")} color={T.purple}/>}
-                  {wf.db_key && wf.db_key!=="default" && <Badge label={`db:${wf.db_key}`} color={T.orange}/>}
-                  {!wf.builtin && <Badge label="custom" color={T.purple}/>}
-                </div>
-                <div style={{ fontSize:11, color:T.muted, lineHeight:1.5 }}>{wf.desc}</div>
-              </div>
-            </div>
-
-            {/* Agents */}
-            <div style={{ display:"flex", flexWrap:"wrap", gap:4, marginBottom:10 }}>
-              {wf.agents.map((a,i) => (
-                <span key={a} style={{ fontSize:9, padding:"2px 7px",
-                  background:`${wf.color||T.accent}12`,
-                  color:wf.color||T.accent, borderRadius:3,
-                  border:`1px solid ${wf.color||T.accent}20` }}>
-                  {i+1}. {a}
-                </span>
-              ))}
-            </div>
-
-            {/* Schedule + actions */}
-            <div style={{ display:"flex", alignItems:"center",
-              justifyContent:"space-between", flexWrap:"wrap", gap:6 }}>
-              <div style={{ display:"flex", flexDirection:"column", gap:2 }}>
-                <span style={{ fontSize:10, color:T.muted }}>
-                  <Clock size={10} style={{ marginRight:3, verticalAlign:"middle" }}/>
-                  {wf.schedule || (wf.trigger==="manual" ? "Manual only" : wf.trigger)}
-                </span>
-                {/* Last run + running indicator for custom workflows */}
-                {!wf.builtin && (() => {
-                  const lastRun = cwfHistory.find(h=>h.workflow_id===wf.id);
-                  const isRunning = cwfHistory.find(h=>h.workflow_id===wf.id&&h.status==="running");
-                  return (
-                    <span style={{ fontSize:9, color: isRunning?T.accent:T.dim,
-                      display:"flex", alignItems:"center", gap:3 }}>
-                      {isRunning
-                        ? <><Spinner size={8} color={T.accent}/> Running now…</>
-                        : lastRun
-                          ? `Last run: ${lastRun.started_at?.slice(11,16)} UTC · ${lastRun.status==="clean"?"✓ clean":`${lastRun.total_issues||0} issues`}`
-                          : "Never run"}
-                    </span>
-                  );
-                })()}
-              </div>
-              <div style={{ display:"flex", gap:5 }}>
-                <Btn onClick={()=>optimizeWorkflow(wf)} size="sm" variant="ghost"
-                  disabled={aiOptimizing===wf.id}>
-                  {aiOptimizing===wf.id?<Spinner size={10}/>:<Zap size={10}/>}
-                  Optimize
-                </Btn>
-                {!wf.builtin && (
-                  <>
-                    <Btn onClick={()=>{ setEditingWf(wf); setView("edit"); }} size="sm" variant="ghost">
-                      Edit
-                    </Btn>
-                    <Btn onClick={()=>deleteWf(wf.id)} size="sm" variant="muted">
-                      <Trash2 size={10}/>
-                    </Btn>
-                  </>
-                )}
-                {wf.id==="daily-brief" && (
-                  <Btn onClick={runDaily} disabled={running} size="sm"
-                    style={{ background:running?T.border:`linear-gradient(135deg,${T.accent},${T.purple})`,
-                      color:"white", border:"none" }}>
-                    {running?<Spinner size={10} color="white"/>:<Play size={10}/>}
-                    {running?"Running…":"Run"}
-                  </Btn>
-                )}
-                {wf.id==="ads-sop" && (
-                  <Btn onClick={()=>setView("sop")} size="sm"
-                    style={{ background:`linear-gradient(135deg,${T.orange},${T.red})`,
-                      color:"white", border:"none" }}>
-                    <Play size={10}/> Open
-                  </Btn>
-                )}
-                {!wf.builtin && (
-                  <>
-                    {(cwfResults[wf.id] || cwfHistory.some(h => h.workflow_id === wf.id)) && (
-                      <Btn size="sm" variant="ghost"
-                        onClick={() => { setDetailWf(wf); setView("detail"); }}>
-                        <Eye size={10}/> Results
-                      </Btn>
-                    )}
-                    <Btn onClick={()=>runCustomWf(wf)} size="sm"
-                      disabled={!!cwfRunning[wf.id]}
-                      style={{ background:cwfRunning[wf.id]?T.border:`linear-gradient(135deg,${T.accent},${T.purple})`,
-                        color:"white", border:"none" }}>
-                      {cwfRunning[wf.id]?<Spinner size={10} color="white"/>:<Play size={10}/>}
-                      {cwfRunning[wf.id]?"Running…":"Run"}
-                    </Btn>
-                  </>
-                )}
-              </div>
-            </div>
-
-            {/* Inline run result for this custom workflow */}
-            {cwfResults[wf.id] && !cwfRunning[wf.id] && (
-              <div style={{ marginTop:10, padding:"8px 12px", borderRadius:6,
-                background: cwfResults[wf.id].error ? `${T.red}10` :
-                  cwfResults[wf.id].total_issues > 0 ? `${T.orange}10` : `${T.green}10`,
-                border:`1px solid ${cwfResults[wf.id].error ? T.red :
-                  cwfResults[wf.id].total_issues > 0 ? T.orange : T.green}30` }}>
-                {cwfResults[wf.id].error ? (
-                  <div style={{ fontSize:11, color:T.red }}>
-                    ✕ {cwfResults[wf.id].error}
-                  </div>
-                ) : (
-                  <>
-                    <div style={{ fontSize:11, fontWeight:600,
-                      color: cwfResults[wf.id].total_issues > 0 ? T.orange : T.green }}>
-                      {cwfResults[wf.id].total_issues > 0
-                        ? `⚠ ${cwfResults[wf.id].total_issues} issue(s) found`
-                        : "✓ All checks passed"}
-                    </div>
-                    {(cwfResults[wf.id].table_results||[]).map((tr,i) => (
-                      <div key={i} style={{ fontSize:10, color:T.muted, marginTop:3 }}>
-                        <span style={{ fontFamily:"monospace" }}>{tr.table}</span>
-                        {" — "}
-                        {tr.skipped ? <span style={{color:T.dim}}>skipped</span>
-                          : tr.issues?.length > 0
-                            ? <span style={{color:T.orange}}>{tr.issues.length} issue(s)</span>
-                            : <span style={{color:T.green}}>clean</span>}
-                        {tr.branch_action && (
-                          <span style={{ marginLeft:6, color:T.purple, fontSize:9 }}>
-                            [{tr.branch_action}]
-                          </span>
-                        )}
-                      </div>
-                    ))}
-                  </>
-                )}
-              </div>
-            )}
-          </Card>
-        ))}
-      </div>
-
-      {/* Run history + results */}
-      {(runHistory.length > 0 || result) && (
-        <div style={{ display:"grid", gridTemplateColumns:"240px 1fr", gap:16 }}>
-          <Card style={{ padding:"14px 16px" }}>
-            <div style={{ fontSize:11, fontWeight:700, color:T.muted, marginBottom:10,
-              textTransform:"uppercase", letterSpacing:"0.06em" }}>Run History</div>
-            <div style={{ display:"flex", flexDirection:"column", gap:5 }}>
-              {runHistory.slice(0,10).map(r => (
-                <button key={r.run_id} onClick={()=>setSelected(r.run_id)}
-                  style={{ display:"flex", alignItems:"center", gap:8, padding:"6px 8px",
-                    borderRadius:6, cursor:"pointer", textAlign:"left", fontFamily:"inherit",
-                    border:`1px solid ${selected===r.run_id?T.accent:T.border}`,
-                    background:selected===r.run_id?`${T.accent}08`:"transparent" }}>
-                  <StatusDot status={r.status==="clean"?"healthy":r.status==="critical"?"critical":"warning"}/>
-                  <div style={{ flex:1 }}>
-                    <div style={{ fontSize:10, fontWeight:600, color:T.text, fontFamily:T.monoFont }}>
-                      #{r.run_id}
-                    </div>
-                    <div style={{ fontSize:9, color:T.muted }}>{r.started_at}</div>
-                  </div>
-                  <div style={{ display:"flex", alignItems:"center", gap:5 }}>
-                    <Badge label={r.status}
-                      color={r.status==="clean"?T.green:r.status==="critical"?T.red:T.orange}/>
-                    <button onClick={(e)=>{ e.stopPropagation(); setTimelineRun(r); setView("timeline"); }}
-                      title="View timeline"
-                      style={{ background:"none", border:"none", cursor:"pointer",
-                        color:T.dim, padding:"1px 3px", fontSize:12, lineHeight:1 }}>
-                      ▤
-                    </button>
-                  </div>
-                </button>
-              ))}
-            </div>
-          </Card>
-
-          {/* Selected run detail */}
-          {(() => {
-            const sel = result?.run_id===selected ? result : runHistory.find(r=>r.run_id===selected);
-            if (!sel || running) return null;
-            return (
-              <div style={{ display:"flex", flexDirection:"column", gap:10 }}>
-                <Card style={{ padding:"14px 18px",
-                  background:sel.status==="clean"?`${T.green}06`:`${T.orange}06`,
-                  borderColor:sel.status==="clean"?`${T.green}30`:`${T.orange}30` }}>
-                  <div style={{ display:"flex", alignItems:"center", gap:10 }}>
-                    {sel.status==="clean"
-                      ?<CheckCircle size={20} color={T.green} strokeWidth={1.5}/>
-                      :<AlertTriangle size={20} color={T.orange} strokeWidth={1.5}/>
-                    }
-                    <div style={{ flex:1 }}>
-                      <div style={{ fontSize:13, fontWeight:700,
-                        color:sel.status==="clean"?T.green:T.orange }}>
-                        #{sel.run_id} — {sel.status?.toUpperCase()}
-                      </div>
-                      <div style={{ fontSize:11, color:T.muted }}>
-                        {sel.started_at} · {sel.issues?.length||0} issue(s)
-                      </div>
-                    </div>
-                    {sel.notified && <Badge label="Slack sent" color={T.green}/>}
-                  </div>
-                  {sel.root_cause_analysis?.root_cause && sel.root_cause_analysis.root_cause!=="none" && (
-                    <div style={{ marginTop:8, padding:"7px 10px", borderRadius:6,
-                      background:`${T.orange}10`, fontSize:11, color:T.text2 }}>
-                      <strong>Root cause:</strong> {sel.root_cause_analysis.root_cause}
-                    </div>
-                  )}
-                </Card>
-                <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr 1fr", gap:8 }}>
-                  {[["📥","Download Monitor","download_findings"],
-                    ["🕐","Freshness","freshness_findings"],
-                    ["🔍","Integrity","integrity_findings"]].map(([icon,label,key]) => {
-                    const findings = sel[key]||[];
-                    const clean = findings.length===0;
-                    return (
-                      <Card key={key} style={{ padding:"10px 12px",
-                        borderColor:clean?`${T.green}30`:`${T.orange}30`,
-                        background:clean?`${T.green}04`:`${T.orange}04` }}>
-                        <div style={{ fontSize:11, fontWeight:600,
-                          color:clean?T.green:T.orange, marginBottom:5 }}>
-                          {icon} {label}
-                        </div>
-                        {clean
-                          ? <div style={{ fontSize:10, color:T.green }}>✓ Clean</div>
-                          : findings.map(f=>(
-                            <div key={f.id} style={{ fontSize:10, color:T.text2,
-                              fontFamily:T.monoFont }}>[{f.id}] {f.count}</div>
-                          ))
-                        }
-                      </Card>
-                    );
-                  })}
-                </div>
-                <Card style={{ padding:"12px 14px" }}>
-                  <div style={{ fontSize:10, fontWeight:700, color:T.muted, marginBottom:6,
-                    textTransform:"uppercase", letterSpacing:"0.06em" }}>Trace</div>
-                  <div style={{ maxHeight:140, overflowY:"auto", display:"flex",
-                    flexDirection:"column", gap:2 }}>
-                    {(sel.trace||[]).map((t,i)=>(
-                      <div key={i} style={{ display:"flex", gap:6, fontSize:10 }}>
-                        <span style={{ color:T.dim, fontFamily:T.monoFont,
-                          fontSize:9, flexShrink:0 }}>[{t.ts}]</span>
-                        <span style={{ padding:"0 5px", borderRadius:3, fontSize:8,
-                          fontWeight:700, background:`${T.accent}12`, color:T.accentL,
-                          flexShrink:0 }}>{t.node}</span>
-                        <span style={{ color:t.level==="success"?T.green:
-                          t.level==="error"?T.red:t.level==="warning"?T.yellow:T.muted }}>
-                          {t.msg}
-                        </span>
-                      </div>
-                    ))}
-                  </div>
-                </Card>
-              </div>
-            );
-          })()}
-        </div>
-      )}
-    </div>
-  );
-}
-
-// ─── Workflow Builder ─────────────────────────────────────────────────────────
-function WorkflowRunDetail({ wf, results, history, onClose, onSendToTriage }) {
-  const T = useT();
-  const [expanded, setExpanded] = React.useState({});
-  const toggle = (k) => setExpanded(p => ({...p, [k]: !p[k]}));
-
-  // Merge: live result + latest from history
-  const runs = React.useMemo(() => {
-    const all = [...(history || []).filter(h => h.workflow_id === wf.id)];
-    if (results && !all.find(r => r.run_id === results.run_id)) {
-      all.unshift(results);
-    }
-    return all.slice(0, 10);
-  }, [results, history, wf.id]);
-
-  const [selectedRun, setSelectedRun] = React.useState(runs[0] || null);
-  const tableResults = selectedRun?.table_results || [];
-  const SEV = { critical: T.red, high: T.orange, medium: T.yellow, low: T.cyan };
-
-  return (
-    <div className="fade-in" style={{ padding:"28px 32px", maxWidth:1000 }}>
-      {/* Header */}
-      <div style={{ display:"flex", alignItems:"center", gap:12, marginBottom:20 }}>
-        <Btn onClick={onClose} variant="ghost" size="sm">← Back</Btn>
-        <div>
-          <div style={{ fontSize:18, fontWeight:700, color:T.text }}>{wf.name}</div>
-          <div style={{ fontSize:12, color:T.muted, marginTop:2 }}>
-            {runs.length} run{runs.length!==1?"s":""} recorded
-          </div>
-        </div>
-      </div>
-
-      <div style={{ display:"grid", gridTemplateColumns:"180px 1fr", gap:16 }}>
-        {/* Run selector */}
-        <div style={{ display:"flex", flexDirection:"column", gap:5 }}>
-          <div style={{ fontSize:10, fontWeight:700, color:T.muted, textTransform:"uppercase",
-            letterSpacing:"0.06em", marginBottom:4 }}>Runs</div>
-          {runs.length === 0 && (
-            <div style={{ fontSize:11, color:T.dim }}>No runs yet</div>
-          )}
-          {runs.map(r => (
-            <button key={r.run_id} onClick={() => setSelectedRun(r)}
-              style={{ textAlign:"left", padding:"8px 10px", borderRadius:7, cursor:"pointer",
-                border:`1px solid ${selectedRun?.run_id===r.run_id ? T.accent : T.border}`,
-                background: selectedRun?.run_id===r.run_id ? `${T.accent}10` : T.surface,
-                color: T.text }}>
-              <div style={{ fontSize:10, fontWeight:600,
-                color: r.status==="clean" ? T.green : r.status==="error" ? T.red : T.orange }}>
-                {r.status==="clean" ? "✓ Clean" : r.status==="error" ? "✗ Error" : `⚠ ${r.total_issues} issue(s)`}
-              </div>
-              <div style={{ fontSize:9, color:T.muted, marginTop:2 }}>
-                {r.triggered_by} · {r.started_at?.slice(11,16)} UTC
-              </div>
-            </button>
-          ))}
-        </div>
-
-        {/* Run detail */}
-        <div style={{ display:"flex", flexDirection:"column", gap:10 }}>
-          {!selectedRun && (
-            <div style={{ fontSize:13, color:T.muted, padding:20 }}>Select a run to view results</div>
-          )}
-          {selectedRun && (
-            <>
-              {/* Run summary bar */}
-              <Card style={{ padding:"12px 16px" }}>
-                <div style={{ display:"flex", gap:24, flexWrap:"wrap" }}>
-                  {[
-                    ["Run ID",     selectedRun.run_id],
-                    ["Triggered",  selectedRun.triggered_by],
-                    ["Started",    selectedRun.started_at?.slice(0,19).replace("T"," ")+" UTC"],
-                    ["Tables",     (selectedRun.table_results||[]).length],
-                    ["Issues",     selectedRun.total_issues || 0],
-                  ].map(([k,v]) => (
-                    <div key={k}>
-                      <div style={{ fontSize:9, fontWeight:700, color:T.muted,
-                        textTransform:"uppercase", letterSpacing:"0.05em" }}>{k}</div>
-                      <div style={{ fontSize:12, fontWeight:600, color:T.text,
-                        fontFamily: k==="Run ID" ? "monospace" : "inherit" }}>{v}</div>
-                    </div>
-                  ))}
-                </div>
-              </Card>
-
-              {/* Per-table results */}
-              {tableResults.length === 0 && (
-                <div style={{ fontSize:12, color:T.muted, padding:"12px 0" }}>No table results recorded.</div>
-              )}
-              {tableResults.map((tr, i) => {
-                const hasIssues = tr.issues?.length > 0;
-                const isExp = expanded[i];
-                return (
-                  <Card key={i} style={{ overflow:"hidden",
-                    borderColor: tr.skipped ? T.border : hasIssues ? `${T.orange}40` : `${T.green}30` }}>
-                    {/* Table header row */}
-                    <div style={{ padding:"12px 16px", display:"flex", alignItems:"center", gap:10 }}>
-                      <StatusDot status={tr.skipped?"muted":hasIssues?"warning":"healthy"}/>
-                      <div style={{ flex:1 }}>
-                        <div style={{ display:"flex", alignItems:"center", gap:8 }}>
-                          <span style={{ fontFamily:"monospace", fontSize:12, fontWeight:600,
-                            color:T.text }}>{tr.table}</span>
-                          {tr.agent && (
-                            <span style={{ fontSize:10, color:T.muted }}>via {tr.agent}</span>
-                          )}
-                          {tr.branch_action && (
-                            <Badge label={tr.branch_action} color={T.purple}/>
-                          )}
-                        </div>
-                        <div style={{ fontSize:11, color:T.muted, marginTop:2 }}>
-                          {tr.skipped ? "Skipped by branching rule"
-                            : hasIssues ? `${tr.issues.length} issue(s) found`
-                            : "All checks passed"}
-                        </div>
-                      </div>
-                      <div style={{ display:"flex", gap:6 }}>
-                        {hasIssues && (
-                          <>
-                            <Btn size="sm" variant="muted" onClick={() => toggle(i)}>
-                              <Eye size={10}/> {isExp ? "Hide" : "Details"}
-                            </Btn>
-                            <Btn size="sm" variant="ghost"
-                              onClick={() => onSendToTriage(tr, wf.name)}
-                              style={{ color:T.accent, borderColor:`${T.accent}40` }}>
-                              <ArrowRight size={10}/> Send to Triage
-                            </Btn>
-                          </>
-                        )}
-                      </div>
-                    </div>
-
-                    {/* Issue details */}
-                    {isExp && hasIssues && (
-                      <div style={{ borderTop:`1px solid ${T.border}`,
-                        padding:"10px 16px", display:"flex", flexDirection:"column", gap:8 }}>
-                        {tr.issues.map((iss, j) => (
-                          <div key={j} style={{ padding:"8px 12px", borderRadius:6,
-                            background:`${SEV[iss.severity]||T.orange}08`,
-                            border:`1px solid ${SEV[iss.severity]||T.orange}25` }}>
-                            <div style={{ display:"flex", alignItems:"center", gap:8, marginBottom:4 }}>
-                              <Badge label={iss.severity||"medium"} color={SEV[iss.severity]||T.orange}/>
-                              <span style={{ fontSize:11, fontWeight:600, color:T.text,
-                                textTransform:"capitalize" }}>
-                                {iss.type?.replace(/_/g," ") || "Issue"}
-                              </span>
-                              {iss.count != null && (
-                                <span style={{ fontSize:11, fontFamily:"monospace",
-                                  color:T.muted }}>· {iss.count} row(s)</span>
-                              )}
-                              {iss.column && (
-                                <span style={{ fontSize:10, fontFamily:"monospace",
-                                  color:T.cyan }}>col: {iss.column}</span>
-                              )}
-                            </div>
-                            {iss.msg && (
-                              <div style={{ fontSize:11, color:T.text2 }}>{iss.msg}</div>
-                            )}
-                            {iss.age_hours != null && (
-                              <div style={{ fontSize:11, color:T.orange }}>
-                                {iss.age_hours}h since last update
-                              </div>
-                            )}
-                          </div>
-                        ))}
-
-                        {/* Trace log */}
-                        {tr.trace?.length > 0 && (
-                          <details style={{ marginTop:4 }}>
-                            <summary style={{ fontSize:10, color:T.muted, cursor:"pointer" }}>
-                              Agent trace ({tr.trace.length} steps)
-                            </summary>
-                            <div style={{ marginTop:6, display:"flex", flexDirection:"column", gap:3 }}>
-                              {tr.trace.map((t,k) => (
-                                <div key={k} style={{ fontSize:10, fontFamily:"monospace",
-                                  color: t.level==="error"?T.red:t.level==="warning"?T.orange:T.muted }}>
-                                  [{t.node}] {t.msg}
-                                </div>
-                              ))}
-                            </div>
-                          </details>
-                        )}
-                      </div>
-                    )}
-                  </Card>
-                );
-              })}
-            </>
-          )}
-        </div>
-      </div>
-    </div>
-  );
-}
-
-function WorkflowBuilder({ initial, onSave, onCancel }) {
-  const T = useT();
-  const dbSchema = useSchema();
-  const blank = { name:"", desc:"", trigger:"manual", schedule:"",
-                  agents:[], tables:[], branches:[], table_checks:{}, endpoint:"",
-                  schema_group:"", db_key:"default", slack_channel:"" };
-  const [wf,       setWf]       = React.useState(initial ? {...blank,...initial, branches: initial.branches||[], table_checks: initial.table_checks||{}} : blank);
-  const [expandedTableChecks, setExpandedTableChecks] = React.useState({});
-  const [tableCheckIn, setTableCheckIn] = React.useState({}); // {tableKey: {name,sql,pass_condition}}
-  const [agentIn,  setAgentIn]  = React.useState("");
-  const [tableIn,  setTableIn]  = React.useState("");
-  const [aiLoading,setAiLoading]= React.useState(false);
-  const [aiHints,  setAiHints]  = React.useState(null);
-  const [showScenarios, setShowScenarios] = React.useState(!initial);
-
-  const SCENARIOS = [
-    { icon:"🌅", label:"Daily freshness check", desc:"Check that data arrived today for key tables",
-      name:"Daily Freshness Check", trigger:"scheduled", schedule:"8:00 AM IST",
-      agents:["Freshness Agent"], tables:["mws.report","mws.orders"] },
-    { icon:"📥", label:"Post-download validation", desc:"Validate data quality after a download pipeline runs",
-      name:"Post-Download Validation", trigger:"event", schedule:"",
-      agents:["Null Check Agent","Dupe Check Agent","Row Count Agent"], tables:["mws.report"] },
-    { icon:"⚠️", label:"Alert on failed downloads", desc:"Detect and notify when report downloads fail",
-      name:"Download Failure Monitor", trigger:"scheduled", schedule:"Every 2 hours",
-      agents:["Download Monitor","Failure Classifier"], tables:["mws.report"] },
-    { icon:"📊", label:"Weekly data integrity scan", desc:"Deep integrity checks across all key tables",
-      name:"Weekly Integrity Scan", trigger:"scheduled", schedule:"Monday 9:00 AM IST",
-      agents:["Null Check Agent","Dupe Check Agent","Freshness Agent","Integrity Agent"], tables:["mws.report","mws.orders","mws.inventory"] },
-    { icon:"🔁", label:"Replication health check", desc:"Monitor Redshift replication status",
-      name:"Replication Health Check", trigger:"scheduled", schedule:"6:00 AM IST",
-      agents:["Copy Status Monitor","Stuck Copy Detector"], tables:["mws.report"] },
-  ];
-
-  const applyScenario = (s) => {
-    setWf(p => ({...p, name:s.name, desc:s.desc, trigger:s.trigger,
-      schedule:s.schedule, agents:[...s.agents], tables:[...s.tables]}));
-    setShowScenarios(false);
-  };
-
-  const blankBranch = () => ({ id: Date.now(), afterAgent:"", condition:"on_failure", action:"notify", target:"" });
-  const addBranch    = () => setWf(p=>({...p, branches:[...p.branches, blankBranch()]}));
-  const removeBranch = (id) => setWf(p=>({...p, branches:p.branches.filter(b=>b.id!==id)}));
-  const updateBranch = (id, key, val) => setWf(p=>({
-    ...p, branches: p.branches.map(b => b.id===id ? {...b,[key]:val} : b)
-  }));
-
-  const field = (key, val) => setWf(p => ({...p, [key]:val}));
-
-  const addAgent = () => {
-    if (!agentIn.trim()) return;
-    setWf(p => ({...p, agents:[...p.agents, agentIn.trim()]}));
-    setAgentIn("");
-  };
-  const removeAgent = (i) => setWf(p=>({...p, agents:p.agents.filter((_,j)=>j!==i)}));
-
-  const addTable = () => {
-    if (!tableIn.trim()) return;
-    setWf(p => ({...p, tables:[...p.tables, tableIn.trim()]}));
-    setTableIn("");
-  };
-  const removeTable = (i) => setWf(p=>({...p, tables:p.tables.filter((_,j)=>j!==i)}));
-
-  const getAiHelp = async () => {
-    if (!wf.name && !wf.desc) return;
-    setAiLoading(true); setAiHints(null);
-    try {
-      const res  = await fetch(`${API}/api/ai/chat`, {
-        method:"POST", headers:{"Content-Type":"application/json"},
-        body:JSON.stringify({
-          system:`You are WiziAgent helping a user design a new data workflow for Intentwise.
-${dbSchema ? "Available tables: " + dbSchema.split(";").map(t=>t.split("(")[0].trim()).filter(Boolean).join(", ") : "Available tables: mws.report, mws.orders, mws.inventory, public.tbl_amzn_campaign_report, public.tbl_amzn_keyword_report"}.
-Based on the workflow name/desc, suggest agents, tables, and schedule.
-Respond ONLY with JSON:
-{"suggested_agents":["agent1","agent2"],"suggested_tables":["mws.report"],"suggested_schedule":"4:30 PM IST","suggested_trigger":"scheduled|manual|event","tips":["tip1","tip2"]}`,
-          messages:[{ role:"user",
-            content:`Workflow: "${wf.name}" — ${wf.desc}. Current agents: ${wf.agents.join(", ")||"none"}` }],
+          system:`You write Redshift SQL checks for a data quality workflow.
+Available tables: ${tables}
+Given a description, respond ONLY with a JSON object (no markdown):
+{"name":"Check name","sql":"SELECT COUNT(*) FROM schema.table WHERE condition","pass_condition":"rows = 0","severity":"high","explanation":"Why this check matters"}
+Rules: sql must be SELECT only. pass_condition options: "rows = 0", "rows > 0", "value = 0", "value > N". severity: critical|high|medium|low`,
+          messages:[{role:"user",content:aiDesc}],
           max_tokens:400
         })
       });
-      const data  = await res.json();
-      const text  = data.content?.[0]?.text||"{}";
-      setAiHints(JSON.parse(text.replace(/```json|```/g,"").trim()));
-    } catch(e) { console.error(e); }
-    setAiLoading(false);
+      const data = await res.json();
+      const text = data?.content?.[0]?.text || "{}";
+      const obj  = JSON.parse(text.replace(/```json|```/g,"").trim());
+      if (obj.sql) {
+        setDraft({
+          name:  obj.name  || aiDesc.slice(0,40),
+          sql:   obj.sql,
+          pass_condition: obj.pass_condition || "rows = 0",
+          severity: obj.severity || "high",
+        });
+        setAiDesc("");
+      }
+    } catch(e) {}
+    setAiLoad(false);
   };
 
-  const applyHints = () => {
-    if (!aiHints) return;
-    setWf(p => ({
-      ...p,
-      agents:   [...new Set([...p.agents, ...(aiHints.suggested_agents||[])])],
-      tables:   [...new Set([...p.tables, ...(aiHints.suggested_tables||[])])],
-      schedule: aiHints.suggested_schedule || p.schedule,
-      trigger:  aiHints.suggested_trigger  || p.trigger,
-    }));
-    setAiHints(null);
+  // Test SQL
+  const testSql = async () => {
+    if (!checkDraft.sql.trim()) return;
+    setTesting(true); setTestResult(null);
+    try {
+      const res  = await fetch(`${API}/api/query?sql=${encodeURIComponent(checkDraft.sql + " LIMIT 5")}`);
+      const data = await res.json();
+      setTestResult(data);
+    } catch(e) { setTestResult({error:e.message}); }
+    setTesting(false);
   };
 
-  const inputStyle = {
-    width:"100%", padding:"8px 12px", borderRadius:7, outline:"none",
-    border:`1px solid ${T.border}`, background:T.surface,
-    color:T.text, fontSize:12, fontFamily:"inherit", boxSizing:"border-box",
-  };
+  const inp = { width:"100%", padding:"7px 10px", borderRadius:7, fontSize:12,
+    border:`1px solid ${T.border}`, background:T.surface, color:T.text,
+    fontFamily:"inherit", outline:"none", boxSizing:"border-box" };
 
   return (
-    <div className="fade-in" style={{ overflowY:"auto", padding:"28px 32px", maxWidth:760 }}>
-      <div style={{ display:"flex", alignItems:"center", gap:12, marginBottom:24 }}>
+    <div style={{ overflowY:"auto", padding:"24px 28px", maxWidth:800 }}>
+      <div style={{ display:"flex", alignItems:"center", gap:12, marginBottom:22 }}>
         <Btn onClick={onCancel} variant="ghost" size="sm">← Back</Btn>
-        <div style={{ fontSize:20, fontWeight:700, color:T.text, letterSpacing:"-0.02em" }}>
+        <div style={{ fontSize:18, fontWeight:700, color:T.text }}>
           {initial ? "Edit Workflow" : "New Workflow"}
         </div>
+        <Btn onClick={()=>onSave(wf)} disabled={!wf.name.trim()}
+          style={{ marginLeft:"auto", background:`linear-gradient(135deg,${T.accent},${T.purple})`,
+            color:"white", border:"none" }}>
+          <Check size={11}/> Save Workflow
+        </Btn>
       </div>
 
       <div style={{ display:"flex", flexDirection:"column", gap:14 }}>
-        {/* Scenario picker — shown when blank */}
-        {showScenarios && !wf.name && (
-          <Card style={{ padding:"18px 20px",
-            borderColor:`${T.accent}30`, background:`${T.accent}04` }}>
-            <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom:14 }}>
-              <div>
-                <div style={{ fontSize:13, fontWeight:700, color:T.text }}>
-                  Start from a common scenario
-                </div>
-                <div style={{ fontSize:11, color:T.muted, marginTop:2 }}>
-                  Pick one to pre-fill the form, or skip and build from scratch below.
-                </div>
-              </div>
-              <Btn size="sm" variant="ghost" onClick={()=>setShowScenarios(false)}>
-                Skip →
-              </Btn>
-            </div>
-            <div style={{ display:"flex", flexDirection:"column", gap:7 }}>
-              {SCENARIOS.map((s,i) => (
-                <button key={i} onClick={()=>applyScenario(s)}
-                  style={{ display:"flex", alignItems:"center", gap:12,
-                    padding:"10px 14px", borderRadius:8, border:`1px solid ${T.border}`,
-                    background:T.surface, cursor:"pointer", textAlign:"left",
-                    transition:"all 0.12s" }}
-                  onMouseEnter={e=>{e.currentTarget.style.borderColor=T.accent; e.currentTarget.style.background=`${T.accent}06`;}}
-                  onMouseLeave={e=>{e.currentTarget.style.borderColor=T.border; e.currentTarget.style.background=T.surface;}}>
-                  <span style={{ fontSize:20, flexShrink:0 }}>{s.icon}</span>
-                  <div style={{ flex:1 }}>
-                    <div style={{ fontSize:12, fontWeight:600, color:T.text }}>{s.label}</div>
-                    <div style={{ fontSize:11, color:T.muted, marginTop:1 }}>{s.desc}</div>
-                  </div>
-                  <ArrowRight size={12} color={T.muted}/>
-                </button>
-              ))}
-            </div>
-          </Card>
-        )}
 
-        {/* Name + desc */}
+        {/* Basic info */}
         <Card style={{ padding:"18px 20px" }}>
-          <div style={{ fontSize:11, fontWeight:700, color:T.muted, marginBottom:12,
-            textTransform:"uppercase", letterSpacing:"0.06em" }}>Basic Info</div>
+          <div style={{ fontSize:12, fontWeight:700, color:T.muted, marginBottom:12,
+            textTransform:"uppercase", letterSpacing:"0.05em" }}>Workflow Info</div>
           <div style={{ display:"flex", flexDirection:"column", gap:10 }}>
             <div>
-              <label style={{ fontSize:11, fontWeight:600, color:T.text2,
-                display:"block", marginBottom:4 }}>Workflow Name *</label>
+              <label style={{ fontSize:11, fontWeight:600, color:T.text2, display:"block", marginBottom:3 }}>Name *</label>
               <input value={wf.name} onChange={e=>field("name",e.target.value)}
-                placeholder="e.g. Inventory Freshness Check"
-                style={inputStyle}
-                onFocus={e=>e.target.style.borderColor=T.accent}
+                placeholder="e.g. Amazon Data Quality Check"
+                style={inp} onFocus={e=>e.target.style.borderColor=T.accent}
                 onBlur={e=>e.target.style.borderColor=T.border}/>
             </div>
             <div>
-              <label style={{ fontSize:11, fontWeight:600, color:T.text2,
-                display:"block", marginBottom:4 }}>Description</label>
-              <textarea value={wf.desc} onChange={e=>field("desc",e.target.value)}
-                placeholder="What does this workflow do and why?"
-                rows={2}
-                style={{...inputStyle, resize:"vertical"}}
-                onFocus={e=>e.target.style.borderColor=T.accent}
+              <label style={{ fontSize:11, fontWeight:600, color:T.text2, display:"block", marginBottom:3 }}>Description</label>
+              <input value={wf.desc} onChange={e=>field("desc",e.target.value)}
+                placeholder="What does this workflow check?"
+                style={inp} onFocus={e=>e.target.style.borderColor=T.accent}
                 onBlur={e=>e.target.style.borderColor=T.border}/>
             </div>
-          </div>
-        </Card>
-
-        {/* Schedule */}
-        <Card style={{ padding:"18px 20px" }}>
-          <div style={{ fontSize:11, fontWeight:700, color:T.muted, marginBottom:12,
-            textTransform:"uppercase", letterSpacing:"0.06em" }}>Schedule</div>
-          <div style={{ display:"flex", flexDirection:"column", gap:10 }}>
-            <div>
-              <label style={{ fontSize:11, fontWeight:600, color:T.text2,
-                display:"block", marginBottom:4 }}>Trigger</label>
-              <select value={wf.trigger} onChange={e=>field("trigger",e.target.value)}
-                style={{...inputStyle}}>
-                <option value="manual">Manual only</option>
-                <option value="scheduled">Scheduled (auto-run)</option>
-                <option value="event">Event-driven</option>
-              </select>
-            </div>
-
-            {wf.trigger==="scheduled" && (
-              <div>
-                {/* Quick test options */}
-                <label style={{ fontSize:11, fontWeight:600, color:T.text2,
-                  display:"block", marginBottom:6 }}>Schedule</label>
-                <div style={{ display:"flex", gap:5, flexWrap:"wrap", marginBottom:8 }}>
-                  {[
-                    { label:"Every 1 min", value:"every 1 min" },
-                    { label:"Every 2 min", value:"every 2 min" },
-                    { label:"Every 5 min", value:"every 5 min" },
-                    { label:"Every 15 min", value:"every 15 min" },
-                    { label:"Every hour",  value:"every 1 hour" },
-                  ].map(opt=>(
-                    <button key={opt.value}
-                      onClick={()=>field("schedule", opt.value)}
-                      style={{ padding:"3px 10px", borderRadius:99, fontSize:10,
-                        cursor:"pointer", border:"none", transition:"all 0.1s",
-                        background: wf.schedule===opt.value ? T.accent : `${T.accent}12`,
-                        color: wf.schedule===opt.value ? "white" : T.muted,
-                        fontWeight: wf.schedule===opt.value ? 600 : 400 }}>
-                      {opt.label}
-                    </button>
-                  ))}
-                </div>
-                <div style={{ display:"flex", gap:8, alignItems:"center" }}>
-                  <input value={wf.schedule} onChange={e=>field("schedule",e.target.value)}
-                    placeholder="or type: 4:30 PM IST / every 30 min / 0 11 * * *"
-                    style={{...inputStyle, flex:1, fontFamily:"monospace", fontSize:11}}
-                    onFocus={e=>e.target.style.borderColor=T.accent}
-                    onBlur={e=>e.target.style.borderColor=T.border}/>
-                </div>
-                {wf.schedule && (
-                  <div style={{ fontSize:10, color:T.dim, marginTop:5 }}>
-                    {wf.schedule.toLowerCase().startsWith("every")
-                      ? `⏱ Runs ${wf.schedule} when the cron checker fires — set Railway cron to */1 * * * *`
-                      : `🕐 Runs daily at the specified IST time — requires Railway cron */10 * * * *`}
-                  </div>
-                )}
-              </div>
-            )}
-          </div>
-        </Card>
-
-        {/* AI assistant */}
-        <Card style={{ padding:"18px 20px",
-          borderColor:`${T.purple}30`, background:`${T.purple}04` }}>
-          <div style={{ display:"flex", alignItems:"center", gap:8, marginBottom:12 }}>
-            <Zap size={13} color={T.purple}/>
-            <span style={{ fontSize:11, fontWeight:700, color:T.purple }}>
-              AI Assistant
-            </span>
-            <Btn onClick={getAiHelp} disabled={aiLoading||(!wf.name&&!wf.desc)}
-              size="sm" variant="ghost" style={{ marginLeft:"auto" }}>
-              {aiLoading?<Spinner size={10}/>:<Zap size={10}/>}
-              {aiLoading?"Thinking…":"Suggest agents & tables"}
-            </Btn>
-          </div>
-          {aiHints && (
-            <div style={{ padding:"10px 14px", borderRadius:7,
-              background:T.surface, border:`1px solid ${T.border}` }}>
-              <div style={{ display:"flex", flexDirection:"column", gap:4, marginBottom:8 }}>
-                {aiHints.tips?.map((tip,i)=>(
-                  <div key={i} style={{ fontSize:11, color:T.text2 }}>💡 {tip}</div>
-                ))}
-              </div>
-              <div style={{ fontSize:11, color:T.muted, marginBottom:6 }}>
-                Suggested agents: <strong style={{color:T.text}}>
-                  {aiHints.suggested_agents?.join(", ")}
-                </strong>
-              </div>
-              <div style={{ fontSize:11, color:T.muted, marginBottom:8 }}>
-                Suggested tables: <strong style={{color:T.text,fontFamily:T.monoFont,fontSize:10}}>
-                  {aiHints.suggested_tables?.join(", ")}
-                </strong>
-              </div>
-              <Btn onClick={applyHints} size="sm" variant="success">
-                <Check size={10}/> Apply suggestions
-              </Btn>
-            </div>
-          )}
-          {!aiHints && !aiLoading && (
-            <div style={{ fontSize:11, color:T.dim }}>
-              Fill in a name and description, then click "Suggest agents & tables"
-            </div>
-          )}
-        </Card>
-
-        {/* Agents */}
-        <Card style={{ padding:"18px 20px" }}>
-          <div style={{ fontSize:11, fontWeight:700, color:T.muted, marginBottom:12,
-            textTransform:"uppercase", letterSpacing:"0.06em" }}>Sub-agents</div>
-          <div style={{ display:"flex", flexWrap:"wrap", gap:6, marginBottom:10 }}>
-            {wf.agents.map((a,i)=>(
-              <div key={i} style={{ display:"flex", alignItems:"center", gap:4,
-                padding:"3px 8px", borderRadius:5,
-                background:`${T.accent}12`, border:`1px solid ${T.accent}20` }}>
-                <span style={{ fontSize:11, color:T.accentL }}>{i+1}. {a}</span>
-                <button onClick={()=>removeAgent(i)}
-                  style={{ background:"none", border:"none", cursor:"pointer",
-                    color:T.muted, padding:0, lineHeight:1 }}>×</button>
-              </div>
-            ))}
-          </div>
-          <div style={{ display:"flex", gap:8 }}>
-            <input value={agentIn} onChange={e=>setAgentIn(e.target.value)}
-              onKeyDown={e=>e.key==="Enter"&&addAgent()}
-              placeholder="Agent name (e.g. NullCheckAgent)"
-              style={{...inputStyle, flex:1}}
-              onFocus={e=>e.target.style.borderColor=T.accent}
-              onBlur={e=>e.target.style.borderColor=T.border}/>
-            <Btn onClick={addAgent} size="sm"><Plus size={11}/></Btn>
-          </div>
-        </Card>
-
-        {/* Branching Rules */}
-        <Card style={{ padding:"18px 20px", borderColor:`${T.orange}30`, background:`${T.orange}04` }}>
-          <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom:12 }}>
-            <div style={{ fontSize:11, fontWeight:700, color:T.muted,
-              textTransform:"uppercase", letterSpacing:"0.06em" }}>Conditional Branching</div>
-            <Btn onClick={addBranch} size="sm" variant="ghost"
-              style={{ fontSize:10, color:T.orange, borderColor:`${T.orange}40` }}>
-              <Plus size={10}/> Add Rule
-            </Btn>
-          </div>
-
-          {wf.branches.length === 0 ? (
-            <div style={{ fontSize:11, color:T.dim, padding:"8px 0" }}>
-              No branching rules — agents run sequentially. Add a rule to control failure routing.
-            </div>
-          ) : (
-            <div style={{ display:"flex", flexDirection:"column", gap:8 }}>
-              {wf.branches.map((b, idx) => (
-                <div key={b.id} style={{
-                  display:"flex", alignItems:"center", gap:6, flexWrap:"wrap",
-                  padding:"10px 12px", borderRadius:7,
-                  background:T.surface, border:`1px solid ${T.border}`,
-                }}>
-                  {/* Rule number */}
-                  <div style={{
-                    minWidth:18, height:18, borderRadius:"50%", display:"flex",
-                    alignItems:"center", justifyContent:"center",
-                    background:`${T.orange}18`, fontSize:10, fontWeight:700, color:T.orange,
-                  }}>{idx+1}</div>
-
-                  <span style={{ fontSize:11, color:T.muted }}>After</span>
-
-                  {/* After which agent */}
-                  <select value={b.afterAgent}
-                    onChange={e=>updateBranch(b.id,"afterAgent",e.target.value)}
-                    style={{ fontSize:11, padding:"3px 6px", borderRadius:5,
-                      border:`1px solid ${T.border}`, background:T.surface, color:T.text,
-                      fontFamily:"inherit", minWidth:120 }}>
-                    <option value="">— any agent —</option>
-                    {wf.agents.map((a,i)=>(
-                      <option key={i} value={a}>{a}</option>
-                    ))}
-                  </select>
-
-                  {/* Condition */}
-                  <select value={b.condition}
-                    onChange={e=>updateBranch(b.id,"condition",e.target.value)}
-                    style={{ fontSize:11, padding:"3px 6px", borderRadius:5,
-                      border:`1px solid ${T.border}`, background:T.surface, color:T.text,
-                      fontFamily:"inherit" }}>
-                    <option value="on_failure">on failure</option>
-                    <option value="on_success">on success</option>
-                    <option value="always">always</option>
-                  </select>
-
-                  <ArrowRight size={11} color={T.muted}/>
-
-                  {/* Action */}
-                  <select value={b.action}
-                    onChange={e=>updateBranch(b.id,"action",e.target.value)}
-                    style={{ fontSize:11, padding:"3px 6px", borderRadius:5,
-                      border:`1px solid ${T.border}`, background:T.surface, color:T.text,
-                      fontFamily:"inherit" }}>
-                    <option value="notify">Notify & continue</option>
-                    <option value="stop">Stop workflow</option>
-                    <option value="skip_remaining">Skip remaining agents</option>
-                    <option value="run_agent">Run specific agent</option>
-                  </select>
-
-                  {/* Target agent (only for run_agent) */}
-                  {b.action === "run_agent" && (
-                    <select value={b.target}
-                      onChange={e=>updateBranch(b.id,"target",e.target.value)}
-                      style={{ fontSize:11, padding:"3px 6px", borderRadius:5,
-                        border:`1px solid ${T.accent}60`, background:`${T.accent}08`,
-                        color:T.text, fontFamily:"inherit", minWidth:120 }}>
-                      <option value="">— pick agent —</option>
-                      {wf.agents.filter(a=>a!==b.afterAgent).map((a,i)=>(
-                        <option key={i} value={a}>{a}</option>
-                      ))}
-                    </select>
-                  )}
-
-                  {/* Remove */}
-                  <button onClick={()=>removeBranch(b.id)}
-                    style={{ marginLeft:"auto", background:"none", border:"none",
-                      cursor:"pointer", color:T.muted, padding:2, lineHeight:1,
-                      fontSize:14, borderRadius:4 }}>×</button>
-                </div>
-              ))}
-            </div>
-          )}
-
-          {wf.branches.length > 0 && wf.agents.length === 0 && (
-            <div style={{ marginTop:8, fontSize:10, color:T.orange }}>
-              ⚠ Add agents above to bind branching rules to specific steps.
-            </div>
-          )}
-        </Card>
-
-        {/* Tables + per-table checks */}
-        <Card style={{ padding:"18px 20px" }}>
-          <div style={{ fontSize:11, fontWeight:700, color:T.muted, marginBottom:12,
-            textTransform:"uppercase", letterSpacing:"0.06em" }}>Tables & Checks</div>
-
-          {/* Add table row */}
-          <div style={{ display:"flex", gap:8, marginBottom:14 }}>
-            <input value={tableIn} onChange={e=>setTableIn(e.target.value)}
-              onKeyDown={e=>e.key==="Enter"&&addTable()}
-              placeholder="schema.table (e.g. mws.orders)"
-              style={{...inputStyle, flex:1, fontFamily:T.monoFont, fontSize:11}}
-              onFocus={e=>e.target.style.borderColor=T.accent}
-              onBlur={e=>e.target.style.borderColor=T.border}/>
-            <Btn onClick={addTable} size="sm"><Plus size={11}/> Add Table</Btn>
-          </div>
-
-          {wf.tables.length === 0 && (
-            <div style={{ fontSize:11, color:T.dim, marginBottom:8 }}>
-              No tables added yet — add a table above to define checks for it.
-            </div>
-          )}
-
-          {/* Per-table check builder */}
-          <div style={{ display:"flex", flexDirection:"column", gap:10 }}>
-            {wf.tables.map((t, i) => {
-              const checks = wf.table_checks?.[t] || [];
-              const isExp  = expandedTableChecks[t];
-              const cin    = tableCheckIn[t] || { name:"", sql:"", pass_condition:"rows > 0" };
-              const updateCin = (key, val) => setTableCheckIn(p=>({...p,[t]:{...cin,[key]:val}}));
-
-              const addCheck = () => {
-                if (!cin.name.trim() || !cin.sql.trim()) return;
-                setWf(p => ({...p, table_checks:{...p.table_checks,
-                  [t]:[...(p.table_checks?.[t]||[]), {id:`tc-${Date.now()}`, ...cin}]}}));
-                setTableCheckIn(p=>({...p,[t]:{name:"",sql:"",pass_condition:"rows > 0"}}));
-              };
-              const removeCheck = (id) => setWf(p=>({...p, table_checks:{...p.table_checks,
-                [t]:(p.table_checks?.[t]||[]).filter(c=>c.id!==id)}}));
-
-              return (
-                <div key={i} style={{ borderRadius:8, border:`1px solid ${T.border}`,
-                  overflow:"hidden" }}>
-                  {/* Table header row */}
-                  <div style={{ display:"flex", alignItems:"center", gap:8,
-                    padding:"9px 12px", background:`${T.cyan}06` }}>
-                    <span style={{ fontSize:11, fontWeight:700, fontFamily:"monospace",
-                      color:T.cyan, flex:1 }}>{t}</span>
-                    <span style={{ fontSize:10, color:T.muted }}>
-                      {checks.length > 0 ? `${checks.length} check${checks.length!==1?"s":""}` : "generic checks"}
-                    </span>
-                    <button onClick={()=>setExpandedTableChecks(p=>({...p,[t]:!p[t]}))}
-                      style={{ background:"none", border:"none", cursor:"pointer",
-                        fontSize:10, color:T.accent, padding:"2px 6px" }}>
-                      {isExp ? "▴ Hide" : "▾ Add Checks"}
-                    </button>
-                    <button onClick={()=>removeTable(i)}
-                      style={{ background:"none", border:"none", cursor:"pointer",
-                        color:T.muted, fontSize:13 }}>×</button>
-                  </div>
-
-                  {/* Existing checks */}
-                  {checks.length > 0 && (
-                    <div style={{ padding:"6px 12px 6px", display:"flex",
-                      flexDirection:"column", gap:4 }}>
-                      {checks.map(c=>(
-                        <div key={c.id} style={{ display:"flex", alignItems:"center",
-                          gap:8, padding:"5px 8px", borderRadius:5,
-                          background:T.surface, border:`1px solid ${T.border}` }}>
-                          <span style={{ fontSize:11, fontWeight:600, color:T.text, flex:1 }}>
-                            {c.name}
-                          </span>
-                          <span style={{ fontSize:10, fontFamily:"monospace",
-                            color:T.cyan, background:`${T.cyan}10`,
-                            padding:"1px 6px", borderRadius:4 }}>
-                            {c.pass_condition}
-                          </span>
-                          <button onClick={()=>removeCheck(c.id)}
-                            style={{ background:"none", border:"none", cursor:"pointer",
-                              color:T.muted, fontSize:12 }}>×</button>
-                        </div>
-                      ))}
-                    </div>
-                  )}
-
-                  {/* Add check form */}
-                  {isExp && (
-                    <div style={{ padding:"10px 12px",
-                      borderTop:`1px solid ${T.border}`, background:`${T.accent}03` }}>
-                      <div style={{ fontSize:10, fontWeight:700, color:T.muted,
-                        marginBottom:8, textTransform:"uppercase", letterSpacing:"0.05em" }}>
-                        Add Check for {t}
-                      </div>
-                      <div style={{ display:"flex", flexDirection:"column", gap:7 }}>
-                        <div style={{ display:"flex", gap:7 }}>
-                          <input value={cin.name}
-                            onChange={e=>updateCin("name",e.target.value)}
-                            placeholder="Check name (e.g. Latest data for n-1)"
-                            style={{...inputStyle, flex:1, fontSize:11}}
-                            onFocus={e=>e.target.style.borderColor=T.accent}
-                            onBlur={e=>e.target.style.borderColor=T.border}/>
-                          <select value={cin.pass_condition}
-                            onChange={e=>updateCin("pass_condition",e.target.value)}
-                            style={{...inputStyle, width:150, fontFamily:"monospace", fontSize:10}}>
-                            <option value="rows > 0">rows &gt; 0</option>
-                            <option value="rows > 1">rows &gt; 1</option>
-                            <option value="value > 0">value &gt; 0</option>
-                            <option value="value = 0">value = 0</option>
-                          </select>
-                        </div>
-                        <textarea value={cin.sql} rows={3}
-                          onChange={e=>updateCin("sql",e.target.value)}
-                          placeholder={`SELECT COUNT(*) FROM ${t} WHERE ...`}
-                          style={{...inputStyle, fontFamily:"monospace", fontSize:11, resize:"vertical"}}
-                          onFocus={e=>e.target.style.borderColor=T.accent}
-                          onBlur={e=>e.target.style.borderColor=T.border}/>
-                        <Btn onClick={addCheck}
-                          disabled={!cin.name.trim()||!cin.sql.trim()} size="sm">
-                          <Plus size={10}/> Add Check
-                        </Btn>
-                      </div>
-                    </div>
-                  )}
-                </div>
-              );
-            })}
-          </div>
-
-          {wf.tables.length > 0 && (
-            <div style={{ fontSize:10, color:T.dim, marginTop:10 }}>
-              Tables without custom checks will run generic NULL/freshness/duplicate checks.
-            </div>
-          )}
-        </Card>
-
-        {/* Routing — schema group, DB, Slack channel */}
-        <Card style={{ padding:"18px 20px" }}>
-          <div style={{ fontSize:11, fontWeight:700, color:T.muted, marginBottom:12,
-            textTransform:"uppercase", letterSpacing:"0.06em" }}>Routing & Connection</div>
-          <div style={{ display:"flex", flexDirection:"column", gap:10 }}>
             <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:10 }}>
               <div>
-                <label style={{ fontSize:11, fontWeight:600, color:T.text2,
-                  display:"block", marginBottom:4 }}>Schema Group</label>
-                <select value={wf.schema_group||""} onChange={e=>field("schema_group",e.target.value)}
-                  style={{...inputStyle}}>
-                  <option value="">— not set —</option>
-                  <option value="amazon_source_data">amazon_source_data</option>
-                  <option value="instacart_source_data">instacart_source_data</option>
-                  <option value="cruteo_source_data">cruteo_source_data</option>
-                  <option value="walmart_source_data">walmart_source_data</option>
-                  <option value="intentwise_ecommerce_graph">intentwise_ecommerce_graph</option>
-                  <option value="tiktok_source_data">tiktok_source_data</option>
-                  <option value="meta_source_data">meta_source_data</option>
-                  <option value="google_source_data">google_source_data</option>
-                  <option value="mws">mws (Amazon MWS)</option>
-                  <option value="public">public</option>
-                  <option value="custom">custom…</option>
+                <label style={{ fontSize:11, fontWeight:600, color:T.text2, display:"block", marginBottom:3 }}>Schedule</label>
+                <select value={wf.schedule} onChange={e=>field("schedule",e.target.value)} style={inp}>
+                  {SCHEDULE_OPTS.map(o=><option key={o.value} value={o.value}>{o.label}</option>)}
                 </select>
-                {wf.schema_group==="custom" && (
-                  <input value={wf._schema_group_custom||""} onChange={e=>field("schema_group",e.target.value)}
-                    placeholder="Enter schema name"
-                    style={{...inputStyle, marginTop:6}}
-                    onFocus={e=>e.target.style.borderColor=T.accent}
-                    onBlur={e=>e.target.style.borderColor=T.border}/>
-                )}
               </div>
               <div>
-                <label style={{ fontSize:11, fontWeight:600, color:T.text2,
-                  display:"block", marginBottom:4 }}>Database Connection</label>
-                <input value={wf.db_key||"default"} onChange={e=>field("db_key",e.target.value)}
-                  placeholder="default"
-                  style={{...inputStyle, fontFamily:"monospace"}}
-                  onFocus={e=>e.target.style.borderColor=T.accent}
+                <label style={{ fontSize:11, fontWeight:600, color:T.text2, display:"block", marginBottom:3 }}>Slack Webhook (optional)</label>
+                <input value={wf.slack_channel} onChange={e=>field("slack_channel",e.target.value)}
+                  placeholder="https://hooks.slack.com/…"
+                  style={inp} onFocus={e=>e.target.style.borderColor=T.accent}
                   onBlur={e=>e.target.style.borderColor=T.border}/>
-                <div style={{ fontSize:10, color:T.dim, marginTop:4 }}>
-                  Connection key — use "default" for primary Redshift
-                </div>
               </div>
             </div>
-            <div>
-              <label style={{ fontSize:11, fontWeight:600, color:T.text2,
-                display:"block", marginBottom:4 }}>Slack Channel / Webhook</label>
-              <input value={wf.slack_channel||""} onChange={e=>field("slack_channel",e.target.value)}
-                placeholder="https://hooks.slack.com/... or leave blank for default"
-                style={{...inputStyle}}
-                onFocus={e=>e.target.style.borderColor=T.accent}
-                onBlur={e=>e.target.style.borderColor=T.border}/>
-              <div style={{ fontSize:10, color:T.dim, marginTop:4 }}>
-                Override the global webhook — route alerts to a team-specific channel
-              </div>
+            <div style={{ display:"flex", alignItems:"center", gap:8 }}>
+              <input type="checkbox" id="wf-enabled" checked={wf.enabled!==false}
+                onChange={e=>field("enabled",e.target.checked)}/>
+              <label htmlFor="wf-enabled" style={{ fontSize:12, color:T.text2, cursor:"pointer" }}>
+                Enabled (run on schedule)
+              </label>
             </div>
           </div>
         </Card>
 
-        {/* Save / Cancel */}
-        <div style={{ display:"flex", gap:10, justifyContent:"flex-end" }}>
-          <Btn onClick={onCancel} variant="muted" size="sm">Cancel</Btn>
-          <Btn onClick={()=>onSave(wf)} disabled={!wf.name.trim()} size="sm">
-            <Check size={12}/> Save Workflow
-          </Btn>
-        </div>
+        {/* SQL Checks */}
+        <Card style={{ padding:"18px 20px" }}>
+          <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom:12 }}>
+            <div style={{ fontSize:12, fontWeight:700, color:T.muted,
+              textTransform:"uppercase", letterSpacing:"0.05em" }}>
+              SQL Checks ({wf.checks.length})
+            </div>
+          </div>
+
+          {/* Existing checks */}
+          {wf.checks.length > 0 && (
+            <div style={{ display:"flex", flexDirection:"column", gap:6, marginBottom:14 }}>
+              {wf.checks.map((chk,i)=>(
+                <div key={chk.id} style={{ display:"flex", alignItems:"center", gap:8,
+                  padding:"8px 12px", borderRadius:8,
+                  background:`${SEV_COLOR[chk.severity]||T.muted}06`,
+                  border:`1px solid ${SEV_COLOR[chk.severity]||T.muted}20` }}>
+                  <div style={{ flex:1, minWidth:0 }}>
+                    <div style={{ fontSize:12, fontWeight:700, color:T.text }}>{chk.name}</div>
+                    <div style={{ fontSize:10, color:T.muted, fontFamily:"monospace",
+                      overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>
+                      {chk.sql}
+                    </div>
+                    <div style={{ fontSize:10, color:T.dim, marginTop:1 }}>
+                      Pass when: <code style={{ fontFamily:"monospace", color:T.accent }}>{chk.pass_condition}</code>
+                      {" · "}<Badge label={chk.severity} color={SEV_COLOR[chk.severity]||T.muted}/>
+                    </div>
+                  </div>
+                  <div style={{ display:"flex", gap:4, flexShrink:0 }}>
+                    <button onClick={()=>moveCheck(chk.id,-1)} disabled={i===0}
+                      style={{ background:"none", border:"none", cursor:"pointer", color:T.dim, fontSize:12 }}>↑</button>
+                    <button onClick={()=>moveCheck(chk.id,1)} disabled={i===wf.checks.length-1}
+                      style={{ background:"none", border:"none", cursor:"pointer", color:T.dim, fontSize:12 }}>↓</button>
+                    <button onClick={()=>removeCheck(chk.id)}
+                      style={{ background:"none", border:"none", cursor:"pointer", color:T.red, fontSize:12 }}>×</button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+
+          {/* AI check generator */}
+          <div style={{ padding:"12px 14px", borderRadius:8, marginBottom:12,
+            background:`${T.purple}05`, border:`1px solid ${T.purple}20` }}>
+            <div style={{ fontSize:11, fontWeight:600, color:T.purple, marginBottom:8,
+              display:"flex", alignItems:"center", gap:5 }}>
+              <Zap size={11}/> AI Check Generator
+            </div>
+            <div style={{ display:"flex", gap:8 }}>
+              <input value={aiDesc} onChange={e=>setAiDesc(e.target.value)}
+                onKeyDown={e=>e.key==="Enter"&&aiGenCheck()}
+                placeholder="Describe what to check, e.g. 'Find orders with null ASIN in the last 7 days'"
+                style={{...inp, flex:1}} onFocus={e=>e.target.style.borderColor=T.purple}
+                onBlur={e=>e.target.style.borderColor=T.border}/>
+              <Btn onClick={aiGenCheck} disabled={aiLoading||!aiDesc.trim()} size="sm"
+                variant="ghost" style={{ color:T.purple, borderColor:`${T.purple}40` }}>
+                {aiLoading?<Spinner size={10}/>:<Zap size={10}/>} Generate
+              </Btn>
+            </div>
+          </div>
+
+          {/* Manual check form */}
+          <div style={{ display:"flex", flexDirection:"column", gap:8,
+            padding:"12px 14px", borderRadius:8, background:T.surface,
+            border:`1px solid ${T.border}` }}>
+            <div style={{ fontSize:11, fontWeight:600, color:T.muted, marginBottom:2 }}>Add Check</div>
+            <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:8 }}>
+              <div>
+                <label style={{ fontSize:10, fontWeight:600, color:T.text2, display:"block", marginBottom:2 }}>Check Name</label>
+                <input value={checkDraft.name} onChange={e=>setDraft(p=>({...p,name:e.target.value}))}
+                  placeholder="e.g. Null ASINs in orders"
+                  style={inp} onFocus={e=>e.target.style.borderColor=T.accent}
+                  onBlur={e=>e.target.style.borderColor=T.border}/>
+              </div>
+              <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:6 }}>
+                <div>
+                  <label style={{ fontSize:10, fontWeight:600, color:T.text2, display:"block", marginBottom:2 }}>Pass When</label>
+                  <select value={checkDraft.pass_condition}
+                    onChange={e=>setDraft(p=>({...p,pass_condition:e.target.value}))} style={inp}>
+                    {PASS_CONDITIONS.map(o=><option key={o.value} value={o.value}>{o.label}</option>)}
+                  </select>
+                </div>
+                <div>
+                  <label style={{ fontSize:10, fontWeight:600, color:T.text2, display:"block", marginBottom:2 }}>Severity</label>
+                  <select value={checkDraft.severity}
+                    onChange={e=>setDraft(p=>({...p,severity:e.target.value}))} style={inp}>
+                    {["critical","high","medium","low"].map(s=><option key={s} value={s}>{s}</option>)}
+                  </select>
+                </div>
+              </div>
+            </div>
+            <div>
+              <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom:2 }}>
+                <label style={{ fontSize:10, fontWeight:600, color:T.text2 }}>SQL Query</label>
+                <button onClick={testSql} disabled={testing||!checkDraft.sql.trim()}
+                  style={{ fontSize:10, color:T.accent, background:"none", border:"none",
+                    cursor:"pointer", fontWeight:600 }}>
+                  {testing?<Spinner size={9}/>:null} ↻ Test SQL
+                </button>
+              </div>
+              <textarea value={checkDraft.sql} rows={3}
+                onChange={e=>setDraft(p=>({...p,sql:e.target.value}))}
+                placeholder={"SELECT COUNT(*) FROM mws.orders\nWHERE asin IS NULL\nAND download_date = (SELECT MAX(download_date) FROM mws.orders)"}
+                style={{...inp, fontFamily:"monospace", fontSize:11, resize:"vertical"}}
+                onFocus={e=>e.target.style.borderColor=T.accent}
+                onBlur={e=>e.target.style.borderColor=T.border}/>
+            </div>
+
+            {/* Test result */}
+            {testResult && (
+              <div style={{ padding:"8px 10px", borderRadius:6, fontSize:11,
+                background:testResult.error?`${T.red}08`:`${T.green}08`,
+                border:`1px solid ${testResult.error?T.red:T.green}25`,
+                fontFamily:"monospace" }}>
+                {testResult.error
+                  ? <span style={{ color:T.red }}>✗ {testResult.error}</span>
+                  : <span style={{ color:T.green }}>✓ {testResult.rows?.length} rows · columns: {testResult.columns?.join(", ")}</span>
+                }
+              </div>
+            )}
+
+            <Btn onClick={addCheck}
+              disabled={!checkDraft.name.trim()||!checkDraft.sql.trim()} size="sm"
+              style={{ alignSelf:"flex-start" }}>
+              <Plus size={10}/> Add Check
+            </Btn>
+          </div>
+        </Card>
       </div>
     </div>
   );
 }
+
 
 export default function WiziAgentApp() {
   const [themeKey,  setThemeKey]  = useLocal("wz_theme", "light");
@@ -9898,7 +7645,7 @@ export default function WiziAgentApp() {
     const SHORTCUT_MAP = {
       "1":"brief", "2":"triage", "3":"workflows", "4":"workflows",
       "5":"activity", "6":"chat", "7":"config", "8":"query",
-      "a":"approvals", "v":"viz",
+      "a":"approvals",
     };
     const handler = (e) => {
       // Skip if user is typing in an input/textarea
@@ -10139,8 +7886,6 @@ export default function WiziAgentApp() {
           {activeTab==="triage"    && <TriageTab initialIssues={issues}/>}
           {activeTab==="workflows" && <WorkflowsTab/>}
           {activeTab==="approvals" && <ApprovalsActivityTab onNavigate={navigateTo}/>}
-          {activeTab==="viz"       && <VizTab/>}
-          {activeTab==="chat"      && <AskWiziTab onAddMonitor={()=>{}} onSaveRule={()=>{}} onNavigate={navigateTo}/>}
           {activeTab==="config"    && <ConfigureTab/>}
           {activeTab==="query"     && <QueryTab/>}
         </main>

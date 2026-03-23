@@ -1,5 +1,4 @@
 import React from 'react';
-import * as XLSX from 'xlsx';
 import { LineChart, Line, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, PieChart, Pie, Cell, Legend, AreaChart, Area } from 'recharts';
 import {
   Sun, Moon, Bell, Settings, Database, Search, MessageSquare,
@@ -5003,6 +5002,7 @@ function UploadPanel({ onAddToMonitor, onQueryTable }) {
       let rows = [], columns = [];
 
       if (ext === 'xlsx' || ext === 'xls') {
+        const XLSX = await import('xlsx');
         const wb   = XLSX.read(buf, { type:'array', cellDates:true });
         const ws   = wb.Sheets[wb.SheetNames[0]];
         const data = XLSX.utils.sheet_to_json(ws, { defval:null, raw:false });

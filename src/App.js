@@ -1,5 +1,4 @@
 import React from 'react';
-import { LineChart, Line, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, PieChart, Pie, Cell, Legend, AreaChart, Area } from 'recharts';
 import {
   Sun, Moon, Bell, Settings, Database, Search, MessageSquare,
   CheckCircle, XCircle, AlertTriangle, Clock, ChevronRight,
@@ -763,6 +762,26 @@ function HealthSparkline({ brief, isHealthy, T }) {
 }
 
 
+// ─── Recharts CDN loader (no build-time dependency) ─────────────────────────
+let _rechartsCache = null;
+function useRecharts() {
+  const [rc, setRc] = React.useState(_rechartsCache);
+  React.useEffect(() => {
+    if (_rechartsCache) { setRc(_rechartsCache); return; }
+    // Load recharts from CDN if not already available
+    if (window.Recharts) { _rechartsCache = window.Recharts; setRc(window.Recharts); return; }
+    const s = document.createElement('script');
+    s.src = 'https://cdnjs.cloudflare.com/ajax/libs/recharts/2.12.7/Recharts.min.js';
+    s.onload = () => {
+      _rechartsCache = window.Recharts;
+      setRc(window.Recharts);
+    };
+    s.onerror = () => {};
+    document.head.appendChild(s);
+  }, []);
+  return rc;
+}
+
 // ─── Widget Builder ──────────────────────────────────────────────────────────
 function WidgetBuilder({ initial, onSave, onCancel }) {
   const T = useT();
@@ -1023,6 +1042,22 @@ Rules: SELECT only, include column aliases, max 2-3 columns, GROUP BY if aggrega
 
 function DashboardTab({ onNavigate }) {
   const T = useT();
+  const RC = useRecharts();
+  const ResponsiveContainer = RC?.ResponsiveContainer || (({children, width, height}) => <div style={{width:width||"100%",height:height||200}}>{children}</div>);
+  const AreaChart = RC?.AreaChart || 'div';
+  const LineChart = RC?.LineChart || 'div';
+  const BarChart  = RC?.BarChart  || 'div';
+  const PieChart  = RC?.PieChart  || 'div';
+  const Area      = RC?.Area      || 'div';
+  const Line      = RC?.Line      || 'div';
+  const Bar       = RC?.Bar       || 'div';
+  const Pie       = RC?.Pie       || 'div';
+  const Cell      = RC?.Cell      || 'div';
+  const XAxis     = RC?.XAxis     || 'div';
+  const YAxis     = RC?.YAxis     || 'div';
+  const CartesianGrid = RC?.CartesianGrid || 'div';
+  const Tooltip   = RC?.Tooltip   || 'div';
+  const Legend    = RC?.Legend    || 'div';
   const [widgets,     setWidgets]    = React.useState([]);
   const [editMode,    setEditMode]   = React.useState(false);
   const [builder,     setBuilder]    = React.useState(null); // null | {initial}
@@ -4993,6 +5028,16 @@ function UploadPanel({ onAddToMonitor, onQueryTable }) {
   React.useEffect(() => { loadUploads(); }, []);
 
   // ── File parsing ─────────────────────────────────────────────────────────
+  // Load XLSX from CDN (avoids build-time dependency)
+  const loadXLSX = () => new Promise((resolve, reject) => {
+    if (window.XLSX) { resolve(window.XLSX); return; }
+    const s = document.createElement('script');
+    s.src = 'https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js';
+    s.onload  = () => resolve(window.XLSX);
+    s.onerror = () => reject(new Error('Failed to load XLSX library'));
+    document.head.appendChild(s);
+  });
+
   const parseFile = async (file) => {
     setParsing(true); setError(null); setParsed(null);
     try {
@@ -5002,7 +5047,7 @@ function UploadPanel({ onAddToMonitor, onQueryTable }) {
       let rows = [], columns = [];
 
       if (ext === 'xlsx' || ext === 'xls') {
-        const XLSX = await import('xlsx');
+        const XLSX = await loadXLSX();
         const wb   = XLSX.read(buf, { type:'array', cellDates:true });
         const ws   = wb.Sheets[wb.SheetNames[0]];
         const data = XLSX.utils.sheet_to_json(ws, { defval:null, raw:false });

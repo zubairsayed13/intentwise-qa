@@ -4483,59 +4483,79 @@ function VizDashboardView({ dashboard, onEdit, onBack, onDelete, onSave }) {
 
 // ── Markdown renderer ────────────────────────────────────────────────────────
 // ── Shared helpers ───────────────────────────────────────────────────────────
-function MdText({ text, T }) {
-  if (!text) return null;
-  const blocks = [];
-  const parts  = text.split(/(```[\s\S]*?```)/g);
-  parts.forEach((part, pi) => {
-    if (part.startsWith('```')) {
-      const code = part.replace(/^```\w*\n?/, '').replace(/```$/, '');
-      blocks.push(<pre key={pi} style={{ background:'#F1F5F9', borderRadius:6, padding:'8px 12px', fontSize:11, fontFamily:'monospace', overflowX:'auto', margin:'4px 0', border:'1px solid #E2E8F0', whiteSpace:'pre-wrap', lineHeight:1.6 }}>{code}</pre>);
-    } else {
-      part.split('\n').forEach((line, li) => {
-        const key = `${pi}-${li}`;
-        if (/^[-*] /.test(line)) {
-          blocks.push(<div key={key} style={{ display:'flex', gap:6, marginBottom:2 }}><span style={{color:T.accent,flexShrink:0}}>•</span><span>{renderInline(line.slice(2),T)}</span></div>);
-        } else if (/^\d+\. /.test(line)) {
-          const num = line.match(/^\d+/)[0];
-          blocks.push(<div key={key} style={{ display:'flex', gap:6, marginBottom:2 }}><span style={{color:T.accent,flexShrink:0,fontWeight:600}}>{num}.</span><span>{renderInline(line.slice(num.length+2),T)}</span></div>);
-        } else if (/^#{1,3} /.test(line)) {
-          const lvl = line.match(/^#+/)[0].length;
-          blocks.push(<div key={key} style={{ fontWeight:700, fontSize:lvl===1?14:12, marginTop:6, marginBottom:2, color:T.text }}>{renderInline(line.replace(/^#+\s/,''),T)}</div>);
-        } else if (!line.trim()) {
-          blocks.push(<div key={key} style={{ height:4 }}/>);
-        } else {
-          blocks.push(<div key={key} style={{ marginBottom:1 }}>{renderInline(line,T)}</div>);
-        }
-      });
-    }
-  });
-  return <>{blocks}</>;
-}
-
-function renderInline(text, T) {
-  return text.split(/(\*\*[^*]+\*\*|`[^`]+`|\*[^*]+\*)/g).map((p,i) => {
-    if (p.startsWith('**')&&p.endsWith('**')) return <strong key={i} style={{fontWeight:700}}>{p.slice(2,-2)}</strong>;
-    if (p.startsWith('`')&&p.endsWith('`')) return <code key={i} style={{background:'#F1F5F9',padding:'1px 5px',borderRadius:4,fontSize:'0.9em',fontFamily:'monospace'}}>{p.slice(1,-1)}</code>;
-    if (p.startsWith('*')&&p.endsWith('*')) return <em key={i}>{p.slice(1,-1)}</em>;
+// ── Markdown renderer ─────────────────────────────────────────────────────────
+function renderInline(text) {
+  if (typeof text !== 'string') return String(text ?? '');
+  const parts = text.split(/(\*\*[^*]+\*\*|`[^`]+`|\*[^*]+\*)/g);
+  return parts.map((p, i) => {
+    if (p.startsWith('**') && p.endsWith('**'))
+      return <strong key={i}>{p.slice(2,-2)}</strong>;
+    if (p.startsWith('`') && p.endsWith('`'))
+      return <code key={i} style={{background:'#EEF2FF',padding:'1px 5px',borderRadius:4,fontSize:'0.9em',fontFamily:'monospace',color:'#4f46e5'}}>{p.slice(1,-1)}</code>;
+    if (p.startsWith('*') && p.endsWith('*'))
+      return <em key={i}>{p.slice(1,-1)}</em>;
     return p;
   });
 }
 
-function InlineTable({ columns, rows, T }) {
-  if (!columns?.length || !rows?.length) return null;
+function MdText({ text }) {
+  if (!text || typeof text !== 'string') return null;
+  try {
+    const blocks = [];
+    let idx = 0;
+    const parts = text.split(/(```[\s\S]*?```)/g);
+    parts.forEach((part, pi) => {
+      if (part.startsWith('```')) {
+        const code = part.replace(/^```\w*\n?/, '').replace(/\n?```$/, '');
+        blocks.push(
+          <pre key={`code-${pi}`} style={{background:'#F8FAFC',border:'1px solid #E2E8F0',borderRadius:6,padding:'8px 12px',fontSize:11,fontFamily:'monospace',overflowX:'auto',margin:'6px 0',whiteSpace:'pre-wrap',lineHeight:1.6}}>
+            {code}
+          </pre>
+        );
+      } else {
+        part.split('\n').forEach((line, li) => {
+          const k = `l-${pi}-${li}`;
+          if (/^[-*] /.test(line)) {
+            blocks.push(<div key={k} style={{display:'flex',gap:6,marginBottom:3}}><span style={{color:'#6366f1',flexShrink:0,marginTop:1}}>•</span><span>{renderInline(line.slice(2))}</span></div>);
+          } else if (/^\d+\. /.test(line)) {
+            const num = line.match(/^\d+/)[0];
+            blocks.push(<div key={k} style={{display:'flex',gap:6,marginBottom:3}}><span style={{color:'#6366f1',flexShrink:0,fontWeight:700,minWidth:16}}>{num}.</span><span>{renderInline(line.slice(num.length+2))}</span></div>);
+          } else if (/^#{1,3} /.test(line)) {
+            const lvl = line.match(/^#+/)[0].length;
+            blocks.push(<div key={k} style={{fontWeight:700,fontSize:lvl===1?14:12,marginTop:8,marginBottom:3,color:'#1e293b'}}>{renderInline(line.replace(/^#+\s/,''))}</div>);
+          } else if (line.trim() === '') {
+            blocks.push(<div key={k} style={{height:5}}/>);
+          } else {
+            blocks.push(<div key={k} style={{marginBottom:2,lineHeight:1.6}}>{renderInline(line)}</div>);
+          }
+        });
+      }
+    });
+    return <>{blocks}</>;
+  } catch(e) {
+    return <span>{String(text)}</span>;
+  }
+}
+
+function InlineTable({ columns, rows }) {
+  if (!Array.isArray(columns) || !Array.isArray(rows) || !columns.length || !rows.length) return null;
   return (
-    <div style={{ overflowX:'auto', borderRadius:7, border:`1px solid ${T.border}`, marginTop:6, maxHeight:200, overflowY:'auto' }}>
-      <table style={{ borderCollapse:'collapse', fontSize:11, fontFamily:'monospace', width:'100%', minWidth:300 }}>
+    <div style={{overflowX:'auto',borderRadius:7,border:'1px solid #E2E8F0',marginTop:8,maxHeight:200,overflowY:'auto'}}>
+      <table style={{borderCollapse:'collapse',fontSize:11,fontFamily:'monospace',width:'100%',minWidth:280}}>
         <thead>
-          <tr style={{ background:`${T.accent}10`, position:'sticky', top:0 }}>
-            {columns.map(c=><th key={c} style={{ padding:'5px 10px', textAlign:'left', fontWeight:700, fontSize:9, color:T.muted, borderBottom:`1px solid ${T.border}`, whiteSpace:'nowrap', textTransform:'uppercase' }}>{c}</th>)}
+          <tr style={{background:'#EEF2FF',position:'sticky',top:0}}>
+            {columns.map(c=><th key={c} style={{padding:'5px 10px',textAlign:'left',fontWeight:700,fontSize:9,color:'#6366f1',borderBottom:'1px solid #E2E8F0',whiteSpace:'nowrap',textTransform:'uppercase'}}>{c}</th>)}
           </tr>
         </thead>
         <tbody>
           {rows.map((row,i)=>(
-            <tr key={i} style={{ background:i%2===1?'#FAFBFF':'transparent' }}>
-              {columns.map(c=>{ const v=row[c]; return <td key={c} style={{ padding:'4px 10px', borderBottom:`1px solid ${T.border}20`, whiteSpace:'nowrap', color:v===null?T.red:T.text2 }}>{v===null?<span style={{color:T.red,fontWeight:700,fontSize:10}}>NULL</span>:String(v).slice(0,60)}</td>; })}
+            <tr key={i} style={{background:i%2===1?'#F8FAFC':'transparent'}}>
+              {columns.map(c=>{
+                const v = row[c];
+                return <td key={c} style={{padding:'4px 10px',borderBottom:'1px solid rgba(226,232,240,0.5)',whiteSpace:'nowrap',color:v===null||v===undefined?'#ef4444':'#475569'}}>
+                  {v===null||v===undefined ? <span style={{color:'#ef4444',fontWeight:700,fontSize:10}}>NULL</span> : String(v).slice(0,60)}
+                </td>;
+              })}
             </tr>
           ))}
         </tbody>
@@ -4544,466 +4564,374 @@ function InlineTable({ columns, rows, T }) {
   );
 }
 
-// ─── Ask WiziAgent — Redesigned ──────────────────────────────────────────────
-// 2-panel layout: context left | conversation + live output right
-// Intent routing: classify message → fetch real data → respond with grounded context
-function AskWiziTab({ onAddMonitor, onSaveRule, onNavigate }) {
+// ─── Ask WiziAgent ────────────────────────────────────────────────────────────
+function AskWiziTab({ onNavigate }) {
   const T = useT();
   const dbSchema = useSchema();
 
-  // ── State ─────────────────────────────────────────────────────────────────
-  const [messages,     setMessages]     = useSession("wz_chat", []);
-  const [input,        setInput]        = React.useState("");
-  const [loading,      setLoading]      = React.useState(false);
-  const [pendingActions, setPending]    = React.useState([]);
-  const [focusTable,   setFocusTable]   = React.useState("mws.report");
-  const [showTP,          setShowTP]    = React.useState(false);
-  const [tableList,    setTableList]    = React.useState([]);
-  const [context,      setContext]      = React.useState(null);  // live context panel data
-  const [contextLoading, setCtxLoading] = React.useState(false);
-  const [recentScans,  setRecentScans]  = React.useState([]);
-  const [liveOutput,   setLiveOutput]   = React.useState(null);  // {type, data}
-  const [monTables,    setMonTables]    = useLocal("wz_monTables", []);
+  const [messages,      setMessages]  = useSession("wz_chat", []);
+  const [input,         setInput]     = React.useState("");
+  const [loading,       setLoading]   = React.useState(false);
+  const [pending,       setPending]   = React.useState([]);
+  const [focusTable,    setFocus]     = React.useState("mws.report");
+  const [showPicker,    setShowPicker]= React.useState(false);
+  const [tableList,     setTableList] = React.useState([]);
+  const [ctx,           setCtx]       = React.useState(null);
+  const [ctxLoading,    setCtxLoad]   = React.useState(false);
+  const [liveOut,       setLiveOut]   = React.useState(null);
+  const [recentScans,   setScans]     = React.useState([]);
+  const [monTables,     setMonTables] = useLocal("wz_monTables", []);
   const bottomRef = React.useRef(null);
   const inputRef  = React.useRef(null);
 
-  React.useEffect(() => { bottomRef.current?.scrollIntoView({ behavior:"smooth" }); }, [messages, pendingActions]);
+  // Scroll to bottom on new messages
+  React.useEffect(() => {
+    try { bottomRef.current?.scrollIntoView({ behavior:"smooth" }); } catch(e) {}
+  }, [messages, pending]);
 
-  // Load tables for picker
+  // Load table list
   React.useEffect(() => {
     fetch(`${API}/api/tables`).then(r=>r.json()).then(d=>{
-      if (Array.isArray(d)) setTableList(d.map(t=>`${t.table_schema}.${t.table_name}`));
+      if (Array.isArray(d)) setTableList(d.map(t=>`${t.table_schema}.${t.table_name}`).filter(Boolean));
     }).catch(()=>{});
   }, []);
 
-  // ── Load context for focus table ──────────────────────────────────────────
-  const loadContext = React.useCallback(async (tbl) => {
-    setCtxLoading(true);
-    setContext(null);
+  // Load context when focus table changes
+  const loadCtx = React.useCallback(async (tbl) => {
+    if (!tbl) return;
+    setCtxLoad(true);
+    setCtx(null);
     try {
-      const [sc, tb] = tbl.includes('.') ? tbl.split('.') : ['mws', tbl];
-      const isMwsReport = tbl === 'mws.report';
-
-      const [preview, triage, kpis] = await Promise.all([
-        fetch(`${API}/api/preview?schema=${sc}&table=${tb}&limit=5`).then(r=>r.json()).catch(()=>({})),
-        isMwsReport ? fetch(`${API}/api/report/triage`).then(r=>r.json()).catch(()=>({})) : Promise.resolve(null),
-        isMwsReport ? fetch(`${API}/api/kpis`).then(r=>r.json()).catch(()=>({})) : Promise.resolve(null),
-      ]);
-
-      setContext({
-        table: tbl, schema: sc, tableName: tb,
-        columns: preview.columns || [],
-        rowSample: preview.rows || [],
-        issues: triage?.issues?.filter(i=>i.count>0) || [],
-        totalRows: triage?.total_rows || null,
-        kpis,
+      const parts = tbl.split('.');
+      const sc = parts[0] || 'mws';
+      const tb = parts[1] || tbl;
+      const preview = await fetch(`${API}/api/preview?schema=${sc}&table=${tb}&limit=5`).then(r=>r.json()).catch(()=>({}));
+      const triage  = tbl === 'mws.report'
+        ? await fetch(`${API}/api/report/triage`).then(r=>r.json()).catch(()=>({}))
+        : {};
+      setCtx({
+        table:   tbl,
+        columns: Array.isArray(preview.columns) ? preview.columns : [],
+        issues:  Array.isArray(triage.issues) ? triage.issues.filter(i=>Number(i.count)>0) : [],
       });
-    } catch(e) {}
-    setCtxLoading(false);
+    } catch(e) {
+      setCtx({ table:tbl, columns:[], issues:[] });
+    }
+    setCtxLoad(false);
   }, []);
 
-  React.useEffect(() => { loadContext(focusTable); }, [focusTable]);
+  React.useEffect(() => { loadCtx(focusTable); }, [focusTable]);
 
-  // ── Intent classifier ─────────────────────────────────────────────────────
-  const classifyIntent = (text) => {
-    const t = text.toLowerCase();
-    if (/^\/scan\s/.test(text))     return 'scan';
-    if (/^\/query\s/.test(text))    return 'query';
-    if (/^\/fix\s/.test(text))      return 'fix';
-    if (/^\/preview\s/.test(text))  return 'preview';
-    if (/(fix|redrive|recopy|repair|resolve).*(fail|error|stuck|issue)/i.test(t)) return 'fix_request';
-    if (/(scan|check|analyze|inspect|audit)\s+[\w.]+/i.test(t)) return 'scan_request';
-    if (/^select\s/i.test(t) || /run\s+(this\s+)?sql/i.test(t)) return 'sql';
-    if (/(show|preview|sample|rows?\s+(from|in))/i.test(t)) return 'preview_request';
-    if (/(how many|count|total|how much)/i.test(t)) return 'count_query';
-    if (/(what.*wrong|issue|problem|error|fail)/i.test(t)) return 'diagnose';
-    if (/(create|build|set up|make).*(workflow|check|monitor)/i.test(t)) return 'create';
-    if (/(go to|open|navigate|show me the)/i.test(t)) return 'navigate';
-    return 'general';
-  };
+  // ── Helpers ───────────────────────────────────────────────────────────────
+  const addMsg = (role, content, extra) =>
+    setMessages(p => [...p, { role, content:String(content ?? ''), ts:new Date().toLocaleTimeString(), ...extra }]);
 
-  // ── Build grounded context for AI ─────────────────────────────────────────
-  const buildGroundedContext = async (intent, text) => {
-    let groundedData = "";
-    let autoOutput = null;
+  const SEV = { critical:'#ef4444', high:'#f97316', medium:'#eab308', low:'#06b6d4' };
 
-    try {
-      if (intent === 'scan' || intent === 'scan_request' || intent === 'diagnose') {
-        const tbl = text.replace(/^\/scan\s+/,'').trim() || focusTable;
-        const [sc, tb] = tbl.includes('.')?tbl.split('.'):['mws',tbl];
-        const res  = await fetch(`${API}/api/report/triage`).then(r=>r.json()).catch(()=>({}));
-        const issues = res.issues?.filter(i=>i.count>0) || [];
-        if (issues.length === 0) {
-          groundedData = `SCAN RESULT for ${tbl}: No issues found. ${res.total_rows?.toLocaleString()||'?'} rows all healthy.`;
-        } else {
-          groundedData = `SCAN RESULT for ${tbl}:\n${issues.map(i=>`- ${i.id}: ${i.title} — ${i.count} rows (${i.severity}), fix: ${i.fix_action||'manual'}`).join('\n')}`;
-        }
-        autoOutput = { type:'scan', issues, table:tbl };
-      }
-
-      else if (intent === 'preview_request' || intent === 'preview') {
-        const tblMatch = text.match(/(?:from|in|of)\s+([\w.]+)/i) || text.match(/^\/preview\s+([\w.]+)/);
-        const tbl = tblMatch?.[1] || focusTable;
-        const [sc, tb] = tbl.includes('.')?tbl.split('.'):['mws',tbl];
-        const res  = await fetch(`${API}/api/preview?schema=${sc}&table=${tb}&limit=10`).then(r=>r.json()).catch(()=>({}));
-        groundedData = `PREVIEW of ${tbl}: ${res.rows?.length||0} rows shown. Columns: ${res.columns?.join(', ')||'unknown'}.`;
-        autoOutput   = { type:'table', columns:res.columns||[], rows:res.rows||[], title:`${tbl} — sample rows` };
-      }
-
-      else if (intent === 'sql' || intent === 'count_query') {
-        const sqlMatch = text.match(/SELECT[\s\S]+/i);
-        if (sqlMatch) {
-          const res  = await fetch(`${API}/api/query?sql=${encodeURIComponent(sqlMatch[0])}`).then(r=>r.json()).catch(()=>({}));
-          if (!res.error) {
-            groundedData = `QUERY RESULT: ${res.rows?.length||0} rows returned.`;
-            autoOutput   = { type:'table', columns:res.columns||[], rows:res.rows||[], title:'Query result' };
-          } else {
-            groundedData = `QUERY ERROR: ${res.error}`;
-          }
-        } else {
-          // Let AI figure out the SQL
-          const [sc, tb] = focusTable.includes('.')?focusTable.split('.'):['mws',focusTable];
-          const colsRes  = await fetch(`${API}/api/preview?schema=${sc}&table=${tb}&limit=1`).then(r=>r.json()).catch(()=>({}));
-          groundedData   = `TABLE CONTEXT for ${focusTable}: columns = ${colsRes.columns?.join(', ')||'unknown'}`;
-        }
-      }
-
-      else if (intent === 'diagnose') {
-        const res = await fetch(`${API}/api/report/triage`).then(r=>r.json()).catch(()=>({}));
-        const kpis = await fetch(`${API}/api/kpis`).then(r=>r.json()).catch(()=>({}));
-        const issues = res.issues?.filter(i=>i.count>0)||[];
-        groundedData = `LIVE DATA STATE:\nIssues: ${issues.length===0?'none found':issues.map(i=>`${i.id}(${i.count})`).join(', ')}\nTotal rows: ${res.total_rows?.toLocaleString()||'?'}\nOrders: ${kpis.orders?.total||'?'} | Revenue: $${kpis.sales?.total_sales?.toFixed(0)||'?'}`;
-        if (issues.length > 0) autoOutput = { type:'scan', issues, table:focusTable };
-      }
-
-    } catch(e) {}
-
-    return { groundedData, autoOutput };
-  };
-
-  // ── Send message ──────────────────────────────────────────────────────────
-  const send = async (overrideText) => {
-    const text = (overrideText || input).trim();
-    if (!text || loading) return;
-    setInput("");
-    setLiveOutput(null);
-
-    // Handle slash commands immediately
-    if (text.startsWith('/')) {
-      const [cmd, ...args] = text.slice(1).split(' ');
-      if (cmd === 'scan') {
-        const tbl = args.join(' ') || focusTable;
-        setMessages(p=>[...p,{role:"user",content:`/scan ${tbl}`,ts:new Date().toLocaleTimeString()}]);
-        await runScan(tbl); return;
-      }
-      if (cmd === 'query' || cmd === 'q') {
-        const sql = args.join(' ');
-        setMessages(p=>[...p,{role:"user",content:text,ts:new Date().toLocaleTimeString()}]);
-        await runQuery(sql); return;
-      }
-      if (cmd === 'fix') {
-        const action = args[0] || 'redrive';
-        proposeFix(action); return;
-      }
-      if (cmd === 'preview') {
-        const tbl = args.join(' ') || focusTable;
-        setMessages(p=>[...p,{role:"user",content:text,ts:new Date().toLocaleTimeString()}]);
-        await runPreview(tbl); return;
-      }
-    }
-
-    const userMsg = { role:"user", content:text, ts:new Date().toLocaleTimeString() };
-    setMessages(p=>[...p, userMsg]);
-    setLoading(true);
-
-    const intent = classifyIntent(text);
-    const { groundedData, autoOutput } = await buildGroundedContext(intent, text);
-    if (autoOutput) setLiveOutput(autoOutput);
-
-    const tableNames = dbSchema
-      ? dbSchema.split(";").map(t=>t.split("(")[0].trim()).filter(Boolean).slice(0,20).join(", ")
-      : "mws.report, mws.orders, mws.inventory, public.tbl_amzn_campaign_report";
-
-    const contextSummary = context ? [
-      context.issues.length > 0
-        ? `CURRENT ISSUES in ${context.table}: ${context.issues.map(i=>`${i.id}(${i.count} rows, ${i.severity})`).join(', ')}`
-        : `${context.table} looks healthy — no active issues`,
-      context.columns.length > 0 ? `Columns: ${context.columns.slice(0,10).join(', ')}` : '',
-    ].filter(Boolean).join('\n') : '';
-
-    const system = `You are WiziAgent — an expert data quality and pipeline operations agent for Intentwise (ecommerce analytics platform).
-
-FOCUS TABLE: ${focusTable}
-AVAILABLE TABLES: ${tableNames}
-
-${contextSummary ? `LIVE CONTEXT:\n${contextSummary}\n` : ''}
-${groundedData ? `REAL-TIME DATA:\n${groundedData}\n` : ''}
-
-PIPELINE FACTS:
-mws.report STATUS: pending | processed | failed
-mws.report COPY_STATUS: REPLICATED | NOT_REPLICATED | null
-A healthy row = status='processed' AND copy_status='REPLICATED' AND not stuck >2h
-
-AVAILABLE ACTIONS (embed in response when you want to act):
-- ACTION:RUN_FIX:redrive — reset failed downloads
-- ACTION:RUN_FIX:recopy — re-trigger replication
-- ACTION:RUN_FIX:redrive_copy — fix stuck copies
-- ACTION:RUN_SQL:SELECT ... — run a SQL query (auto-shows results)
-- ACTION:SHOW_ROWS:schema.table — show sample rows
-- ACTION:ADD_MONITOR:schema.table — add to monitor watchlist
-- ACTION:NAVIGATE:tab_name — go to a tab (triage/monitor/workflows/viz)
-- ACTION:CREATE_WORKFLOW:description — open workflow builder
-
-RULES:
-- You have REAL data above. Use it. Don't guess or make up numbers.
-- If groundedData shows issues, address them specifically.
-- Be direct and actionable. Lead with findings, follow with explanation.
-- Use markdown: **bold** for key terms, \`code\` for table/column names, bullet lists for findings.
-- Propose actions as ACTION tags. The user sees confirm buttons before anything executes.
-- If you ran a scan and found issues, list them with counts and severity.
-- Keep responses focused. 3-5 sentences max unless detail is needed.`;
-
-    try {
-      const history = messages.slice(-6).map(m=>({
-        role: m.role==="system"?"assistant":m.role,
-        content: typeof m.content==="string"&&m.content.length>400 ? m.content.slice(0,400)+"…" : m.content
-      }));
-      const res  = await fetch(`${API}/api/ai/chat`, {
-        method:"POST", headers:{"Content-Type":"application/json"},
-        body:JSON.stringify({ system, messages:[...history,{role:"user",content:text}], max_tokens:700 })
-      });
-      const data = await res.json();
-      const reply = data.content?.[0]?.text
-        || (typeof data.error==="string"?data.error:data.error?JSON.stringify(data.error):null)
-        || "No response";
-
-      // Parse actions
-      const actionPatterns = [
-        { re:/ACTION:RUN_FIX:(\w+)/g,          type:"fix"      },
-        { re:/ACTION:SHOW_ROWS:([\w.]+)/g,      type:"rows"     },
-        { re:/ACTION:RUN_SQL:(SELECT[^\n]+)/gi, type:"sql"      },
-        { re:/ACTION:ADD_MONITOR:([\w.]+)/g,    type:"monitor"  },
-        { re:/ACTION:NAVIGATE:(\w+)/g,          type:"navigate" },
-        { re:/ACTION:CREATE_WORKFLOW:([^\n]+)/g,type:"workflow" },
-      ];
-      const found = [];
-      for (const { re, type } of actionPatterns) {
-        let m;
-        while ((m = re.exec(reply)) !== null)
-          found.push({ type, value:m[1].trim(), id:Math.random().toString(36).slice(2) });
-      }
-
-      const clean = reply.replace(/ACTION:[A-Z_]+:[^\n]+/g,"").trim();
-      setMessages(p=>[...p,{role:"assistant",content:clean,ts:new Date().toLocaleTimeString()}]);
-      if (found.length>0) setPending(found);
-
-    } catch(e) {
-      setMessages(p=>[...p,{role:"assistant",content:`Error: ${e.message}`,ts:new Date().toLocaleTimeString()}]);
-    }
-    setLoading(false);
-  };
-
-  // ── Direct action runners ─────────────────────────────────────────────────
+  // ── Direct runners ────────────────────────────────────────────────────────
   const runScan = async (tbl) => {
-    setLoading(true); setLiveOutput({type:'loading',msg:`Scanning ${tbl}…`});
+    setLoading(true);
+    setLiveOut({ type:'loading', msg:`Scanning ${tbl}…` });
     try {
-      const res   = await fetch(`${API}/api/report/triage`).then(r=>r.json());
-      const issues = res.issues?.filter(i=>i.count>0)||[];
-      setLiveOutput({ type:'scan', issues, table:tbl });
-      const summary = issues.length===0
-        ? `✓ **${tbl}** looks healthy — no issues found`
-        : `Found **${issues.length} issue type${issues.length!==1?'s':''}** in \`${tbl}\`:\n${issues.map(i=>`- **${i.id}**: ${i.title} — ${i.count} rows (${i.severity})${i.fix_action?`, fix: \`${i.fix_action}\``:''}` ).join('\n')}`;
-      setMessages(p=>[...p,{role:"assistant",content:summary,ts:new Date().toLocaleTimeString()}]);
-      if (issues.some(i=>i.fix_action)) {
-        const fixActions = [...new Set(issues.filter(i=>i.fix_action).map(i=>i.fix_action))];
-        setPending(fixActions.map(fa=>({ type:"fix", value:fa, id:Math.random().toString(36).slice(2) })));
-      }
-      setRecentScans(p=>[{table:tbl,issues:issues.length,ts:new Date().toLocaleTimeString()},...p].slice(0,5));
-    } catch(e) { setLiveOutput({type:'error',msg:e.message}); }
-    setLoading(false);
-  };
-
-  const runQuery = async (sql) => {
-    setLoading(true); setLiveOutput({type:'loading',msg:'Running query…'});
-    try {
-      const res = await fetch(`${API}/api/query?sql=${encodeURIComponent(sql)}`).then(r=>r.json());
-      if (res.error) throw new Error(res.error);
-      setLiveOutput({ type:'table', columns:res.columns||[], rows:res.rows||[], title:'Query result' });
-      setMessages(p=>[...p,{role:"assistant",content:`Query returned **${res.rows?.length||0} rows**`,ts:new Date().toLocaleTimeString()}]);
+      const data = await fetch(`${API}/api/report/triage`).then(r=>r.json());
+      const issues = Array.isArray(data.issues) ? data.issues.filter(i=>Number(i.count)>0) : [];
+      setLiveOut({ type:'scan', issues, table:tbl });
+      const summary = issues.length === 0
+        ? `**${tbl}** looks healthy — no issues found ✓`
+        : `Found **${issues.length} issue type${issues.length!==1?'s':''}** in \`${tbl}\`:\n${issues.map(i=>`- **${i.id}**: ${i.title} — ${i.count} rows (${i.severity})`).join('\n')}`;
+      addMsg('assistant', summary);
+      const fixes = [...new Set(issues.filter(i=>i.fix_action).map(i=>i.fix_action))];
+      if (fixes.length > 0)
+        setPending(fixes.map(fa=>({ type:'fix', value:fa, id:Math.random().toString(36).slice(2) })));
+      setScans(p => [{ table:tbl, count:issues.length, ts:new Date().toLocaleTimeString() }, ...p].slice(0,5));
     } catch(e) {
-      setLiveOutput({type:'error',msg:e.message});
-      setMessages(p=>[...p,{role:"assistant",content:`Query error: ${e.message}`,ts:new Date().toLocaleTimeString()}]);
+      setLiveOut({ type:'error', msg:String(e.message) });
+      addMsg('assistant', `Scan error: ${e.message}`);
     }
     setLoading(false);
   };
 
   const runPreview = async (tbl) => {
-    setLoading(true); setLiveOutput({type:'loading',msg:`Loading ${tbl}…`});
+    setLoading(true);
+    setLiveOut({ type:'loading', msg:`Loading ${tbl}…` });
     try {
-      const [sc,tb] = tbl.includes('.')?tbl.split('.'):['mws',tbl];
-      const res = await fetch(`${API}/api/preview?schema=${sc}&table=${tb}&limit=20`).then(r=>r.json());
-      setLiveOutput({ type:'table', columns:res.columns||[], rows:res.rows||[], title:`${tbl} — preview` });
-      setMessages(p=>[...p,{role:"assistant",content:`Showing **${res.rows?.length||0} rows** from \`${tbl}\``,ts:new Date().toLocaleTimeString()}]);
-    } catch(e) { setLiveOutput({type:'error',msg:e.message}); }
+      const parts = tbl.split('.');
+      const data  = await fetch(`${API}/api/preview?schema=${parts[0]}&table=${parts[1]}&limit=20`).then(r=>r.json());
+      const cols  = Array.isArray(data.columns) ? data.columns : [];
+      const rows  = Array.isArray(data.rows)    ? data.rows    : [];
+      setLiveOut({ type:'table', columns:cols, rows, title:`${tbl} — preview` });
+      addMsg('assistant', `Showing **${rows.length} rows** from \`${tbl}\``);
+    } catch(e) {
+      setLiveOut({ type:'error', msg:String(e.message) });
+    }
     setLoading(false);
   };
 
-  const proposeFix = (fixAction) => {
-    const labels = { redrive:"Reset failed downloads (status→pending)", recopy:"Re-trigger replication (copy_status→NOT_REPLICATED)", redrive_copy:"Fix stuck copies (processed + not replicated >2h)" };
-    setPending([{ type:"fix", value:fixAction, id:Math.random().toString(36).slice(2) }]);
-    setMessages(p=>[...p,
-      {role:"user",content:`/fix ${fixAction}`,ts:new Date().toLocaleTimeString()},
-      {role:"assistant",content:`Ready to **${labels[fixAction]||fixAction}**. Confirm below to execute.`,ts:new Date().toLocaleTimeString()}
-    ]);
+  const runQuery = async (sql) => {
+    setLoading(true);
+    setLiveOut({ type:'loading', msg:'Running query…' });
+    try {
+      const data = await fetch(`${API}/api/query?sql=${encodeURIComponent(sql)}`).then(r=>r.json());
+      if (data.error) throw new Error(data.error);
+      const cols = Array.isArray(data.columns) ? data.columns : [];
+      const rows = Array.isArray(data.rows)    ? data.rows    : [];
+      setLiveOut({ type:'table', columns:cols, rows, title:'Query result' });
+      addMsg('assistant', `Query returned **${rows.length} rows**`);
+    } catch(e) {
+      setLiveOut({ type:'error', msg:String(e.message) });
+      addMsg('assistant', `Query error: ${e.message}`);
+    }
+    setLoading(false);
   };
 
-  const executeAction = async (action) => {
-    setPending(p=>p.filter(a=>a.id!==action.id));
-    if (action.type==="fix") {
-      setLiveOutput({type:'loading',msg:`Executing ${action.value}…`});
-      try {
-        const res  = await fetch(`${API}/api/report/fix`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({fix_action:action.value,dry_run:false})});
-        const data = await res.json();
-        if (data.error) throw new Error(data.error);
-        setLiveOutput({type:'fix_result', action:action.value, before:data.before, after:data.after, rows:data.rows_affected});
-        setMessages(p=>[...p,{role:"system",content:`✓ **${action.value}** — ${data.rows_affected} rows fixed (${data.before}→${data.after})`,ts:new Date().toLocaleTimeString()}]);
-        loadContext(focusTable);
-      } catch(e) { setMessages(p=>[...p,{role:"system",content:`✗ Fix failed: ${e.message}`,ts:new Date().toLocaleTimeString()}]); }
+  const runFix = async (action) => {
+    setLoading(true);
+    setLiveOut({ type:'loading', msg:`Executing ${action}…` });
+    try {
+      const data = await fetch(`${API}/api/report/fix`, {
+        method:'POST', headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({ fix_action:action, dry_run:false })
+      }).then(r=>r.json());
+      if (data.error) throw new Error(data.error);
+      setLiveOut({ type:'fix', action, before:data.before, after:data.after, rows:data.rows_affected });
+      addMsg('system', `✓ **${action}** executed — ${data.rows_affected} rows fixed (${data.before}→${data.after})`);
+      loadCtx(focusTable);
+    } catch(e) {
+      setLiveOut(null);
+      addMsg('system', `✗ Fix failed: ${e.message}`);
     }
-    else if (action.type==="sql"||action.type==="rows") {
-      const url = action.type==="rows"
-        ? `${API}/api/preview?schema=${action.value.split('.')[0]}&table=${action.value.split('.')[1]}&limit=20`
-        : `${API}/api/query?sql=${encodeURIComponent(action.value)}`;
-      const res = await fetch(url).then(r=>r.json()).catch(e=>({error:e.message}));
-      if (!res.error) setLiveOutput({type:'table',columns:res.columns||[],rows:res.rows||[],title:action.type==="rows"?action.value:"Query result"});
-    }
-    else if (action.type==="monitor") {
-      const [sc,tb] = action.value.includes('.')?action.value.split('.'):['mws',action.value];
-      setMonTables(p=>{ if(p.find(t=>`${t.schema}.${t.table}`===action.value)) return p; return [...p,{schema:sc,table:tb,label:action.value,primary:false,checkSets:[],checks:[]}]; });
-      setMessages(p=>[...p,{role:"system",content:`✓ Added \`${action.value}\` to Monitor`,ts:new Date().toLocaleTimeString()}]);
-    }
-    else if (action.type==="navigate") { onNavigate?.(action.value); }
-    else if (action.type==="workflow") { onNavigate?.("workflows"); }
+    setLoading(false);
   };
 
-  const SLASH_CMDS = [
-    { cmd:"/scan", desc:"Scan focus table for issues" },
-    { cmd:"/preview", desc:"Show sample rows" },
-    { cmd:"/query SELECT ...", desc:"Run SQL" },
-    { cmd:"/fix redrive", desc:"Fix failed downloads" },
-  ];
+  const execAction = async (a) => {
+    setPending(p => p.filter(x=>x.id!==a.id));
+    if (a.type==='fix')      { await runFix(a.value); }
+    else if (a.type==='preview' || a.type==='rows') { await runPreview(a.value || focusTable); }
+    else if (a.type==='sql') { await runQuery(a.value); }
+    else if (a.type==='monitor') {
+      const [sc,tb] = (a.value||focusTable).split('.');
+      const key = `${sc}.${tb}`;
+      setMonTables(p => p.find(t=>`${t.schema}.${t.table}`===key) ? p : [...p,{schema:sc,table:tb,label:key,primary:false,checkSets:[],checks:[]}]);
+      addMsg('system', `✓ Added \`${key}\` to Monitor`);
+    }
+    else if (a.type==='navigate') { onNavigate?.(a.value); }
+  };
 
-  const ACTION_LABELS = {
+  // ── Send ──────────────────────────────────────────────────────────────────
+  const send = async (override) => {
+    const text = String(override || input).trim();
+    if (!text || loading) return;
+    setInput('');
+    setLiveOut(null);
+
+    // Slash commands
+    if (text.startsWith('/')) {
+      const [cmd, ...args] = text.slice(1).split(' ');
+      const arg = args.join(' ').trim();
+      addMsg('user', text);
+      if (cmd==='scan')    { await runScan(arg || focusTable); return; }
+      if (cmd==='preview') { await runPreview(arg || focusTable); return; }
+      if (cmd==='query'||cmd==='q') { await runQuery(arg); return; }
+      if (cmd==='fix')     {
+        const fa = arg || 'redrive';
+        setPending([{ type:'fix', value:fa, id:Math.random().toString(36).slice(2) }]);
+        addMsg('assistant', `Ready to execute **${fa}**. Confirm below.`);
+        return;
+      }
+    }
+
+    addMsg('user', text);
+    setLoading(true);
+
+    // Fetch real data for grounding
+    let groundedData = '';
+    let autoOut = null;
+    const tl = text.toLowerCase();
+    try {
+      if (/(scan|check|what.*wrong|issue|problem|fail|error|diagnose)/i.test(tl)) {
+        const d = await fetch(`${API}/api/report/triage`).then(r=>r.json()).catch(()=>({}));
+        const issues = Array.isArray(d.issues) ? d.issues.filter(i=>Number(i.count)>0) : [];
+        groundedData = issues.length===0
+          ? `LIVE SCAN: ${focusTable} is healthy. ${d.total_rows||'?'} rows, no issues.`
+          : `LIVE SCAN RESULTS:\n${issues.map(i=>`- ${i.id}: ${i.title} (${i.count} rows, ${i.severity}), fix=${i.fix_action||'manual'}`).join('\n')}`;
+        autoOut = { type:'scan', issues, table:focusTable };
+      } else if (/(show|preview|sample|rows?\s+(from|in))/i.test(tl)) {
+        const m = text.match(/(?:from|in|of)\s+([\w.]+)/i);
+        const tbl = m?.[1] || focusTable;
+        const parts = tbl.split('.');
+        const d = await fetch(`${API}/api/preview?schema=${parts[0]}&table=${parts[1]}&limit=10`).then(r=>r.json()).catch(()=>({}));
+        const cols = Array.isArray(d.columns)?d.columns:[];
+        const rows = Array.isArray(d.rows)?d.rows:[];
+        groundedData = `PREVIEW of ${tbl}: ${rows.length} rows. Columns: ${cols.join(', ')}.`;
+        autoOut = { type:'table', columns:cols, rows, title:`${tbl}` };
+      } else if (/^select\s/i.test(text)) {
+        const d = await fetch(`${API}/api/query?sql=${encodeURIComponent(text)}`).then(r=>r.json()).catch(()=>({}));
+        if (!d.error) {
+          const cols = Array.isArray(d.columns)?d.columns:[];
+          const rows = Array.isArray(d.rows)?d.rows:[];
+          groundedData = `QUERY RESULT: ${rows.length} rows.`;
+          autoOut = { type:'table', columns:cols, rows, title:'Query result' };
+        }
+      }
+    } catch(e) {}
+
+    if (autoOut) setLiveOut(autoOut);
+
+    const tableNames = dbSchema
+      ? dbSchema.split(';').map(t=>t.split('(')[0].trim()).filter(Boolean).slice(0,20).join(', ')
+      : 'mws.report, mws.orders, mws.inventory';
+
+    const ctxSummary = ctx
+      ? (ctx.issues.length > 0
+          ? `CURRENT ISSUES: ${ctx.issues.map(i=>`${i.id}(${i.count})`).join(', ')}`
+          : `${ctx.table} has no active issues`)
+      : '';
+
+    const system = `You are WiziAgent, a data quality agent for Intentwise (ecommerce analytics).
+Focus table: ${focusTable}
+Tables: ${tableNames}
+${ctxSummary ? ctxSummary+'\n' : ''}${groundedData ? 'REAL-TIME DATA:\n'+groundedData+'\n' : ''}
+mws.report: STATUS(pending|processed|failed), COPY_STATUS(REPLICATED|NOT_REPLICATED|null)
+Healthy = status=processed AND copy_status=REPLICATED AND not stuck >2h
+
+ACTIONS (embed in response, user confirms before execution):
+ACTION:RUN_FIX:redrive — reset failed downloads
+ACTION:RUN_FIX:recopy — re-trigger replication
+ACTION:RUN_FIX:redrive_copy — fix stuck copies
+ACTION:SHOW_ROWS:schema.table — show sample rows
+ACTION:ADD_MONITOR:schema.table — add to monitor
+ACTION:NAVIGATE:tab — go to tab (triage/workflows/viz)
+
+Rules: Use real data above — don't guess. Be concise and direct. Use **bold** and \`code\` formatting.`;
+
+    try {
+      const history = messages.slice(-6).map(m=>({
+        role: m.role==='system'?'assistant':m.role,
+        content: String(m.content||'').slice(0,500)
+      }));
+      const res  = await fetch(`${API}/api/ai/chat`, {
+        method:'POST', headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({ system, messages:[...history,{role:'user',content:text}], max_tokens:600 })
+      });
+      const data = await res.json();
+      const reply = String(data?.content?.[0]?.text || data?.error || 'No response');
+
+      // Parse action tags
+      const newActions = [];
+      const patterns = [
+        { re:/ACTION:RUN_FIX:(\w+)/g,          type:'fix'      },
+        { re:/ACTION:SHOW_ROWS:([\w.]+)/g,      type:'rows'     },
+        { re:/ACTION:ADD_MONITOR:([\w.]+)/g,    type:'monitor'  },
+        { re:/ACTION:NAVIGATE:(\w+)/g,          type:'navigate' },
+      ];
+      for (const {re,type} of patterns) {
+        let m;
+        while ((m=re.exec(reply))!==null)
+          newActions.push({ type, value:m[1], id:Math.random().toString(36).slice(2) });
+      }
+
+      const clean = reply.replace(/ACTION:[A-Z_]+:[^\n]*/g,'').trim();
+      addMsg('assistant', clean);
+      if (newActions.length>0) setPending(newActions);
+
+    } catch(e) {
+      addMsg('assistant', `Error connecting to WiziAgent: ${e.message}`);
+    }
+    setLoading(false);
+  };
+
+  const STARTERS = React.useMemo(() => {
+    const s = [];
+    if (ctx?.issues?.length > 0) s.push(`Explain the ${ctx.issues[0].id} issue`);
+    if (ctx?.issues?.some(i=>i.fix_action)) s.push(`Fix issues in ${focusTable}`);
+    s.push(`Scan ${focusTable} for problems`);
+    s.push(`Show sample rows from ${focusTable}`);
+    if (s.length < 4) s.push(`What does the data in ${focusTable} look like?`);
+    return s.slice(0,4);
+  }, [ctx, focusTable]);
+
+  const ACTION_LABEL = {
     fix:      v => `Execute fix: ${v}`,
-    sql:      v => `Run SQL: ${v.slice(0,50)}…`,
-    rows:     v => `Show rows from ${v}`,
-    monitor:  v => `Add ${v} to Monitor`,
-    navigate: v => `Go to ${v}`,
-    workflow: v => `Open workflow builder`,
+    rows:     v => `Show rows: ${v}`,
+    monitor:  v => `Add to Monitor: ${v}`,
+    navigate: v => `Go to: ${v}`,
   };
-
-  const SEV_COLOR = { critical:T.red, high:T.orange, medium:T.yellow, low:T.cyan };
 
   return (
-    <div className="fade-in" style={{ display:"flex", height:"calc(100vh - 2px)",
-      overflow:"hidden" }}>
+    <div style={{ display:'flex', width:'100%', height:'100%', overflow:'hidden', fontFamily:'inherit' }}>
 
-      {/* ── LEFT: Context panel ─────────────────────────────────────────── */}
-      <div style={{ width:240, flexShrink:0, borderRight:`1px solid ${T.border}`,
-        overflowY:"auto", display:"flex", flexDirection:"column",
-        background:T.surface }}>
+      {/* LEFT panel */}
+      <div style={{ width:220, flexShrink:0, borderRight:'1px solid #E2E8F0',
+        display:'flex', flexDirection:'column', background:'#F8FAFC', overflowY:'auto' }}>
 
-        {/* Focus table selector */}
-        <div style={{ padding:"14px 12px 10px", borderBottom:`1px solid ${T.border}` }}>
-          <div style={{ fontSize:9, fontWeight:700, color:T.dim, textTransform:"uppercase",
-            letterSpacing:"0.07em", marginBottom:6 }}>Focus Table</div>
-          <button onClick={()=>setShowTP(p=>!p)}
-            style={{ width:"100%", display:"flex", alignItems:"center", gap:6,
-              padding:"7px 10px", borderRadius:8, cursor:"pointer",
-              border:`1px solid ${T.accent}40`, background:`${T.accent}08`,
-              color:T.accent, fontSize:11, fontWeight:700, fontFamily:"monospace",
-              textAlign:"left" }}>
-            <Database size={11}/>{focusTable}<ChevronDown size={9} style={{marginLeft:"auto"}}/>
+        {/* Focus table */}
+        <div style={{ padding:'12px 10px', borderBottom:'1px solid #E2E8F0', position:'relative' }}>
+          <div style={{ fontSize:9, fontWeight:700, color:'#94a3b8', textTransform:'uppercase',
+            letterSpacing:'0.07em', marginBottom:5 }}>Focus Table</div>
+          <button onClick={()=>setShowPicker(p=>!p)}
+            style={{ width:'100%', display:'flex', alignItems:'center', gap:5, padding:'6px 9px',
+              borderRadius:7, border:'1px solid rgba(99,102,241,0.3)', background:'rgba(99,102,241,0.06)',
+              color:'#6366f1', fontSize:10, fontWeight:700, fontFamily:'monospace',
+              cursor:'pointer', textAlign:'left' }}>
+            <Database size={10}/><span style={{flex:1,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{focusTable}</span>
+            <ChevronDown size={8}/>
           </button>
-          {showTP && (
-            <div style={{ position:"absolute", zIndex:60, background:T.card,
-              border:`1px solid ${T.border}`, borderRadius:10,
-              boxShadow:"0 8px 24px rgba(0,0,0,0.14)", padding:"6px 0",
-              minWidth:220, maxHeight:260, overflowY:"auto" }}>
-              <div style={{ padding:"4px 12px 3px", fontSize:9, fontWeight:700,
-                color:T.dim, textTransform:"uppercase" }}>Select table</div>
-              {tableList.map(t=>(
-                <button key={t} onClick={()=>{ setFocusTable(t); setShowTP(false); }}
-                  style={{ width:"100%", padding:"5px 14px", background:"none", border:"none",
-                    cursor:"pointer", textAlign:"left", fontSize:11, color:T.text2,
-                    fontFamily:"monospace" }}
-                  onMouseEnter={e=>e.currentTarget.style.background=`${T.accent}10`}
-                  onMouseLeave={e=>e.currentTarget.style.background="none"}>
-                  {t}
-                </button>
-              ))}
+          {showPicker && (
+            <div style={{ position:'absolute', left:8, top:'100%', zIndex:100,
+              background:'white', border:'1px solid #E2E8F0', borderRadius:10,
+              boxShadow:'0 8px 24px rgba(0,0,0,0.12)', padding:'5px 0',
+              minWidth:200, maxHeight:240, overflowY:'auto' }}>
+              {tableList.length===0
+                ? <div style={{padding:'8px 12px',fontSize:11,color:'#94a3b8'}}>Loading…</div>
+                : tableList.map(t=>(
+                  <button key={t} onClick={()=>{ setFocus(t); setShowPicker(false); }}
+                    style={{ width:'100%', padding:'5px 12px', background:'none', border:'none',
+                      cursor:'pointer', textAlign:'left', fontSize:11, color:'#334155',
+                      fontFamily:'monospace', display:'block' }}
+                    onMouseEnter={e=>e.currentTarget.style.background='rgba(99,102,241,0.07)'}
+                    onMouseLeave={e=>e.currentTarget.style.background='none'}>
+                    {t}
+                  </button>
+                ))}
             </div>
           )}
         </div>
 
-        {/* Live context */}
-        <div style={{ padding:"10px 12px", flex:1 }}>
-          {contextLoading && (
-            <div style={{ display:"flex", gap:6, alignItems:"center",
-              color:T.muted, fontSize:11, padding:"8px 0" }}>
-              <Spinner size={11}/> Loading context…
-            </div>
-          )}
-          {context && !contextLoading && (
+        {/* Context */}
+        <div style={{ flex:1, padding:'10px', display:'flex', flexDirection:'column', gap:12 }}>
+          {ctxLoading && <div style={{fontSize:11,color:'#94a3b8',display:'flex',gap:6,alignItems:'center'}}><Spinner size={10}/>Loading…</div>}
+
+          {ctx && !ctxLoading && (
             <>
-              {/* Issues summary */}
-              <div style={{ marginBottom:10 }}>
-                <div style={{ fontSize:9, fontWeight:700, color:T.dim,
-                  textTransform:"uppercase", letterSpacing:"0.07em", marginBottom:5 }}>
-                  Current Issues
-                </div>
-                {context.issues.length===0 ? (
-                  <div style={{ display:"flex", alignItems:"center", gap:5,
-                    fontSize:11, color:T.green }}>
-                    <CheckCircle size={12} color={T.green}/> All clear
-                  </div>
-                ) : (
-                  <div style={{ display:"flex", flexDirection:"column", gap:4 }}>
-                    {context.issues.slice(0,5).map(issue=>(
-                      <div key={issue.id} style={{ padding:"5px 8px", borderRadius:6,
-                        background:`${SEV_COLOR[issue.severity]||T.muted}10`,
-                        border:`1px solid ${SEV_COLOR[issue.severity]||T.muted}20`,
-                        cursor:"pointer" }}
-                        onClick={()=>send(`Explain ${issue.id}: ${issue.title}`)}>
-                        <div style={{ fontSize:10, fontWeight:700,
-                          color:SEV_COLOR[issue.severity]||T.muted }}>
-                          {issue.id}
-                        </div>
-                        <div style={{ fontSize:10, color:T.text2, marginTop:1 }}>
-                          {issue.count} rows · {issue.severity}
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                )}
+              {/* Issues */}
+              <div>
+                <div style={{fontSize:9,fontWeight:700,color:'#94a3b8',textTransform:'uppercase',letterSpacing:'0.07em',marginBottom:5}}>Issues</div>
+                {ctx.issues.length===0
+                  ? <div style={{fontSize:11,color:'#10b981',display:'flex',alignItems:'center',gap:4}}><CheckCircle size={11} color="#10b981"/>All clear</div>
+                  : ctx.issues.slice(0,5).map(issue=>(
+                    <div key={issue.id}
+                      onClick={()=>send(`Explain ${issue.id}: ${issue.title}`)}
+                      style={{ padding:'5px 7px', borderRadius:6, marginBottom:3, cursor:'pointer',
+                        background:`${SEV[issue.severity]||'#94a3b8'}10`,
+                        border:`1px solid ${SEV[issue.severity]||'#94a3b8'}25` }}>
+                      <div style={{fontSize:10,fontWeight:700,color:SEV[issue.severity]||'#94a3b8'}}>{issue.id}</div>
+                      <div style={{fontSize:10,color:'#64748b'}}>{issue.count} rows · {issue.severity}</div>
+                    </div>
+                  ))
+                }
               </div>
 
               {/* Columns */}
-              {context.columns.length > 0 && (
-                <div style={{ marginBottom:10 }}>
-                  <div style={{ fontSize:9, fontWeight:700, color:T.dim,
-                    textTransform:"uppercase", letterSpacing:"0.07em", marginBottom:5 }}>
-                    Columns
-                  </div>
-                  <div style={{ display:"flex", flexWrap:"wrap", gap:3 }}>
-                    {context.columns.slice(0,12).map(c=>(
-                      <button key={c}
-                        onClick={()=>send(`What's in the ${c} column of ${focusTable}?`)}
-                        style={{ fontSize:9, padding:"2px 6px", borderRadius:4,
-                          background:T.surface, border:`1px solid ${T.border}`,
-                          color:T.muted, cursor:"pointer", fontFamily:"monospace" }}
-                        onMouseEnter={e=>{ e.currentTarget.style.borderColor=T.accent; e.currentTarget.style.color=T.accent; }}
-                        onMouseLeave={e=>{ e.currentTarget.style.borderColor=T.border; e.currentTarget.style.color=T.muted; }}>
+              {ctx.columns.length > 0 && (
+                <div>
+                  <div style={{fontSize:9,fontWeight:700,color:'#94a3b8',textTransform:'uppercase',letterSpacing:'0.07em',marginBottom:5}}>Columns</div>
+                  <div style={{display:'flex',flexWrap:'wrap',gap:3}}>
+                    {ctx.columns.slice(0,10).map(c=>(
+                      <button key={c} onClick={()=>send(`What's in the ${c} column?`)}
+                        style={{fontSize:9,padding:'2px 5px',borderRadius:4,border:'1px solid #E2E8F0',
+                          background:'white',color:'#64748b',cursor:'pointer',fontFamily:'monospace'}}
+                        onMouseEnter={e=>{e.currentTarget.style.borderColor='#6366f1';e.currentTarget.style.color='#6366f1';}}
+                        onMouseLeave={e=>{e.currentTarget.style.borderColor='#E2E8F0';e.currentTarget.style.color='#64748b';}}>
                         {c}
                       </button>
                     ))}
@@ -5013,236 +4941,161 @@ RULES:
 
               {/* Quick actions */}
               <div>
-                <div style={{ fontSize:9, fontWeight:700, color:T.dim,
-                  textTransform:"uppercase", letterSpacing:"0.07em", marginBottom:5 }}>
-                  Quick Actions
-                </div>
-                <div style={{ display:"flex", flexDirection:"column", gap:4 }}>
-                  <button onClick={()=>runScan(focusTable)}
-                    style={{ padding:"6px 8px", borderRadius:6, fontSize:10,
-                      cursor:"pointer", border:`1px solid ${T.border}`,
-                      background:"transparent", color:T.text2, textAlign:"left",
-                      display:"flex", alignItems:"center", gap:6 }}
-                    onMouseEnter={e=>e.currentTarget.style.background=`${T.accent}08`}
-                    onMouseLeave={e=>e.currentTarget.style.background="transparent"}>
-                    <RefreshCw size={10} color={T.accent}/> Scan table
+                <div style={{fontSize:9,fontWeight:700,color:'#94a3b8',textTransform:'uppercase',letterSpacing:'0.07em',marginBottom:5}}>Quick Actions</div>
+                {[
+                  { label:'Scan table',    icon:<RefreshCw size={9}/>,  action:()=>{ addMsg('user',`/scan ${focusTable}`); runScan(focusTable); } },
+                  { label:'Preview rows',  icon:<Eye size={9}/>,        action:()=>{ addMsg('user',`/preview ${focusTable}`); runPreview(focusTable); } },
+                  { label:'Open Triage',   icon:<ArrowRight size={9}/>, action:()=>onNavigate?.('triage') },
+                ].map(btn=>(
+                  <button key={btn.label} onClick={btn.action}
+                    style={{ width:'100%', padding:'5px 7px', borderRadius:6, fontSize:10,
+                      border:'1px solid #E2E8F0', background:'transparent', color:'#475569',
+                      cursor:'pointer', textAlign:'left', display:'flex', alignItems:'center',
+                      gap:5, marginBottom:3 }}
+                    onMouseEnter={e=>e.currentTarget.style.background='rgba(99,102,241,0.06)'}
+                    onMouseLeave={e=>e.currentTarget.style.background='transparent'}>
+                    <span style={{color:'#6366f1'}}>{btn.icon}</span>{btn.label}
                   </button>
-                  <button onClick={()=>runPreview(focusTable)}
-                    style={{ padding:"6px 8px", borderRadius:6, fontSize:10,
-                      cursor:"pointer", border:`1px solid ${T.border}`,
-                      background:"transparent", color:T.text2, textAlign:"left",
-                      display:"flex", alignItems:"center", gap:6 }}
-                    onMouseEnter={e=>e.currentTarget.style.background=`${T.accent}08`}
-                    onMouseLeave={e=>e.currentTarget.style.background="transparent"}>
-                    <Eye size={10} color={T.accent}/> Preview rows
+                ))}
+                {ctx.issues.some(i=>i.fix_action) && (
+                  <button onClick={()=>{ const fa=ctx.issues.find(i=>i.fix_action)?.fix_action; if(fa){addMsg('user',`/fix ${fa}`);setPending([{type:'fix',value:fa,id:Math.random().toString(36).slice(2)}]);addMsg('assistant',`Ready to execute **${fa}**. Confirm below.`);} }}
+                    style={{ width:'100%', padding:'5px 7px', borderRadius:6, fontSize:10,
+                      border:'1px solid rgba(249,115,22,0.3)', background:'rgba(249,115,22,0.07)',
+                      color:'#f97316', cursor:'pointer', textAlign:'left',
+                      display:'flex', alignItems:'center', gap:5 }}>
+                    <Zap size={9}/>Fix issues
                   </button>
-                  {context.issues.some(i=>i.fix_action) && (
-                    <button onClick={()=>{ const fa=context.issues.find(i=>i.fix_action)?.fix_action; if(fa) proposeFix(fa); }}
-                      style={{ padding:"6px 8px", borderRadius:6, fontSize:10,
-                        cursor:"pointer", border:`1px solid ${T.orange}40`,
-                        background:`${T.orange}08`, color:T.orange, textAlign:"left",
-                        display:"flex", alignItems:"center", gap:6 }}>
-                      <Zap size={10}/> Fix issues
-                    </button>
-                  )}
-                  <button onClick={()=>onNavigate?.("triage")}
-                    style={{ padding:"6px 8px", borderRadius:6, fontSize:10,
-                      cursor:"pointer", border:`1px solid ${T.border}`,
-                      background:"transparent", color:T.text2, textAlign:"left",
-                      display:"flex", alignItems:"center", gap:6 }}
-                    onMouseEnter={e=>e.currentTarget.style.background=`${T.accent}08`}
-                    onMouseLeave={e=>e.currentTarget.style.background="transparent"}>
-                    <ArrowRight size={10} color={T.accent}/> Open Triage
-                  </button>
-                </div>
+                )}
               </div>
             </>
           )}
 
           {/* Recent scans */}
-          {recentScans.length > 0 && (
-            <div style={{ marginTop:14 }}>
-              <div style={{ fontSize:9, fontWeight:700, color:T.dim,
-                textTransform:"uppercase", letterSpacing:"0.07em", marginBottom:5 }}>
-                Recent Scans
-              </div>
+          {recentScans.length>0 && (
+            <div>
+              <div style={{fontSize:9,fontWeight:700,color:'#94a3b8',textTransform:'uppercase',letterSpacing:'0.07em',marginBottom:5}}>Recent Scans</div>
               {recentScans.map((s,i)=>(
-                <div key={i} style={{ fontSize:10, color:T.muted, marginBottom:3 }}>
-                  <span style={{ fontFamily:"monospace", color:T.text2 }}>{s.table}</span>
-                  {" — "}{s.issues===0
-                    ? <span style={{color:T.green}}>clean</span>
-                    : <span style={{color:T.orange}}>{s.issues} issues</span>}
-                  <span style={{ color:T.dim }}> · {s.ts}</span>
+                <div key={i} style={{fontSize:10,color:'#94a3b8',marginBottom:2}}>
+                  <span style={{fontFamily:'monospace',color:'#475569'}}>{s.table.split('.')[1]||s.table}</span>
+                  {' — '}{s.count===0?<span style={{color:'#10b981'}}>clean</span>:<span style={{color:'#f97316'}}>{s.count} issues</span>}
                 </div>
               ))}
             </div>
           )}
 
-          {/* Slash command reference */}
-          <div style={{ marginTop:14, paddingTop:10,
-            borderTop:`1px solid ${T.border}` }}>
-            <div style={{ fontSize:9, fontWeight:700, color:T.dim,
-              textTransform:"uppercase", letterSpacing:"0.07em", marginBottom:5 }}>
-              Slash Commands
-            </div>
-            {SLASH_CMDS.map(c=>(
-              <div key={c.cmd} style={{ marginBottom:4 }}>
-                <code style={{ fontSize:10, color:T.accent,
-                  fontFamily:"monospace" }}>{c.cmd}</code>
-                <div style={{ fontSize:9, color:T.dim }}>{c.desc}</div>
-              </div>
+          {/* Slash commands */}
+          <div style={{borderTop:'1px solid #E2E8F0',paddingTop:10}}>
+            <div style={{fontSize:9,fontWeight:700,color:'#94a3b8',textTransform:'uppercase',letterSpacing:'0.07em',marginBottom:6}}>Commands</div>
+            {['/scan','/preview','/query SELECT…','/fix redrive'].map(c=>(
+              <div key={c} style={{fontSize:10,color:'#6366f1',fontFamily:'monospace',marginBottom:3}}>{c}</div>
             ))}
           </div>
         </div>
       </div>
 
-      {/* ── RIGHT: Conversation + Live Output ───────────────────────────── */}
-      <div style={{ flex:1, display:"flex", flexDirection:"column",
-        overflow:"hidden", minWidth:0 }}>
+      {/* RIGHT panel */}
+      <div style={{ flex:1, display:'flex', flexDirection:'column', overflow:'hidden', minWidth:0, background:'white' }}>
 
         {/* Header */}
-        <div style={{ padding:"12px 20px 10px", borderBottom:`1px solid ${T.border}`,
-          flexShrink:0, display:"flex", alignItems:"center",
-          justifyContent:"space-between" }}>
+        <div style={{ padding:'11px 18px', borderBottom:'1px solid #E2E8F0',
+          flexShrink:0, display:'flex', alignItems:'center', justifyContent:'space-between' }}>
           <div>
-            <div style={{ fontSize:15, fontWeight:700, color:T.text }}>Ask WiziAgent</div>
-            <div style={{ fontSize:10, color:T.muted, marginTop:1 }}>
-              Focused on <code style={{fontFamily:"monospace",color:T.accent,fontSize:10}}>{focusTable}</code>
-              {" · "}
-              {context?.issues.length > 0
-                ? <span style={{color:T.orange}}>{context.issues.length} active issues</span>
-                : <span style={{color:T.green}}>no issues</span>}
+            <div style={{fontSize:14,fontWeight:700,color:'#1e293b'}}>Ask WiziAgent</div>
+            <div style={{fontSize:10,color:'#94a3b8',marginTop:1}}>
+              Focus: <span style={{fontFamily:'monospace',color:'#6366f1'}}>{focusTable}</span>
+              {ctx && <span style={{marginLeft:6,color:ctx.issues.length>0?'#f97316':'#10b981'}}>
+                {ctx.issues.length>0?`${ctx.issues.length} issues`:'no issues'}
+              </span>}
             </div>
           </div>
           {messages.length>0 && (
-            <Btn onClick={()=>{ setMessages([]); setPending([]); setLiveOutput(null); }}
-              variant="muted" size="sm"><Trash2 size={10}/> Clear</Btn>
+            <button onClick={()=>{setMessages([]);setPending([]);setLiveOut(null);}}
+              style={{fontSize:10,color:'#94a3b8',background:'none',border:'1px solid #E2E8F0',
+                borderRadius:6,padding:'4px 10px',cursor:'pointer',display:'flex',alignItems:'center',gap:4}}>
+              <Trash2 size={10}/>Clear
+            </button>
           )}
         </div>
 
         {/* Live output bar */}
-        {liveOutput && (
-          <div style={{ borderBottom:`1px solid ${T.border}`, flexShrink:0,
-            background:T.surface, padding:"10px 20px",
-            maxHeight:260, overflowY:"auto", position:"relative" }}>
-            {liveOutput.type==='loading' && (
-              <div style={{ display:"flex", gap:8, alignItems:"center",
-                color:T.muted, fontSize:12 }}>
-                <Spinner size={13}/> {liveOutput.msg}
+        {liveOut && (
+          <div style={{ borderBottom:'1px solid #E2E8F0', flexShrink:0, background:'#F8FAFC',
+            padding:'10px 18px', maxHeight:220, overflowY:'auto', position:'relative' }}>
+            <button onClick={()=>setLiveOut(null)}
+              style={{position:'absolute',right:10,top:8,background:'none',border:'none',
+                cursor:'pointer',color:'#94a3b8',fontSize:16,lineHeight:1}}>×</button>
+            {liveOut.type==='loading' && (
+              <div style={{display:'flex',gap:8,alignItems:'center',color:'#94a3b8',fontSize:12}}>
+                <Spinner size={12}/>{liveOut.msg}
               </div>
             )}
-            {liveOutput.type==='error' && (
-              <div style={{ fontSize:12, color:T.red, fontFamily:"monospace" }}>
-                ✗ {liveOutput.msg}
-              </div>
+            {liveOut.type==='error' && (
+              <div style={{fontSize:12,color:'#ef4444',fontFamily:'monospace'}}>✗ {liveOut.msg}</div>
             )}
-            {liveOutput.type==='table' && (
+            {liveOut.type==='table' && (
+              <>
+                {liveOut.title && <div style={{fontSize:10,fontWeight:700,color:'#94a3b8',textTransform:'uppercase',letterSpacing:'0.05em',marginBottom:6}}>{liveOut.title}</div>}
+                <InlineTable columns={liveOut.columns} rows={liveOut.rows}/>
+              </>
+            )}
+            {liveOut.type==='scan' && (
               <div>
-                {liveOutput.title && (
-                  <div style={{ fontSize:10, fontWeight:700, color:T.muted,
-                    marginBottom:6, textTransform:"uppercase", letterSpacing:"0.05em" }}>
-                    {liveOutput.title}
-                  </div>
-                )}
-                <InlineTable columns={liveOutput.columns} rows={liveOutput.rows} T={T}/>
+                <div style={{fontSize:10,fontWeight:700,color:'#94a3b8',textTransform:'uppercase',letterSpacing:'0.05em',marginBottom:6}}>Scan: {liveOut.table}</div>
+                {liveOut.issues.length===0
+                  ? <div style={{display:'flex',gap:6,alignItems:'center',fontSize:12,color:'#10b981'}}><CheckCircle size={14} color="#10b981"/>No issues found</div>
+                  : liveOut.issues.map(issue=>(
+                    <div key={issue.id} style={{display:'flex',alignItems:'center',gap:8,padding:'5px 10px',borderRadius:7,marginBottom:4,
+                      background:`${SEV[issue.severity]||'#94a3b8'}08`,border:`1px solid ${SEV[issue.severity]||'#94a3b8'}20`}}>
+                      <span style={{fontSize:10,fontWeight:700,color:SEV[issue.severity]||'#94a3b8',fontFamily:'monospace',minWidth:60}}>{issue.id}</span>
+                      <span style={{fontSize:11,color:'#334155',flex:1}}>{issue.title}</span>
+                      <span style={{fontSize:11,fontWeight:700,color:SEV[issue.severity]||'#94a3b8',fontFamily:'monospace'}}>{issue.count}</span>
+                      {issue.fix_action && (
+                        <button onClick={()=>setPending(p=>[...p,{type:'fix',value:issue.fix_action,id:Math.random().toString(36).slice(2)}])}
+                          style={{fontSize:10,padding:'2px 8px',borderRadius:5,border:'1px solid #6366f1',
+                            background:'rgba(99,102,241,0.08)',color:'#6366f1',cursor:'pointer'}}>Fix</button>
+                      )}
+                    </div>
+                  ))
+                }
               </div>
             )}
-            {liveOutput.type==='scan' && (
-              <div>
-                <div style={{ fontSize:10, fontWeight:700, color:T.muted,
-                  marginBottom:6, textTransform:"uppercase", letterSpacing:"0.05em" }}>
-                  Scan: {liveOutput.table}
-                </div>
-                {liveOutput.issues.length===0 ? (
-                  <div style={{ display:"flex", gap:6, alignItems:"center",
-                    fontSize:12, color:T.green }}>
-                    <CheckCircle size={14} color={T.green}/> No issues found
-                  </div>
-                ) : (
-                  <div style={{ display:"flex", flexDirection:"column", gap:5 }}>
-                    {liveOutput.issues.map(issue=>(
-                      <div key={issue.id} style={{ display:"flex", alignItems:"center",
-                        gap:10, padding:"6px 10px", borderRadius:7,
-                        background:`${SEV_COLOR[issue.severity]||T.muted}08`,
-                        border:`1px solid ${SEV_COLOR[issue.severity]||T.muted}25` }}>
-                        <Badge label={issue.id} color={SEV_COLOR[issue.severity]||T.muted}/>
-                        <span style={{ fontSize:11, color:T.text, flex:1 }}>
-                          {issue.title}
-                        </span>
-                        <span style={{ fontSize:11, fontWeight:700,
-                          color:SEV_COLOR[issue.severity]||T.muted,
-                          fontFamily:"monospace" }}>{issue.count} rows</span>
-                        {issue.fix_action && (
-                          <Btn size="sm" onClick={()=>proposeFix(issue.fix_action)}
-                            style={{ fontSize:9 }}>Fix</Btn>
-                        )}
-                      </div>
-                    ))}
-                  </div>
-                )}
-              </div>
-            )}
-            {liveOutput.type==='fix_result' && (
-              <div style={{ display:"flex", alignItems:"center", gap:12,
-                padding:"8px 12px", borderRadius:8,
-                background:`${T.green}08`, border:`1px solid ${T.green}30` }}>
-                <CheckCircle size={16} color={T.green}/>
+            {liveOut.type==='fix' && (
+              <div style={{display:'flex',alignItems:'center',gap:10,padding:'8px 12px',borderRadius:8,
+                background:'rgba(16,185,129,0.07)',border:'1px solid rgba(16,185,129,0.2)'}}>
+                <CheckCircle size={16} color="#10b981"/>
                 <div>
-                  <div style={{ fontSize:12, fontWeight:700, color:T.green }}>
-                    Fix applied: {liveOutput.action}
-                  </div>
-                  <div style={{ fontSize:11, color:T.muted, marginTop:1 }}>
-                    {liveOutput.rows} rows affected · {liveOutput.before} → {liveOutput.after}
-                  </div>
+                  <div style={{fontSize:12,fontWeight:700,color:'#10b981'}}>{liveOut.action} executed</div>
+                  <div style={{fontSize:11,color:'#64748b'}}>{liveOut.rows} rows · {liveOut.before}→{liveOut.after}</div>
                 </div>
               </div>
             )}
-            <button onClick={()=>setLiveOutput(null)}
-              style={{ position:"absolute", right:20, top:10, background:"none",
-                border:"none", cursor:"pointer", color:T.dim, fontSize:14 }}>×</button>
           </div>
         )}
 
-        {/* Messages */}
-        <div style={{ flex:1, overflowY:"auto", padding:"14px 20px" }}
-          onClick={()=>showTP&&setShowTP(false)}>
+        {/* Messages area */}
+        <div style={{ flex:1, overflowY:'auto', padding:'14px 18px' }}
+          onClick={()=>showPicker&&setShowPicker(false)}>
 
           {/* Empty state */}
           {messages.length===0 && (
-            <div style={{ paddingTop:24 }}>
-              <div style={{ textAlign:"center", marginBottom:20 }}>
-                <div style={{ width:44, height:44, borderRadius:12, margin:"0 auto 10px",
-                  background:`linear-gradient(135deg,${T.accent},${T.purple})`,
-                  display:"flex", alignItems:"center", justifyContent:"center" }}>
-                  <Zap size={20} color="white"/>
+            <div style={{paddingTop:20}}>
+              <div style={{textAlign:'center',marginBottom:18}}>
+                <div style={{width:42,height:42,borderRadius:11,margin:'0 auto 10px',
+                  background:'linear-gradient(135deg,#6366f1,#8b5cf6)',
+                  display:'flex',alignItems:'center',justifyContent:'center'}}>
+                  <Zap size={19} color="white"/>
                 </div>
-                <div style={{ fontSize:14, fontWeight:700, color:T.text }}>
-                  WiziAgent
-                </div>
-                <div style={{ fontSize:11, color:T.muted, marginTop:3 }}>
-                  Ask questions, run scans, fix issues, query data
-                </div>
+                <div style={{fontSize:14,fontWeight:700,color:'#1e293b'}}>WiziAgent</div>
+                <div style={{fontSize:11,color:'#94a3b8',marginTop:3}}>Ask questions · scan · fix · query data</div>
               </div>
-              {/* Context-aware starter prompts */}
-              <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:6,
-                maxWidth:480, margin:"0 auto" }}>
-                {[
-                  context?.issues.length > 0
-                    ? `Explain the ${context.issues[0]?.id} issue in ${focusTable}`
-                    : `Scan ${focusTable} for issues`,
-                  `Show me sample rows from ${focusTable}`,
-                  `What does the data in ${focusTable} look like?`,
-                  context?.issues.some(i=>i.fix_action)
-                    ? `Fix the ${context?.issues.find(i=>i.fix_action)?.fix_action} issue`
-                    : `Add ${focusTable} to monitoring`,
-                ].map((s,i)=>(
+              <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:7,maxWidth:440,margin:'0 auto'}}>
+                {STARTERS.map((s,i)=>(
                   <button key={i} onClick={()=>send(s)}
-                    style={{ padding:"9px 12px", background:T.surface,
-                      border:`1px solid ${T.border}`, borderRadius:8,
-                      cursor:"pointer", fontSize:11, color:T.text2,
-                      textAlign:"left", fontFamily:"inherit", lineHeight:1.4 }}
-                    onMouseEnter={e=>{ e.currentTarget.style.borderColor=T.accent; e.currentTarget.style.color=T.accent; }}
-                    onMouseLeave={e=>{ e.currentTarget.style.borderColor=T.border; e.currentTarget.style.color=T.text2; }}>
+                    style={{padding:'9px 12px',background:'#F8FAFC',border:'1px solid #E2E8F0',
+                      borderRadius:8,cursor:'pointer',fontSize:11,color:'#475569',
+                      textAlign:'left',fontFamily:'inherit',lineHeight:1.4}}
+                    onMouseEnter={e=>{e.currentTarget.style.borderColor='#6366f1';e.currentTarget.style.color='#6366f1';}}
+                    onMouseLeave={e=>{e.currentTarget.style.borderColor='#E2E8F0';e.currentTarget.style.color='#475569';}}>
                     {s}
                   </button>
                 ))}
@@ -5252,78 +5105,68 @@ RULES:
 
           {/* Message bubbles */}
           {messages.map((m,i)=>(
-            <div key={i} style={{ display:"flex", gap:8, marginBottom:12,
-              justifyContent:m.role==="user"?"flex-end":"flex-start" }}>
-              {m.role!=="user" && (
-                <div style={{ width:24, height:24, borderRadius:6, flexShrink:0,
-                  background:m.role==="system"?`${T.green}15`:`linear-gradient(135deg,${T.accent},${T.purple})`,
-                  display:"flex", alignItems:"center", justifyContent:"center", marginTop:2 }}>
-                  {m.role==="system"?<Check size={10} color={T.green}/>:<Zap size={10} color="white"/>}
+            <div key={i} style={{display:'flex',gap:8,marginBottom:12,
+              justifyContent:m.role==='user'?'flex-end':'flex-start'}}>
+              {m.role!=='user' && (
+                <div style={{width:24,height:24,borderRadius:6,flexShrink:0,marginTop:2,
+                  background:m.role==='system'?'rgba(16,185,129,0.15)':'linear-gradient(135deg,#6366f1,#8b5cf6)',
+                  display:'flex',alignItems:'center',justifyContent:'center'}}>
+                  {m.role==='system'
+                    ? <Check size={11} color="#10b981"/>
+                    : <Zap size={11} color="white"/>}
                 </div>
               )}
-              <div style={{ maxWidth:"78%" }}>
-                <div style={{ padding:"9px 13px", borderRadius:10,
-                  background:m.role==="user"?T.accent:m.role==="system"?`${T.green}08`:T.card,
-                  color:m.role==="user"?"white":T.text,
-                  border:m.role==="user"?"none":m.role==="system"?`1px solid ${T.green}20`:`1px solid ${T.border}`,
-                  fontSize:12, lineHeight:1.65 }}>
-                  {m.role==="user"
-                    ? <span style={{whiteSpace:"pre-wrap"}}>{m.content}</span>
-                    : <MdText text={m.content} T={T}/>
+              <div style={{maxWidth:'76%'}}>
+                <div style={{padding:'9px 13px',borderRadius:10,fontSize:12,lineHeight:1.65,
+                  background:m.role==='user'?'#6366f1':m.role==='system'?'rgba(16,185,129,0.07)':'white',
+                  color:m.role==='user'?'white':'#334155',
+                  border:m.role==='user'?'none':m.role==='system'?'1px solid rgba(16,185,129,0.2)':'1px solid #E2E8F0'}}>
+                  {m.role==='user'
+                    ? <span style={{whiteSpace:'pre-wrap'}}>{m.content}</span>
+                    : <MdText text={m.content}/>
                   }
-                  {m.tableResult && <InlineTable columns={m.tableResult.columns} rows={m.tableResult.rows} T={T}/>}
-                  <div style={{ fontSize:9, marginTop:4,
-                    color:m.role==="user"?"rgba(255,255,255,0.4)":T.dim }}>
-                    {m.ts}
-                  </div>
+                  <div style={{fontSize:9,marginTop:4,color:m.role==='user'?'rgba(255,255,255,0.45)':'#cbd5e1'}}>{m.ts}</div>
                 </div>
               </div>
             </div>
           ))}
 
           {/* Pending actions */}
-          {pendingActions.length>0 && (
-            <div style={{ marginBottom:10 }}>
-              <div style={{ fontSize:9, fontWeight:700, color:T.muted, marginBottom:6,
-                textTransform:"uppercase", letterSpacing:"0.05em" }}>
-                WiziAgent wants to:
-              </div>
-              <div style={{ display:"flex", flexDirection:"column", gap:5 }}>
-                {pendingActions.map(a=>(
-                  <div key={a.id} style={{ display:"flex", alignItems:"center", gap:8,
-                    padding:"9px 12px", borderRadius:8,
-                    background:`${T.yellow}08`, border:`1px solid ${T.yellow}30` }}>
-                    <Zap size={11} color={T.yellow}/>
-                    <span style={{ flex:1, fontSize:11, color:T.text2 }}>
-                      {ACTION_LABELS[a.type]?.(a.value)||a.value}
-                    </span>
-                    <Btn onClick={()=>executeAction(a)} size="sm" variant="success">
-                      <Check size={10}/> Run
-                    </Btn>
-                    <Btn onClick={()=>setPending(p=>p.filter(x=>x.id!==a.id))} size="sm" variant="muted">
-                      <X size={10}/>
-                    </Btn>
-                  </div>
-                ))}
-              </div>
+          {pending.length>0 && (
+            <div style={{marginBottom:10}}>
+              <div style={{fontSize:9,fontWeight:700,color:'#94a3b8',marginBottom:7,textTransform:'uppercase',letterSpacing:'0.05em'}}>Confirm actions:</div>
+              {pending.map(a=>(
+                <div key={a.id} style={{display:'flex',alignItems:'center',gap:8,padding:'8px 12px',
+                  borderRadius:8,marginBottom:5,background:'rgba(234,179,8,0.07)',
+                  border:'1px solid rgba(234,179,8,0.25)'}}>
+                  <Zap size={11} color="#eab308"/>
+                  <span style={{flex:1,fontSize:11,color:'#475569'}}>{ACTION_LABEL[a.type]?.(a.value)||a.value}</span>
+                  <button onClick={()=>execAction(a)}
+                    style={{fontSize:10,padding:'3px 10px',borderRadius:5,border:'none',
+                      background:'#10b981',color:'white',cursor:'pointer',display:'flex',alignItems:'center',gap:4}}>
+                    <Check size={9}/>Run
+                  </button>
+                  <button onClick={()=>setPending(p=>p.filter(x=>x.id!==a.id))}
+                    style={{fontSize:10,padding:'3px 8px',borderRadius:5,border:'1px solid #E2E8F0',
+                      background:'none',color:'#94a3b8',cursor:'pointer'}}>✕</button>
+                </div>
+              ))}
             </div>
           )}
 
-          {/* Typing */}
+          {/* Typing indicator */}
           {loading && (
-            <div style={{ display:"flex", gap:8, marginBottom:10 }}>
-              <div style={{ width:24, height:24, borderRadius:6, flexShrink:0,
-                background:`linear-gradient(135deg,${T.accent},${T.purple})`,
-                display:"flex", alignItems:"center", justifyContent:"center" }}>
-                <Zap size={10} color="white"/>
+            <div style={{display:'flex',gap:8,marginBottom:10}}>
+              <div style={{width:24,height:24,borderRadius:6,flexShrink:0,
+                background:'linear-gradient(135deg,#6366f1,#8b5cf6)',
+                display:'flex',alignItems:'center',justifyContent:'center'}}>
+                <Zap size={11} color="white"/>
               </div>
-              <div style={{ padding:"9px 13px", background:T.card,
-                border:`1px solid ${T.border}`, borderRadius:10,
-                display:"flex", gap:4, alignItems:"center" }}>
+              <div style={{padding:'9px 13px',background:'white',border:'1px solid #E2E8F0',
+                borderRadius:10,display:'flex',gap:4,alignItems:'center'}}>
                 {[0,1,2].map(d=>(
-                  <div key={d} style={{ width:5, height:5, borderRadius:"50%",
-                    background:T.muted, animation:"pulse 1.2s infinite",
-                    animationDelay:`${d*0.2}s` }}/>
+                  <div key={d} style={{width:5,height:5,borderRadius:'50%',background:'#cbd5e1',
+                    animation:'pulse 1.2s infinite',animationDelay:`${d*0.2}s`}}/>
                 ))}
               </div>
             </div>
@@ -5332,25 +5175,26 @@ RULES:
         </div>
 
         {/* Input */}
-        <div style={{ padding:"10px 20px 14px", borderTop:`1px solid ${T.border}`,
-          background:T.bg, flexShrink:0 }}>
-          <div style={{ display:"flex", gap:7, alignItems:"flex-end" }}>
+        <div style={{padding:'10px 18px 14px',borderTop:'1px solid #E2E8F0',flexShrink:0,background:'white'}}>
+          <div style={{display:'flex',gap:7,alignItems:'flex-end'}}>
             <textarea ref={inputRef}
               value={input}
               onChange={e=>setInput(e.target.value)}
-              onKeyDown={e=>{ if(e.key==="Enter"&&!e.shiftKey){ e.preventDefault(); send(); } }}
-              placeholder={`Ask about ${focusTable}… or type /scan, /query, /fix`}
+              onKeyDown={e=>{ if(e.key==='Enter'&&!e.shiftKey){ e.preventDefault(); send(); } }}
+              placeholder={`Ask about ${focusTable}… or /scan /preview /query /fix`}
               rows={2}
-              style={{ flex:1, padding:"8px 12px", borderRadius:8, resize:"none",
-                border:`1px solid ${T.border}`, background:T.surface,
-                color:T.text, fontSize:12, fontFamily:"inherit",
-                outline:"none", lineHeight:1.5 }}
-              onFocus={e=>e.target.style.borderColor=T.accent}
-              onBlur={e=>e.target.style.borderColor=T.border}/>
-            <Btn onClick={()=>send()} disabled={loading||!input.trim()}
-              style={{ alignSelf:"stretch", paddingLeft:14, paddingRight:14 }}>
-              {loading?<Spinner size={12} color="white"/>:<ArrowRight size={13}/>}
-            </Btn>
+              style={{flex:1,padding:'8px 12px',borderRadius:8,resize:'none',
+                border:'1px solid #E2E8F0',background:'#F8FAFC',color:'#334155',
+                fontSize:12,fontFamily:'inherit',outline:'none',lineHeight:1.5}}
+              onFocus={e=>e.target.style.borderColor='#6366f1'}
+              onBlur={e=>e.target.style.borderColor='#E2E8F0'}/>
+            <button onClick={()=>send()} disabled={loading||!input.trim()}
+              style={{alignSelf:'stretch',padding:'0 16px',borderRadius:8,border:'none',
+                background:loading||!input.trim()?'#E2E8F0':'#6366f1',
+                color:loading||!input.trim()?'#94a3b8':'white',cursor:loading||!input.trim()?'default':'pointer',
+                display:'flex',alignItems:'center',justifyContent:'center',minWidth:44}}>
+              {loading?<Spinner size={13} color="white"/>:<ArrowRight size={14}/>}
+            </button>
           </div>
         </div>
       </div>

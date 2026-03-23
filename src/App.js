@@ -6483,6 +6483,7 @@ function WorkflowsTab() {
   // Load workflows + history from backend
   const load = async (seed=false) => {
     try {
+      if (seed) await fetch(`${API}/api/custom-workflows/load-from-db`).catch(()=>{});
       const [wfsRes, histRes] = await Promise.all([
         fetch(`${API}/api/custom-workflows`).then(r=>r.json()),
         fetch(`${API}/api/custom-workflows/history/v2?limit=100`).then(r=>r.json()).catch(()=>[]),
@@ -6507,22 +6508,27 @@ function WorkflowsTab() {
     return () => clearInterval(id);
   }, []);
 
+  const [saveError, setSaveError] = React.useState(null);
   const saveWf = async (wf) => {
+    setSaveError(null);
     try {
       const res  = await fetch(`${API}/api/custom-workflows/save/v2`, {
         method:"POST", headers:{"Content-Type":"application/json"},
         body:JSON.stringify(wf)
       });
       const data = await res.json();
+      if (data.error) { setSaveError(String(data.error)); return; }
       if (data.workflow) {
         setWfs(p => {
           const idx = p.findIndex(w=>w.id===data.workflow.id);
           return idx>=0 ? p.map((w,i)=>i===idx?data.workflow:w) : [...p, data.workflow];
         });
+        setView("list");
+        setEditing(null);
       }
-    } catch(e) {}
-    setView("list");
-    setEditing(null);
+    } catch(e) {
+      setSaveError(e.message);
+    }
   };
 
   const deleteWf = async (id) => {
@@ -6602,8 +6608,8 @@ function WorkflowsTab() {
   };
 
   const runBuiltin = async (wf) => {
-    // Ads SOP: if no custom checks configured, use the multi-gate SOP endpoint
-    if (wf.id === "ads-sop" && (!wf.checks || wf.checks.length === 0)) {
+    if (wf.id === "ads-sop") {
+      // Always use the full SOP gate workflow for Ads SOP
       setSopRunning(true);
       try {
         const res  = await fetch(`${API}/api/workflow/ads-sop`, {method:"POST"});
@@ -6613,7 +6619,24 @@ function WorkflowsTab() {
       setSopRunning(false);
       return;
     }
-    // Everything else uses the standard SQL check runner
+    if (wf.id === "daily-brief") {
+      // Use dedicated daily-run endpoint
+      setRunning(p=>({...p,"daily-brief":true}));
+      try {
+        const res  = await fetch(`${API}/api/workflow/daily-run`, {
+          method:"POST", headers:{"Content-Type":"application/json"}, body:"{}"
+        });
+        const data = await res.json();
+        if (!data.error) {
+          setHistory(p=>[data,...p]);
+          setLiveRun(data);
+          setDetail(BUILTIN_WFS.find(b=>b.id==="daily-brief"));
+          setView("detail");
+        }
+      } catch(e) {}
+      setRunning(p=>({...p,"daily-brief":false}));
+      return;
+    }
     await runWf(wf);
   };
 
@@ -6670,11 +6693,18 @@ Respond ONLY with JSON array (no markdown):
 
   if (view==="builder") return (
     <div style={{ display:"flex", flexDirection:"column", height:"100%", overflow:"hidden" }}>
+      {saveError && (
+        <div style={{ padding:"10px 20px", background:"#fef2f2", borderBottom:"1px solid #fca5a5",
+          fontSize:12, color:"#ef4444", flexShrink:0 }}>
+          ✗ Save failed: {saveError} —{" "}
+          <button onClick={()=>setSaveError(null)} style={{background:"none",border:"none",cursor:"pointer",color:"#ef4444",textDecoration:"underline"}}>dismiss</button>
+        </div>
+      )}
       <WorkflowBuilder
         initial={editingWf}
         dbSchema={dbSchema}
         onSave={saveWf}
-        onCancel={()=>{ setView("list"); setEditing(null); }}
+        onCancel={()=>{ setView("list"); setEditing(null); setSaveError(null); }}
       />
     </div>
   );
@@ -6819,7 +6849,12 @@ Respond ONLY with JSON array (no markdown):
                           Open SOP
                         </Btn>
                       )}
-                      <Btn onClick={()=>{ setEditing(wf); setView("builder"); }}
+                      <Btn onClick={()=>{
+                          // Merge display entry with backend-loaded version (has real checks)
+                          const backendWf = workflows.find(w=>w.id===wf.id);
+                          setEditing(backendWf ? {...wf,...backendWf} : wf);
+                          setView("builder");
+                        }}
                         size="sm" variant="ghost">✏ Edit</Btn>
                       <Btn onClick={()=>{ setDetail(wf); setLiveRun(null); setView("detail"); }}
                         size="sm" variant="ghost"><Eye size={10}/> History</Btn>

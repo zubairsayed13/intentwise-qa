@@ -1,11 +1,13 @@
 import React from 'react';
+import * as XLSX from 'xlsx';
+import { LineChart, Line, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, PieChart, Pie, Cell, Legend, AreaChart, Area } from 'recharts';
 import {
   Sun, Moon, Bell, Settings, Database, Search, MessageSquare,
   CheckCircle, XCircle, AlertTriangle, Clock, ChevronRight,
   RefreshCw, Terminal, Plus, Trash2, Play, Eye, Filter,
   TrendingUp, TrendingDown, Minus, Zap, Shield, Activity,
   BarChart2, FileText, GitBranch, Lock, ChevronDown, X,
-  ArrowRight, Check, Loader, Hash, Table, Columns
+  ArrowRight, Check, Loader, Hash, Table, Columns, Upload
 } from 'lucide-react';
 
 // ─── Constants ────────────────────────────────────────────────────────────────
@@ -300,6 +302,7 @@ const GLOBAL_CSS = `
 
 // ─── Nav items ────────────────────────────────────────────────────────────────
 const NAV = [
+  { id:"dashboard", label:"Dashboard",       icon:BarChart2,    shortcut:"D" },
   { id:"brief",     label:"Morning Brief",  icon:Zap,          shortcut:"1" },
   { id:"monitor",   label:"Monitor",        icon:Activity,     shortcut:"2" },
   { id:"triage",    label:"Triage",         icon:AlertTriangle,shortcut:"3" },
@@ -362,6 +365,7 @@ function CommandPalette({ onNavigate, onClose }) {
   }, [onClose]);
 
   const COMMANDS = [
+    { label:"Dashboard",             tab:"dashboard", icon:"📊", desc:"KPIs, charts, pipeline overview" },
     { label:"Morning Brief",        tab:"brief",     icon:"⚡", desc:"View daily pipeline health" },
     { label:"Monitor",              tab:"monitor",   icon:"📊", desc:"Watch tables for issues" },
     { label:"Triage",               tab:"triage",    icon:"🔍", desc:"Scan and fix issues" },
@@ -755,6 +759,869 @@ function HealthSparkline({ brief, isHealthy, T }) {
             : <span key={i} style={{ fontSize:9 }}>&nbsp;</span>
         ))}
       </div>
+    </div>
+  );
+}
+
+
+// ─── Widget Builder ──────────────────────────────────────────────────────────
+function WidgetBuilder({ initial, onSave, onCancel }) {
+  const T = useT();
+  const dbSchema = useSchema();
+  const blank = { id:"", title:"", type:"bar", sql:"", x_col:"", y_col:"",
+                  size:"medium", color:"#6366f1", visible:true, builtin:false };
+  const [w, setW]       = React.useState(initial ? {...blank,...initial} : blank);
+  const [aiDesc, setAi] = React.useState("");
+  const [aiLoading, setAiLoading] = React.useState(false);
+  const [testResult, setTestResult] = React.useState(null);
+  const [testing, setTesting] = React.useState(false);
+
+  const field = (k,v) => setW(p=>({...p,[k]:v}));
+  const inp   = { width:"100%", padding:"7px 10px", borderRadius:6, fontSize:11,
+    border:`1px solid ${T.border}`, background:T.surface, color:T.text,
+    fontFamily:"inherit", outline:"none", boxSizing:"border-box" };
+
+  const testSql = async () => {
+    if (!w.sql.trim()) return;
+    setTesting(true); setTestResult(null);
+    try {
+      const res  = await fetch(`${API}/api/query?sql=${encodeURIComponent(w.sql + " LIMIT 5")}`);
+      const data = await res.json();
+      setTestResult(data);
+      // Auto-suggest columns
+      if (data.columns?.length >= 1 && !w.x_col) field("x_col", data.columns[0]);
+      if (data.columns?.length >= 2 && !w.y_col) field("y_col", data.columns[1]);
+    } catch(e) { setTestResult({error:e.message}); }
+    setTesting(false);
+  };
+
+  const aiSuggest = async () => {
+    if (!aiDesc.trim()) return;
+    setAiLoading(true);
+    try {
+      const res  = await fetch(`${API}/api/ai/chat`, {
+        method:"POST", headers:{"Content-Type":"application/json"},
+        body: JSON.stringify({
+          system:`You are WiziAgent writing Redshift SQL for a dashboard widget.
+Available tables: ${dbSchema ? dbSchema.split(";").map(t=>t.split("(")[0].trim()).filter(Boolean).slice(0,30).join(", ") : "mws.report, mws.orders, mws.inventory, mws.sales_and_traffic_by_date"}
+Return ONLY a JSON object (no markdown): {"sql":"SELECT ...","title":"Widget title","x_col":"col1","y_col":"col2","type":"bar|line|area|donut|kpi"}
+Rules: SELECT only, include column aliases, max 2-3 columns, GROUP BY if aggregating`,
+          messages:[{role:"user",content:aiDesc}], max_tokens:300
+        })
+      });
+      const data = await res.json();
+      const text = data.content?.[0]?.text || "{}";
+      const obj  = JSON.parse(text.replace(/```json|```/g,"").trim());
+      if (obj.sql)   field("sql",   obj.sql);
+      if (obj.title) field("title", obj.title);
+      if (obj.x_col) field("x_col", obj.x_col);
+      if (obj.y_col) field("y_col", obj.y_col);
+      if (obj.type)  field("type",  obj.type);
+      setAi("");
+    } catch(e) { console.error(e); }
+    setAiLoading(false);
+  };
+
+  const TYPES = [
+    {id:"kpi",   icon:"🔢", label:"KPI Card"},
+    {id:"bar",   icon:"📊", label:"Bar Chart"},
+    {id:"line",  icon:"📈", label:"Line Chart"},
+    {id:"area",  icon:"🌊", label:"Area Chart"},
+    {id:"donut", icon:"🍩", label:"Donut Chart"},
+    {id:"table", icon:"📋", label:"Data Table"},
+  ];
+  const SIZES = [
+    {id:"small",  label:"Small",  cols:"1"},
+    {id:"medium", label:"Medium", cols:"2"},
+    {id:"large",  label:"Large",  cols:"3"},
+    {id:"full",   label:"Full",   cols:"4"},
+  ];
+  const COLORS = ["#6366f1","#0ea5e9","#10b981","#f59e0b","#ef4444","#8b5cf6","#06b6d4","#ec4899"];
+
+  return (
+    <div style={{ padding:"20px 24px", maxWidth:700 }}>
+      <div style={{ display:"flex", alignItems:"center", gap:10, marginBottom:20 }}>
+        <Btn onClick={onCancel} variant="ghost" size="sm">← Back</Btn>
+        <div style={{ fontSize:16, fontWeight:700, color:T.text }}>
+          {initial?.id ? "Edit Widget" : "New Widget"}
+        </div>
+      </div>
+
+      <div style={{ display:"flex", flexDirection:"column", gap:14 }}>
+        {/* AI Suggester */}
+        <Card style={{ padding:"16px 20px", borderColor:`${T.purple}30`, background:`${T.purple}04` }}>
+          <div style={{ display:"flex", alignItems:"center", gap:8, marginBottom:10 }}>
+            <Zap size={12} color={T.purple}/>
+            <span style={{ fontSize:11, fontWeight:700, color:T.purple }}>AI Widget Builder</span>
+          </div>
+          <div style={{ display:"flex", gap:8 }}>
+            <input value={aiDesc} onChange={e=>setAi(e.target.value)}
+              onKeyDown={e=>e.key==="Enter"&&aiSuggest()}
+              placeholder="Describe what you want, e.g. 'show download count by report type for last 7 days'"
+              style={{...inp, flex:1}}
+              onFocus={e=>e.target.style.borderColor=T.purple}
+              onBlur={e=>e.target.style.borderColor=T.border}/>
+            <Btn onClick={aiSuggest} disabled={aiLoading||!aiDesc.trim()} size="sm" variant="ghost"
+              style={{ color:T.purple, borderColor:`${T.purple}40` }}>
+              {aiLoading?<Spinner size={10}/>:<Zap size={10}/>} Generate
+            </Btn>
+          </div>
+        </Card>
+
+        {/* Title + Type + Size */}
+        <Card style={{ padding:"16px 20px" }}>
+          <div style={{ display:"flex", flexDirection:"column", gap:10 }}>
+            <div>
+              <label style={{ fontSize:11, fontWeight:600, color:T.text2, display:"block", marginBottom:4 }}>Title</label>
+              <input value={w.title} onChange={e=>field("title",e.target.value)}
+                placeholder="Widget title" style={inp}
+                onFocus={e=>e.target.style.borderColor=T.accent}
+                onBlur={e=>e.target.style.borderColor=T.border}/>
+            </div>
+            <div>
+              <label style={{ fontSize:11, fontWeight:600, color:T.text2, display:"block", marginBottom:6 }}>Chart Type</label>
+              <div style={{ display:"flex", gap:6, flexWrap:"wrap" }}>
+                {TYPES.map(t=>(
+                  <button key={t.id} onClick={()=>field("type",t.id)}
+                    style={{ padding:"6px 12px", borderRadius:7, fontSize:11, cursor:"pointer",
+                      border:`1px solid ${w.type===t.id?T.accent:T.border}`,
+                      background:w.type===t.id?`${T.accent}12`:"transparent",
+                      color:w.type===t.id?T.accent:T.muted, fontWeight:w.type===t.id?700:400 }}>
+                    {t.icon} {t.label}
+                  </button>
+                ))}
+              </div>
+            </div>
+            <div style={{ display:"flex", gap:10 }}>
+              <div style={{ flex:1 }}>
+                <label style={{ fontSize:11, fontWeight:600, color:T.text2, display:"block", marginBottom:6 }}>Size</label>
+                <div style={{ display:"flex", gap:5 }}>
+                  {SIZES.map(s=>(
+                    <button key={s.id} onClick={()=>field("size",s.id)}
+                      style={{ flex:1, padding:"5px 0", borderRadius:6, fontSize:10, cursor:"pointer",
+                        border:`1px solid ${w.size===s.id?T.accent:T.border}`,
+                        background:w.size===s.id?`${T.accent}12`:"transparent",
+                        color:w.size===s.id?T.accent:T.muted, fontWeight:w.size===s.id?700:400 }}>
+                      {s.label}
+                    </button>
+                  ))}
+                </div>
+              </div>
+              <div>
+                <label style={{ fontSize:11, fontWeight:600, color:T.text2, display:"block", marginBottom:6 }}>Colour</label>
+                <div style={{ display:"flex", gap:4 }}>
+                  {COLORS.map(c=>(
+                    <button key={c} onClick={()=>field("color",c)}
+                      style={{ width:22, height:22, borderRadius:"50%", background:c,
+                        border:w.color===c?`2px solid ${T.text}`:`2px solid transparent`,
+                        cursor:"pointer", padding:0 }}/>
+                  ))}
+                </div>
+              </div>
+            </div>
+          </div>
+        </Card>
+
+        {/* SQL */}
+        <Card style={{ padding:"16px 20px" }}>
+          <div style={{ fontSize:11, fontWeight:700, color:T.muted, marginBottom:10,
+            textTransform:"uppercase", letterSpacing:"0.06em" }}>SQL Query</div>
+          <textarea value={w.sql} rows={4} onChange={e=>field("sql",e.target.value)}
+            placeholder={"SELECT col1, COUNT(*) AS cnt\nFROM schema.table\nGROUP BY col1\nORDER BY cnt DESC"}
+            style={{...inp, fontFamily:"monospace", fontSize:11, resize:"vertical", marginBottom:8}}
+            onFocus={e=>e.target.style.borderColor=T.accent}
+            onBlur={e=>e.target.style.borderColor=T.border}/>
+          <Btn onClick={testSql} disabled={testing||!w.sql.trim()} size="sm" variant="ghost">
+            {testing?<Spinner size={10}/>:<Play size={10}/>} Test Query
+          </Btn>
+
+          {/* Test result */}
+          {testResult && (
+            <div style={{ marginTop:10 }}>
+              {testResult.error ? (
+                <div style={{ fontSize:11, color:T.red, padding:"6px 10px",
+                  background:`${T.red}08`, borderRadius:5, fontFamily:"monospace" }}>
+                  {testResult.error}
+                </div>
+              ) : (
+                <div>
+                  <div style={{ fontSize:10, color:T.green, marginBottom:6 }}>
+                    ✓ {testResult.rows?.length} rows · columns: {testResult.columns?.join(", ")}
+                  </div>
+                  {/* Column mapping */}
+                  <div style={{ display:"flex", gap:8 }}>
+                    <div style={{ flex:1 }}>
+                      <label style={{ fontSize:10, fontWeight:600, color:T.text2,
+                        display:"block", marginBottom:3 }}>
+                        {w.type==="donut"?"Label column":"X / Label column"}
+                      </label>
+                      <select value={w.x_col} onChange={e=>field("x_col",e.target.value)}
+                        style={{...inp, fontSize:10, fontFamily:"monospace"}}>
+                        <option value="">— select —</option>
+                        {testResult.columns?.map(c=><option key={c} value={c}>{c}</option>)}
+                      </select>
+                    </div>
+                    {w.type!=="table" && (
+                      <div style={{ flex:1 }}>
+                        <label style={{ fontSize:10, fontWeight:600, color:T.text2,
+                          display:"block", marginBottom:3 }}>
+                          {w.type==="kpi"?"Value column":"Y / Value column"}
+                        </label>
+                        <select value={w.y_col} onChange={e=>field("y_col",e.target.value)}
+                          style={{...inp, fontSize:10, fontFamily:"monospace"}}>
+                          <option value="">— select —</option>
+                          {testResult.columns?.map(c=><option key={c} value={c}>{c}</option>)}
+                        </select>
+                      </div>
+                    )}
+                  </div>
+                  {/* Mini preview */}
+                  <div style={{ overflowX:"auto", borderRadius:5,
+                    border:`1px solid ${T.border}`, marginTop:8 }}>
+                    <table style={{ borderCollapse:"collapse", fontSize:10,
+                      fontFamily:"monospace", width:"100%" }}>
+                      <thead>
+                        <tr style={{ background:`${T.accent}08` }}>
+                          {testResult.columns?.map(c=>(
+                            <th key={c} style={{ padding:"4px 10px", textAlign:"left",
+                              fontWeight:700, fontSize:9, color:T.muted,
+                              borderBottom:`1px solid ${T.border}`, whiteSpace:"nowrap" }}>{c}</th>
+                          ))}
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {testResult.rows?.slice(0,3).map((row,i)=>(
+                          <tr key={i}>
+                            {testResult.columns?.map(c=>(
+                              <td key={c} style={{ padding:"3px 10px", color:T.text2,
+                                borderBottom:`1px solid ${T.border}20`, whiteSpace:"nowrap" }}>
+                                {row[c]===null?"NULL":String(row[c]).slice(0,30)}
+                              </td>
+                            ))}
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
+        </Card>
+
+        {/* Save */}
+        <div style={{ display:"flex", gap:8, justifyContent:"flex-end" }}>
+          <Btn onClick={onCancel} variant="muted" size="sm">Cancel</Btn>
+          <Btn onClick={()=>onSave(w)} disabled={!w.title.trim()} size="sm">
+            <Check size={11}/> Save Widget
+          </Btn>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+
+function DashboardTab({ onNavigate }) {
+  const T = useT();
+  const [widgets,     setWidgets]    = React.useState([]);
+  const [editMode,    setEditMode]   = React.useState(false);
+  const [builder,     setBuilder]    = React.useState(null); // null | {initial}
+  const [wData,       setWData]      = React.useState({}); // {wid: {rows,columns,error,loading}}
+  const [kpis,        setKpis]       = React.useState(null);
+  const [triage,      setTriage]     = React.useState(null);
+  const [cwfHistory,  setCwfHistory] = React.useState([]);
+  const [accounts,    setAccounts]   = React.useState([]);
+  const [accountId,   setAccountId]  = React.useState("all");
+  const [healthHist,  setHealthHist] = React.useState([]);
+  const [loading,     setLoading]    = React.useState(true);
+
+  // ── Load widget definitions ───────────────────────────────────────────────
+  const loadWidgets = async () => {
+    try {
+      const res  = await fetch(`${API}/api/dashboard/widgets`);
+      const data = await res.json();
+      if (data.widgets) setWidgets(data.widgets.filter(w=>w.visible!==false));
+    } catch(e) {}
+  };
+
+  // ── Load base data (KPIs, triage, wf history) ────────────────────────────
+  const loadBase = React.useCallback(async (acc) => {
+    setLoading(true);
+    try {
+      const [k, tg, cwf] = await Promise.all([
+        fetch(`${API}/api/kpis?account_id=${acc}`).then(r=>r.json()),
+        fetch(`${API}/api/report/triage?account_id=${acc}`).then(r=>r.json()),
+        fetch(`${API}/api/custom-workflows/history`).then(r=>r.json()),
+      ]);
+      if (!k.error)  setKpis(k);
+      if (!tg.error) setTriage(tg);
+      if (Array.isArray(cwf)) setCwfHistory(cwf.slice(0,12));
+    } catch(e) {}
+    setLoading(false);
+  }, []);
+
+  // ── Run SQL for a custom widget ───────────────────────────────────────────
+  const runWidget = async (w) => {
+    if (!w.sql?.trim() || w.builtin) return;
+    setWData(p=>({...p,[w.id]:{loading:true}}));
+    try {
+      const res  = await fetch(`${API}/api/query?sql=${encodeURIComponent(w.sql)}`);
+      const data = await res.json();
+      setWData(p=>({...p,[w.id]:{...data, loading:false}}));
+    } catch(e) {
+      setWData(p=>({...p,[w.id]:{error:e.message, loading:false}}));
+    }
+  };
+
+  const runAllCustom = (wlist) => {
+    wlist.filter(w=>!w.builtin&&w.sql&&w.visible!==false).forEach(runWidget);
+  };
+
+  React.useEffect(() => {
+    fetch(`${API}/api/accounts`).then(r=>r.json()).then(d=>{
+      if (Array.isArray(d)) setAccounts(d);
+    }).catch(()=>{});
+    try {
+      const h = JSON.parse(localStorage.getItem("wz_healthHistory")||"[]");
+      setHealthHist(h.slice(-14).map((v,i)=>({day:`-${14-i}d`,score:v})));
+    } catch(e) {}
+    loadWidgets().then(()=>{});
+    loadBase("all");
+  }, []);
+
+  React.useEffect(() => { loadBase(accountId); }, [accountId]);
+
+  // Run custom widgets when widget list loads
+  React.useEffect(() => {
+    if (widgets.length > 0) runAllCustom(widgets);
+  }, [widgets]);
+
+  // ── Widget save / delete / reorder ────────────────────────────────────────
+  const saveWidget = async (w) => {
+    if (!w.id) w.id = `wgt_${Date.now().toString(36)}`;
+    const order = widgets.length;
+    const full  = {...w, order, visible:true};
+    try {
+      await fetch(`${API}/api/dashboard/widgets`, {
+        method:"POST", headers:{"Content-Type":"application/json"},
+        body:JSON.stringify(full)
+      });
+    } catch(e) {}
+    setWidgets(p=>{
+      const idx = p.findIndex(x=>x.id===full.id);
+      return idx>=0 ? p.map((x,i)=>i===idx?full:x) : [...p,full];
+    });
+    if (full.sql) runWidget(full);
+    setBuilder(null);
+  };
+
+  const hideWidget = async (wid) => {
+    await fetch(`${API}/api/dashboard/widgets/${wid}`, {method:"DELETE"}).catch(()=>{});
+    setWidgets(p=>p.filter(w=>w.id!==wid));
+  };
+
+  const moveWidget = async (idx, dir) => {
+    const arr = [...widgets];
+    const swap = idx + dir;
+    if (swap < 0 || swap >= arr.length) return;
+    [arr[idx], arr[swap]] = [arr[swap], arr[idx]];
+    const reordered = arr.map((w,i)=>({...w,order:i}));
+    setWidgets(reordered);
+    try {
+      await fetch(`${API}/api/dashboard/widgets/reorder`, {
+        method:"POST", headers:{"Content-Type":"application/json"},
+        body:JSON.stringify({order: reordered.map(w=>w.id)})
+      });
+    } catch(e) {}
+  };
+
+  const resizeWidget = async (wid, size) => {
+    const w = widgets.find(x=>x.id===wid);
+    if (!w) return;
+    const updated = {...w, size};
+    setWidgets(p=>p.map(x=>x.id===wid?updated:x));
+    await fetch(`${API}/api/dashboard/widgets`, {
+      method:"POST", headers:{"Content-Type":"application/json"},
+      body:JSON.stringify(updated)
+    }).catch(()=>{});
+  };
+
+  // ── Derived data for builtin charts ──────────────────────────────────────
+  const fmt = (n,pfx="") => {
+    if (n==null) return "—";
+    if (n>=1000000) return `${pfx}${(n/1000000).toFixed(1)}M`;
+    if (n>=1000)    return `${pfx}${(n/1000).toFixed(1)}K`;
+    return `${pfx}${Number(n).toLocaleString()}`;
+  };
+  const fmtCurr  = n => fmt(n,"$");
+  const fmtPct   = n => n!=null?`${Number(n).toFixed(1)}%`:"—";
+
+  const kpiValue = (key, format) => {
+    if (!kpis) return "—";
+    const [section, field] = key.split(".");
+    if (section==="triage") return fmt(triage?.issues?.filter(i=>i.count>0).length||0);
+    const val = kpis[section]?.[field];
+    if (format==="currency") return fmtCurr(val);
+    if (format==="percent")  return fmtPct(val);
+    return fmt(val);
+  };
+
+  const orderStatusData = kpis ? [
+    {name:"Shipped",   value:kpis.orders?.shipped||0,   color:T.green},
+    {name:"Pending",   value:kpis.orders?.pending||0,   color:T.yellow},
+    {name:"Unshipped", value:kpis.orders?.unshipped||0, color:T.orange},
+    {name:"Canceled",  value:kpis.orders?.canceled||0,  color:T.red},
+  ].filter(d=>d.value>0) : [];
+
+  const issueChartData = (triage?.issues||[]).filter(i=>i.count>0).map(i=>({
+    code:i.id, count:i.count,
+    color:i.severity==="critical"?T.red:i.severity==="high"?T.orange:T.yellow
+  }));
+
+  const wfChartData = cwfHistory.map((r,i)=>({
+    name:r.workflow_name?.slice(0,10)||`Run${i+1}`,
+    issues:r.total_issues||0, status:r.status,
+  }));
+
+  const inventoryData = kpis ? [
+    {label:"Available",    value:kpis.inventory?.available||0,    max:kpis.inventory?.total_skus||1, color:T.green},
+    {label:"Out of Stock", value:kpis.inventory?.out_of_stock||0, max:kpis.inventory?.total_skus||1, color:T.red},
+    {label:"Alerts",       value:kpis.inventory?.alerts||0,       max:kpis.inventory?.total_skus||1, color:T.orange},
+  ] : [];
+
+  const CHART_COLORS = ["#6366f1","#0ea5e9","#10b981","#f59e0b","#ef4444","#8b5cf6"];
+
+  const SIZE_COLS = {small:1, medium:2, large:3, full:4};
+
+  const CustomTooltip = ({active,payload,label}) => {
+    if (!active||!payload?.length) return null;
+    return (
+      <div style={{ background:T.surface, border:`1px solid ${T.border}`,
+        borderRadius:8, padding:"8px 12px", fontSize:11 }}>
+        <div style={{ fontWeight:600, color:T.text, marginBottom:3 }}>{label}</div>
+        {payload.map((p,i)=>(
+          <div key={i} style={{ color:p.color||T.text }}>
+            {p.name}: {typeof p.value==="number"?p.value.toLocaleString():p.value}
+          </div>
+        ))}
+      </div>
+    );
+  };
+
+  // ── Render a single widget ────────────────────────────────────────────────
+  const renderWidgetContent = (w, data) => {
+    const color = w.color || T.accent;
+
+    // KPI card (builtin)
+    if (w.type==="kpi" && w.kpi_key) {
+      const val = kpiValue(w.kpi_key, w.kpi_format);
+      const isIssue = w.kpi_key==="triage.issue_count";
+      const isOOS   = w.kpi_key==="inventory.out_of_stock";
+      const dispColor = (isIssue&&val!=="0"&&val!=="—")?T.orange:(isOOS&&val!=="0"&&val!=="—")?T.red:color;
+      return (
+        <div style={{ display:"flex", flexDirection:"column", justifyContent:"space-between",
+          height:"100%", cursor:isIssue?"pointer":undefined }}
+          onClick={isIssue?()=>onNavigate("triage"):undefined}>
+          <div style={{ fontSize:10, fontWeight:600, color:T.muted, textTransform:"uppercase",
+            letterSpacing:"0.06em", marginBottom:8 }}>{w.title}</div>
+          <div style={{ fontSize:32, fontWeight:800, color:dispColor,
+            letterSpacing:"-0.02em", lineHeight:1 }}>{loading?"…":val}</div>
+        </div>
+      );
+    }
+
+    // KPI card (custom — single value from SQL)
+    if (w.type==="kpi" && data?.rows?.length > 0) {
+      const val = data.rows[0][w.y_col||data.columns?.[0]];
+      return (
+        <div style={{ display:"flex", flexDirection:"column", height:"100%" }}>
+          <div style={{ fontSize:10, fontWeight:600, color:T.muted, textTransform:"uppercase",
+            letterSpacing:"0.06em", marginBottom:8 }}>{w.title}</div>
+          <div style={{ fontSize:32, fontWeight:800, color, letterSpacing:"-0.02em", lineHeight:1 }}>
+            {val!=null?Number(val).toLocaleString():"—"}
+          </div>
+        </div>
+      );
+    }
+
+    // Donut (builtin order status)
+    if (w.type==="donut" && w.builtin && w.id==="wgt_order_status") {
+      if (!orderStatusData.length) return <div style={{color:T.dim,fontSize:12,paddingTop:20,textAlign:"center"}}>No data</div>;
+      return (
+        <>
+          <ResponsiveContainer width="100%" height={140}>
+            <PieChart>
+              <Pie data={orderStatusData} cx="50%" cy="50%"
+                innerRadius={40} outerRadius={65} dataKey="value" paddingAngle={2}>
+                {orderStatusData.map((e,i)=><Cell key={i} fill={e.color} stroke="none"/>)}
+              </Pie>
+              <Tooltip content={<CustomTooltip/>}/>
+            </PieChart>
+          </ResponsiveContainer>
+          <div style={{ display:"flex", flexDirection:"column", gap:4, marginTop:4 }}>
+            {orderStatusData.map(d=>(
+              <div key={d.name} style={{ display:"flex", alignItems:"center", gap:7 }}>
+                <div style={{ width:7, height:7, borderRadius:"50%", background:d.color, flexShrink:0 }}/>
+                <span style={{ fontSize:10, color:T.text2, flex:1 }}>{d.name}</span>
+                <span style={{ fontSize:11, fontWeight:700, color:T.text, fontFamily:"monospace" }}>
+                  {d.value.toLocaleString()}
+                </span>
+              </div>
+            ))}
+          </div>
+        </>
+      );
+    }
+
+    // Donut (custom)
+    if (w.type==="donut" && data?.rows?.length > 0) {
+      const rows = data.rows.map((r,i)=>({name:r[w.x_col]||r[data.columns?.[0]], value:Number(r[w.y_col||data.columns?.[1]])||0, color:CHART_COLORS[i%CHART_COLORS.length]}));
+      return (
+        <ResponsiveContainer width="100%" height="100%">
+          <PieChart>
+            <Pie data={rows} cx="50%" cy="45%" innerRadius="35%" outerRadius="60%" dataKey="value" paddingAngle={2}>
+              {rows.map((e,i)=><Cell key={i} fill={e.color} stroke="none"/>)}
+            </Pie>
+            <Tooltip content={<CustomTooltip/>}/>
+            <Legend iconSize={8} wrapperStyle={{fontSize:10}}/>
+          </PieChart>
+        </ResponsiveContainer>
+      );
+    }
+
+    // Area (builtin trend)
+    if ((w.type==="area"||w.type==="line") && w.builtin && w.id==="wgt_trend") {
+      const trendData = data?.rows || [];
+      if (!trendData.length && !w.builtin) return <div style={{color:T.dim,fontSize:12,paddingTop:20,textAlign:"center"}}>No data</div>;
+      // Builtin uses trend from API — data is fetched separately
+      return (
+        <ResponsiveContainer width="100%" height="100%">
+          <AreaChart data={[]} margin={{top:5,right:5,bottom:0,left:0}}>
+            <defs>
+              <linearGradient id={`grad_${w.id}`} x1="0" y1="0" x2="0" y2="1">
+                <stop offset="5%"  stopColor={color} stopOpacity={0.2}/>
+                <stop offset="95%" stopColor={color} stopOpacity={0}/>
+              </linearGradient>
+            </defs>
+            <CartesianGrid strokeDasharray="3 3" stroke={T.border} vertical={false}/>
+            <XAxis dataKey="day" tick={{fontSize:9,fill:T.dim}} tickFormatter={d=>d?.slice(5)} axisLine={false} tickLine={false}/>
+            <YAxis tick={{fontSize:9,fill:T.dim}} axisLine={false} tickLine={false} tickFormatter={v=>fmt(v)}/>
+            <Tooltip content={<CustomTooltip/>}/>
+            <Area type="monotone" dataKey={w.y_col||"revenue"} stroke={color} strokeWidth={2} fill={`url(#grad_${w.id})`} dot={false}/>
+          </AreaChart>
+        </ResponsiveContainer>
+      );
+    }
+
+    // Bar (builtin issues)
+    if (w.type==="bar" && w.triage_chart) {
+      if (!issueChartData.length) return (
+        <div style={{display:"flex",alignItems:"center",justifyContent:"center",height:"100%",flexDirection:"column",gap:6}}>
+          <CheckCircle size={24} color={T.green}/>
+          <span style={{fontSize:12,color:T.green,fontWeight:600}}>No open issues</span>
+        </div>
+      );
+      return (
+        <ResponsiveContainer width="100%" height="100%">
+          <BarChart data={issueChartData} margin={{top:5,right:5,bottom:20,left:0}}>
+            <CartesianGrid strokeDasharray="3 3" stroke={T.border} vertical={false}/>
+            <XAxis dataKey="code" tick={{fontSize:9,fill:T.muted}} axisLine={false} tickLine={false}/>
+            <YAxis tick={{fontSize:9,fill:T.dim}} axisLine={false} tickLine={false}/>
+            <Tooltip content={<CustomTooltip/>}/>
+            <Bar dataKey="count" name="Issues" radius={[4,4,0,0]}>
+              {issueChartData.map((e,i)=><Cell key={i} fill={e.color}/>)}
+            </Bar>
+          </BarChart>
+        </ResponsiveContainer>
+      );
+    }
+
+    // Bar (builtin workflow history)
+    if (w.type==="bar" && w.wf_chart) {
+      if (!wfChartData.length) return <div style={{color:T.dim,fontSize:12,paddingTop:20,textAlign:"center"}}>No workflow runs yet</div>;
+      return (
+        <ResponsiveContainer width="100%" height="100%">
+          <BarChart data={wfChartData} margin={{top:5,right:5,bottom:30,left:0}}>
+            <CartesianGrid strokeDasharray="3 3" stroke={T.border} vertical={false}/>
+            <XAxis dataKey="name" tick={{fontSize:8,fill:T.muted}} angle={-30} textAnchor="end" axisLine={false} tickLine={false}/>
+            <YAxis tick={{fontSize:9,fill:T.dim}} axisLine={false} tickLine={false}/>
+            <Tooltip content={<CustomTooltip/>}/>
+            <Bar dataKey="issues" name="Issues" radius={[4,4,0,0]}>
+              {wfChartData.map((e,i)=><Cell key={i} fill={e.issues===0?T.green:e.issues<5?T.yellow:T.orange}/>)}
+            </Bar>
+          </BarChart>
+        </ResponsiveContainer>
+      );
+    }
+
+    // Bars (builtin inventory)
+    if (w.type==="bars" && w.inventory_chart) {
+      return (
+        <div style={{ display:"flex", flexDirection:"column", gap:10, paddingTop:4 }}>
+          {inventoryData.map(item=>(
+            <div key={item.label}>
+              <div style={{ display:"flex", justifyContent:"space-between", marginBottom:3 }}>
+                <span style={{ fontSize:11, color:T.muted }}>{item.label}</span>
+                <span style={{ fontSize:12, fontWeight:700, color:item.color, fontFamily:"monospace" }}>
+                  {item.value?.toLocaleString()}
+                </span>
+              </div>
+              <div style={{ height:5, background:T.border, borderRadius:99, overflow:"hidden" }}>
+                <div style={{ height:"100%", borderRadius:99,
+                  width:`${Math.min((item.value/item.max)*100,100)}%`,
+                  background:item.color, opacity:0.8, transition:"width 0.6s" }}/>
+              </div>
+            </div>
+          ))}
+        </div>
+      );
+    }
+
+    // Line (builtin health history)
+    if (w.type==="line" && w.health_chart) {
+      if (healthHist.length < 2) return <div style={{color:T.dim,fontSize:12,paddingTop:20,textAlign:"center"}}>Run Morning Brief to build health history</div>;
+      return (
+        <ResponsiveContainer width="100%" height="100%">
+          <LineChart data={healthHist} margin={{top:5,right:10,bottom:0,left:0}}>
+            <CartesianGrid strokeDasharray="3 3" stroke={T.border} vertical={false}/>
+            <XAxis dataKey="day" tick={{fontSize:9,fill:T.dim}} axisLine={false} tickLine={false}/>
+            <YAxis domain={[0,100]} tick={{fontSize:9,fill:T.dim}} axisLine={false} tickLine={false}/>
+            <Tooltip content={<CustomTooltip/>}/>
+            <Line type="monotone" dataKey="score" name="Health" stroke={T.green} strokeWidth={2.5} dot={{r:3,fill:T.green}}/>
+          </LineChart>
+        </ResponsiveContainer>
+      );
+    }
+
+    // Bar (custom SQL)
+    if (w.type==="bar" && data?.rows?.length > 0) {
+      return (
+        <ResponsiveContainer width="100%" height="100%">
+          <BarChart data={data.rows} margin={{top:5,right:5,bottom:20,left:0}}>
+            <CartesianGrid strokeDasharray="3 3" stroke={T.border} vertical={false}/>
+            <XAxis dataKey={w.x_col||data.columns?.[0]} tick={{fontSize:9,fill:T.muted}} axisLine={false} tickLine={false}/>
+            <YAxis tick={{fontSize:9,fill:T.dim}} axisLine={false} tickLine={false} tickFormatter={v=>fmt(v)}/>
+            <Tooltip content={<CustomTooltip/>}/>
+            <Bar dataKey={w.y_col||data.columns?.[1]} name={w.y_col} fill={color} radius={[4,4,0,0]}/>
+          </BarChart>
+        </ResponsiveContainer>
+      );
+    }
+
+    // Line/Area (custom SQL)
+    if ((w.type==="line"||w.type==="area") && data?.rows?.length > 0) {
+      const ChartComp = w.type==="area" ? AreaChart : LineChart;
+      const DataComp  = w.type==="area" ? Area      : Line;
+      return (
+        <ResponsiveContainer width="100%" height="100%">
+          <ChartComp data={data.rows} margin={{top:5,right:5,bottom:0,left:0}}>
+            {w.type==="area" && (
+              <defs>
+                <linearGradient id={`grad_${w.id}`} x1="0" y1="0" x2="0" y2="1">
+                  <stop offset="5%"  stopColor={color} stopOpacity={0.2}/>
+                  <stop offset="95%" stopColor={color} stopOpacity={0}/>
+                </linearGradient>
+              </defs>
+            )}
+            <CartesianGrid strokeDasharray="3 3" stroke={T.border} vertical={false}/>
+            <XAxis dataKey={w.x_col||data.columns?.[0]} tick={{fontSize:9,fill:T.dim}} axisLine={false} tickLine={false}/>
+            <YAxis tick={{fontSize:9,fill:T.dim}} axisLine={false} tickLine={false} tickFormatter={v=>fmt(v)}/>
+            <Tooltip content={<CustomTooltip/>}/>
+            <DataComp type="monotone" dataKey={w.y_col||data.columns?.[1]} stroke={color} strokeWidth={2}
+              fill={w.type==="area"?`url(#grad_${w.id})`:"none"} dot={false}/>
+          </ChartComp>
+        </ResponsiveContainer>
+      );
+    }
+
+    // Table (custom SQL)
+    if (w.type==="table" && data?.rows?.length > 0) {
+      return (
+        <div style={{ overflowX:"auto", overflowY:"auto", height:"100%", borderRadius:5,
+          border:`1px solid ${T.border}` }}>
+          <table style={{ borderCollapse:"collapse", fontSize:11, fontFamily:"monospace", width:"100%" }}>
+            <thead>
+              <tr style={{ background:`${T.accent}08`, position:"sticky", top:0 }}>
+                {data.columns?.map(c=>(
+                  <th key={c} style={{ padding:"5px 10px", textAlign:"left", fontWeight:700,
+                    fontSize:9, color:T.muted, borderBottom:`1px solid ${T.border}`,
+                    whiteSpace:"nowrap", textTransform:"uppercase" }}>{c}</th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {data.rows?.map((row,i)=>(
+                <tr key={i} style={{ background:i%2===1?"#FAFBFF":"transparent" }}>
+                  {data.columns?.map(c=>(
+                    <td key={c} style={{ padding:"4px 10px", borderBottom:`1px solid ${T.border}20`,
+                      whiteSpace:"nowrap", color:row[c]===null?T.red:T.text2 }}>
+                      {row[c]===null?"NULL":String(row[c]).slice(0,40)}
+                    </td>
+                  ))}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      );
+    }
+
+    // Loading / empty
+    if (data?.loading) return (
+      <div style={{ display:"flex", alignItems:"center", justifyContent:"center",
+        height:"100%", gap:8, color:T.muted, fontSize:12 }}>
+        <Spinner size={14}/> Loading…
+      </div>
+    );
+    if (data?.error) return (
+      <div style={{ padding:"10px", fontSize:11, color:T.red, fontFamily:"monospace" }}>
+        {data.error}
+      </div>
+    );
+    return (
+      <div style={{ display:"flex", alignItems:"center", justifyContent:"center",
+        height:"100%", color:T.dim, fontSize:12 }}>
+        {w.sql ? "No data" : "Configure this widget"}
+      </div>
+    );
+  };
+
+  // Builder view
+  if (builder !== null) return (
+    <div className="fade-in" style={{ padding:"28px 32px" }}>
+      <WidgetBuilder
+        initial={builder.initial||null}
+        onSave={saveWidget}
+        onCancel={()=>setBuilder(null)}
+      />
+    </div>
+  );
+
+  const HEIGHT = {small:110, medium:220, large:240, full:260};
+  const SIZE_SPAN = {small:1, medium:2, large:3, full:4};
+
+  return (
+    <div className="fade-in" style={{ padding:"24px 28px", maxWidth:1280, overflowY:"auto" }}>
+
+      {/* Header */}
+      <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom:20 }}>
+        <div>
+          <div style={{ fontSize:22, fontWeight:800, color:T.text, letterSpacing:"-0.02em" }}>
+            Dashboard
+          </div>
+          <div style={{ fontSize:12, color:T.muted, marginTop:2 }}>
+            {widgets.length} widget{widgets.length!==1?"s":""} · customisable
+          </div>
+        </div>
+        <div style={{ display:"flex", alignItems:"center", gap:8 }}>
+          <select value={accountId} onChange={e=>setAccountId(e.target.value)}
+            style={{ padding:"6px 12px", borderRadius:8, fontSize:12,
+              border:`1px solid ${T.border}`, background:T.surface, color:T.text, outline:"none" }}>
+            <option value="all">All Accounts</option>
+            {accounts.map(a=>(
+              <option key={a.account_id} value={a.account_id}>{a.seller_id||a.account_id}</option>
+            ))}
+          </select>
+          <Btn onClick={()=>setBuilder({initial:null})} size="sm" variant="ghost"
+            style={{ color:T.accent, borderColor:`${T.accent}40` }}>
+            <Plus size={11}/> Add Widget
+          </Btn>
+          <Btn onClick={()=>setEditMode(p=>!p)} size="sm"
+            variant={editMode?"muted":"ghost"}
+            style={{ color:editMode?T.orange:T.muted }}>
+            {editMode?"✓ Done":"✏ Edit"}
+          </Btn>
+          <Btn onClick={()=>{ loadBase(accountId); runAllCustom(widgets); }} size="sm" variant="ghost" disabled={loading}>
+            {loading?<Spinner size={10}/>:<RefreshCw size={10}/>}
+          </Btn>
+        </div>
+      </div>
+
+      {/* Widget grid */}
+      <div style={{ display:"grid", gridTemplateColumns:"repeat(4, 1fr)", gap:14 }}>
+        {widgets.map((w, idx) => {
+          const span    = SIZE_SPAN[w.size] || 2;
+          const height  = HEIGHT[w.size] || 220;
+          const data    = wData[w.id];
+          const color   = w.color || T.accent;
+
+          return (
+            <div key={w.id} style={{ gridColumn:`span ${span}` }}>
+              <div style={{ background:T.card, border:`1px solid ${editMode?T.accent+"40":T.border}`,
+                borderRadius:12, padding:"16px 18px",
+                height: w.type==="kpi" ? 110 : height,
+                boxShadow:"0 1px 4px rgba(0,0,0,0.07)",
+                transition:"box-shadow 0.15s, border-color 0.15s",
+                display:"flex", flexDirection:"column",
+                position:"relative", overflow:"hidden" }}>
+
+                {/* Widget header */}
+                <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between",
+                  marginBottom: w.type==="kpi" ? 0 : 10, flexShrink:0 }}>
+                  <div style={{ fontSize:11, fontWeight:700, color:T.muted,
+                    textTransform:"uppercase", letterSpacing:"0.05em" }}>
+                    {w.type!=="kpi" && w.title}
+                  </div>
+                  {editMode && (
+                    <div style={{ display:"flex", gap:3 }}>
+                      {/* Size toggles */}
+                      {["small","medium","large","full"].map(s=>(
+                        <button key={s} onClick={()=>resizeWidget(w.id,s)}
+                          style={{ padding:"1px 5px", borderRadius:4, fontSize:8, cursor:"pointer",
+                            border:`1px solid ${T.border}`, fontWeight:w.size===s?700:400,
+                            background:w.size===s?T.accent:"transparent",
+                            color:w.size===s?"white":T.dim }}>
+                          {s[0].toUpperCase()}
+                        </button>
+                      ))}
+                      <button onClick={()=>moveWidget(idx,-1)} disabled={idx===0}
+                        style={{ padding:"2px 5px", borderRadius:4, fontSize:10, cursor:"pointer",
+                          border:`1px solid ${T.border}`, background:"transparent", color:T.muted }}>↑</button>
+                      <button onClick={()=>moveWidget(idx,1)} disabled={idx===widgets.length-1}
+                        style={{ padding:"2px 5px", borderRadius:4, fontSize:10, cursor:"pointer",
+                          border:`1px solid ${T.border}`, background:"transparent", color:T.muted }}>↓</button>
+                      {!w.builtin && (
+                        <button onClick={()=>setBuilder({initial:w})}
+                          style={{ padding:"2px 6px", borderRadius:4, fontSize:9, cursor:"pointer",
+                            border:`1px solid ${T.accent}40`, background:`${T.accent}10`,
+                            color:T.accent }}>Edit</button>
+                      )}
+                      <button onClick={()=>hideWidget(w.id)}
+                        style={{ padding:"2px 6px", borderRadius:4, fontSize:9, cursor:"pointer",
+                          border:`1px solid ${T.red}40`, background:`${T.red}08`,
+                          color:T.red }}>Hide</button>
+                    </div>
+                  )}
+                </div>
+
+                {/* Widget content */}
+                <div style={{ flex:1, minHeight:0 }}>
+                  {renderWidgetContent(w, data)}
+                </div>
+
+                {/* Accent bar at bottom */}
+                <div style={{ position:"absolute", bottom:0, left:0, right:0,
+                  height:3, background:`linear-gradient(90deg,${color}60,transparent)`,
+                  borderRadius:"0 0 12px 12px" }}/>
+              </div>
+            </div>
+          );
+        })}
+      </div>
+
+      {widgets.length === 0 && (
+        <div style={{ textAlign:"center", padding:"60px 0" }}>
+          <BarChart2 size={40} color={T.border} style={{ margin:"0 auto 12px", display:"block" }}/>
+          <div style={{ fontSize:16, fontWeight:700, color:T.text, marginBottom:6 }}>No widgets yet</div>
+          <div style={{ fontSize:13, color:T.muted, marginBottom:16 }}>
+            Add a widget to start building your dashboard
+          </div>
+          <Btn onClick={()=>setBuilder({initial:null})} size="sm">
+            <Plus size={11}/> Add Widget
+          </Btn>
+        </div>
+      )}
     </div>
   );
 }
@@ -4102,6 +4969,367 @@ function ConfigureTab() {
 }
 
 // ─── Query Tab ────────────────────────────────────────────────────────────────
+// ─── Upload Tab (inside Data Explorer) ───────────────────────────────────────
+function UploadPanel({ onAddToMonitor, onQueryTable }) {
+  const T = useT();
+  const [uploads,    setUploads]    = React.useState([]);
+  const [uploading,  setUploading]  = React.useState(false);
+  const [parsing,    setParsing]    = React.useState(false);
+  const [parsed,     setParsed]     = React.useState(null); // {filename, rows, columns}
+  const [error,      setError]      = React.useState(null);
+  const [preview,    setPreview]    = React.useState(null); // {columns, rows} for existing upload
+  const [previewFor, setPreviewFor] = React.useState(null);
+  const [previewLoading, setPreviewLoading] = React.useState(false);
+  const dropRef = React.useRef(null);
+  const fileRef = React.useRef(null);
+
+  const loadUploads = async () => {
+    try {
+      const res  = await fetch(`${API}/api/uploads`);
+      const data = await res.json();
+      if (data.uploads) setUploads(data.uploads);
+    } catch(e) {}
+  };
+
+  React.useEffect(() => { loadUploads(); }, []);
+
+  // ── File parsing ─────────────────────────────────────────────────────────
+  const parseFile = async (file) => {
+    setParsing(true); setError(null); setParsed(null);
+    try {
+      const ext = file.name.split('.').pop().toLowerCase();
+      const buf = await file.arrayBuffer();
+
+      let rows = [], columns = [];
+
+      if (ext === 'xlsx' || ext === 'xls') {
+        const wb   = XLSX.read(buf, { type:'array', cellDates:true });
+        const ws   = wb.Sheets[wb.SheetNames[0]];
+        const data = XLSX.utils.sheet_to_json(ws, { defval:null, raw:false });
+        columns    = data.length > 0 ? Object.keys(data[0]) : [];
+        rows       = data;
+      } else if (ext === 'csv') {
+        const text  = new TextDecoder().decode(buf);
+        const lines = text.split('\n').filter(l=>l.trim());
+        if (lines.length < 2) throw new Error('CSV must have a header row and at least one data row');
+        const headers = lines[0].split(',').map(h=>h.trim().replace(/^"|"$/g,''));
+        columns = headers;
+        rows = lines.slice(1).map(line => {
+          const vals = line.split(',').map(v=>v.trim().replace(/^"|"$/g,''));
+          return Object.fromEntries(headers.map((h,i)=>[h, vals[i]??null]));
+        });
+      } else if (ext === 'json') {
+        const text = new TextDecoder().decode(buf);
+        const data = JSON.parse(text);
+        const arr  = Array.isArray(data) ? data : data.data || data.rows || Object.values(data)[0];
+        if (!Array.isArray(arr)) throw new Error('JSON must be an array of objects');
+        columns = arr.length > 0 ? Object.keys(arr[0]) : [];
+        rows    = arr;
+      } else {
+        throw new Error(`Unsupported format: .${ext}. Use .xlsx, .csv, or .json`);
+      }
+
+      if (rows.length === 0) throw new Error('File contains no data rows');
+      setParsed({ filename: file.name, rows, columns, size: rows.length });
+    } catch(e) {
+      setError(e.message);
+    }
+    setParsing(false);
+  };
+
+  const onDrop = (e) => {
+    e.preventDefault();
+    const file = e.dataTransfer.files[0];
+    if (file) parseFile(file);
+  };
+
+  const onFileChange = (e) => {
+    const file = e.target.files[0];
+    if (file) parseFile(file);
+    e.target.value = "";
+  };
+
+  // ── Push to Redshift ─────────────────────────────────────────────────────
+  const pushToRedshift = async () => {
+    if (!parsed) return;
+    setUploading(true); setError(null);
+    try {
+      const res  = await fetch(`${API}/api/uploads`, {
+        method:"POST", headers:{"Content-Type":"application/json"},
+        body: JSON.stringify({
+          filename: parsed.filename,
+          columns:  parsed.columns,
+          rows:     parsed.rows.slice(0, 50000), // safety cap
+        })
+      });
+      const data = await res.json();
+      if (data.error) throw new Error(data.error);
+      setParsed(null);
+      await loadUploads();
+    } catch(e) { setError(e.message); }
+    setUploading(false);
+  };
+
+  // ── Preview existing upload ───────────────────────────────────────────────
+  const loadPreview = async (tbl) => {
+    setPreviewFor(tbl); setPreviewLoading(true); setPreview(null);
+    try {
+      const res  = await fetch(`${API}/api/uploads/${tbl}/preview?limit=50`);
+      const data = await res.json();
+      setPreview(data);
+    } catch(e) { setPreview({error:e.message}); }
+    setPreviewLoading(false);
+  };
+
+  // ── Delete ────────────────────────────────────────────────────────────────
+  const deleteUpload = async (tbl) => {
+    if (!confirm(`Drop staging table wz_uploads.${tbl}? This cannot be undone.`)) return;
+    try {
+      await fetch(`${API}/api/uploads/${tbl}`, { method:"DELETE" });
+      if (previewFor === tbl) { setPreview(null); setPreviewFor(null); }
+      await loadUploads();
+    } catch(e) {}
+  };
+
+  const inp = { width:"100%", padding:"6px 10px", borderRadius:6, fontSize:11,
+    border:`1px solid ${T.border}`, background:T.surface, color:T.text,
+    fontFamily:"inherit", outline:"none", boxSizing:"border-box" };
+
+  return (
+    <div style={{ display:"flex", flexDirection:"column", gap:16 }}>
+
+      {/* Drop zone */}
+      <div ref={dropRef}
+        onDragOver={e=>{ e.preventDefault(); dropRef.current.style.borderColor=T.accent; }}
+        onDragLeave={()=>{ dropRef.current.style.borderColor=T.border; }}
+        onDrop={e=>{ dropRef.current.style.borderColor=T.border; onDrop(e); }}
+        onClick={()=>fileRef.current.click()}
+        style={{ border:`2px dashed ${T.border}`, borderRadius:10, padding:"28px 20px",
+          textAlign:"center", cursor:"pointer", transition:"border-color 0.15s",
+          background:T.surface }}>
+        <input ref={fileRef} type="file" accept=".xlsx,.xls,.csv,.json"
+          onChange={onFileChange} style={{ display:"none" }}/>
+        <Upload size={28} color={T.muted} style={{ margin:"0 auto 10px", display:"block" }}/>
+        <div style={{ fontSize:13, fontWeight:600, color:T.text, marginBottom:4 }}>
+          Drop a file or click to browse
+        </div>
+        <div style={{ fontSize:11, color:T.muted }}>
+          Supports .xlsx · .csv · .json — max 50,000 rows
+        </div>
+      </div>
+
+      {/* Parsing state */}
+      {parsing && (
+        <div style={{ display:"flex", alignItems:"center", gap:8,
+          padding:"12px 16px", background:`${T.accent}08`, borderRadius:8 }}>
+          <Spinner size={14}/><span style={{ fontSize:12, color:T.accent }}>Parsing file…</span>
+        </div>
+      )}
+
+      {/* Error */}
+      {error && (
+        <div style={{ padding:"10px 14px", background:`${T.red}08`,
+          border:`1px solid ${T.red}30`, borderRadius:7,
+          fontSize:12, color:T.red }}>{error}</div>
+      )}
+
+      {/* Parsed preview — before push */}
+      {parsed && !parsing && (
+        <Card style={{ padding:"16px 18px" }}>
+          <div style={{ display:"flex", alignItems:"center", gap:10, marginBottom:12 }}>
+            <FileText size={16} color={T.accent}/>
+            <div style={{ flex:1 }}>
+              <div style={{ fontSize:13, fontWeight:700, color:T.text }}>
+                {parsed.filename}
+              </div>
+              <div style={{ fontSize:11, color:T.muted, marginTop:1 }}>
+                {parsed.size.toLocaleString()} rows · {parsed.columns.length} columns
+              </div>
+            </div>
+            <button onClick={()=>setParsed(null)}
+              style={{ background:"none", border:"none", cursor:"pointer",
+                color:T.muted, fontSize:16 }}>×</button>
+          </div>
+
+          {/* Column preview */}
+          <div style={{ display:"flex", gap:5, flexWrap:"wrap", marginBottom:12 }}>
+            {parsed.columns.slice(0,12).map(c=>(
+              <span key={c} style={{ fontSize:10, padding:"2px 8px", borderRadius:4,
+                background:`${T.accent}10`, color:T.accent, fontFamily:"monospace" }}>
+                {c}
+              </span>
+            ))}
+            {parsed.columns.length>12 && (
+              <span style={{ fontSize:10, color:T.muted }}>+{parsed.columns.length-12} more</span>
+            )}
+          </div>
+
+          {/* Sample rows */}
+          <div style={{ overflowX:"auto", borderRadius:6, border:`1px solid ${T.border}`,
+            marginBottom:12, maxHeight:160, overflowY:"auto" }}>
+            <table style={{ borderCollapse:"collapse", fontSize:10,
+              fontFamily:"monospace", width:"100%" }}>
+              <thead>
+                <tr style={{ background:`${T.accent}08` }}>
+                  {parsed.columns.slice(0,6).map(c=>(
+                    <th key={c} style={{ padding:"5px 10px", textAlign:"left", fontWeight:700,
+                      fontSize:9, color:T.muted, borderBottom:`1px solid ${T.border}`,
+                      whiteSpace:"nowrap", textTransform:"uppercase" }}>{c}</th>
+                  ))}
+                  {parsed.columns.length>6&&<th style={{padding:"5px 10px",color:T.dim}}>…</th>}
+                </tr>
+              </thead>
+              <tbody>
+                {parsed.rows.slice(0,5).map((row,i)=>(
+                  <tr key={i}>
+                    {parsed.columns.slice(0,6).map(c=>(
+                      <td key={c} style={{ padding:"4px 10px", borderBottom:`1px solid ${T.border}20`,
+                        whiteSpace:"nowrap", color:row[c]===null?T.red:T.text2 }}>
+                        {row[c]===null?"NULL":String(row[c]).slice(0,30)}
+                      </td>
+                    ))}
+                    {parsed.columns.length>6&&<td style={{color:T.dim}}>…</td>}
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+
+          <Btn onClick={pushToRedshift} disabled={uploading}
+            style={{ width:"100%", justifyContent:"center",
+              background:`linear-gradient(135deg,${T.accent},${T.purple})`,
+              color:"white", border:"none" }}>
+            {uploading?<Spinner size={12} color="white"/>:<Upload size={12}/>}
+            {uploading?"Pushing to Redshift…":"Push to Redshift (wz_uploads)"}
+          </Btn>
+        </Card>
+      )}
+
+      {/* Existing uploads */}
+      {uploads.length > 0 && (
+        <div>
+          <div style={{ fontSize:11, fontWeight:700, color:T.muted, marginBottom:8,
+            textTransform:"uppercase", letterSpacing:"0.06em", display:"flex",
+            alignItems:"center", justifyContent:"space-between" }}>
+            <span>Stored Uploads ({uploads.length})</span>
+            <button onClick={loadUploads}
+              style={{ background:"none", border:"none", cursor:"pointer", color:T.dim }}>
+              <RefreshCw size={11}/>
+            </button>
+          </div>
+          <div style={{ display:"flex", flexDirection:"column", gap:8 }}>
+            {uploads.map(u=>(
+              <div key={u.table_name}>
+                <Card style={{ padding:"12px 14px",
+                  borderColor:previewFor===u.table_name?`${T.accent}50`:T.border }}>
+                  <div style={{ display:"flex", alignItems:"flex-start", gap:8 }}>
+                    <div style={{ width:32, height:32, borderRadius:7, flexShrink:0,
+                      background:`${T.accent}12`,
+                      display:"flex", alignItems:"center", justifyContent:"center" }}>
+                      <FileText size={14} color={T.accent}/>
+                    </div>
+                    <div style={{ flex:1, minWidth:0 }}>
+                      <div style={{ fontSize:12, fontWeight:700, color:T.text,
+                        overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>
+                        {u.filename || u.table_name}
+                      </div>
+                      <div style={{ fontSize:10, color:T.muted, marginTop:1, fontFamily:"monospace" }}>
+                        wz_uploads.{u.table_name}
+                      </div>
+                      <div style={{ fontSize:10, color:T.dim, marginTop:1 }}>
+                        {Number(u.row_count)?.toLocaleString()} rows · {u.col_count} cols
+                        {u.uploaded_at && ` · ${u.uploaded_at?.slice(0,16)}`}
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Actions */}
+                  <div style={{ display:"flex", gap:5, marginTop:8, flexWrap:"wrap" }}>
+                    <Btn size="sm" variant="ghost"
+                      onClick={()=>previewFor===u.table_name ? setPreviewFor(null) : loadPreview(u.table_name)}>
+                      <Eye size={10}/> {previewFor===u.table_name?"Hide":"Preview"}
+                    </Btn>
+                    <Btn size="sm" variant="ghost"
+                      onClick={()=>onQueryTable(`SELECT * FROM wz_uploads.${u.table_name} LIMIT 100`)}>
+                      <Database size={10}/> Query
+                    </Btn>
+                    <Btn size="sm" variant="ghost"
+                      onClick={()=>onAddToMonitor("wz_uploads", u.table_name)}>
+                      <Activity size={10}/> Monitor
+                    </Btn>
+                    <Btn size="sm" variant="muted"
+                      onClick={()=>deleteUpload(u.table_name)}>
+                      <Trash2 size={10}/>
+                    </Btn>
+                  </div>
+
+                  {/* Inline preview */}
+                  {previewFor===u.table_name && (
+                    <div style={{ marginTop:10, borderTop:`1px solid ${T.border}`, paddingTop:10 }}>
+                      {previewLoading ? (
+                        <div style={{ display:"flex", gap:8, alignItems:"center",
+                          padding:"12px 0", color:T.muted, fontSize:12 }}>
+                          <Spinner size={12}/> Loading…
+                        </div>
+                      ) : preview?.error ? (
+                        <div style={{ fontSize:11, color:T.red }}>{preview.error}</div>
+                      ) : preview?.rows?.length > 0 ? (
+                        <div style={{ overflowX:"auto", borderRadius:6,
+                          border:`1px solid ${T.border}`,
+                          maxHeight:220, overflowY:"auto" }}>
+                          <table style={{ borderCollapse:"collapse", fontSize:10,
+                            fontFamily:"monospace", width:"100%" }}>
+                            <thead>
+                              <tr style={{ background:`${T.accent}08`, position:"sticky", top:0 }}>
+                                {preview.columns.map(c=>(
+                                  <th key={c} style={{ padding:"5px 10px", textAlign:"left",
+                                    fontWeight:700, fontSize:9, color:T.muted,
+                                    borderBottom:`1px solid ${T.border}`, whiteSpace:"nowrap",
+                                    textTransform:"uppercase" }}>{c}</th>
+                                ))}
+                              </tr>
+                            </thead>
+                            <tbody>
+                              {preview.rows.map((row,i)=>(
+                                <tr key={i}
+                                  style={{ background:i%2===1?"#FAFBFF":"transparent" }}
+                                  onMouseEnter={e=>e.currentTarget.style.background=`${T.accent}08`}
+                                  onMouseLeave={e=>e.currentTarget.style.background=i%2===1?"#FAFBFF":"transparent"}>
+                                  {preview.columns.map(c=>{
+                                    const v = row[c];
+                                    return (
+                                      <td key={c} style={{ padding:"4px 10px",
+                                        borderBottom:`1px solid ${T.border}20`,
+                                        whiteSpace:"nowrap",
+                                        color:v===null?T.red:T.text2 }}>
+                                        {v===null?<span style={{color:T.red,fontWeight:700}}>NULL</span>:String(v)}
+                                      </td>
+                                    );
+                                  })}
+                                </tr>
+                              ))}
+                            </tbody>
+                          </table>
+                        </div>
+                      ) : null}
+                    </div>
+                  )}
+                </Card>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {uploads.length === 0 && !parsed && !parsing && (
+        <div style={{ textAlign:"center", padding:"20px 0", color:T.muted, fontSize:12 }}>
+          No uploads yet — drop a file above to get started
+        </div>
+      )}
+    </div>
+  );
+}
+
 function QueryTab() {
   const T = useT();
   const dbSchema = useSchema();
@@ -4125,7 +5353,7 @@ function QueryTab() {
   const [sqlGrounding, setSqlGrounding] = React.useState(null); // { valid, error, confidence, tables_referenced }
   const [runBlocked,   setRunBlocked]   = React.useState(false);
   const [expandedSchema,  setExpandedSchema]  = useSession("wz_queryExpandedSchema", {});
-  const [leftMode,        setLeftMode]        = React.useState("schema"); // "schema" | "queries"
+  const [leftMode,        setLeftMode]        = React.useState("schema"); // "schema" | "queries" | "uploads"
   const [richSchema,      setRichSchema]      = React.useState([]); // [{table_schema, table_name, columns}]
   const [richLoading,     setRichLoading]     = React.useState(false);
   const [schemaSearch,    setSchemaSearch]    = React.useState("");
@@ -4307,7 +5535,7 @@ Return ONLY valid Redshift SQL, no explanation, no markdown, no backticks.`,
 
         {/* Mode toggle */}
         <div style={{ display:"flex", borderBottom:`1px solid ${T.border}`, flexShrink:0 }}>
-          {[["schema","Schema"],["queries","Queries"]].map(([m,label])=>(
+          {[["schema","Schema"],["queries","Queries"],["uploads","Uploads"]].map(([m,label])=>(
             <button key={m} onClick={()=>setLeftMode(m)}
               style={{ flex:1, padding:"8px 0", fontSize:11, fontWeight:leftMode===m?700:400,
                 color:leftMode===m?T.accent:T.muted, background:"none", border:"none",
@@ -4515,6 +5743,26 @@ Return ONLY valid Redshift SQL, no explanation, no markdown, no backticks.`,
           </div>
         )}
       </div>
+
+      {/* UPLOADS MODE */}
+      {leftMode==="uploads" && (
+        <div style={{ flex:1, overflowY:"auto", padding:"10px 8px" }}>
+          <UploadPanel
+            onAddToMonitor={(schema, table) => {
+              // Navigate to monitor and add the table
+              try {
+                const existing = JSON.parse(sessionStorage.getItem("wz_monTables")||"[]");
+                const key = `${schema}.${table}`;
+                if (!existing.find(t=>`${t.schema}.${t.table}`===key)) {
+                  existing.push({ schema, table, label:key, primary:false, checkSets:[], checks:[], schema_group:"wz_uploads", slack_channel:"" });
+                  sessionStorage.setItem("wz_monTables", JSON.stringify(existing));
+                }
+              } catch(e) {}
+            }}
+            onQueryTable={(sql) => { setSql(sql); setLeftMode("schema"); }}
+          />
+        </div>
+      )}
 
       {/* Right: editor + results */}
       <div style={{ flex:1, display:"flex", flexDirection:"column", overflow:"hidden" }}>
@@ -7197,7 +8445,7 @@ export default function WiziAgentApp() {
     const SHORTCUT_MAP = {
       "1":"brief", "2":"monitor", "3":"triage", "4":"workflows",
       "5":"activity", "6":"chat", "7":"config", "8":"query",
-      "a":"approvals", "e":"evals",
+      "a":"approvals", "e":"evals", "d":"dashboard",
     };
     const handler = (e) => {
       // Skip if user is typing in an input/textarea
@@ -7434,6 +8682,7 @@ export default function WiziAgentApp() {
             </div>
           )}
 
+          {activeTab==="dashboard"  && <DashboardTab onNavigate={navigateTo}/>}
           {activeTab==="brief"     && <MorningBriefTab onNavigate={navigateTo} onIssueFound={setIssues}/>}
           {activeTab==="monitor"   && <MonitorTab/>}
           {activeTab==="triage"    && <TriageTab initialIssues={issues}/>}

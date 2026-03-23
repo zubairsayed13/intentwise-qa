@@ -1530,7 +1530,7 @@ function DashboardTab({ onNavigate }) {
   const SIZE_SPAN = {small:1, medium:2, large:3, full:4};
 
   return (
-    <div className="fade-in" style={{ padding:"24px 28px", maxWidth:1280, overflowY:"auto" }}>
+    <div className="fade-in" style={{ overflowY:"auto", padding:"24px 28px", maxWidth:1280, overflowY:"auto" }}>
 
       {/* Header */}
       <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom:20 }}>
@@ -1761,7 +1761,7 @@ function MorningBriefTab({ onNavigate, onIssueFound }) {
   const otherTables = monTables.filter(t => !t.primary);
 
   return (
-    <div className="fade-in" style={{ padding:"28px 32px", maxWidth:1000 }}>
+    <div className="fade-in" style={{ overflowY:"auto", padding:"28px 32px", maxWidth:1000 }}>
       {/* Header row */}
       <div style={{ display:"flex", alignItems:"flex-start", justifyContent:"space-between", marginBottom:28 }}>
         <div>
@@ -3157,7 +3157,7 @@ function ApprovalQueueTab({ onNavigate }) {
   const urgencyColor = { critical:T.red, high:T.orange, medium:T.yellow, low:T.cyan };
 
   return (
-    <div className="fade-in" style={{ padding:"28px 32px", maxWidth:800 }}>
+    <div className="fade-in" style={{ overflowY:"auto", padding:"28px 32px", maxWidth:800 }}>
       <div style={{ marginBottom:20 }}>
         <div style={{ fontSize:22, fontWeight:700, color:T.text, letterSpacing:"-0.02em" }}>Approval Queue</div>
         <div style={{ fontSize:13, color:T.muted, marginTop:3 }}>Pending approvals across workflows, triage fixes, and WiziAgent runs</div>
@@ -3333,7 +3333,7 @@ function ActivityTab({ onNavigate }) {
   const healthColor = insight?.health_score>=80?T.green:insight?.health_score>=50?T.yellow:T.red;
 
   return (
-    <div className="fade-in" style={{ padding:"28px 32px", maxWidth:920 }}>
+    <div className="fade-in" style={{ overflowY:"auto", padding:"28px 32px", maxWidth:920 }}>
       {/* Header */}
       <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom:20 }}>
         <div>
@@ -3667,7 +3667,7 @@ function VizTab() {
 
   // ── List view ─────────────────────────────────────────────────────────────
   return (
-    <div className="fade-in" style={{ padding:"28px 32px", maxWidth:1100 }}>
+    <div className="fade-in" style={{ overflowY:"auto", padding:"28px 32px", maxWidth:1100 }}>
       <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between",
         marginBottom:24 }}>
         <div>
@@ -5124,7 +5124,7 @@ RULES:
         {liveOutput && (
           <div style={{ borderBottom:`1px solid ${T.border}`, flexShrink:0,
             background:T.surface, padding:"10px 20px",
-            maxHeight:260, overflowY:"auto" }}>
+            maxHeight:260, overflowY:"auto", position:"relative" }}>
             {liveOutput.type==='loading' && (
               <div style={{ display:"flex", gap:8, alignItems:"center",
                 color:T.muted, fontSize:12 }}>
@@ -5664,7 +5664,7 @@ function MonitorTab() {
   };
 
   if (builderFor) return (
-    <div className="fade-in" style={{ padding:"28px 32px" }}>
+    <div className="fade-in" style={{ overflowY:"auto", padding:"28px 32px" }}>
       <CheckSetBuilder
         table={builderFor.tableKey}
         initial={builderFor.initial||null}
@@ -5681,7 +5681,7 @@ function MonitorTab() {
   const totalFail = allCsIds.filter(id=>csResults[id]?.overall==="fail").length;
 
   return (
-    <div className="fade-in" style={{ padding:"28px 32px", maxWidth:1040 }}>
+    <div className="fade-in" style={{ overflowY:"auto", padding:"28px 32px", maxWidth:1040 }}>
 
       {/* Header */}
       <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom:20 }}>
@@ -6217,7 +6217,7 @@ function EvalsTab() {
   const scoreLabel = (s) => s>=90?"Excellent":s>=70?"Acceptable":"Needs attention";
 
   return (
-    <div className="fade-in" style={{ padding:"28px 32px", maxWidth:1000 }}>
+    <div className="fade-in" style={{ overflowY:"auto", padding:"28px 32px", maxWidth:1000 }}>
 
       {/* Header */}
       <div style={{ display:"flex", alignItems:"flex-start", justifyContent:"space-between", marginBottom:24 }}>
@@ -6458,7 +6458,7 @@ function ConfigureTab() {
   };
 
   return (
-    <div className="fade-in" style={{ padding:"28px 32px", maxWidth:680 }}>
+    <div className="fade-in" style={{ overflowY:"auto", padding:"28px 32px", maxWidth:680 }}>
       <div style={{ marginBottom:28 }}>
         <div style={{ fontSize:22, fontWeight:700, color:T.text, letterSpacing:"-0.02em", display:"flex", alignItems:"center" }}>
           Configure
@@ -7919,7 +7919,7 @@ function AdsSopTab() {
   };
 
   return (
-    <div className="fade-in" style={{ padding:"28px 32px", maxWidth:1100 }}>
+    <div className="fade-in" style={{ overflowY:"auto", padding:"28px 32px", maxWidth:1100 }}>
       {/* Header */}
       <div style={{ display:"flex", alignItems:"flex-start", justifyContent:"space-between", marginBottom:24 }}>
         <div>
@@ -8808,7 +8808,7 @@ Respond ONLY with JSON, no markdown:
   );
 
   if (view === "sop") return (
-    <div className="fade-in" style={{ padding:"16px 32px 0" }}>
+    <div className="fade-in" style={{ overflowY:"auto", padding:"16px 32px 0" }}>
       <Btn onClick={()=>setView("list")} variant="ghost" size="sm" style={{ marginBottom:16 }}>
         ← Back to Workflows
       </Btn>
@@ -8840,7 +8840,7 @@ Respond ONLY with JSON, no markdown:
 
   // ── List view ──────────────────────────────────────────────────────────────
   return (
-    <div className="fade-in" style={{ padding:"28px 32px", maxWidth:1100 }}>
+    <div className="fade-in" style={{ overflowY:"auto", padding:"28px 32px", maxWidth:1100 }}>
       {/* Header */}
       <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom:24 }}>
         <div>
@@ -9535,7 +9535,7 @@ Respond ONLY with JSON:
   };
 
   return (
-    <div className="fade-in" style={{ padding:"28px 32px", maxWidth:760 }}>
+    <div className="fade-in" style={{ overflowY:"auto", padding:"28px 32px", maxWidth:760 }}>
       <div style={{ display:"flex", alignItems:"center", gap:12, marginBottom:24 }}>
         <Btn onClick={onCancel} variant="ghost" size="sm">← Back</Btn>
         <div style={{ fontSize:20, fontWeight:700, color:T.text, letterSpacing:"-0.02em" }}>
@@ -10219,7 +10219,7 @@ export default function WiziAgentApp() {
         />
         <ThemeCtx.Provider value={TC}>
         <main style={{
-          flex:1, overflowY:"auto", minWidth:0, position:"relative",
+          flex:1, overflow:"hidden", minWidth:0, position:"relative",
           background:"#F8FAFC",
           backgroundImage: T.wallpaper ? `url("data:image/svg+xml;base64,${T.wallpaper}")` : "none",
           backgroundRepeat: "no-repeat",

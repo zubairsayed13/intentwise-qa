@@ -300,15 +300,12 @@ const GLOBAL_CSS = `
 
 // ─── Nav items ────────────────────────────────────────────────────────────────
 const NAV = [
-  { id:"dashboard", label:"Dashboard",       icon:BarChart2,    shortcut:"D" },
-  { id:"brief",     label:"Morning Brief",  icon:Zap,          shortcut:"1" },
-  { id:"monitor",   label:"Monitor",        icon:Activity,     shortcut:"2" },
-  { id:"triage",    label:"Triage",         icon:AlertTriangle,shortcut:"3" },
+  { id:"brief",     label:"Daily Brief",    icon:Zap,          shortcut:"1" },
+  { id:"triage",    label:"Triage & Monitor", icon:AlertTriangle,shortcut:"3" },
   { id:"workflows", label:"Workflows",      icon:GitBranch,    shortcut:"4" },
-  { id:"approvals", label:"Approvals",       icon:Lock,         shortcut:"A" },
-  { id:"activity",  label:"Activity",        icon:Bell,         shortcut:"5" },
+  { id:"approvals", label:"Approvals & Activity", icon:Lock, shortcut:"A" },
+  { id:"viz",       label:"Visualization",   icon:BarChart2,    shortcut:"V" },
   { id:"chat",      label:"Ask WiziAgent",  icon:MessageSquare,shortcut:"6" },
-  { id:"evals",     label:"Evals",           icon:Shield,       shortcut:"E" },
   { id:"config",    label:"Configure",      icon:Settings,     shortcut:"7" },
   { id:"query",     label:"Data Explorer", icon:Database,     shortcut:"8" },
 ];
@@ -363,15 +360,12 @@ function CommandPalette({ onNavigate, onClose }) {
   }, [onClose]);
 
   const COMMANDS = [
-    { label:"Dashboard",             tab:"dashboard", icon:"📊", desc:"KPIs, charts, pipeline overview" },
-    { label:"Morning Brief",        tab:"brief",     icon:"⚡", desc:"View daily pipeline health" },
-    { label:"Monitor",              tab:"monitor",   icon:"📊", desc:"Watch tables for issues" },
+    { label:"Daily Brief",          tab:"brief",     icon:"⚡", desc:"View daily pipeline health" },
     { label:"Triage",               tab:"triage",    icon:"🔍", desc:"Scan and fix issues" },
     { label:"Workflows",            tab:"workflows", icon:"🔀", desc:"Run and manage workflows" },
-    { label:"Approvals",            tab:"approvals", icon:"🔒", desc:"Pending fix approvals" },
-    { label:"Activity",             tab:"activity",  icon:"🔔", desc:"Alerts, fix log + AI insight" },
+    { label:"Approvals & Activity", tab:"approvals", icon:"🔒", desc:"Pending fix approvals" },
+    { label:"Visualization",         tab:"viz",       icon:"📊", desc:"Build visual dashboards from any table or upload" },
     { label:"Ask WiziAgent",        tab:"chat",      icon:"💬", desc:"Chat with WiziAgent" },
-    { label:"Evals",                tab:"evals",     icon:"🧪", desc:"Agent eval suite — accuracy, reliability" },
     { label:"Configure",            tab:"config",    icon:"⚙️", desc:"Slack, thresholds, sources" },
     { label:"Data Explorer", tab:"query",     icon:"🖥", desc:"SQL editor with AI generation" },
   ];
@@ -3037,6 +3031,9 @@ Rows affected: ${issue.count}
           </div>
         )}
 
+        {/* MONITOR VIEW */}
+        {activeView==="monitor" && <div style={{marginTop:8}}><MonitorTab/></div>}
+
         {/* ══════════════════════════════════════════════════════════════════ */}
         {/* LOG VIEW                                                           */}
         {/* ══════════════════════════════════════════════════════════════════ */}
@@ -3077,6 +3074,37 @@ Rows affected: ${issue.count}
 
 // ─── Notification Center ──────────────────────────────────────────────────────
 // Persistent unified activity feed — every WiziAgent action, fix, gate, Slack msg
+function ApprovalsActivityTab({ onNavigate }) {
+  const T = useT();
+  const [view, setView] = React.useState("approvals"); // approvals | activity
+
+  return (
+    <div className="fade-in" style={{ display:"flex", flexDirection:"column",
+      height:"calc(100vh - 2px)", overflow:"hidden" }}>
+      {/* Sub-tab bar */}
+      <div style={{ display:"flex", gap:0, borderBottom:`1px solid ${T.border}`,
+        paddingLeft:32, flexShrink:0, background:"white" }}>
+        {[
+          { id:"approvals", label:"Approvals" },
+          { id:"activity",  label:"Activity"  },
+        ].map(tab=>(
+          <button key={tab.id} onClick={()=>setView(tab.id)}
+            style={{ padding:"10px 22px", fontSize:12, fontWeight:view===tab.id?700:400,
+              color:view===tab.id?T.accent:T.muted, background:"none", border:"none",
+              cursor:"pointer", borderBottom:view===tab.id?`2px solid ${T.accent}`:"2px solid transparent",
+              marginBottom:-1, transition:"all 0.12s" }}>
+            {tab.label}
+          </button>
+        ))}
+      </div>
+      <div style={{ flex:1, overflowY:"auto" }}>
+        {view==="approvals" && <ApprovalQueueTab onNavigate={onNavigate}/>}
+        {view==="activity"  && <ActivityTab onNavigate={onNavigate}/>}
+      </div>
+    </div>
+  );
+}
+
 function ApprovalQueueTab({ onNavigate }) {
   const T = useT();
   const [sopResult]    = useSession("wz_sopResult", null);
@@ -3580,6 +3608,818 @@ function ActivityTab({ onNavigate }) {
 //   ACTION:SHOW_ROWS:{schema}.{table}    → calls /api/preview
 //   ACTION:ADD_MONITOR:{schema}.{table}  → adds to Monitor tab
 //   ACTION:SAVE_RULE:{json_rule}         → saves to custom rules
+// ─── Visualization Tab ───────────────────────────────────────────────────────
+function VizTab() {
+  const T = useT();
+  const [view,        setView]       = React.useState("list");   // list | new | edit | show
+  const [dashboards,  setDashboards] = React.useState([]);
+  const [activeDash,  setActiveDash] = React.useState(null);     // dashboard being viewed/edited
+  const [loading,     setLoading]    = React.useState(false);
+
+  React.useEffect(() => {
+    fetch(`${API}/api/viz/dashboards`).then(r=>r.json()).then(d=>{
+      if (d.dashboards) setDashboards(d.dashboards);
+    }).catch(()=>{});
+  }, []);
+
+  const saveDashboard = async (dash) => {
+    try {
+      const res  = await fetch(`${API}/api/viz/dashboards`, {
+        method:"POST", headers:{"Content-Type":"application/json"},
+        body: JSON.stringify(dash)
+      });
+      const data = await res.json();
+      if (data.dashboard) {
+        setDashboards(p=>{
+          const idx = p.findIndex(d=>d.id===data.dashboard.id);
+          return idx>=0 ? p.map((d,i)=>i===idx?data.dashboard:d) : [...p,data.dashboard];
+        });
+        setActiveDash(data.dashboard);
+      }
+    } catch(e) {}
+  };
+
+  const deleteDashboard = async (id) => {
+    if (!confirm("Delete this dashboard?")) return;
+    await fetch(`${API}/api/viz/dashboards/${id}`, {method:"DELETE"}).catch(()=>{});
+    setDashboards(p=>p.filter(d=>d.id!==id));
+    if (activeDash?.id===id) { setActiveDash(null); setView("list"); }
+  };
+
+  // ── Views ─────────────────────────────────────────────────────────────────
+  if (view==="new" || view==="edit") return (
+    <VizBuilder
+      initial={view==="edit" ? activeDash : null}
+      onSave={(dash) => { saveDashboard(dash); setView("show"); }}
+      onCancel={() => setView(activeDash ? "show" : "list")}
+    />
+  );
+
+  if (view==="show" && activeDash) return (
+    <VizDashboardView
+      dashboard={activeDash}
+      onEdit={() => setView("edit")}
+      onBack={() => setView("list")}
+      onDelete={() => deleteDashboard(activeDash.id)}
+      onSave={saveDashboard}
+    />
+  );
+
+  // ── List view ─────────────────────────────────────────────────────────────
+  return (
+    <div className="fade-in" style={{ padding:"28px 32px", maxWidth:1100 }}>
+      <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between",
+        marginBottom:24 }}>
+        <div>
+          <div style={{ fontSize:22, fontWeight:800, color:T.text, letterSpacing:"-0.02em" }}>
+            Visualization
+          </div>
+          <div style={{ fontSize:13, color:T.muted, marginTop:2 }}>
+            Build visual dashboards from any table or uploaded file
+          </div>
+        </div>
+        <Btn onClick={()=>{ setActiveDash(null); setView("new"); }}
+          style={{ background:`linear-gradient(135deg,${T.accent},${T.purple})`,
+            color:"white", border:"none" }}>
+          <Plus size={12}/> New Dashboard
+        </Btn>
+      </div>
+
+      {dashboards.length === 0 ? (
+        <div style={{ textAlign:"center", padding:"80px 0" }}>
+          <BarChart2 size={48} color={T.border} style={{ margin:"0 auto 16px", display:"block" }}/>
+          <div style={{ fontSize:18, fontWeight:700, color:T.text, marginBottom:6 }}>
+            No dashboards yet
+          </div>
+          <div style={{ fontSize:13, color:T.muted, marginBottom:20 }}>
+            Pick a table or upload a file — the system will profile your data and suggest charts automatically
+          </div>
+          <Btn onClick={()=>setView("new")}
+            style={{ background:`linear-gradient(135deg,${T.accent},${T.purple})`,
+              color:"white", border:"none" }}>
+            <Plus size={12}/> Create your first dashboard
+          </Btn>
+        </div>
+      ) : (
+        <div style={{ display:"grid", gridTemplateColumns:"repeat(3,1fr)", gap:16 }}>
+          {dashboards.map(d=>(
+            <div key={d.id}
+              onClick={()=>{ setActiveDash(d); setView("show"); }}
+              style={{ background:T.card, border:`1px solid ${T.border}`, borderRadius:12,
+                padding:"20px", cursor:"pointer", transition:"all 0.15s",
+                boxShadow:"0 1px 4px rgba(0,0,0,0.06)" }}
+              onMouseEnter={e=>{ e.currentTarget.style.transform="translateY(-2px)"; e.currentTarget.style.boxShadow="0 6px 16px rgba(0,0,0,0.1)"; }}
+              onMouseLeave={e=>{ e.currentTarget.style.transform=""; e.currentTarget.style.boxShadow="0 1px 4px rgba(0,0,0,0.06)"; }}>
+              <div style={{ display:"flex", alignItems:"flex-start",
+                justifyContent:"space-between", marginBottom:10 }}>
+                <div style={{ width:40, height:40, borderRadius:10,
+                  background:`linear-gradient(135deg,${T.accent},${T.purple})`,
+                  display:"flex", alignItems:"center", justifyContent:"center", fontSize:18 }}>
+                  📊
+                </div>
+                <button onClick={e=>{ e.stopPropagation(); deleteDashboard(d.id); }}
+                  style={{ background:"none", border:"none", cursor:"pointer",
+                    color:T.dim, fontSize:16, padding:2 }}>×</button>
+              </div>
+              <div style={{ fontSize:14, fontWeight:700, color:T.text, marginBottom:4 }}>
+                {d.name}
+              </div>
+              <div style={{ fontSize:11, color:T.muted, marginBottom:8,
+                fontFamily:"monospace" }}>
+                {d.source_schema}.{d.source_table}
+              </div>
+              <div style={{ display:"flex", gap:8, alignItems:"center" }}>
+                <Badge label={`${d.charts?.length||0} charts`} color={T.accent}/>
+                <span style={{ fontSize:10, color:T.dim }}>
+                  {d.updated_at?.slice(0,10)}
+                </span>
+              </div>
+            </div>
+          ))}
+          {/* New dashboard card */}
+          <div onClick={()=>{ setActiveDash(null); setView("new"); }}
+            style={{ background:"transparent", border:`2px dashed ${T.border}`,
+              borderRadius:12, padding:"20px", cursor:"pointer",
+              display:"flex", flexDirection:"column", alignItems:"center",
+              justifyContent:"center", gap:8, minHeight:140,
+              transition:"border-color 0.15s" }}
+            onMouseEnter={e=>e.currentTarget.style.borderColor=T.accent}
+            onMouseLeave={e=>e.currentTarget.style.borderColor=T.border}>
+            <Plus size={24} color={T.muted}/>
+            <span style={{ fontSize:12, color:T.muted, fontWeight:600 }}>New Dashboard</span>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ─── Viz Builder ─────────────────────────────────────────────────────────────
+function VizBuilder({ initial, onSave, onCancel }) {
+  const T = useT();
+  const [step,        setStep]       = React.useState(initial ? "charts" : "source"); // source | profile | charts
+  const [name,        setName]       = React.useState(initial?.name || "");
+  const [sourceType,  setSourceType] = React.useState(initial?.source_type || "table"); // table | upload
+  const [schema,      setSchema]     = React.useState(initial?.source_schema || "");
+  const [table,       setTable]      = React.useState(initial?.source_table  || "");
+  const [profile,     setProfile]    = React.useState(null);
+  const [profiling,   setProfiling]  = React.useState(false);
+  const [charts,      setCharts]     = React.useState(initial?.charts || []);
+  const [editingChart,setEditingChart]= React.useState(null);
+  const [uploads,     setUploads]    = React.useState([]);
+  const [richSchema,  setRichSchema] = React.useState([]);
+  const [schemaSearch,setSchemaSearch]=React.useState("");
+
+  React.useEffect(() => {
+    fetch(`${API}/api/uploads`).then(r=>r.json()).then(d=>{ if(d.uploads) setUploads(d.uploads); }).catch(()=>{});
+    fetch(`${API}/api/schema`).then(r=>r.json()).then(d=>{ if(Array.isArray(d)) setRichSchema(d); }).catch(()=>{});
+    if (initial?.source_schema && initial?.source_table) profileTable(initial.source_schema, initial.source_table);
+  }, []);
+
+  const profileTable = async (sc, tbl) => {
+    setProfiling(true);
+    try {
+      const res  = await fetch(`${API}/api/viz/profile?schema=${sc}&table=${tbl}`);
+      const data = await res.json();
+      if (!data.error) {
+        setProfile(data);
+        if (charts.length === 0) setCharts(data.suggestions || []);
+        setStep("charts");
+      }
+    } catch(e) {}
+    setProfiling(false);
+  };
+
+  const selectSource = (sc, tbl) => {
+    setSchema(sc); setTable(tbl);
+    profileTable(sc, tbl);
+    setStep("profile");
+  };
+
+  const addChart = () => {
+    const newChart = {
+      id:`ch_${Date.now()}`, title:"New Chart", type:"bar",
+      sql:`SELECT * FROM ${schema}.${table} LIMIT 20`,
+      x_col:"", y_col:"", color:"#6366f1", size:"medium"
+    };
+    setCharts(p=>[...p, newChart]);
+    setEditingChart(newChart.id);
+  };
+
+  const updateChart = (id, updates) => setCharts(p=>p.map(c=>c.id===id?{...c,...updates}:c));
+  const removeChart  = (id) => { setCharts(p=>p.filter(c=>c.id!==id)); if(editingChart===id) setEditingChart(null); };
+
+  const handleSave = () => {
+    if (!name.trim() || !schema || !table) return;
+    onSave({
+      id: initial?.id || "",
+      name, source_type:sourceType,
+      source_schema:schema, source_table:table,
+      charts, profile_summary: profile ? {
+        row_count: profile.row_count,
+        column_count: profile.column_count,
+      } : null,
+    });
+  };
+
+  const filteredSchema = React.useMemo(() => {
+    const search = schemaSearch.toLowerCase();
+    if (!search) return richSchema;
+    return richSchema.filter(t =>
+      `${t.table_schema}.${t.table_name}`.toLowerCase().includes(search)
+    );
+  }, [richSchema, schemaSearch]);
+
+  const groupedSchema = React.useMemo(() => filteredSchema.reduce((acc,t)=>{
+    if (!acc[t.table_schema]) acc[t.table_schema] = [];
+    acc[t.table_schema].push(t);
+    return acc;
+  }, {}), [filteredSchema]);
+
+  const inp = { width:"100%", padding:"7px 10px", borderRadius:6, fontSize:11,
+    border:`1px solid ${T.border}`, background:T.surface, color:T.text,
+    fontFamily:"inherit", outline:"none", boxSizing:"border-box" };
+
+  const CHART_TYPES = [
+    {id:"kpi","icon":"🔢",label:"KPI"},
+    {id:"bar","icon":"📊",label:"Bar"},
+    {id:"line","icon":"📈",label:"Line"},
+    {id:"area","icon":"🌊",label:"Area"},
+    {id:"donut","icon":"🍩",label:"Donut"},
+    {id:"table","icon":"📋",label:"Table"},
+  ];
+  const SIZES = ["small","medium","large","full"];
+  const COLORS = ["#6366f1","#0ea5e9","#10b981","#f59e0b","#ef4444","#8b5cf6","#06b6d4","#ec4899"];
+
+  return (
+    <div className="fade-in" style={{ display:"flex", height:"calc(100vh - 2px)",
+      overflow:"hidden", flexDirection:"column" }}>
+      {/* Builder header */}
+      <div style={{ padding:"14px 28px", borderBottom:`1px solid ${T.border}`,
+        display:"flex", alignItems:"center", gap:14, flexShrink:0, background:"white" }}>
+        <Btn onClick={onCancel} variant="ghost" size="sm">← Back</Btn>
+        <input value={name} onChange={e=>setName(e.target.value)}
+          placeholder="Dashboard name…"
+          style={{ flex:1, padding:"6px 12px", borderRadius:7, fontSize:14,
+            fontWeight:700, border:`1px solid ${T.border}`, background:T.surface,
+            color:T.text, fontFamily:"inherit", outline:"none", maxWidth:360 }}
+          onFocus={e=>e.target.style.borderColor=T.accent}
+          onBlur={e=>e.target.style.borderColor=T.border}/>
+        {schema && table && (
+          <span style={{ fontSize:11, color:T.muted, fontFamily:"monospace" }}>
+            {schema}.{table}
+            {profile && ` · ${profile.row_count?.toLocaleString()} rows · ${profile.column_count} cols`}
+          </span>
+        )}
+        <Btn onClick={handleSave}
+          disabled={!name.trim()||!schema||!table||charts.length===0}
+          style={{ background:`linear-gradient(135deg,${T.accent},${T.purple})`,
+            color:"white", border:"none", marginLeft:"auto" }}>
+          <Check size={11}/> Save Dashboard
+        </Btn>
+      </div>
+
+      {/* Step tabs */}
+      <div style={{ display:"flex", borderBottom:`1px solid ${T.border}`,
+        paddingLeft:28, flexShrink:0, background:"white" }}>
+        {[
+          {id:"source",  label:"1. Data Source"},
+          {id:"profile", label:"2. Data Profile", disabled:!schema},
+          {id:"charts",  label:`3. Charts (${charts.length})`, disabled:!schema},
+        ].map(s=>(
+          <button key={s.id} onClick={()=>!s.disabled&&setStep(s.id)}
+            disabled={s.disabled}
+            style={{ padding:"8px 20px", fontSize:11,
+              fontWeight:step===s.id?700:400,
+              color:s.disabled?T.dim:step===s.id?T.accent:T.muted,
+              background:"none", border:"none", cursor:s.disabled?"default":"pointer",
+              borderBottom:step===s.id?`2px solid ${T.accent}`:"2px solid transparent",
+              marginBottom:-1, transition:"all 0.12s" }}>
+            {s.label}
+          </button>
+        ))}
+      </div>
+
+      <div style={{ flex:1, overflow:"hidden", display:"flex" }}>
+
+        {/* ── STEP 1: Source ──────────────────────────────────────────────── */}
+        {step==="source" && (
+          <div style={{ flex:1, overflowY:"auto", padding:"24px 28px" }}>
+            <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:20, maxWidth:900 }}>
+
+              {/* Uploaded files */}
+              <Card style={{ padding:"18px 20px" }}>
+                <div style={{ fontSize:13, fontWeight:700, color:T.text, marginBottom:12,
+                  display:"flex", alignItems:"center", gap:8 }}>
+                  <Upload size={14} color={T.accent}/> Uploaded Files
+                </div>
+                {uploads.length === 0 ? (
+                  <div style={{ fontSize:11, color:T.dim, padding:"12px 0" }}>
+                    No uploads yet — go to Data Explorer → Uploads to upload a file
+                  </div>
+                ) : (
+                  <div style={{ display:"flex", flexDirection:"column", gap:6 }}>
+                    {uploads.map(u=>(
+                      <button key={u.table_name}
+                        onClick={()=>selectSource("wz_uploads", u.table_name)}
+                        style={{ padding:"10px 14px", borderRadius:8, cursor:"pointer",
+                          border:`1px solid ${schema==="wz_uploads"&&table===u.table_name?T.accent:T.border}`,
+                          background:schema==="wz_uploads"&&table===u.table_name?`${T.accent}08`:"transparent",
+                          textAlign:"left", transition:"all 0.1s" }}
+                        onMouseEnter={e=>e.currentTarget.style.background=`${T.accent}06`}
+                        onMouseLeave={e=>e.currentTarget.style.background=schema==="wz_uploads"&&table===u.table_name?`${T.accent}08`:"transparent"}>
+                        <div style={{ fontSize:12, fontWeight:600, color:T.text }}>{u.filename||u.table_name}</div>
+                        <div style={{ fontSize:10, color:T.muted, marginTop:2 }}>
+                          {Number(u.row_count)?.toLocaleString()} rows · {u.col_count} cols · {u.uploaded_at?.slice(0,10)}
+                        </div>
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </Card>
+
+              {/* Redshift tables */}
+              <Card style={{ padding:"18px 20px" }}>
+                <div style={{ fontSize:13, fontWeight:700, color:T.text, marginBottom:10,
+                  display:"flex", alignItems:"center", gap:8 }}>
+                  <Database size={14} color={T.accent}/> Redshift Tables
+                </div>
+                <input value={schemaSearch} onChange={e=>setSchemaSearch(e.target.value)}
+                  placeholder="Search tables…"
+                  style={{...inp, marginBottom:10, fontSize:11}}
+                  onFocus={e=>e.target.style.borderColor=T.accent}
+                  onBlur={e=>e.target.style.borderColor=T.border}/>
+                <div style={{ overflowY:"auto", maxHeight:320 }}>
+                  {Object.entries(groupedSchema).map(([sc,tables])=>(
+                    <div key={sc} style={{ marginBottom:6 }}>
+                      <div style={{ fontSize:10, fontWeight:700, color:T.accent,
+                        padding:"3px 0", textTransform:"uppercase",
+                        letterSpacing:"0.05em", fontFamily:"monospace" }}>{sc}</div>
+                      {tables.map(t=>(
+                        <button key={t.table_name}
+                          onClick={()=>selectSource(t.table_schema, t.table_name)}
+                          style={{ width:"100%", padding:"5px 8px", borderRadius:5,
+                            cursor:"pointer", border:"none", textAlign:"left",
+                            background:schema===t.table_schema&&table===t.table_name?`${T.accent}10`:"transparent",
+                            color:T.text2, fontSize:11, fontFamily:"monospace",
+                            transition:"background 0.1s" }}
+                          onMouseEnter={e=>e.currentTarget.style.background=`${T.accent}08`}
+                          onMouseLeave={e=>e.currentTarget.style.background=schema===t.table_schema&&table===t.table_name?`${T.accent}10`:"transparent"}>
+                          {t.table_name}
+                          <span style={{ color:T.dim, marginLeft:6, fontSize:9 }}>{t.columns?.length} cols</span>
+                        </button>
+                      ))}
+                    </div>
+                  ))}
+                </div>
+              </Card>
+            </div>
+
+            {profiling && (
+              <div style={{ display:"flex", alignItems:"center", gap:10, marginTop:16,
+                color:T.accent, fontSize:13 }}>
+                <Spinner size={16}/> Profiling {schema}.{table}…
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* ── STEP 2: Profile ─────────────────────────────────────────────── */}
+        {step==="profile" && profile && (
+          <div style={{ flex:1, overflowY:"auto", padding:"24px 28px" }}>
+            <div style={{ maxWidth:900 }}>
+              <div style={{ display:"flex", gap:12, marginBottom:20 }}>
+                {[
+                  {label:"Rows",    value:profile.row_count?.toLocaleString()},
+                  {label:"Columns", value:profile.column_count},
+                  {label:"Numeric", value:profile.columns?.filter(c=>c.kind==="numeric").length},
+                  {label:"Categorical", value:profile.columns?.filter(c=>c.kind==="categorical").length},
+                  {label:"Date cols", value:profile.columns?.filter(c=>c.kind==="date"||c.kind==="datetime").length},
+                ].map(stat=>(
+                  <div key={stat.label} style={{ padding:"12px 16px", background:T.card,
+                    border:`1px solid ${T.border}`, borderRadius:10, textAlign:"center",
+                    minWidth:80 }}>
+                    <div style={{ fontSize:18, fontWeight:800, color:T.accent }}>{stat.value}</div>
+                    <div style={{ fontSize:10, color:T.muted, marginTop:2 }}>{stat.label}</div>
+                  </div>
+                ))}
+              </div>
+
+              <div style={{ display:"grid", gridTemplateColumns:"repeat(3,1fr)", gap:10 }}>
+                {profile.columns?.map(col=>(
+                  <div key={col.name} style={{ padding:"12px 14px", background:T.card,
+                    border:`1px solid ${T.border}`, borderRadius:8 }}>
+                    <div style={{ display:"flex", alignItems:"center", gap:7, marginBottom:6 }}>
+                      <span style={{ fontSize:11, fontWeight:700, color:T.text,
+                        fontFamily:"monospace", flex:1, overflow:"hidden",
+                        textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{col.name}</span>
+                      <Badge label={col.kind} color={
+                        col.kind==="numeric"?T.orange:col.kind==="date"||col.kind==="datetime"?T.purple:T.cyan
+                      }/>
+                    </div>
+                    <div style={{ fontSize:10, color:T.muted, fontFamily:"monospace" }}>
+                      {col.data_type}
+                    </div>
+                    {col.kind==="numeric" && col.min!=null && (
+                      <div style={{ fontSize:10, color:T.dim, marginTop:3 }}>
+                        {col.min?.toLocaleString()} – {col.max?.toLocaleString()} · avg {col.avg?.toLocaleString()}
+                      </div>
+                    )}
+                    {col.kind==="categorical" && (
+                      <div style={{ fontSize:10, color:T.dim, marginTop:3 }}>
+                        {col.distinct} distinct values
+                        {col.null_pct>0 && ` · ${col.null_pct}% null`}
+                      </div>
+                    )}
+                    {(col.kind==="date"||col.kind==="datetime") && col.min_date && (
+                      <div style={{ fontSize:10, color:T.dim, marginTop:3 }}>
+                        {col.min_date?.slice(0,10)} → {col.max_date?.slice(0,10)}
+                      </div>
+                    )}
+                    {col.top_values && (
+                      <div style={{ display:"flex", gap:4, flexWrap:"wrap", marginTop:4 }}>
+                        {col.top_values.slice(0,4).map(v=>(
+                          <span key={v.val} style={{ fontSize:9, padding:"1px 5px",
+                            background:`${T.accent}10`, color:T.accent,
+                            borderRadius:4, fontFamily:"monospace" }}>
+                            {String(v.val).slice(0,12)}
+                          </span>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                ))}
+              </div>
+
+              <div style={{ marginTop:20, display:"flex", gap:10 }}>
+                <Btn onClick={()=>setStep("charts")}
+                  style={{ background:`linear-gradient(135deg,${T.accent},${T.purple})`,
+                    color:"white", border:"none" }}>
+                  View {charts.length} Suggested Charts →
+                </Btn>
+                <Btn onClick={()=>setStep("source")} variant="ghost" size="sm">
+                  Change Source
+                </Btn>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* ── STEP 3: Charts ──────────────────────────────────────────────── */}
+        {step==="charts" && (
+          <div style={{ flex:1, display:"flex", overflow:"hidden" }}>
+            {/* Chart list */}
+            <div style={{ width:260, flexShrink:0, borderRight:`1px solid ${T.border}`,
+              overflowY:"auto", padding:"12px 8px" }}>
+              <div style={{ fontSize:10, fontWeight:700, color:T.muted, marginBottom:8,
+                paddingLeft:8, textTransform:"uppercase", letterSpacing:"0.06em" }}>
+                Charts ({charts.length})
+              </div>
+              {charts.map((c,i)=>(
+                <div key={c.id}
+                  onClick={()=>setEditingChart(c.id)}
+                  style={{ padding:"8px 10px", borderRadius:7, marginBottom:4,
+                    cursor:"pointer", border:`1px solid ${editingChart===c.id?T.accent:T.border}`,
+                    background:editingChart===c.id?`${T.accent}08`:"transparent",
+                    display:"flex", alignItems:"center", gap:8 }}>
+                  <span style={{ fontSize:14 }}>
+                    {c.type==="bar"?"📊":c.type==="line"?"📈":c.type==="area"?"🌊":c.type==="donut"?"🍩":c.type==="kpi"?"🔢":"📋"}
+                  </span>
+                  <div style={{ flex:1, minWidth:0 }}>
+                    <div style={{ fontSize:11, fontWeight:600, color:T.text,
+                      overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>
+                      {c.title}
+                    </div>
+                    <div style={{ fontSize:9, color:T.muted }}>{c.type} · {c.size}</div>
+                  </div>
+                  <button onClick={e=>{e.stopPropagation();removeChart(c.id);}}
+                    style={{ background:"none", border:"none", cursor:"pointer",
+                      color:T.dim, fontSize:13, flexShrink:0 }}>×</button>
+                </div>
+              ))}
+              <Btn onClick={addChart} size="sm" variant="ghost"
+                style={{ width:"100%", marginTop:6, justifyContent:"center" }}>
+                <Plus size={10}/> Add Chart
+              </Btn>
+            </div>
+
+            {/* Chart editor */}
+            {editingChart ? (() => {
+              const c = charts.find(x=>x.id===editingChart);
+              if (!c) return null;
+              const cols = profile?.columns || [];
+              return (
+                <div style={{ flex:1, overflowY:"auto", padding:"20px 24px" }}>
+                  <div style={{ maxWidth:600 }}>
+                    <div style={{ fontSize:13, fontWeight:700, color:T.text, marginBottom:16 }}>
+                      Edit Chart
+                    </div>
+                    <div style={{ display:"flex", flexDirection:"column", gap:12 }}>
+                      {/* Title */}
+                      <div>
+                        <label style={{ fontSize:11, fontWeight:600, color:T.text2, display:"block", marginBottom:3 }}>Title</label>
+                        <input value={c.title} onChange={e=>updateChart(c.id,{title:e.target.value})}
+                          style={inp} onFocus={e=>e.target.style.borderColor=T.accent} onBlur={e=>e.target.style.borderColor=T.border}/>
+                      </div>
+                      {/* Type */}
+                      <div>
+                        <label style={{ fontSize:11, fontWeight:600, color:T.text2, display:"block", marginBottom:6 }}>Type</label>
+                        <div style={{ display:"flex", gap:6, flexWrap:"wrap" }}>
+                          {CHART_TYPES.map(t=>(
+                            <button key={t.id} onClick={()=>updateChart(c.id,{type:t.id})}
+                              style={{ padding:"5px 12px", borderRadius:6, fontSize:11,
+                                cursor:"pointer", border:`1px solid ${c.type===t.id?T.accent:T.border}`,
+                                background:c.type===t.id?`${T.accent}12`:"transparent",
+                                color:c.type===t.id?T.accent:T.muted }}>
+                              {t.icon} {t.label}
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+                      {/* SQL */}
+                      <div>
+                        <label style={{ fontSize:11, fontWeight:600, color:T.text2, display:"block", marginBottom:3 }}>SQL</label>
+                        <textarea value={c.sql} rows={3}
+                          onChange={e=>updateChart(c.id,{sql:e.target.value})}
+                          style={{...inp, fontFamily:"monospace", fontSize:11, resize:"vertical"}}
+                          onFocus={e=>e.target.style.borderColor=T.accent} onBlur={e=>e.target.style.borderColor=T.border}/>
+                      </div>
+                      {/* Column mapping */}
+                      <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:10 }}>
+                        <div>
+                          <label style={{ fontSize:11, fontWeight:600, color:T.text2, display:"block", marginBottom:3 }}>X / Label column</label>
+                          <select value={c.x_col} onChange={e=>updateChart(c.id,{x_col:e.target.value})} style={inp}>
+                            <option value="">— select —</option>
+                            {cols.map(col=><option key={col.name} value={col.name}>{col.name}</option>)}
+                          </select>
+                        </div>
+                        <div>
+                          <label style={{ fontSize:11, fontWeight:600, color:T.text2, display:"block", marginBottom:3 }}>Y / Value column</label>
+                          <select value={c.y_col} onChange={e=>updateChart(c.id,{y_col:e.target.value})} style={inp}>
+                            <option value="">— select —</option>
+                            {cols.map(col=><option key={col.name} value={col.name}>{col.name}</option>)}
+                          </select>
+                        </div>
+                      </div>
+                      {/* Size + Color */}
+                      <div style={{ display:"grid", gridTemplateColumns:"1fr auto", gap:10, alignItems:"start" }}>
+                        <div>
+                          <label style={{ fontSize:11, fontWeight:600, color:T.text2, display:"block", marginBottom:6 }}>Size</label>
+                          <div style={{ display:"flex", gap:5 }}>
+                            {SIZES.map(s=>(
+                              <button key={s} onClick={()=>updateChart(c.id,{size:s})}
+                                style={{ flex:1, padding:"4px 0", borderRadius:5, fontSize:10,
+                                  cursor:"pointer", border:`1px solid ${c.size===s?T.accent:T.border}`,
+                                  background:c.size===s?`${T.accent}12`:"transparent",
+                                  color:c.size===s?T.accent:T.muted }}>
+                                {s[0].toUpperCase()+s.slice(1)}
+                              </button>
+                            ))}
+                          </div>
+                        </div>
+                        <div>
+                          <label style={{ fontSize:11, fontWeight:600, color:T.text2, display:"block", marginBottom:6 }}>Colour</label>
+                          <div style={{ display:"flex", gap:4 }}>
+                            {COLORS.map(col=>(
+                              <button key={col} onClick={()=>updateChart(c.id,{color:col})}
+                                style={{ width:20, height:20, borderRadius:"50%", background:col,
+                                  border:c.color===col?`2px solid ${T.text}`:`2px solid transparent`,
+                                  cursor:"pointer", padding:0 }}/>
+                            ))}
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              );
+            })() : (
+              <div style={{ flex:1, display:"flex", alignItems:"center",
+                justifyContent:"center", color:T.dim, fontSize:13 }}>
+                Select a chart from the left to edit it
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ─── Viz Dashboard View ───────────────────────────────────────────────────────
+function VizDashboardView({ dashboard, onEdit, onBack, onDelete, onSave }) {
+  const T   = useT();
+  const RC  = useRecharts();
+  const [chartData,  setChartData]  = React.useState({});
+  const [running,    setRunning]    = React.useState({});
+  const [refreshKey, setRefreshKey] = React.useState(0);
+
+  const ResponsiveContainer = RC?.ResponsiveContainer || (({children,width,height})=><div style={{width:width||"100%",height:height||200}}>{children}</div>);
+  const AreaChart  = RC?.AreaChart  || 'div'; const Area  = RC?.Area  || 'div';
+  const LineChart  = RC?.LineChart  || 'div'; const Line  = RC?.Line  || 'div';
+  const BarChart   = RC?.BarChart   || 'div'; const Bar   = RC?.Bar   || 'div';
+  const PieChart   = RC?.PieChart   || 'div'; const Pie   = RC?.Pie   || 'div';
+  const Cell       = RC?.Cell       || 'div';
+  const XAxis      = RC?.XAxis      || 'div'; const YAxis = RC?.YAxis || 'div';
+  const CartesianGrid = RC?.CartesianGrid || 'div';
+  const Tooltip    = RC?.Tooltip    || 'div'; const Legend = RC?.Legend || 'div';
+
+  const CHART_COLORS = ["#6366f1","#0ea5e9","#10b981","#f59e0b","#ef4444","#8b5cf6"];
+  const SIZE_SPAN = {small:1, medium:2, large:3, full:4};
+
+  const runChart = async (c) => {
+    if (!c.sql?.trim()) return;
+    setRunning(p=>({...p,[c.id]:true}));
+    try {
+      const res  = await fetch(`${API}/api/query?sql=${encodeURIComponent(c.sql)}`);
+      const data = await res.json();
+      setChartData(p=>({...p,[c.id]:data}));
+    } catch(e) { setChartData(p=>({...p,[c.id]:{error:e.message}})); }
+    setRunning(p=>({...p,[c.id]:false}));
+  };
+
+  React.useEffect(() => {
+    dashboard.charts?.forEach(c => runChart(c));
+  }, [dashboard.id, refreshKey]);
+
+  const fmt = (n,pfx="") => {
+    if (n==null) return "—";
+    if (n>=1000000) return `${pfx}${(n/1000000).toFixed(1)}M`;
+    if (n>=1000)    return `${pfx}${(n/1000).toFixed(1)}K`;
+    return `${pfx}${Number(n).toLocaleString()}`;
+  };
+
+  const CustomTooltip = ({active,payload,label}) => {
+    if (!active||!payload?.length) return null;
+    return (
+      <div style={{ background:T.surface, border:`1px solid ${T.border}`,
+        borderRadius:8, padding:"8px 12px", fontSize:11 }}>
+        <div style={{ fontWeight:600, color:T.text, marginBottom:3 }}>{label}</div>
+        {payload.map((p,i)=>(
+          <div key={i} style={{ color:p.color||T.text }}>
+            {p.name}: {typeof p.value==="number"?p.value.toLocaleString():p.value}
+          </div>
+        ))}
+      </div>
+    );
+  };
+
+  const renderChart = (c) => {
+    const data  = chartData[c.id];
+    const color = c.color || "#6366f1";
+    if (running[c.id]) return <div style={{display:"flex",alignItems:"center",justifyContent:"center",height:"100%",gap:8,color:T.muted,fontSize:12}}><Spinner size={14}/>Loading…</div>;
+    if (data?.error)   return <div style={{padding:10,fontSize:11,color:T.red,fontFamily:"monospace"}}>{data.error}</div>;
+    if (!data?.rows?.length) return <div style={{display:"flex",alignItems:"center",justifyContent:"center",height:"100%",color:T.dim,fontSize:12}}>No data</div>;
+
+    if (c.type==="kpi") {
+      const val = data.rows[0]?.[c.y_col||data.columns?.[0]];
+      return (
+        <div style={{display:"flex",flexDirection:"column",height:"100%"}}>
+          <div style={{fontSize:32,fontWeight:800,color,letterSpacing:"-0.02em",lineHeight:1,marginTop:"auto"}}>
+            {val!=null?Number(val).toLocaleString():"—"}
+          </div>
+        </div>
+      );
+    }
+    if (c.type==="bar") return (
+      <ResponsiveContainer width="100%" height="100%">
+        <BarChart data={data.rows} margin={{top:5,right:5,bottom:20,left:0}}>
+          <CartesianGrid strokeDasharray="3 3" stroke={T.border} vertical={false}/>
+          <XAxis dataKey={c.x_col||data.columns?.[0]} tick={{fontSize:9,fill:T.muted}} axisLine={false} tickLine={false}/>
+          <YAxis tick={{fontSize:9,fill:T.dim}} axisLine={false} tickLine={false} tickFormatter={v=>fmt(v)}/>
+          <Tooltip content={<CustomTooltip/>}/>
+          <Bar dataKey={c.y_col||data.columns?.[1]} fill={color} radius={[4,4,0,0]}/>
+        </BarChart>
+      </ResponsiveContainer>
+    );
+    if (c.type==="line") return (
+      <ResponsiveContainer width="100%" height="100%">
+        <LineChart data={data.rows} margin={{top:5,right:5,bottom:0,left:0}}>
+          <CartesianGrid strokeDasharray="3 3" stroke={T.border} vertical={false}/>
+          <XAxis dataKey={c.x_col||data.columns?.[0]} tick={{fontSize:9,fill:T.dim}} axisLine={false} tickLine={false}/>
+          <YAxis tick={{fontSize:9,fill:T.dim}} axisLine={false} tickLine={false} tickFormatter={v=>fmt(v)}/>
+          <Tooltip content={<CustomTooltip/>}/>
+          <Line type="monotone" dataKey={c.y_col||data.columns?.[1]} stroke={color} strokeWidth={2} dot={false}/>
+        </LineChart>
+      </ResponsiveContainer>
+    );
+    if (c.type==="area") {
+      return (
+        <ResponsiveContainer width="100%" height="100%">
+          <AreaChart data={data.rows} margin={{top:5,right:5,bottom:0,left:0}}>
+            <defs>
+              <linearGradient id={`vg_${c.id}`} x1="0" y1="0" x2="0" y2="1">
+                <stop offset="5%"  stopColor={color} stopOpacity={0.2}/>
+                <stop offset="95%" stopColor={color} stopOpacity={0}/>
+              </linearGradient>
+            </defs>
+            <CartesianGrid strokeDasharray="3 3" stroke={T.border} vertical={false}/>
+            <XAxis dataKey={c.x_col||data.columns?.[0]} tick={{fontSize:9,fill:T.dim}} axisLine={false} tickLine={false}/>
+            <YAxis tick={{fontSize:9,fill:T.dim}} axisLine={false} tickLine={false} tickFormatter={v=>fmt(v)}/>
+            <Tooltip content={<CustomTooltip/>}/>
+            <Area type="monotone" dataKey={c.y_col||data.columns?.[1]} stroke={color} strokeWidth={2} fill={`url(#vg_${c.id})`} dot={false}/>
+          </AreaChart>
+        </ResponsiveContainer>
+      );
+    }
+    if (c.type==="donut") {
+      const rows = data.rows.map((r,i)=>({name:String(r[c.x_col||data.columns?.[0]]),value:Number(r[c.y_col||data.columns?.[1]])||0,color:CHART_COLORS[i%CHART_COLORS.length]}));
+      return (
+        <ResponsiveContainer width="100%" height="100%">
+          <PieChart>
+            <Pie data={rows} cx="50%" cy="45%" innerRadius="30%" outerRadius="60%" dataKey="value" paddingAngle={2}>
+              {rows.map((e,i)=><Cell key={i} fill={e.color} stroke="none"/>)}
+            </Pie>
+            <Tooltip content={<CustomTooltip/>}/>
+            <Legend iconSize={8} wrapperStyle={{fontSize:10}}/>
+          </PieChart>
+        </ResponsiveContainer>
+      );
+    }
+    if (c.type==="table") return (
+      <div style={{overflowX:"auto",overflowY:"auto",height:"100%",borderRadius:5,border:`1px solid ${T.border}`}}>
+        <table style={{borderCollapse:"collapse",fontSize:11,fontFamily:"monospace",width:"100%"}}>
+          <thead><tr style={{background:`${T.accent}08`,position:"sticky",top:0}}>
+            {data.columns?.map(col=>(
+              <th key={col} style={{padding:"5px 10px",textAlign:"left",fontWeight:700,fontSize:9,color:T.muted,borderBottom:`1px solid ${T.border}`,whiteSpace:"nowrap",textTransform:"uppercase"}}>{col}</th>
+            ))}
+          </tr></thead>
+          <tbody>
+            {data.rows?.map((row,i)=>(
+              <tr key={i} style={{background:i%2===1?"#FAFBFF":"transparent"}}>
+                {data.columns?.map(col=>(
+                  <td key={col} style={{padding:"4px 10px",borderBottom:`1px solid ${T.border}20`,whiteSpace:"nowrap",color:row[col]===null?T.red:T.text2}}>
+                    {row[col]===null?"NULL":String(row[col]).slice(0,40)}
+                  </td>
+                ))}
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    );
+    return null;
+  };
+
+  const HEIGHT = {small:110, medium:220, large:240, full:260};
+
+  return (
+    <div className="fade-in" style={{ display:"flex", flexDirection:"column",
+      height:"calc(100vh - 2px)", overflow:"hidden" }}>
+      {/* Header */}
+      <div style={{ padding:"14px 28px", borderBottom:`1px solid ${T.border}`,
+        display:"flex", alignItems:"center", gap:14, flexShrink:0, background:"white" }}>
+        <Btn onClick={onBack} variant="ghost" size="sm">← Dashboards</Btn>
+        <div style={{ flex:1 }}>
+          <div style={{ fontSize:16, fontWeight:800, color:T.text }}>{dashboard.name}</div>
+          <div style={{ fontSize:11, color:T.muted, fontFamily:"monospace" }}>
+            {dashboard.source_schema}.{dashboard.source_table}
+            {dashboard.profile_summary && ` · ${dashboard.profile_summary.row_count?.toLocaleString()} rows`}
+          </div>
+        </div>
+        <Btn onClick={()=>setRefreshKey(p=>p+1)} size="sm" variant="ghost">
+          <RefreshCw size={10}/> Refresh
+        </Btn>
+        <Btn onClick={onEdit} size="sm" variant="ghost">✏ Edit</Btn>
+        <Btn onClick={onDelete} size="sm" variant="muted">
+          <Trash2 size={10}/>
+        </Btn>
+      </div>
+
+      {/* Chart grid */}
+      <div style={{ flex:1, overflowY:"auto", padding:"20px 24px" }}>
+        <div style={{ display:"grid", gridTemplateColumns:"repeat(4,1fr)", gap:14 }}>
+          {dashboard.charts?.map(c=>(
+            <div key={c.id} style={{ gridColumn:`span ${SIZE_SPAN[c.size]||2}` }}>
+              <div style={{ background:T.card, border:`1px solid ${T.border}`,
+                borderRadius:12, padding:"16px 18px",
+                height:c.type==="kpi"?110:HEIGHT[c.size]||220,
+                boxShadow:"0 1px 4px rgba(0,0,0,0.07)",
+                display:"flex", flexDirection:"column", overflow:"hidden",
+                position:"relative" }}>
+                {c.type!=="kpi" && (
+                  <div style={{ fontSize:11, fontWeight:700, color:T.muted,
+                    textTransform:"uppercase", letterSpacing:"0.05em",
+                    marginBottom:10, flexShrink:0 }}>{c.title}</div>
+                )}
+                {c.type==="kpi" && (
+                  <div style={{ fontSize:10, fontWeight:600, color:T.muted,
+                    textTransform:"uppercase", letterSpacing:"0.06em",
+                    marginBottom:4, flexShrink:0 }}>{c.title}</div>
+                )}
+                <div style={{ flex:1, minHeight:0 }}>{renderChart(c)}</div>
+                <div style={{ position:"absolute", bottom:0, left:0, right:0, height:3,
+                  background:`linear-gradient(90deg,${c.color||T.accent}60,transparent)`,
+                  borderRadius:"0 0 12px 12px" }}/>
+              </div>
+            </div>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function AskWiziTab({ onAddMonitor, onSaveRule }) {
   const T = useT();
   const dbSchema = useSchema();
@@ -4629,6 +5469,150 @@ function MonitorTab() {
 
 
 // ─── Evals Tab ───────────────────────────────────────────────────────────────
+function EvalsInline() {
+  const T = useT();
+  const [suite,      setSuite]      = React.useState(null);
+  const [activeRun,  setActiveRun]  = React.useState(null);
+  const [running,    setRunning]    = React.useState(false);
+  const [expanded,   setExpanded]   = React.useState({});
+  const [targetAgent,setTargetAgent]= React.useState("all");
+
+  React.useEffect(() => {
+    fetch(`${API}/api/evals/suite`).then(r=>r.json()).then(setSuite).catch(()=>{});
+    fetch(`${API}/api/evals/history`).then(r=>r.json()).then(d=>{
+      if (d.runs?.[0]) setActiveRun(d.runs[0]);
+    }).catch(()=>{});
+  }, []);
+
+  const runEvals = async () => {
+    setRunning(true);
+    try {
+      const body = targetAgent==="all" ? {} : { agent: targetAgent };
+      const res  = await fetch(`${API}/api/evals/run`, {
+        method:"POST", headers:{"Content-Type":"application/json"},
+        body: JSON.stringify(body)
+      });
+      const data = await res.json();
+      setActiveRun(data);
+    } catch(e) {}
+    setRunning(false);
+  };
+
+  const scoreColor = s => s>=90?T.green:s>=70?T.yellow:T.red;
+
+  return (
+    <div>
+      {/* Controls */}
+      <div style={{ display:"flex", gap:8, alignItems:"center", marginBottom:14 }}>
+        <select value={targetAgent} onChange={e=>setTargetAgent(e.target.value)}
+          style={{ fontSize:11, padding:"5px 8px", borderRadius:6,
+            border:`1px solid ${T.border}`, background:T.surface, color:T.text }}>
+          <option value="all">All agents</option>
+          {suite && Object.entries(suite).map(([k,v])=>(
+            <option key={k} value={k}>{v.agent}</option>
+          ))}
+        </select>
+        <Btn onClick={runEvals} disabled={running} size="sm"
+          style={{ background:running?T.border:`linear-gradient(135deg,${T.accent},${T.purple})`,
+            color:"white", border:"none" }}>
+          {running?<Spinner size={10} color="white"/>:<Play size={10}/>}
+          {running?"Running…":"▶ Run Evals"}
+        </Btn>
+        {activeRun && (
+          <div style={{ marginLeft:"auto", display:"flex", alignItems:"center", gap:6 }}>
+            <span style={{ fontSize:10, color:T.muted }}>Last run:</span>
+            <span style={{ fontSize:20, fontWeight:800,
+              color:scoreColor(activeRun.overall_score) }}>
+              {activeRun.overall_score}
+            </span>
+            <span style={{ fontSize:10, color:T.muted }}>
+              / 100 · {activeRun.total_passed}/{activeRun.total_cases} passed
+            </span>
+          </div>
+        )}
+      </div>
+
+      {/* Results */}
+      {running && (
+        <div style={{ display:"flex", alignItems:"center", gap:8, color:T.muted,
+          fontSize:12, padding:"12px 0" }}>
+          <Spinner size={12}/> Running eval suite…
+        </div>
+      )}
+
+      {activeRun && !running && (
+        <div style={{ display:"flex", flexDirection:"column", gap:8 }}>
+          {activeRun.agents?.map(agent=>{
+            const isExp = expanded[agent.suite];
+            const AC    = scoreColor(agent.score);
+            return (
+              <div key={agent.suite} style={{ borderRadius:8,
+                border:`1px solid ${T.border}`, overflow:"hidden" }}>
+                <div style={{ padding:"10px 14px", display:"flex", alignItems:"center",
+                  gap:10, cursor:"pointer", background:T.surface }}
+                  onClick={()=>setExpanded(p=>({...p,[agent.suite]:!p[agent.suite]}))}>
+                  <div style={{ width:36, height:36, borderRadius:8, flexShrink:0,
+                    background:`${AC}15`, display:"flex", flexDirection:"column",
+                    alignItems:"center", justifyContent:"center" }}>
+                    <span style={{ fontSize:14, fontWeight:800, color:AC, lineHeight:1 }}>
+                      {agent.score}
+                    </span>
+                  </div>
+                  <div style={{ flex:1 }}>
+                    <div style={{ fontSize:12, fontWeight:700, color:T.text }}>
+                      {agent.agent}
+                    </div>
+                    <div style={{ fontSize:10, color:T.muted, marginTop:1 }}>
+                      {agent.passed}/{agent.total} passed · {agent.duration_ms}ms
+                    </div>
+                  </div>
+                  <span style={{ fontSize:10, color:T.dim }}>{isExp?"▴":"▾"}</span>
+                </div>
+                {isExp && (
+                  <div>
+                    {agent.cases?.map((c,ci)=>(
+                      <div key={c.id} style={{ padding:"8px 14px 8px 22px",
+                        borderTop:`1px solid ${T.border}20`,
+                        display:"flex", alignItems:"flex-start", gap:10,
+                        background:ci%2===0?"transparent":`${T.accent}02` }}>
+                        <div style={{ width:18, height:18, borderRadius:4, flexShrink:0,
+                          background:c.passed?`${T.green}15`:`${T.red}15`,
+                          display:"flex", alignItems:"center", justifyContent:"center",
+                          fontSize:9, fontWeight:700, color:c.passed?T.green:T.red }}>
+                          {c.passed?"✓":"✗"}
+                        </div>
+                        <div style={{ flex:1 }}>
+                          <div style={{ fontSize:11, color:T.text }}>
+                            <span style={{ fontFamily:"monospace", color:T.dim,
+                              fontSize:10 }}>{c.id}</span>
+                            {" "}{c.name}
+                          </div>
+                          {c.detail && (
+                            <div style={{ fontSize:10, color:T.muted, marginTop:1,
+                              fontFamily:"monospace" }}>{c.detail}</div>
+                          )}
+                        </div>
+                        <Badge label={c.passed?"PASS":"FAIL"}
+                          color={c.passed?T.green:T.red}/>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      )}
+
+      {!activeRun && !running && (
+        <div style={{ fontSize:12, color:T.dim, textAlign:"center", padding:"16px 0" }}>
+          No evals run yet — click ▶ Run Evals to test all agents
+        </div>
+      )}
+    </div>
+  );
+}
+
 function EvalsTab() {
   const T = useT();
   const [suite,      setSuite]      = React.useState(null);
@@ -4997,6 +5981,19 @@ function ConfigureTab() {
             </div>
           ))}
         </div>
+      </Card>
+
+      {/* ── Evals ──────────────────────────────────────────────────────── */}
+      <Card style={{ padding:"20px 24px" }}>
+        <div style={{ fontSize:14, fontWeight:700, color:T.text, marginBottom:4,
+          display:"flex", alignItems:"center", justifyContent:"space-between" }}>
+          <span>Agent Evals</span>
+          <Badge label="QA" color={T.purple}/>
+        </div>
+        <div style={{ fontSize:12, color:T.muted, marginBottom:16 }}>
+          Systematic tests measuring agent accuracy, reliability, and reasoning quality
+        </div>
+        <EvalsInline/>
       </Card>
     </div>
   );
@@ -8488,9 +9485,9 @@ export default function WiziAgentApp() {
   // ── Keyboard shortcuts ────────────────────────────────────────────────────
   React.useEffect(() => {
     const SHORTCUT_MAP = {
-      "1":"brief", "2":"monitor", "3":"triage", "4":"workflows",
+      "1":"brief", "2":"triage", "3":"workflows", "4":"workflows",
       "5":"activity", "6":"chat", "7":"config", "8":"query",
-      "a":"approvals", "e":"evals", "d":"dashboard",
+      "a":"approvals", "v":"viz",
     };
     const handler = (e) => {
       // Skip if user is typing in an input/textarea
@@ -8727,15 +9724,12 @@ export default function WiziAgentApp() {
             </div>
           )}
 
-          {activeTab==="dashboard"  && <DashboardTab onNavigate={navigateTo}/>}
           {activeTab==="brief"     && <MorningBriefTab onNavigate={navigateTo} onIssueFound={setIssues}/>}
-          {activeTab==="monitor"   && <MonitorTab/>}
           {activeTab==="triage"    && <TriageTab initialIssues={issues}/>}
           {activeTab==="workflows" && <WorkflowsTab/>}
-          {activeTab==="approvals" && <ApprovalQueueTab onNavigate={navigateTo}/>}
-          {activeTab==="activity"  && <ActivityTab onNavigate={navigateTo}/>}
+          {activeTab==="approvals" && <ApprovalsActivityTab onNavigate={navigateTo}/>}
+          {activeTab==="viz"       && <VizTab/>}
           {activeTab==="chat"      && <AskWiziTab onAddMonitor={()=>{}} onSaveRule={()=>{}}/>}
-          {activeTab==="evals"     && <EvalsTab/>}
           {activeTab==="config"    && <ConfigureTab/>}
           {activeTab==="query"     && <QueryTab/>}
         </main>

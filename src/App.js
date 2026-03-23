@@ -307,6 +307,7 @@ const NAV = [
   { id:"approvals", label:"Approvals",       icon:Lock,         shortcut:"A" },
   { id:"activity",  label:"Activity",        icon:Bell,         shortcut:"5" },
   { id:"chat",      label:"Ask WiziAgent",  icon:MessageSquare,shortcut:"6" },
+  { id:"evals",     label:"Evals",           icon:Shield,       shortcut:"E" },
   { id:"config",    label:"Configure",      icon:Settings,     shortcut:"7" },
   { id:"query",     label:"Data Explorer", icon:Database,     shortcut:"8" },
 ];
@@ -368,6 +369,7 @@ function CommandPalette({ onNavigate, onClose }) {
     { label:"Approvals",            tab:"approvals", icon:"🔒", desc:"Pending fix approvals" },
     { label:"Activity",             tab:"activity",  icon:"🔔", desc:"Alerts, fix log + AI insight" },
     { label:"Ask WiziAgent",        tab:"chat",      icon:"💬", desc:"Chat with WiziAgent" },
+    { label:"Evals",                tab:"evals",     icon:"🧪", desc:"Agent eval suite — accuracy, reliability" },
     { label:"Configure",            tab:"config",    icon:"⚙️", desc:"Slack, thresholds, sources" },
     { label:"Data Explorer", tab:"query",     icon:"🖥", desc:"SQL editor with AI generation" },
   ];
@@ -1509,11 +1511,12 @@ Rows affected: ${issue.count}
   const [previewLimit,   setPreviewLimit]   = React.useState(20);
   const [previewFilter,  setPreviewFilter]  = React.useState("all"); // all | issues_only
 
-  const loadPreview = async (limit=20) => {
+  const loadPreview = async (limit=20, tableOverride=null) => {
     setPreviewLoading(true);
     setPreview(null);
-    const [schema, tbl] = selectedTable.includes(".")
-      ? selectedTable.split(".") : ["mws", selectedTable];
+    const tblStr = tableOverride || selectedTable;
+    const [schema, tbl] = tblStr.includes(".")
+      ? tblStr.split(".") : ["mws", tblStr];
     try {
       const res  = await fetch(`${API}/api/preview?schema=${schema}&table=${tbl}&limit=${limit}`);
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
@@ -1638,7 +1641,7 @@ Rows affected: ${issue.count}
           ].map(tab => (
             <button key={tab.id} onClick={()=>{
                 setActiveView(tab.id);
-                if(tab.id==="data") { setPreview(null); loadPreview(previewLimit); }
+                if(tab.id==="data") { setPreview(null); loadPreview(previewLimit, selectedTable); }
               }}
               style={{ padding:"8px 18px", fontSize:12, fontWeight:activeView===tab.id?600:400,
                 color:activeView===tab.id?T.accent:T.muted,
@@ -1876,7 +1879,7 @@ Rows affected: ${issue.count}
                             </Btn>
                           )}
                           <Btn size="sm" variant="ghost"
-                            onClick={()=>{ setPreview(null); setActiveView("data"); loadPreview(previewLimit); }}
+                            onClick={()=>{ setPreview(null); setActiveView("data"); loadPreview(previewLimit, selectedTable); }}
                             style={{ fontSize:10 }}>
                             <Table size={10}/> View Data
                           </Btn>
@@ -1949,7 +1952,7 @@ Rows affected: ${issue.count}
                           Sample rows ({issue.samples.length} shown)
                         </span>
                         <Btn size="sm" variant="ghost"
-                          onClick={()=>{ setActiveView("data"); loadPreview(previewLimit); }}
+                          onClick={()=>{ setPreview(null); setActiveView("data"); loadPreview(previewLimit, selectedTable); }}
                           style={{ fontSize:10 }}>
                           View full table →
                         </Btn>
@@ -3253,35 +3256,22 @@ Rules: only SELECT queries, use exact table name, pass_condition is one of: "row
 
 function MonitorTab() {
   const T = useT();
-  const [tables,      setTables]      = useLocal("wz_monTables",
+  const [tables,     setTables]     = useLocal("wz_monTables",
     [{ schema:"mws", table:"report", label:"mws.report", primary:true,
-       checkSets:[], checks:["status='processed'","copy_status='REPLICATED'","no stuck >2h"] }]
+       checkSets:[], checks:[] }]
   );
-  const [results,     setResults]     = useSession("wz_monResults", {});
-  const [csResults,   setCsResults]   = React.useState({}); // { [csId]: run result }
-  const [scanning,    setScanning]    = React.useState({});
-  const [csRunning,   setCsRunning]   = React.useState({}); // { [csId]: bool }
-  const [expanded,    setExpanded]    = React.useState({}); // { [key]: bool } table expand
-  const [csExpanded,  setCsExpanded]  = React.useState({}); // { [csId]: bool } check result expand
-  const [addOpen,     setAddOpen]     = React.useState(false);
-  const [newTable,    setNewTable]    = React.useState({ schema:"mws", table:"" });
-  const [builderFor,  setBuilderFor]  = React.useState(null); // { tableKey, initial }
+  const [csResults,  setCsResults]  = useSession("wz_monCsResults", {});
+  const [csRunning,  setCsRunning]  = React.useState({});
+  const [scanning,   setScanning]   = React.useState({});
+  const [addOpen,    setAddOpen]    = React.useState(false);
+  const [newTable,   setNewTable]   = React.useState({ schema:"mws", table:"" });
+  const [builderFor, setBuilderFor] = React.useState(null);
+  const [subExpanded,setSubExpanded]= React.useState({}); // {checkId: bool} — expand sub-check results
 
-  const scan = async (t) => {
-    const key = `${t.schema}.${t.table}`;
-    setScanning(p => ({...p,[key]:true}));
-    try {
-      const res = await fetch(`${API}/api/wizi-agent/run-table`, {
-        method:"POST", headers:{"Content-Type":"application/json"},
-        body:JSON.stringify({ schema:t.schema, table:t.table, dry_run:true })
-      });
-      const data = await res.json();
-      setResults(p => ({...p,[key]:data}));
-    } catch(e) { setResults(p => ({...p,[key]:{error:e.message}})); }
-    setScanning(p => ({...p,[key]:false}));
-  };
+  const SC = { pass:T.green, fail:T.orange, error:T.red };
+  const SI = { pass:"✓", fail:"✗", error:"!" };
 
-  const runCheckSet = async (cs) => {
+  const runCheckSet = async (cs, tableKey) => {
     setCsRunning(p=>({...p,[cs.id]:true}));
     try {
       const res = await fetch(`${API}/api/monitor/run-checks`, {
@@ -3289,99 +3279,138 @@ function MonitorTab() {
         body:JSON.stringify({ checks: cs.checks })
       });
       const data = await res.json();
-      setCsResults(p=>({...p,[cs.id]:data}));
+      setCsResults(p=>({...p,[cs.id]:{...data, ran_at: new Date().toLocaleTimeString()}}));
+      // Auto-expand all sub-checks that have results
+      if (data.results) {
+        const exp = {};
+        data.results.forEach(r=>{ exp[r.id] = true; });
+        setSubExpanded(p=>({...p,...exp}));
+      }
     } catch(e) {
       setCsResults(p=>({...p,[cs.id]:{overall:"error",results:[],error:e.message}}));
     }
     setCsRunning(p=>({...p,[cs.id]:false}));
-    setCsExpanded(p=>({...p,[cs.id]:true}));
+  };
+
+  const runAllCheckSets = async (t) => {
+    const key = `${t.schema}.${t.table}`;
+    for (const cs of (t.checkSets||[])) {
+      await runCheckSet(cs, key);
+    }
+  };
+
+  const quickScan = async (t) => {
+    const key = `${t.schema}.${t.table}`;
+    setScanning(p=>({...p,[key]:true}));
+    try {
+      const res = await fetch(`${API}/api/wizi-agent/run-table`, {
+        method:"POST", headers:{"Content-Type":"application/json"},
+        body:JSON.stringify({ schema:t.schema, table:t.table, dry_run:true })
+      });
+      const data = await res.json();
+      // Store as a special check set result
+      const scanId = `__scan_${key}`;
+      const synth  = {
+        overall: data.alerts?.length > 0 ? "fail" : "pass",
+        ran_at: new Date().toLocaleTimeString(),
+        results: data.alerts?.length > 0
+          ? data.alerts.map(a=>({ id:a.id||a.check, name:a.title||a.check,
+              status:"fail", row_count:a.count||0, rows:a.samples||[], columns:[], error:null }))
+          : [{ id:"scan_ok", name:"No issues found", status:"pass", row_count:data.total_rows||0, rows:[], columns:[] }],
+        total_rows: data.total_rows,
+      };
+      setCsResults(p=>({...p,[scanId]:synth}));
+    } catch(e) { console.error(e); }
+    setScanning(p=>({...p,[key]:false}));
   };
 
   const addTable = () => {
     if (!newTable.table.trim()) return;
-    setTables(p => [...p, {
+    setTables(p=>[...p, {
       schema:newTable.schema, table:newTable.table,
-      label:`${newTable.schema}.${newTable.table}`,
-      primary:false, checkSets:[], checks:[]
+      label:`${newTable.schema}.${newTable.table}`, primary:false, checkSets:[], checks:[]
     }]);
     setNewTable({ schema:"mws", table:"" });
     setAddOpen(false);
     try { const c=JSON.parse(localStorage.getItem("wz_onboarding")||"{}"); localStorage.setItem("wz_onboarding",JSON.stringify({...c,monitored:true})); } catch {}
   };
 
-  const removeTable = (key) => {
-    setTables(p => p.filter(t=>`${t.schema}.${t.table}`!==key));
-    setResults(p => { const n={...p}; delete n[key]; return n; });
-  };
+  const removeTable = (key) => setTables(p=>p.filter(t=>`${t.schema}.${t.table}`!==key));
 
   const saveCheckSet = (tableKey, cs) => {
-    setTables(p => p.map(t => {
-      if (`${t.schema}.${t.table}` !== tableKey) return t;
-      const existing = (t.checkSets||[]).findIndex(c=>c.id===cs.id);
-      const newSets  = existing>=0
-        ? t.checkSets.map((c,i)=>i===existing?cs:c)
-        : [...(t.checkSets||[]), cs];
-      return {...t, checkSets:newSets};
+    setTables(p=>p.map(t=>{
+      if (`${t.schema}.${t.table}`!==tableKey) return t;
+      const idx = (t.checkSets||[]).findIndex(c=>c.id===cs.id);
+      return {...t, checkSets: idx>=0 ? t.checkSets.map((c,i)=>i===idx?cs:c) : [...(t.checkSets||[]),cs]};
     }));
     setBuilderFor(null);
   };
 
   const removeCheckSet = (tableKey, csId) => {
-    setTables(p => p.map(t => {
-      if (`${t.schema}.${t.table}` !== tableKey) return t;
+    setTables(p=>p.map(t=>{
+      if (`${t.schema}.${t.table}`!==tableKey) return t;
       return {...t, checkSets:(t.checkSets||[]).filter(c=>c.id!==csId)};
     }));
   };
 
-  const STATUS_COLOR = { pass:T.green, fail:T.orange, error:T.red };
-  const STATUS_ICON  = { pass:"✓", fail:"✗", error:"!" };
+  if (builderFor) return (
+    <div className="fade-in" style={{ padding:"28px 32px" }}>
+      <CheckSetBuilder
+        table={builderFor.tableKey}
+        initial={builderFor.initial||null}
+        onSave={(cs)=>saveCheckSet(builderFor.tableKey,cs)}
+        onCancel={()=>setBuilderFor(null)}
+      />
+    </div>
+  );
 
-  // Builder view
-  if (builderFor) {
-    return (
-      <div className="fade-in" style={{ padding:"28px 32px" }}>
-        <CheckSetBuilder
-          table={builderFor.tableKey}
-          initial={builderFor.initial||null}
-          onSave={(cs) => saveCheckSet(builderFor.tableKey, cs)}
-          onCancel={() => setBuilderFor(null)}
-        />
-      </div>
-    );
-  }
+  // Summary counts across all tables
+  const allCsIds = tables.flatMap(t=>(t.checkSets||[]).map(cs=>cs.id));
+  const totalRan  = allCsIds.filter(id=>csResults[id]).length;
+  const totalPass = allCsIds.filter(id=>csResults[id]?.overall==="pass").length;
+  const totalFail = allCsIds.filter(id=>csResults[id]?.overall==="fail").length;
 
   return (
-    <div className="fade-in" style={{ padding:"28px 32px", maxWidth:960 }}>
+    <div className="fade-in" style={{ padding:"28px 32px", maxWidth:1040 }}>
+
       {/* Header */}
-      <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom:24 }}>
+      <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom:20 }}>
         <div>
           <div style={{ fontSize:22, fontWeight:700, color:T.text, letterSpacing:"-0.02em",
-            display:"flex", alignItems:"center" }}>
+            display:"flex", alignItems:"center", gap:8 }}>
             Monitor
             <HelpTip>
-              <strong>Monitor</strong> watches tables with custom check sets.<br/><br/>
-              <strong>Check Set</strong> — a named group of SQL queries on one table. Each query is a sub-check with its own pass condition.<br/>
-              <strong>AI Suggester</strong> — describe what you want to check in plain English, AI writes the SQL.<br/>
-              <strong>Run</strong> — executes all sub-checks and shows results inline.
+              <strong>Check Set</strong> — a named group of SQL checks on one table.<br/>
+              Each sub-check is a SQL query with a pass condition (e.g. rows &gt; 0).<br/><br/>
+              <strong>AI Suggester</strong> — describe the check in plain English, AI writes the SQL.<br/>
+              <strong>Run All</strong> — executes all check sets on a table at once.
             </HelpTip>
           </div>
-          <div style={{ fontSize:13, color:T.muted, marginTop:3 }}>
-            {tables.length} table{tables.length!==1?"s":""} · {tables.reduce((n,t)=>n+(t.checkSets?.length||0),0)} check sets
-          </div>
+          {/* Summary strip */}
+          {totalRan > 0 && (
+            <div style={{ display:"flex", gap:12, marginTop:5 }}>
+              <span style={{ fontSize:12, color:T.muted }}>{totalRan} check sets ran</span>
+              {totalPass>0 && <span style={{ fontSize:12, color:T.green, fontWeight:600 }}>✓ {totalPass} passed</span>}
+              {totalFail>0 && <span style={{ fontSize:12, color:T.orange, fontWeight:600 }}>✗ {totalFail} failed</span>}
+            </div>
+          )}
         </div>
-        <Btn onClick={()=>setAddOpen(true)} size="sm"><Plus size={12}/> Add Table</Btn>
+        <div style={{ display:"flex", gap:8 }}>
+          <Btn onClick={()=>setAddOpen(p=>!p)} size="sm"><Plus size={12}/> Add Table</Btn>
+        </div>
       </div>
 
-      {/* Add table form */}
+      {/* Add table */}
       {addOpen && (
-        <Card style={{ padding:"16px 20px", marginBottom:16, borderColor:T.accent, background:`${T.accent}06` }}>
-          <div style={{ fontSize:12, fontWeight:700, color:T.text, marginBottom:10 }}>Add table to monitoring</div>
+        <Card style={{ padding:"14px 18px", marginBottom:16,
+          borderColor:T.accent, background:`${T.accent}05` }}>
+          <div style={{ fontSize:12, fontWeight:700, color:T.text, marginBottom:10 }}>Add table</div>
           <div style={{ display:"flex", gap:8, alignItems:"center" }}>
             <input value={newTable.schema} onChange={e=>setNewTable(p=>({...p,schema:e.target.value}))}
-              placeholder="schema" style={{ width:90, padding:"6px 10px", borderRadius:6,
+              placeholder="schema" style={{ width:100, padding:"6px 10px", borderRadius:6,
                 border:`1px solid ${T.border}`, background:T.surface, color:T.text,
                 fontSize:12, fontFamily:"monospace" }}/>
-            <span style={{ color:T.muted }}>.</span>
+            <span style={{ color:T.muted, fontWeight:700 }}>.</span>
             <input value={newTable.table} onChange={e=>setNewTable(p=>({...p,table:e.target.value}))}
               onKeyDown={e=>e.key==="Enter"&&addTable()}
               placeholder="table_name" style={{ flex:1, padding:"6px 10px", borderRadius:6,
@@ -3394,259 +3423,278 @@ function MonitorTab() {
       )}
 
       {/* Table cards */}
-      <div style={{ display:"flex", flexDirection:"column", gap:14 }}>
-        {tables.map(t => {
-          const key     = `${t.schema}.${t.table}`;
-          const res     = results[key];
-          const busy    = scanning[key];
-          const alerts  = res?.alerts||[];
-          const isExp   = expanded[key];
+      <div style={{ display:"flex", flexDirection:"column", gap:16 }}>
+        {tables.map(t=>{
+          const key       = `${t.schema}.${t.table}`;
           const checkSets = t.checkSets||[];
+          const scanId    = `__scan_${key}`;
+          const scanRes   = csResults[scanId];
+          const anyScanBusy = scanning[key];
+          const anyCSBusy   = checkSets.some(cs=>csRunning[cs.id]);
 
-          // Overall status for the table
-          const csStatuses = checkSets.map(cs=>csResults[cs.id]?.overall);
-          const tableStatus = !res && !csStatuses.length ? "idle"
-            : csStatuses.includes("fail")||csStatuses.includes("error") ? "warning"
-            : csStatuses.length && csStatuses.every(s=>s==="pass") ? "healthy"
-            : res?.error ? "error"
-            : alerts.length>0 ? "warning" : res ? "healthy" : "idle";
+          // Table-level overall status
+          const statuses = checkSets.map(cs=>csResults[cs.id]?.overall).filter(Boolean);
+          const tableStatus = statuses.includes("fail")||statuses.includes("error") ? "warning"
+            : statuses.length&&statuses.every(s=>s==="pass") ? "healthy"
+            : scanRes?.overall==="fail" ? "warning"
+            : scanRes?.overall==="pass" ? "healthy" : "idle";
+
+          const passCount = checkSets.filter(cs=>csResults[cs.id]?.overall==="pass").length;
+          const failCount = checkSets.filter(cs=>csResults[cs.id]?.overall==="fail").length;
+          const lastRan   = checkSets
+            .map(cs=>csResults[cs.id]?.ran_at).filter(Boolean).slice(-1)[0];
 
           return (
             <Card key={key} style={{ overflow:"hidden" }}>
-              {/* Table header */}
-              <div style={{ padding:"16px 20px", display:"flex", alignItems:"center", gap:12 }}>
+
+              {/* ── Table header ──────────────────────────────────────────────── */}
+              <div style={{ padding:"14px 20px", display:"flex", alignItems:"center",
+                gap:12, borderBottom:`1px solid ${T.border}` }}>
                 <StatusDot status={tableStatus}/>
                 <div style={{ flex:1, minWidth:0 }}>
-                  <div style={{ display:"flex", alignItems:"center", gap:8, marginBottom:2 }}>
+                  <div style={{ display:"flex", alignItems:"center", gap:8, flexWrap:"wrap" }}>
                     <span style={{ fontSize:13, fontWeight:700, color:T.text,
                       fontFamily:"monospace" }}>{key}</span>
                     {t.primary && <Badge label="primary" color={T.accent}/>}
-                    <Badge label={`${checkSets.length} check set${checkSets.length!==1?"s":""}`}
-                      color={T.purple}/>
+                    {checkSets.length > 0 && (
+                      <span style={{ fontSize:10, color:T.muted }}>
+                        {checkSets.length} check set{checkSets.length!==1?"s":""}
+                      </span>
+                    )}
+                    {passCount>0 && <Badge label={`${passCount} passed`} color={T.green}/>}
+                    {failCount>0 && <Badge label={`${failCount} failed`} color={T.orange}/>}
+                    {lastRan && (
+                      <span style={{ fontSize:10, color:T.dim }}>last ran {lastRan}</span>
+                    )}
                   </div>
-                  {/* Check set status summary */}
-                  {checkSets.length > 0 && (
-                    <div style={{ display:"flex", gap:5, flexWrap:"wrap", marginTop:3 }}>
-                      {checkSets.map(cs => {
-                        const r = csResults[cs.id];
-                        const col = r ? STATUS_COLOR[r.overall]||T.muted : T.dim;
-                        return (
-                          <span key={cs.id} style={{ fontSize:10, padding:"1px 8px", borderRadius:4,
-                            background:`${col}12`, color:col, border:`1px solid ${col}25` }}>
-                            {r ? STATUS_ICON[r.overall] : "○"} {cs.name}
-                          </span>
-                        );
-                      })}
-                    </div>
-                  )}
-                  {checkSets.length === 0 && (
-                    <div style={{ fontSize:11, color:T.dim, marginTop:2 }}>
-                      No check sets yet — add one to define custom SQL checks
-                    </div>
-                  )}
                 </div>
-                <div style={{ display:"flex", gap:6, flexShrink:0 }}>
-                  <Btn onClick={()=>setExpanded(p=>({...p,[key]:!p[key]}))} size="sm" variant="ghost">
-                    <Eye size={11}/> {isExp?"Hide":"Details"}
-                  </Btn>
+                <div style={{ display:"flex", gap:5, flexShrink:0 }}>
+                  {checkSets.length > 0 && (
+                    <Btn onClick={()=>runAllCheckSets(t)} disabled={anyCSBusy} size="sm"
+                      style={{ background:`linear-gradient(135deg,${T.accent},${T.purple})`,
+                        color:"white", border:"none" }}>
+                      {anyCSBusy?<Spinner size={10} color="white"/>:<Play size={10}/>}
+                      {anyCSBusy?"Running…":"Run All"}
+                    </Btn>
+                  )}
                   <Btn onClick={()=>setBuilderFor({tableKey:key})} size="sm" variant="ghost"
                     style={{ color:T.purple, borderColor:`${T.purple}30` }}>
-                    <Plus size={11}/> Add Check Set
+                    <Plus size={11}/> Check Set
                   </Btn>
-                  <Btn onClick={()=>scan(t)} disabled={busy} size="sm" variant="ghost">
-                    {busy?<Spinner size={11}/>:<RefreshCw size={11}/>} Quick Scan
+                  <Btn onClick={()=>quickScan(t)} disabled={anyScanBusy} size="sm" variant="ghost">
+                    {anyScanBusy?<Spinner size={10}/>:<RefreshCw size={10}/>} Scan
                   </Btn>
                   {!t.primary && (
                     <Btn onClick={()=>removeTable(key)} size="sm" variant="muted">
-                      <Trash2 size={11}/>
+                      <Trash2 size={10}/>
                     </Btn>
                   )}
                 </div>
               </div>
 
-              {/* Expanded: check sets + quick scan results */}
-              {isExp && (
-                <div style={{ borderTop:`1px solid ${T.border}`, padding:"14px 20px",
-                  display:"flex", flexDirection:"column", gap:12 }}>
+              {/* ── Body ─────────────────────────────────────────────────────── */}
+              <div style={{ padding:"14px 20px", display:"flex", flexDirection:"column", gap:10 }}>
 
-                  {/* Quick scan result */}
-                  {res && (
-                    <div>
-                      <div style={{ fontSize:10, fontWeight:700, color:T.muted,
-                        textTransform:"uppercase", letterSpacing:"0.06em", marginBottom:6 }}>
-                        Quick Scan Result
-                      </div>
-                      {res.error ? (
-                        <div style={{ fontSize:11, color:T.red }}>{res.error}</div>
-                      ) : (
-                        <div style={{ display:"flex", gap:12, flexWrap:"wrap" }}>
-                          <span style={{ fontSize:11, color:T.muted }}>
-                            {res.total_rows?.toLocaleString()} rows scanned
-                          </span>
-                          {alerts.length===0
-                            ? <span style={{ fontSize:11, color:T.green }}>✓ No issues</span>
-                            : alerts.slice(0,4).map(a=>(
-                                <Badge key={a.id} label={a.title||a.check} color={T.orange}/>
-                              ))}
-                        </div>
+                {/* Quick scan result */}
+                {scanRes && (
+                  <div style={{ padding:"10px 14px", borderRadius:8,
+                    border:`1px solid ${scanRes.overall==="pass"?T.green+"30":T.orange+"40"}`,
+                    background:`${scanRes.overall==="pass"?T.green:T.orange}05` }}>
+                    <div style={{ display:"flex", alignItems:"center", gap:8, marginBottom:4 }}>
+                      <span style={{ fontSize:11, fontWeight:700,
+                        color:scanRes.overall==="pass"?T.green:T.orange }}>
+                        {scanRes.overall==="pass"?"✓":"✗"} Quick Scan
+                      </span>
+                      {scanRes.total_rows!=null && (
+                        <span style={{ fontSize:10, color:T.muted }}>
+                          {scanRes.total_rows?.toLocaleString()} rows
+                        </span>
                       )}
+                      <span style={{ fontSize:10, color:T.dim, marginLeft:"auto" }}>
+                        {scanRes.ran_at}
+                      </span>
                     </div>
-                  )}
-
-                  {/* Check sets */}
-                  {checkSets.length === 0 ? (
-                    <div style={{ textAlign:"center", padding:"20px 0" }}>
-                      <div style={{ fontSize:12, color:T.muted, marginBottom:8 }}>
-                        No check sets yet. Add a check set to define custom SQL checks with sub-queries.
+                    {scanRes.results?.map((r,i)=>(
+                      <div key={i} style={{ fontSize:11, color:r.status==="fail"?T.orange:T.green,
+                        marginTop:2 }}>
+                        {r.status==="fail"?"✗":"✓"} {r.name}
+                        {r.row_count>0 && ` (${r.row_count} rows affected)`}
                       </div>
+                    ))}
+                  </div>
+                )}
+
+                {/* Check sets — always visible */}
+                {checkSets.length === 0 ? (
+                  <div style={{ textAlign:"center", padding:"24px 0",
+                    border:`1px dashed ${T.border}`, borderRadius:8 }}>
+                    <div style={{ fontSize:12, color:T.muted, marginBottom:8 }}>
+                      No custom checks defined for this table
+                    </div>
+                    <div style={{ display:"flex", gap:8, justifyContent:"center" }}>
                       <Btn onClick={()=>setBuilderFor({tableKey:key})} size="sm"
                         style={{ color:T.purple, borderColor:`${T.purple}30` }} variant="ghost">
                         <Plus size={11}/> Add Check Set
                       </Btn>
+                      <Btn onClick={()=>quickScan(t)} disabled={anyScanBusy} size="sm" variant="ghost">
+                        {anyScanBusy?<Spinner size={10}/>:<RefreshCw size={10}/>} Quick Scan
+                      </Btn>
                     </div>
-                  ) : (
-                    checkSets.map(cs => {
-                      const csr       = csResults[cs.id];
-                      const isRunning = csRunning[cs.id];
-                      const isCsExp   = csExpanded[cs.id];
-                      const overallColor = csr ? STATUS_COLOR[csr.overall]||T.muted : T.muted;
+                  </div>
+                ) : (
+                  checkSets.map(cs=>{
+                    const csr       = csResults[cs.id];
+                    const isRunning = csRunning[cs.id];
+                    const OC        = csr ? SC[csr.overall]||T.muted : T.border;
 
-                      return (
-                        <div key={cs.id} style={{ borderRadius:8,
-                          border:`1px solid ${csr ? overallColor+"40" : T.border}`,
-                          background: csr ? `${overallColor}04` : T.surface,
-                          overflow:"hidden" }}>
+                    return (
+                      <div key={cs.id} style={{ borderRadius:8,
+                        border:`1px solid ${csr?OC+"50":T.border}`,
+                        overflow:"hidden" }}>
 
-                          {/* Check set header */}
-                          <div style={{ padding:"12px 16px", display:"flex", alignItems:"center", gap:10 }}>
-                            <div style={{ width:28, height:28, borderRadius:6, flexShrink:0,
-                              background:`${overallColor}14`,
-                              display:"flex", alignItems:"center", justifyContent:"center",
-                              fontSize:13, fontWeight:700, color:overallColor }}>
-                              {isRunning ? <Spinner size={12}/> : (csr ? STATUS_ICON[csr.overall] : "○")}
-                            </div>
-                            <div style={{ flex:1, minWidth:0 }}>
-                              <div style={{ fontSize:12, fontWeight:700, color:T.text }}>
-                                {cs.name}
-                              </div>
-                              {cs.desc && (
-                                <div style={{ fontSize:11, color:T.muted, marginTop:1 }}>{cs.desc}</div>
-                              )}
-                              <div style={{ fontSize:10, color:T.dim, marginTop:1 }}>
-                                {cs.checks.length} sub-check{cs.checks.length!==1?"s":""}
-                                {csr && ` · ran ${csr.ran_at ? new Date(csr.ran_at).toLocaleTimeString() : ""}`}
-                              </div>
-                            </div>
-                            <div style={{ display:"flex", gap:5, flexShrink:0 }}>
-                              {csr && (
-                                <Btn size="sm" variant="ghost"
-                                  onClick={()=>setCsExpanded(p=>({...p,[cs.id]:!p[cs.id]}))}>
-                                  <Eye size={10}/> {isCsExp?"Hide":"Results"}
-                                </Btn>
-                              )}
-                              <Btn size="sm" variant="ghost"
-                                onClick={()=>setBuilderFor({tableKey:key, initial:cs})}
-                                style={{ fontSize:10 }}>Edit</Btn>
-                              <Btn size="sm" onClick={()=>runCheckSet(cs)} disabled={isRunning}
-                                style={{ background:isRunning?T.border:`linear-gradient(135deg,${T.accent},${T.purple})`,
-                                  color:"white", border:"none" }}>
-                                {isRunning?<Spinner size={10} color="white"/>:<Play size={10}/>}
-                                {isRunning?"Running…":"Run"}
-                              </Btn>
-                              <Btn size="sm" variant="muted"
-                                onClick={()=>removeCheckSet(key,cs.id)}>
-                                <Trash2 size={10}/>
-                              </Btn>
-                            </div>
+                        {/* Check set header */}
+                        <div style={{ padding:"10px 14px", display:"flex",
+                          alignItems:"center", gap:10,
+                          background: csr ? `${OC}06` : T.surface }}>
+                          <div style={{ width:26, height:26, borderRadius:6, flexShrink:0,
+                            background:`${OC}18`, display:"flex", alignItems:"center",
+                            justifyContent:"center", fontSize:12, fontWeight:800, color:OC }}>
+                            {isRunning?<Spinner size={11}/>:(csr?SI[csr.overall]:"○")}
                           </div>
-
-                          {/* Sub-check results */}
-                          {isCsExp && csr && (
-                            <div style={{ borderTop:`1px solid ${T.border}`,
-                              padding:"10px 16px",
-                              display:"flex", flexDirection:"column", gap:10 }}>
-                              {csr.error && (
-                                <div style={{ fontSize:12, color:T.red }}>Error: {csr.error}</div>
+                          <div style={{ flex:1, minWidth:0 }}>
+                            <div style={{ fontSize:12, fontWeight:700, color:T.text }}>
+                              {cs.name}
+                            </div>
+                            <div style={{ fontSize:10, color:T.dim, marginTop:1 }}>
+                              {cs.checks.length} sub-check{cs.checks.length!==1?"s":""}
+                              {csr && ` · ran ${csr.ran_at}`}
+                              {csr && ` · `}
+                              {csr && (
+                                <span style={{ color:OC, fontWeight:600 }}>
+                                  {csr.results?.filter(r=>r.status==="pass").length}/{csr.results?.length} passed
+                                </span>
                               )}
-                              {csr.results?.map((r,i) => (
-                                <div key={r.id||i}>
-                                  {/* Sub-check header */}
-                                  <div style={{ display:"flex", alignItems:"center", gap:8,
-                                    marginBottom:6 }}>
-                                    <span style={{ fontSize:11, fontWeight:700,
-                                      color:STATUS_COLOR[r.status]||T.muted }}>
-                                      {STATUS_ICON[r.status]||"?"} {r.name}
-                                    </span>
-                                    <Badge label={r.status}
-                                      color={STATUS_COLOR[r.status]||T.muted}/>
-                                    <span style={{ fontSize:10, color:T.dim }}>
-                                      {r.row_count} row{r.row_count!==1?"s":""}
-                                      {r.duration_ms ? ` · ${r.duration_ms}ms` : ""}
-                                    </span>
-                                  </div>
+                            </div>
+                            {cs.desc && (
+                              <div style={{ fontSize:10, color:T.muted, marginTop:1 }}>{cs.desc}</div>
+                            )}
+                          </div>
+                          <div style={{ display:"flex", gap:5, flexShrink:0 }}>
+                            <Btn size="sm" variant="ghost" style={{ fontSize:10 }}
+                              onClick={()=>setBuilderFor({tableKey:key, initial:cs})}>Edit</Btn>
+                            <Btn size="sm" onClick={()=>runCheckSet(cs,key)} disabled={isRunning}
+                              style={{ background:isRunning?T.border:`linear-gradient(135deg,${T.accent},${T.purple})`,
+                                color:"white", border:"none" }}>
+                              {isRunning?<Spinner size={10} color="white"/>:<Play size={10}/>}
+                              {isRunning?"Running…":"Run"}
+                            </Btn>
+                            <Btn size="sm" variant="muted" onClick={()=>removeCheckSet(key,cs.id)}>
+                              <Trash2 size={10}/>
+                            </Btn>
+                          </div>
+                        </div>
 
-                                  {/* Error */}
-                                  {r.error && (
-                                    <div style={{ fontSize:11, color:T.red, marginBottom:6,
-                                      padding:"5px 10px", background:`${T.red}08`,
-                                      borderRadius:5, fontFamily:"monospace" }}>
-                                      {r.error}
-                                    </div>
-                                  )}
+                        {/* Sub-check results — shown inline always after run */}
+                        {csr && csr.results?.map((r,ri)=>{
+                          const RC  = SC[r.status]||T.muted;
+                          const isSubExp = subExpanded[r.id]!==false; // expanded by default
+                          const hasData  = r.rows?.length > 0;
 
-                                  {/* Result table */}
-                                  {r.rows?.length > 0 && (
-                                    <div style={{ overflowX:"auto", borderRadius:6,
-                                      border:`1px solid ${T.border}` }}>
-                                      <table style={{ borderCollapse:"collapse", fontSize:11,
-                                        fontFamily:"monospace", width:"100%" }}>
-                                        <thead>
-                                          <tr style={{ background:`${T.accent}08` }}>
-                                            {r.columns.map(col=>(
-                                              <th key={col} style={{ padding:"6px 12px",
-                                                textAlign:"left", fontWeight:700, fontSize:10,
-                                                color:T.muted, borderBottom:`1px solid ${T.border}`,
-                                                whiteSpace:"nowrap", textTransform:"uppercase",
-                                                letterSpacing:"0.04em" }}>
-                                                {col}
-                                              </th>
-                                            ))}
-                                          </tr>
-                                        </thead>
-                                        <tbody>
-                                          {r.rows.map((row,ri)=>(
-                                            <tr key={ri}
-                                              onMouseEnter={e=>e.currentTarget.style.background=`${T.accent}06`}
-                                              onMouseLeave={e=>e.currentTarget.style.background="transparent"}>
-                                              {r.columns.map((col,ci)=>{
-                                                const v=row[col];
-                                                return (
-                                                  <td key={ci} style={{ padding:"5px 12px",
-                                                    borderBottom:`1px solid ${T.border}20`,
-                                                    whiteSpace:"nowrap",
-                                                    color:v===null?T.red:T.text2 }}>
-                                                    {v===null
-                                                      ? <span style={{color:T.red,fontWeight:700}}>NULL</span>
-                                                      : String(v)}
-                                                  </td>
-                                                );
-                                              })}
-                                            </tr>
-                                          ))}
-                                        </tbody>
-                                      </table>
-                                    </div>
+                          return (
+                            <div key={r.id||ri} style={{
+                              borderTop:`1px solid ${T.border}20`,
+                              background: ri%2===0 ? "transparent" : `${T.accent}02` }}>
+
+                              {/* Sub-check header */}
+                              <div style={{ padding:"8px 14px 8px 48px", display:"flex",
+                                alignItems:"center", gap:10 }}>
+                                <span style={{ fontSize:11, fontWeight:600, color:RC, flexShrink:0 }}>
+                                  {SI[r.status]||"?"} 
+                                </span>
+                                <span style={{ fontSize:11, fontWeight:600, color:T.text, flex:1 }}>
+                                  {r.name}
+                                </span>
+                                <div style={{ display:"flex", alignItems:"center",
+                                  gap:8, flexShrink:0 }}>
+                                  <Badge label={r.status} color={RC}/>
+                                  <span style={{ fontSize:10, color:T.dim, fontFamily:"monospace" }}>
+                                    {r.row_count} row{r.row_count!==1?"s":""}
+                                    {r.duration_ms ? ` · ${r.duration_ms}ms` : ""}
+                                  </span>
+                                  {hasData && (
+                                    <button onClick={()=>setSubExpanded(p=>({...p,[r.id]:!p[r.id]}))}
+                                      style={{ background:"none", border:"none", cursor:"pointer",
+                                        color:T.accent, fontSize:10, padding:"2px 4px" }}>
+                                      {isSubExp?"▴ Hide":"▾ Show data"}
+                                    </button>
                                   )}
                                 </div>
-                              ))}
+                              </div>
+
+                              {/* Error */}
+                              {r.error && (
+                                <div style={{ margin:"0 14px 8px 48px", padding:"6px 10px",
+                                  background:`${T.red}08`, borderRadius:5,
+                                  fontSize:11, color:T.red, fontFamily:"monospace" }}>
+                                  {r.error}
+                                </div>
+                              )}
+
+                              {/* Data table — full width, always visible after run */}
+                              {hasData && isSubExp && (
+                                <div style={{ margin:"0 14px 10px 48px",
+                                  border:`1px solid ${T.border}`, borderRadius:7,
+                                  overflowX:"auto", maxHeight:280, overflowY:"auto" }}>
+                                  <table style={{ borderCollapse:"collapse", fontSize:11,
+                                    fontFamily:"monospace", width:"100%", minWidth:400 }}>
+                                    <thead>
+                                      <tr style={{ background:`${T.accent}08`,
+                                        position:"sticky", top:0 }}>
+                                        {r.columns.map(col=>(
+                                          <th key={col} style={{ padding:"6px 14px",
+                                            textAlign:"left", fontWeight:700, fontSize:10,
+                                            color:T.muted, borderBottom:`1px solid ${T.border}`,
+                                            whiteSpace:"nowrap", textTransform:"uppercase",
+                                            letterSpacing:"0.04em" }}>
+                                            {col}
+                                          </th>
+                                        ))}
+                                      </tr>
+                                    </thead>
+                                    <tbody>
+                                      {r.rows.map((row,rowI)=>(
+                                        <tr key={rowI}
+                                          onMouseEnter={e=>e.currentTarget.style.background=`${T.accent}08`}
+                                          onMouseLeave={e=>e.currentTarget.style.background=rowI%2===0?"transparent":"#FAFBFF"}
+                                          style={{ background:rowI%2===1?"#FAFBFF":"transparent" }}>
+                                          {r.columns.map((col,ci)=>{
+                                            const v = row[col];
+                                            return (
+                                              <td key={ci} style={{ padding:"6px 14px",
+                                                borderBottom:`1px solid ${T.border}20`,
+                                                whiteSpace:"nowrap",
+                                                color:v===null?T.red:
+                                                  (typeof v==="number"&&v===0)?T.muted:T.text2 }}>
+                                                {v===null
+                                                  ? <span style={{color:T.red,fontWeight:700,fontSize:10}}>NULL</span>
+                                                  : String(v)}
+                                              </td>
+                                            );
+                                          })}
+                                        </tr>
+                                      ))}
+                                    </tbody>
+                                  </table>
+                                </div>
+                              )}
                             </div>
-                          )}
-                        </div>
-                      );
-                    })
-                  )}
-                </div>
-              )}
+                          );
+                        })}
+                      </div>
+                    );
+                  })
+                )}
+              </div>
             </Card>
           );
         })}
@@ -3655,6 +3703,272 @@ function MonitorTab() {
   );
 }
 
+
+// ─── Evals Tab ───────────────────────────────────────────────────────────────
+function EvalsTab() {
+  const T = useT();
+  const [suite,      setSuite]      = React.useState(null);
+  const [history,    setHistory]    = React.useState([]);
+  const [running,    setRunning]    = React.useState(false);
+  const [activeRun,  setActiveRun]  = React.useState(null);
+  const [expanded,   setExpanded]   = React.useState({});
+  const [targetAgent,setTargetAgent]= React.useState("all");
+
+  React.useEffect(() => {
+    // Load suite definition
+    fetch(`${API}/api/evals/suite`).then(r=>r.json()).then(setSuite).catch(()=>{});
+    // Load history
+    fetch(`${API}/api/evals/history`).then(r=>r.json()).then(d=>{
+      if(d.runs) { setHistory(d.runs); if(d.runs[0]) setActiveRun(d.runs[0]); }
+    }).catch(()=>{});
+  }, []);
+
+  const runEvals = async () => {
+    setRunning(true);
+    try {
+      const body = targetAgent==="all" ? {} : { agent: targetAgent };
+      const res  = await fetch(`${API}/api/evals/run`, {
+        method:"POST", headers:{"Content-Type":"application/json"},
+        body: JSON.stringify(body)
+      });
+      const data = await res.json();
+      setActiveRun(data);
+      setHistory(p=>[data,...p].slice(0,20));
+    } catch(e) { console.error(e); }
+    setRunning(false);
+  };
+
+  const scoreColor = (s) => s>=90?T.green:s>=70?T.yellow:T.red;
+  const scoreLabel = (s) => s>=90?"Excellent":s>=70?"Acceptable":"Needs attention";
+
+  return (
+    <div className="fade-in" style={{ padding:"28px 32px", maxWidth:1000 }}>
+
+      {/* Header */}
+      <div style={{ display:"flex", alignItems:"flex-start", justifyContent:"space-between", marginBottom:24 }}>
+        <div>
+          <div style={{ fontSize:22, fontWeight:700, color:T.text, letterSpacing:"-0.02em" }}>
+            Agent Evals
+          </div>
+          <div style={{ fontSize:13, color:T.muted, marginTop:3 }}>
+            Systematic tests measuring agent accuracy, reliability, and reasoning quality
+          </div>
+        </div>
+        <div style={{ display:"flex", gap:8, alignItems:"center" }}>
+          <select value={targetAgent} onChange={e=>setTargetAgent(e.target.value)}
+            style={{ fontSize:11, padding:"6px 10px", borderRadius:6,
+              border:`1px solid ${T.border}`, background:T.surface, color:T.text }}>
+            <option value="all">All agents</option>
+            {suite && Object.entries(suite).map(([k,v])=>(
+              <option key={k} value={k}>{v.agent}</option>
+            ))}
+          </select>
+          <Btn onClick={runEvals} disabled={running} size="sm"
+            style={{ background:running?T.border:`linear-gradient(135deg,${T.accent},${T.purple})`,
+              color:"white", border:"none" }}>
+            {running?<Spinner size={11} color="white"/>:<Play size={11}/>}
+            {running?"Running…":"▶ Run Evals"}
+          </Btn>
+        </div>
+      </div>
+
+      <div style={{ display:"grid", gridTemplateColumns:"220px 1fr", gap:16 }}>
+
+        {/* Left: history + suite overview */}
+        <div style={{ display:"flex", flexDirection:"column", gap:12 }}>
+
+          {/* Suite overview */}
+          {suite && (
+            <Card style={{ padding:"14px 16px" }}>
+              <div style={{ fontSize:10, fontWeight:700, color:T.muted, marginBottom:10,
+                textTransform:"uppercase", letterSpacing:"0.06em" }}>Suite</div>
+              {Object.entries(suite).map(([k,v])=>(
+                <div key={k} style={{ marginBottom:8 }}>
+                  <div style={{ fontSize:11, fontWeight:600, color:T.text }}>{v.agent}</div>
+                  <div style={{ fontSize:10, color:T.dim }}>{v.case_count} cases</div>
+                </div>
+              ))}
+            </Card>
+          )}
+
+          {/* Run history */}
+          {history.length > 0 && (
+            <Card style={{ padding:"14px 16px" }}>
+              <div style={{ fontSize:10, fontWeight:700, color:T.muted, marginBottom:10,
+                textTransform:"uppercase", letterSpacing:"0.06em" }}>History</div>
+              {history.slice(0,8).map((run,i)=>(
+                <button key={run.run_id} onClick={()=>setActiveRun(run)}
+                  style={{ width:"100%", padding:"6px 8px", borderRadius:6, marginBottom:4,
+                    border:`1px solid ${activeRun?.run_id===run.run_id?T.accent:T.border}`,
+                    background:activeRun?.run_id===run.run_id?`${T.accent}08`:"transparent",
+                    cursor:"pointer", textAlign:"left", display:"flex",
+                    alignItems:"center", gap:8 }}>
+                  <span style={{ fontSize:13, fontWeight:700,
+                    color:scoreColor(run.overall_score) }}>
+                    {run.overall_score}
+                  </span>
+                  <div style={{ flex:1, minWidth:0 }}>
+                    <div style={{ fontSize:10, color:T.text2, fontFamily:"monospace",
+                      overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>
+                      {run.run_id}
+                    </div>
+                    <div style={{ fontSize:9, color:T.dim }}>
+                      {run.total_passed}/{run.total_cases} · {run.duration_ms}ms
+                    </div>
+                  </div>
+                </button>
+              ))}
+            </Card>
+          )}
+        </div>
+
+        {/* Right: active run results */}
+        <div>
+          {!activeRun && !running && (
+            <EmptyState icon={Shield} title="No evals run yet"
+              desc="Click ▶ Run Evals to execute the full agent test suite"
+              action={<Btn onClick={runEvals} size="sm">▶ Run Evals</Btn>}/>
+          )}
+
+          {running && (
+            <Card style={{ padding:"32px", textAlign:"center" }}>
+              <Spinner size={28} style={{ margin:"0 auto 12px" }}/>
+              <div style={{ fontSize:14, fontWeight:700, color:T.text }}>Running eval suite…</div>
+              <div style={{ fontSize:12, color:T.muted, marginTop:4 }}>
+                Testing all agents against known inputs
+              </div>
+            </Card>
+          )}
+
+          {activeRun && !running && (
+            <div style={{ display:"flex", flexDirection:"column", gap:14 }}>
+
+              {/* Overall score */}
+              <Card style={{ padding:"20px 24px",
+                borderColor:`${scoreColor(activeRun.overall_score)}40`,
+                background:`${scoreColor(activeRun.overall_score)}06` }}>
+                <div style={{ display:"flex", alignItems:"center", gap:20 }}>
+                  <div style={{ textAlign:"center" }}>
+                    <div style={{ fontSize:48, fontWeight:800, lineHeight:1,
+                      color:scoreColor(activeRun.overall_score) }}>
+                      {activeRun.overall_score}
+                    </div>
+                    <div style={{ fontSize:10, color:T.muted, marginTop:2 }}>/ 100</div>
+                  </div>
+                  <div style={{ flex:1 }}>
+                    <div style={{ fontSize:16, fontWeight:700, color:T.text }}>
+                      {scoreLabel(activeRun.overall_score)}
+                    </div>
+                    <div style={{ fontSize:12, color:T.muted, marginTop:3 }}>
+                      {activeRun.total_passed} of {activeRun.total_cases} cases passed
+                      · {activeRun.duration_ms}ms · {activeRun.target==="all"?"Full suite":activeRun.target}
+                    </div>
+                    {/* Score bar */}
+                    <div style={{ height:6, background:T.border, borderRadius:99,
+                      marginTop:10, overflow:"hidden" }}>
+                      <div style={{ height:"100%", borderRadius:99,
+                        width:`${activeRun.overall_score}%`,
+                        background:`linear-gradient(90deg,${scoreColor(activeRun.overall_score)},${scoreColor(activeRun.overall_score)}99)`,
+                        transition:"width 0.6s" }}/>
+                    </div>
+                  </div>
+                </div>
+              </Card>
+
+              {/* Per-agent results */}
+              {activeRun.agents?.map(agent=>{
+                const isExp = expanded[agent.suite]!==false;
+                const AC    = scoreColor(agent.score);
+                return (
+                  <Card key={agent.suite} style={{ overflow:"hidden" }}>
+
+                    {/* Agent header */}
+                    <div style={{ padding:"14px 18px", display:"flex",
+                      alignItems:"center", gap:12,
+                      cursor:"pointer",
+                      borderBottom: isExp?`1px solid ${T.border}`:"none" }}
+                      onClick={()=>setExpanded(p=>({...p,[agent.suite]:!isExp}))}>
+                      <div style={{ width:44, height:44, borderRadius:10, flexShrink:0,
+                        background:`${AC}15`, display:"flex", flexDirection:"column",
+                        alignItems:"center", justifyContent:"center" }}>
+                        <span style={{ fontSize:16, fontWeight:800, color:AC, lineHeight:1 }}>
+                          {agent.score}
+                        </span>
+                        <span style={{ fontSize:8, color:T.dim }}>/ 100</span>
+                      </div>
+                      <div style={{ flex:1 }}>
+                        <div style={{ fontSize:13, fontWeight:700, color:T.text }}>
+                          {agent.agent}
+                        </div>
+                        <div style={{ fontSize:11, color:T.muted, marginTop:1 }}>
+                          {agent.description}
+                        </div>
+                        <div style={{ display:"flex", gap:10, marginTop:4 }}>
+                          <span style={{ fontSize:10, color:T.green, fontWeight:600 }}>
+                            ✓ {agent.passed} passed
+                          </span>
+                          {agent.failed > 0 && (
+                            <span style={{ fontSize:10, color:T.red, fontWeight:600 }}>
+                              ✗ {agent.failed} failed
+                            </span>
+                          )}
+                          <span style={{ fontSize:10, color:T.dim }}>
+                            {agent.duration_ms}ms
+                          </span>
+                        </div>
+                      </div>
+                      <span style={{ fontSize:10, color:T.dim }}>{isExp?"▴":"▾"}</span>
+                    </div>
+
+                    {/* Case results */}
+                    {isExp && (
+                      <div>
+                        {agent.cases?.map((c,ci)=>(
+                          <div key={c.id} style={{
+                            padding:"10px 18px 10px 24px",
+                            borderBottom:`1px solid ${T.border}20`,
+                            display:"flex", alignItems:"flex-start", gap:12,
+                            background:ci%2===0?"transparent":`${T.accent}02` }}>
+                            <div style={{ width:20, height:20, borderRadius:5,
+                              flexShrink:0, marginTop:1,
+                              background:c.passed?`${T.green}15`:`${T.red}15`,
+                              display:"flex", alignItems:"center",
+                              justifyContent:"center", fontSize:10,
+                              fontWeight:700, color:c.passed?T.green:T.red }}>
+                              {c.passed?"✓":"✗"}
+                            </div>
+                            <div style={{ flex:1, minWidth:0 }}>
+                              <div style={{ display:"flex", alignItems:"center", gap:8 }}>
+                                <span style={{ fontSize:10, fontFamily:"monospace",
+                                  color:T.dim }}>{c.id}</span>
+                                <span style={{ fontSize:12, color:T.text,
+                                  fontWeight:c.passed?400:600 }}>
+                                  {c.name}
+                                </span>
+                              </div>
+                              {c.detail && (
+                                <div style={{ fontSize:10, color:T.muted, marginTop:2,
+                                  fontFamily:"monospace" }}>
+                                  {c.detail}
+                                </div>
+                              )}
+                            </div>
+                            <Badge label={c.passed?"PASS":"FAIL"}
+                              color={c.passed?T.green:T.red}/>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </Card>
+                );
+              })}
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
 
 // ─── Configure Tab ────────────────────────────────────────────────────────────
 function ConfigureTab() {
@@ -6238,8 +6552,10 @@ function WorkflowBuilder({ initial, onSave, onCancel }) {
   const T = useT();
   const dbSchema = useSchema();
   const blank = { name:"", desc:"", trigger:"manual", schedule:"",
-                  agents:[], tables:[], branches:[], endpoint:"" };
-  const [wf,       setWf]       = React.useState(initial ? {...blank,...initial, branches: initial.branches||[]} : blank);
+                  agents:[], tables:[], branches:[], table_checks:{}, endpoint:"" };
+  const [wf,       setWf]       = React.useState(initial ? {...blank,...initial, branches: initial.branches||[], table_checks: initial.table_checks||{}} : blank);
+  const [expandedTableChecks, setExpandedTableChecks] = React.useState({});
+  const [tableCheckIn, setTableCheckIn] = React.useState({}); // {tableKey: {name,sql,pass_condition}}
   const [agentIn,  setAgentIn]  = React.useState("");
   const [tableIn,  setTableIn]  = React.useState("");
   const [aiLoading,setAiLoading]= React.useState(false);
@@ -6640,31 +6956,138 @@ Respond ONLY with JSON:
           )}
         </Card>
 
-        {/* Tables */}
+        {/* Tables + per-table checks */}
         <Card style={{ padding:"18px 20px" }}>
           <div style={{ fontSize:11, fontWeight:700, color:T.muted, marginBottom:12,
-            textTransform:"uppercase", letterSpacing:"0.06em" }}>Tables to Check</div>
-          <div style={{ display:"flex", flexWrap:"wrap", gap:6, marginBottom:10 }}>
-            {wf.tables.map((t,i)=>(
-              <div key={i} style={{ display:"flex", alignItems:"center", gap:4,
-                padding:"3px 8px", borderRadius:5, fontFamily:T.monoFont,
-                background:`${T.cyan}10`, border:`1px solid ${T.cyan}20` }}>
-                <span style={{ fontSize:11, color:T.cyan }}>{t}</span>
-                <button onClick={()=>removeTable(i)}
-                  style={{ background:"none", border:"none", cursor:"pointer",
-                    color:T.muted, padding:0, lineHeight:1 }}>×</button>
-              </div>
-            ))}
-          </div>
-          <div style={{ display:"flex", gap:8 }}>
+            textTransform:"uppercase", letterSpacing:"0.06em" }}>Tables & Checks</div>
+
+          {/* Add table row */}
+          <div style={{ display:"flex", gap:8, marginBottom:14 }}>
             <input value={tableIn} onChange={e=>setTableIn(e.target.value)}
               onKeyDown={e=>e.key==="Enter"&&addTable()}
               placeholder="schema.table (e.g. mws.orders)"
               style={{...inputStyle, flex:1, fontFamily:T.monoFont, fontSize:11}}
               onFocus={e=>e.target.style.borderColor=T.accent}
               onBlur={e=>e.target.style.borderColor=T.border}/>
-            <Btn onClick={addTable} size="sm"><Plus size={11}/></Btn>
+            <Btn onClick={addTable} size="sm"><Plus size={11}/> Add Table</Btn>
           </div>
+
+          {wf.tables.length === 0 && (
+            <div style={{ fontSize:11, color:T.dim, marginBottom:8 }}>
+              No tables added yet — add a table above to define checks for it.
+            </div>
+          )}
+
+          {/* Per-table check builder */}
+          <div style={{ display:"flex", flexDirection:"column", gap:10 }}>
+            {wf.tables.map((t, i) => {
+              const checks = wf.table_checks?.[t] || [];
+              const isExp  = expandedTableChecks[t];
+              const cin    = tableCheckIn[t] || { name:"", sql:"", pass_condition:"rows > 0" };
+              const updateCin = (key, val) => setTableCheckIn(p=>({...p,[t]:{...cin,[key]:val}}));
+
+              const addCheck = () => {
+                if (!cin.name.trim() || !cin.sql.trim()) return;
+                setWf(p => ({...p, table_checks:{...p.table_checks,
+                  [t]:[...(p.table_checks?.[t]||[]), {id:`tc-${Date.now()}`, ...cin}]}}));
+                setTableCheckIn(p=>({...p,[t]:{name:"",sql:"",pass_condition:"rows > 0"}}));
+              };
+              const removeCheck = (id) => setWf(p=>({...p, table_checks:{...p.table_checks,
+                [t]:(p.table_checks?.[t]||[]).filter(c=>c.id!==id)}}));
+
+              return (
+                <div key={i} style={{ borderRadius:8, border:`1px solid ${T.border}`,
+                  overflow:"hidden" }}>
+                  {/* Table header row */}
+                  <div style={{ display:"flex", alignItems:"center", gap:8,
+                    padding:"9px 12px", background:`${T.cyan}06` }}>
+                    <span style={{ fontSize:11, fontWeight:700, fontFamily:"monospace",
+                      color:T.cyan, flex:1 }}>{t}</span>
+                    <span style={{ fontSize:10, color:T.muted }}>
+                      {checks.length > 0 ? `${checks.length} check${checks.length!==1?"s":""}` : "generic checks"}
+                    </span>
+                    <button onClick={()=>setExpandedTableChecks(p=>({...p,[t]:!p[t]}))}
+                      style={{ background:"none", border:"none", cursor:"pointer",
+                        fontSize:10, color:T.accent, padding:"2px 6px" }}>
+                      {isExp ? "▴ Hide" : "▾ Add Checks"}
+                    </button>
+                    <button onClick={()=>removeTable(i)}
+                      style={{ background:"none", border:"none", cursor:"pointer",
+                        color:T.muted, fontSize:13 }}>×</button>
+                  </div>
+
+                  {/* Existing checks */}
+                  {checks.length > 0 && (
+                    <div style={{ padding:"6px 12px 6px", display:"flex",
+                      flexDirection:"column", gap:4 }}>
+                      {checks.map(c=>(
+                        <div key={c.id} style={{ display:"flex", alignItems:"center",
+                          gap:8, padding:"5px 8px", borderRadius:5,
+                          background:T.surface, border:`1px solid ${T.border}` }}>
+                          <span style={{ fontSize:11, fontWeight:600, color:T.text, flex:1 }}>
+                            {c.name}
+                          </span>
+                          <span style={{ fontSize:10, fontFamily:"monospace",
+                            color:T.cyan, background:`${T.cyan}10`,
+                            padding:"1px 6px", borderRadius:4 }}>
+                            {c.pass_condition}
+                          </span>
+                          <button onClick={()=>removeCheck(c.id)}
+                            style={{ background:"none", border:"none", cursor:"pointer",
+                              color:T.muted, fontSize:12 }}>×</button>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+
+                  {/* Add check form */}
+                  {isExp && (
+                    <div style={{ padding:"10px 12px",
+                      borderTop:`1px solid ${T.border}`, background:`${T.accent}03` }}>
+                      <div style={{ fontSize:10, fontWeight:700, color:T.muted,
+                        marginBottom:8, textTransform:"uppercase", letterSpacing:"0.05em" }}>
+                        Add Check for {t}
+                      </div>
+                      <div style={{ display:"flex", flexDirection:"column", gap:7 }}>
+                        <div style={{ display:"flex", gap:7 }}>
+                          <input value={cin.name}
+                            onChange={e=>updateCin("name",e.target.value)}
+                            placeholder="Check name (e.g. Latest data for n-1)"
+                            style={{...inputStyle, flex:1, fontSize:11}}
+                            onFocus={e=>e.target.style.borderColor=T.accent}
+                            onBlur={e=>e.target.style.borderColor=T.border}/>
+                          <select value={cin.pass_condition}
+                            onChange={e=>updateCin("pass_condition",e.target.value)}
+                            style={{...inputStyle, width:150, fontFamily:"monospace", fontSize:10}}>
+                            <option value="rows > 0">rows &gt; 0</option>
+                            <option value="rows > 1">rows &gt; 1</option>
+                            <option value="value > 0">value &gt; 0</option>
+                            <option value="value = 0">value = 0</option>
+                          </select>
+                        </div>
+                        <textarea value={cin.sql} rows={3}
+                          onChange={e=>updateCin("sql",e.target.value)}
+                          placeholder={`SELECT COUNT(*) FROM ${t} WHERE ...`}
+                          style={{...inputStyle, fontFamily:"monospace", fontSize:11, resize:"vertical"}}
+                          onFocus={e=>e.target.style.borderColor=T.accent}
+                          onBlur={e=>e.target.style.borderColor=T.border}/>
+                        <Btn onClick={addCheck}
+                          disabled={!cin.name.trim()||!cin.sql.trim()} size="sm">
+                          <Plus size={10}/> Add Check
+                        </Btn>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+
+          {wf.tables.length > 0 && (
+            <div style={{ fontSize:10, color:T.dim, marginTop:10 }}>
+              Tables without custom checks will run generic NULL/freshness/duplicate checks.
+            </div>
+          )}
         </Card>
 
         {/* Save / Cancel */}
@@ -6688,7 +7111,7 @@ export default function WiziAgentApp() {
     const SHORTCUT_MAP = {
       "1":"brief", "2":"monitor", "3":"triage", "4":"workflows",
       "5":"activity", "6":"chat", "7":"config", "8":"query",
-      "a":"approvals",
+      "a":"approvals", "e":"evals",
     };
     const handler = (e) => {
       // Skip if user is typing in an input/textarea
@@ -6932,6 +7355,7 @@ export default function WiziAgentApp() {
           {activeTab==="approvals" && <ApprovalQueueTab onNavigate={navigateTo}/>}
           {activeTab==="activity"  && <ActivityTab onNavigate={navigateTo}/>}
           {activeTab==="chat"      && <AskWiziTab onAddMonitor={()=>{}} onSaveRule={()=>{}}/>}
+          {activeTab==="evals"     && <EvalsTab/>}
           {activeTab==="config"    && <ConfigureTab/>}
           {activeTab==="query"     && <QueryTab/>}
         </main>

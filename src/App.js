@@ -1511,14 +1511,20 @@ Rows affected: ${issue.count}
 
   const loadPreview = async (limit=20) => {
     setPreviewLoading(true);
+    setPreview(null);
     const [schema, tbl] = selectedTable.includes(".")
       ? selectedTable.split(".") : ["mws", selectedTable];
     try {
       const res  = await fetch(`${API}/api/preview?schema=${schema}&table=${tbl}&limit=${limit}`);
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const data = await res.json();
+      if (data.error) throw new Error(data.error);
       setPreview(data);
-    } catch(e) { setPreview({ error: e.message }); }
-    setPreviewLoading(false);
+    } catch(e) {
+      setPreview({ error: e.message });
+    } finally {
+      setPreviewLoading(false);
+    }
   };
 
   const [activeView, setActiveView] = React.useState("issues"); // issues | data | log
@@ -1632,7 +1638,7 @@ Rows affected: ${issue.count}
           ].map(tab => (
             <button key={tab.id} onClick={()=>{
                 setActiveView(tab.id);
-                if(tab.id==="data") loadPreview(previewLimit);
+                if(tab.id==="data") { setPreview(null); loadPreview(previewLimit); }
               }}
               style={{ padding:"8px 18px", fontSize:12, fontWeight:activeView===tab.id?600:400,
                 color:activeView===tab.id?T.accent:T.muted,
@@ -1870,7 +1876,7 @@ Rows affected: ${issue.count}
                             </Btn>
                           )}
                           <Btn size="sm" variant="ghost"
-                            onClick={()=>{ setActiveView("data"); loadPreview(previewLimit); }}
+                            onClick={()=>{ setPreview(null); setActiveView("data"); loadPreview(previewLimit); }}
                             style={{ fontSize:10 }}>
                             <Table size={10}/> View Data
                           </Btn>
@@ -2116,8 +2122,12 @@ Rows affected: ${issue.count}
             )}
             {!previewLoading && !preview && (
               <div style={{ textAlign:"center", padding:"48px 0", color:T.muted }}>
-                <Spinner size={24} style={{ margin:"0 auto 10px", display:"block" }}/>
-                <div style={{ fontSize:13 }}>Loading…</div>
+                <Database size={28} color={T.border} style={{ margin:"0 auto 10px", display:"block" }}/>
+                <div style={{ fontSize:13 }}>No data loaded</div>
+                <Btn onClick={()=>loadPreview(previewLimit)} size="sm" variant="ghost"
+                  style={{ marginTop:10 }}>
+                  <RefreshCw size={10}/> Load Data
+                </Btn>
               </div>
             )}
           </div>
@@ -2774,8 +2784,9 @@ function AskWiziTab({ onAddMonitor, onSaveRule }) {
     setMessages(p => [...p, userMsg]);
     setLoading(true);
 
+    // Compact schema: table names only (no columns) to stay within token limits
     const schemaSection = dbSchema
-      ? `DATABASE SCHEMA (all tables and columns):\n${dbSchema}`
+      ? `AVAILABLE TABLES: ${dbSchema.split(";").map(t=>t.split("(")[0].trim()).filter(Boolean).join(", ")}`
       : `KNOWN TABLES: mws.report, mws.orders, mws.inventory, mws.sales_and_traffic_by_date, mws.sales_and_traffic_by_asin, public.tbl_amzn_campaign_report, public.tbl_amzn_keyword_report, public.tbl_amzn_product_ad_report, public.tbl_amzn_targets_report`;
 
     const system = `You are WiziAgent, an autonomous data quality and pipeline operations agent for Intentwise.
@@ -2802,9 +2813,11 @@ Always explain what you're doing and why before embedding an action tag.
 Keep responses concise. Use markdown. Be direct and practical.`;
 
     try {
-      const history = messages.slice(-8).map(m => ({
+      // Keep last 4 exchanges, truncate long messages to 500 chars to avoid context overflow
+      const history = messages.slice(-4).map(m => ({
         role: m.role === "system" ? "assistant" : m.role,
-        content: m.content
+        content: typeof m.content === "string" && m.content.length > 500
+          ? m.content.slice(0, 500) + "…" : m.content
       }));
       const res  = await fetch(`${API}/api/ai/chat`, {
         method:"POST", headers:{"Content-Type":"application/json"},
@@ -5260,29 +5273,39 @@ function WorkflowLiveStatus({ onViewRun }) {
   const [lastPoll, setLastPoll] = React.useState(null);
   const [nextIn,   setNextIn]   = React.useState(30);
 
-  // Poll every 30 seconds
+  // Poll every 15s — check both built-in and custom workflow history
   React.useEffect(() => {
     let interval, countdown;
     const poll = async () => {
       setPolling(true);
       try {
+        // Check custom workflow history for running jobs
+        const r2  = await fetch(`${API}/api/custom-workflows/history`);
+        const d2  = await r2.json();
+        if (Array.isArray(d2)) {
+          const running = d2.find(r => r.status === "running");
+          if (running) {
+            setLiveRun({ ...running, source:"custom" });
+            setLastPoll(new Date().toLocaleTimeString());
+            setNextIn(15);
+            setPolling(false);
+            return;
+          }
+        }
+        // Fall back to built-in workflow history
         const res  = await fetch(`${API}/api/workflow/history`);
         const data = await res.json();
         const runs = data.runs || [];
-        // Find any run in the last 5 minutes that's still running
-        const recent = runs.find(r => {
-          if (r.status !== "running") return false;
-          const ts = new Date(r.started_at);
-          return (Date.now() - ts) < 5 * 60 * 1000;
-        });
+        const recent = runs.find(r => r.status === "running" &&
+          (Date.now() - new Date(r.started_at)) < 5 * 60 * 1000);
         setLiveRun(recent || null);
         setLastPoll(new Date().toLocaleTimeString());
-        setNextIn(30);
+        setNextIn(15);
       } catch {}
       setPolling(false);
     };
     poll();
-    interval = setInterval(poll, 30000);
+    interval = setInterval(poll, 15000);
     countdown = setInterval(() => setNextIn(p => Math.max(0, p - 1)), 1000);
     return () => { clearInterval(interval); clearInterval(countdown); };
   }, []);
@@ -5297,7 +5320,7 @@ function WorkflowLiveStatus({ onViewRun }) {
         No workflow running
         {lastPoll && (
           <span style={{ marginLeft:4, color:T.dim }}>
-            · polled {lastPoll} · next in {nextIn}s
+            · last checked {lastPoll} · refreshes in {nextIn}s
           </span>
         )}
         {polling && <Spinner size={10}/>}
@@ -5358,7 +5381,11 @@ function WorkflowsTab() {
       if (Array.isArray(data)) setCwfHistory(data);
     } catch(e) {}
   };
-  React.useEffect(() => { loadCwfHistory(); }, []);
+  React.useEffect(() => {
+    loadCwfHistory();
+    const id = setInterval(loadCwfHistory, 15000);
+    return () => clearInterval(id);
+  }, []);
 
   // Load custom workflows from backend on mount
   React.useEffect(() => {
@@ -5779,10 +5806,27 @@ Respond ONLY with JSON, no markdown:
             {/* Schedule + actions */}
             <div style={{ display:"flex", alignItems:"center",
               justifyContent:"space-between", flexWrap:"wrap", gap:6 }}>
-              <span style={{ fontSize:10, color:T.muted }}>
-                <Clock size={10} style={{ marginRight:3, verticalAlign:"middle" }}/>
-                {wf.schedule}
-              </span>
+              <div style={{ display:"flex", flexDirection:"column", gap:2 }}>
+                <span style={{ fontSize:10, color:T.muted }}>
+                  <Clock size={10} style={{ marginRight:3, verticalAlign:"middle" }}/>
+                  {wf.schedule || (wf.trigger==="manual" ? "Manual only" : wf.trigger)}
+                </span>
+                {/* Last run + running indicator for custom workflows */}
+                {!wf.builtin && (() => {
+                  const lastRun = cwfHistory.find(h=>h.workflow_id===wf.id);
+                  const isRunning = cwfHistory.find(h=>h.workflow_id===wf.id&&h.status==="running");
+                  return (
+                    <span style={{ fontSize:9, color: isRunning?T.accent:T.dim,
+                      display:"flex", alignItems:"center", gap:3 }}>
+                      {isRunning
+                        ? <><Spinner size={8} color={T.accent}/> Running now…</>
+                        : lastRun
+                          ? `Last run: ${lastRun.started_at?.slice(11,16)} UTC · ${lastRun.status==="clean"?"✓ clean":`${lastRun.total_issues||0} issues`}`
+                          : "Never run"}
+                    </span>
+                  );
+                })()}
+              </div>
               <div style={{ display:"flex", gap:5 }}>
                 <Btn onClick={()=>optimizeWorkflow(wf)} size="sm" variant="ghost"
                   disabled={aiOptimizing===wf.id}>
@@ -6370,26 +6414,56 @@ Respond ONLY with JSON:
         <Card style={{ padding:"18px 20px" }}>
           <div style={{ fontSize:11, fontWeight:700, color:T.muted, marginBottom:12,
             textTransform:"uppercase", letterSpacing:"0.06em" }}>Schedule</div>
-          <div style={{ display:"flex", gap:10 }}>
-            <div style={{ flex:1 }}>
+          <div style={{ display:"flex", flexDirection:"column", gap:10 }}>
+            <div>
               <label style={{ fontSize:11, fontWeight:600, color:T.text2,
                 display:"block", marginBottom:4 }}>Trigger</label>
               <select value={wf.trigger} onChange={e=>field("trigger",e.target.value)}
                 style={{...inputStyle}}>
-                <option value="manual">Manual</option>
-                <option value="scheduled">Scheduled</option>
+                <option value="manual">Manual only</option>
+                <option value="scheduled">Scheduled (auto-run)</option>
                 <option value="event">Event-driven</option>
               </select>
             </div>
+
             {wf.trigger==="scheduled" && (
-              <div style={{ flex:1 }}>
+              <div>
+                {/* Quick test options */}
                 <label style={{ fontSize:11, fontWeight:600, color:T.text2,
-                  display:"block", marginBottom:4 }}>Time (IST)</label>
-                <input value={wf.schedule} onChange={e=>field("schedule",e.target.value)}
-                  placeholder="e.g. 4:30 PM IST"
-                  style={inputStyle}
-                  onFocus={e=>e.target.style.borderColor=T.accent}
-                  onBlur={e=>e.target.style.borderColor=T.border}/>
+                  display:"block", marginBottom:6 }}>Schedule</label>
+                <div style={{ display:"flex", gap:5, flexWrap:"wrap", marginBottom:8 }}>
+                  {[
+                    { label:"Every 1 min", value:"every 1 min" },
+                    { label:"Every 2 min", value:"every 2 min" },
+                    { label:"Every 5 min", value:"every 5 min" },
+                    { label:"Every 15 min", value:"every 15 min" },
+                    { label:"Every hour",  value:"every 1 hour" },
+                  ].map(opt=>(
+                    <button key={opt.value}
+                      onClick={()=>field("schedule", opt.value)}
+                      style={{ padding:"3px 10px", borderRadius:99, fontSize:10,
+                        cursor:"pointer", border:"none", transition:"all 0.1s",
+                        background: wf.schedule===opt.value ? T.accent : `${T.accent}12`,
+                        color: wf.schedule===opt.value ? "white" : T.muted,
+                        fontWeight: wf.schedule===opt.value ? 600 : 400 }}>
+                      {opt.label}
+                    </button>
+                  ))}
+                </div>
+                <div style={{ display:"flex", gap:8, alignItems:"center" }}>
+                  <input value={wf.schedule} onChange={e=>field("schedule",e.target.value)}
+                    placeholder="or type: 4:30 PM IST / every 30 min / 0 11 * * *"
+                    style={{...inputStyle, flex:1, fontFamily:"monospace", fontSize:11}}
+                    onFocus={e=>e.target.style.borderColor=T.accent}
+                    onBlur={e=>e.target.style.borderColor=T.border}/>
+                </div>
+                {wf.schedule && (
+                  <div style={{ fontSize:10, color:T.dim, marginTop:5 }}>
+                    {wf.schedule.toLowerCase().startsWith("every")
+                      ? `⏱ Runs ${wf.schedule} when the cron checker fires — set Railway cron to */1 * * * *`
+                      : `🕐 Runs daily at the specified IST time — requires Railway cron */10 * * * *`}
+                  </div>
+                )}
               </div>
             )}
           </div>

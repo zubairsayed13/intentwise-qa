@@ -625,6 +625,11 @@ function Sidebar({ active, setActive, pendingCount, themeKey, setThemeKey }) {
         </div>
       )}
 
+      {/* Notifications bell */}
+      <div style={{ padding:"0 8px 4px" }}>
+        <BellButton collapsed={collapsed}/>
+      </div>
+
       {/* Theme picker */}
       <div style={{ padding:"4px 8px 16px" }}>
         <button
@@ -5220,7 +5225,7 @@ function UploadPanel({ onAddToMonitor, onQueryTable }) {
 function QueryTab() {
   const T = useT();
   const dbSchema = useSchema();
-  const [sql,          setSql]          = useSession("wz_sql", "SELECT * FROM mws.report LIMIT 20");
+  const [sql,          setSql]          = useLocal("wz_sql", "SELECT * FROM mws.report LIMIT 20"); // persist last SQL
   const [results,      setResults]      = useSession("wz_sqlResults", null);
   const [running,      setRunning]      = React.useState(false);
   const [error,        setError]        = React.useState(null);
@@ -5231,7 +5236,7 @@ function QueryTab() {
     { id:3, name:"Stuck copies >2h",     sql:"SELECT request_id, report_type, status, copy_status, download_date FROM mws.report WHERE status='processed' AND (copy_status IS NULL OR copy_status='NOT_REPLICATED') AND download_date < CURRENT_TIMESTAMP - INTERVAL '2 hours' LIMIT 20" },
     { id:4, name:"Recent report activity", sql:"SELECT report_type, status, copy_status, COUNT(*) cnt FROM mws.report WHERE requested_date >= CURRENT_DATE - 3 GROUP BY 1,2,3 ORDER BY cnt DESC" },
   ]);
-  const [history,      setHistory]      = useSession("wz_queryHistory", []);
+  const [history,      setHistory]      = useLocal("wz_queryHistory", []);  // persisted across sessions
   const [saveModalOpen,setSaveModal]    = React.useState(false);
   const [saveName,     setSaveName]     = React.useState("");
   const [aiLoading,    setAiLoading]    = React.useState(false);
@@ -5324,7 +5329,7 @@ function QueryTab() {
       setHistory(p => {
         const filtered = p.filter(h => h.sql !== q);
         return [{ sql:q, ts:new Date().toLocaleTimeString(), rows:data.rows?.length||0 },
-                ...filtered].slice(0, 20);
+                ...filtered].slice(0, 50);
       });
     } catch(e) { setError(e.message); }
     setRunning(false);
@@ -7693,6 +7698,216 @@ const SCHEDULE_OPTS = [
   { value:"manual",        label:"Manual only" },
 ];
 
+
+// ─── Notification / Toast System ─────────────────────────────────────────────
+const NotifCtx = React.createContext({ add:()=>{}, items:[] });
+const useNotif = () => React.useContext(NotifCtx);
+
+function NotifProvider({ children }) {
+  const [items, setItems] = React.useState([]);
+  const [drawer, setDrawer] = React.useState(false);
+
+  const add = React.useCallback((msg, type="info", opts={}) => {
+    const id = Date.now().toString(36) + Math.random().toString(36).slice(2,5);
+    const item = { id, msg, type, ts: new Date().toISOString(),
+                   read: false, persistent: opts.persistent||false,
+                   action: opts.action||null, actionLabel: opts.actionLabel||null };
+    setItems(p => [item, ...p].slice(0, 50));
+    // Auto-dismiss non-persistent toasts
+    if (!opts.persistent) {
+      setTimeout(() => setItems(p => p.filter(i => i.id !== id)), opts.duration||4500);
+    }
+    return id;
+  }, []);
+
+  const dismiss = React.useCallback((id) => setItems(p => p.filter(i => i.id !== id)), []);
+  const markRead = React.useCallback((id) => setItems(p => p.map(i => i.id===id?{...i,read:true}:i)), []);
+  const markAllRead = React.useCallback(() => setItems(p => p.map(i => ({...i,read:true}))), []);
+  const clearAll = React.useCallback(() => setItems([]), []);
+  const unread = items.filter(i => !i.read).length;
+
+  const TYPE_STYLE = {
+    success: { bg:"#10B981", icon:"✓" },
+    error:   { bg:"#EF4444", icon:"✗" },
+    warning: { bg:"#F59E0B", icon:"⚠" },
+    info:    { bg:"#6366F1", icon:"ℹ" },
+    run:     { bg:"#8B5CF6", icon:"▶" },
+  };
+
+  return (
+    <NotifCtx.Provider value={{ add, items, unread, drawer, setDrawer, markRead, markAllRead, clearAll, dismiss }}>
+      {children}
+
+      {/* Toast stack — bottom-right */}
+      <div style={{ position:"fixed", bottom:24, right:24, zIndex:9999,
+        display:"flex", flexDirection:"column", gap:8, pointerEvents:"none",
+        maxWidth:360 }}>
+        {items.filter(i=>!i.read&&!i.persistent).slice(0,4).map(item => {
+          const s = TYPE_STYLE[item.type] || TYPE_STYLE.info;
+          return (
+            <div key={item.id}
+              style={{ display:"flex", alignItems:"flex-start", gap:10,
+                padding:"12px 14px", borderRadius:10, pointerEvents:"all",
+                background:"#1C1917", color:"white",
+                boxShadow:"0 8px 24px rgba(0,0,0,0.35)",
+                border:`1px solid rgba(255,255,255,0.1)`,
+                animation:"slideIn 0.2s ease",
+                maxWidth:360 }}>
+              <div style={{ width:22, height:22, borderRadius:6, flexShrink:0,
+                background:s.bg, display:"flex", alignItems:"center",
+                justifyContent:"center", fontSize:11, fontWeight:700, color:"white",
+                marginTop:1 }}>{s.icon}</div>
+              <div style={{ flex:1, minWidth:0 }}>
+                <div style={{ fontSize:12, fontWeight:500, color:"rgba(255,255,255,0.92)",
+                  lineHeight:1.4, wordBreak:"break-word" }}>{item.msg}</div>
+                {item.action && (
+                  <button onClick={item.action}
+                    style={{ marginTop:5, fontSize:11, color:s.bg, background:"none",
+                      border:"none", cursor:"pointer", padding:0, fontWeight:600 }}>
+                    {item.actionLabel||"View →"}
+                  </button>
+                )}
+              </div>
+              <button onClick={()=>dismiss(item.id)}
+                style={{ background:"none", border:"none", cursor:"pointer",
+                  color:"rgba(255,255,255,0.35)", fontSize:16, lineHeight:1,
+                  padding:0, flexShrink:0, marginTop:1 }}>×</button>
+            </div>
+          );
+        })}
+      </div>
+
+      {/* Notification Drawer */}
+      {drawer && (
+        <div style={{ position:"fixed", inset:0, zIndex:8000 }}
+          onClick={()=>setDrawer(false)}>
+          <div style={{ position:"absolute", top:0, right:0, width:380, height:"100%",
+            background:"#FFFFFF", boxShadow:"-8px 0 32px rgba(0,0,0,0.14)",
+            display:"flex", flexDirection:"column",
+            borderLeft:"1px solid #E8ECF0" }}
+            onClick={e=>e.stopPropagation()}>
+
+            {/* Header */}
+            <div style={{ padding:"16px 20px", borderBottom:"1px solid #E8ECF0",
+              display:"flex", alignItems:"center", gap:10 }}>
+              <Bell size={15} color="#6B7280"/>
+              <span style={{ fontSize:14, fontWeight:700, color:"#0D1117", flex:1 }}>
+                Notifications
+              </span>
+              {unread > 0 && (
+                <button onClick={markAllRead}
+                  style={{ fontSize:11, color:"#6366F1", background:"none",
+                    border:"none", cursor:"pointer", fontWeight:600 }}>
+                  Mark all read
+                </button>
+              )}
+              {items.length > 0 && (
+                <button onClick={clearAll}
+                  style={{ fontSize:11, color:"#9CA3AF", background:"none",
+                    border:"none", cursor:"pointer" }}>
+                  Clear
+                </button>
+              )}
+              <button onClick={()=>setDrawer(false)}
+                style={{ background:"none", border:"none", cursor:"pointer",
+                  color:"#9CA3AF", fontSize:18, lineHeight:1 }}>×</button>
+            </div>
+
+            {/* Items */}
+            <div style={{ flex:1, overflowY:"auto" }}>
+              {items.length === 0 ? (
+                <div style={{ textAlign:"center", padding:"60px 24px", color:"#9CA3AF" }}>
+                  <Bell size={32} style={{ opacity:0.3, marginBottom:12 }}/>
+                  <div style={{ fontSize:13, fontWeight:600 }}>All caught up</div>
+                  <div style={{ fontSize:11, marginTop:4 }}>No notifications yet</div>
+                </div>
+              ) : items.map(item => {
+                const s = TYPE_STYLE[item.type] || TYPE_STYLE.info;
+                return (
+                  <div key={item.id} onClick={()=>markRead(item.id)}
+                    style={{ padding:"12px 20px", borderBottom:"1px solid #F3F4F6",
+                      display:"flex", gap:10, cursor:"pointer",
+                      background: item.read ? "transparent" : "#F8F9FF",
+                      transition:"background 0.1s" }}
+                    onMouseEnter={e=>e.currentTarget.style.background="#F3F4F6"}
+                    onMouseLeave={e=>e.currentTarget.style.background=item.read?"transparent":"#F8F9FF"}>
+                    <div style={{ width:22, height:22, borderRadius:6, flexShrink:0,
+                      background:s.bg, display:"flex", alignItems:"center",
+                      justifyContent:"center", fontSize:11, fontWeight:700,
+                      color:"white", marginTop:2 }}>{s.icon}</div>
+                    <div style={{ flex:1, minWidth:0 }}>
+                      <div style={{ fontSize:12, color:"#0D1117", lineHeight:1.4 }}>{item.msg}</div>
+                      <div style={{ fontSize:10, color:"#9CA3AF", marginTop:3 }}>
+                        {new Date(item.ts).toLocaleTimeString()}
+                      </div>
+                      {item.action && (
+                        <button onClick={(e)=>{e.stopPropagation();item.action();}}
+                          style={{ marginTop:4, fontSize:11, color:s.bg, background:"none",
+                            border:"none", cursor:"pointer", padding:0, fontWeight:600 }}>
+                          {item.actionLabel||"View →"}
+                        </button>
+                      )}
+                    </div>
+                    {!item.read && (
+                      <div style={{ width:7, height:7, borderRadius:"50%",
+                        background:"#6366F1", flexShrink:0, marginTop:6 }}/>
+                    )}
+                    <button onClick={(e)=>{e.stopPropagation();dismiss(item.id);}}
+                      style={{ background:"none", border:"none", cursor:"pointer",
+                        color:"#D1D5DB", fontSize:14, lineHeight:1, flexShrink:0 }}>×</button>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        </div>
+      )}
+    </NotifCtx.Provider>
+  );
+}
+
+// Bell button — used in Sidebar
+function BellButton({ collapsed }) {
+  const T = useT();
+  const { unread, setDrawer } = useNotif();
+  return (
+    <button onClick={()=>setDrawer(d=>!d)}
+      title="Notifications"
+      style={{ width:"100%", display:"flex", alignItems:"center",
+        gap: collapsed ? 0 : 10,
+        padding: collapsed ? "8px 0" : "8px 10px",
+        justifyContent: collapsed ? "center" : "flex-start",
+        borderRadius:7, border:"none", background:"transparent",
+        color:"rgba(255,255,255,0.4)", cursor:"pointer",
+        transition:"all 0.12s", fontFamily:"inherit",
+        position:"relative" }}
+      onMouseEnter={e=>{e.currentTarget.style.background="rgba(255,255,255,0.05)";e.currentTarget.style.color="rgba(255,255,255,0.7)";}}
+      onMouseLeave={e=>{e.currentTarget.style.background="transparent";e.currentTarget.style.color="rgba(255,255,255,0.4)";}}>
+      <div style={{ position:"relative", flexShrink:0 }}>
+        <Bell size={14} strokeWidth={1.8}/>
+        {unread > 0 && (
+          <div style={{ position:"absolute", top:-4, right:-4,
+            width:14, height:14, borderRadius:99, background:"#EF4444",
+            display:"flex", alignItems:"center", justifyContent:"center",
+            fontSize:8, fontWeight:700, color:"white" }}>
+            {unread > 9 ? "9+" : unread}
+          </div>
+        )}
+      </div>
+      {!collapsed && (
+        <span style={{ fontSize:12, fontWeight:400, flex:1 }}>Notifications</span>
+      )}
+      {!collapsed && unread > 0 && (
+        <span style={{ minWidth:18, height:18, borderRadius:99, padding:"0 5px",
+          background:"#EF4444", color:"white", fontSize:9, fontWeight:700,
+          display:"flex", alignItems:"center", justifyContent:"center" }}>
+          {unread}
+        </span>
+      )}
+    </button>
+  );
+}
+
 const PASS_CONDITIONS = [
   { value:"rows = 0",    label:"rows = 0  — no bad records returned" },
   { value:"rows > 0",    label:"rows > 0  — data must be present" },
@@ -7835,8 +8050,10 @@ function WorkflowsTab({ navigateTo }) {
     setWfs(p=>p.filter(w=>w.id!==id));
   };
 
+  const { add: addNotif } = useNotif();
   const runWf = async (wf) => {
     setRunning(p=>({...p,[wf.id]:true}));
+    addNotif(`Running: ${wf.name}…`, "run");
     try {
       const res  = await fetch(`${API}/api/custom-workflows/${wf.id}/run/v2`, {method:"POST"});
       const data = await res.json();
@@ -7845,8 +8062,18 @@ function WorkflowsTab({ navigateTo }) {
         setLiveRun(data);
         setDetail(wf);
         setView("detail");
+        const failed = data.failed || 0;
+        if (failed > 0) {
+          addNotif(`${wf.name}: ${failed} check${failed!==1?"s":""} failed`, "error", {
+            persistent:true, actionLabel:"View results", action:()=>setView("detail")
+          });
+        } else {
+          addNotif(`${wf.name}: all checks passed ✓`, "success");
+        }
       }
-    } catch(e) {}
+    } catch(e) {
+      addNotif(`${wf.name}: run error — ${e.message}`, "error", {persistent:true});
+    }
     setRunning(p=>({...p,[wf.id]:false}));
   };
 
@@ -7866,6 +8093,9 @@ function WorkflowsTab({ navigateTo }) {
   const [aiLoading,      setAiLoading]      = React.useState(false);
   const [showTemplates,  setShowTemplates]  = React.useState(false);
   const [sopConfigOpen,  setSopConfigOpen]  = React.useState(false);
+  const [selectedWfIds, setSelectedWfIds] = React.useState(new Set());
+  const toggleWfSelect = (id) => setSelectedWfIds(p => { const n=new Set(p); n.has(id)?n.delete(id):n.add(id); return n; });
+  const clearWfSelect = () => setSelectedWfIds(new Set());
   const [sopConfig,      setSopConfig]      = React.useState(null);
   const [sopConfigSaving,setSopConfigSaving]= React.useState(false);
   const [sopConfigMsg,   setSopConfigMsg]   = React.useState(null);
@@ -8314,20 +8544,27 @@ Respond ONLY with JSON array (no markdown):
         ) : (
           <div style={{ display:"flex", flexDirection:"column", gap:10 }}>
             {workflows.map(wf=>{
-            const wfRuns = runHistory.filter(r=>r.workflow_id===wf.id);
-            const lastRun = wfRuns[0];
+            const wfRuns   = runHistory.filter(r=>r.workflow_id===wf.id);
+            const lastRun  = wfRuns[0];
             const isRunning = !!running[wf.id];
+            const isWfSel  = selectedWfIds.has(wf.id);
             const passRate  = wfRuns.slice(0,10).length > 0
               ? Math.round(wfRuns.slice(0,10).filter(r=>r.status==="clean").length/Math.min(wfRuns.length,10)*100)
               : null;
             const sparkData = wfRuns.slice(0,20).reverse();
 
             return (
-              <div key={wf.id} style={{ background:T.card, border:`1px solid ${T.border}`,
+              <div key={wf.id} style={{ background:T.card,
+                border:`1px solid ${isWfSel ? T.accent : T.border}`,
                 borderRadius:12, padding:"16px 20px",
-                borderLeft:`3px solid ${wf.enabled!==false?T.accent:T.border}`,
+                borderLeft:`3px solid ${isWfSel ? T.accent : wf.enabled!==false?T.accent:T.border}`,
+                background: isWfSel ? `${T.accent}05` : T.card,
                 boxShadow:"0 1px 4px rgba(0,0,0,0.06)" }}>
                 <div style={{ display:"flex", alignItems:"flex-start", gap:14 }}>
+                  <input type="checkbox" checked={isWfSel}
+                    onChange={()=>toggleWfSelect(wf.id)}
+                    style={{ marginTop:4, cursor:"pointer", accentColor:T.accent, flexShrink:0 }}
+                    onClick={e=>e.stopPropagation()}/>
 
                   {/* Left: info */}
                   <div style={{ flex:1, minWidth:0 }}>
@@ -9736,16 +9973,17 @@ ${runContext}`;
 
 function ResultsTab({ onNavigate }) {
   const T = useT();
-  const [view,       setView]    = React.useState("list"); // list | detail
+  const [view,       setView]    = React.useState("list"); // list | detail | trends
   const [runs,       setRuns]    = React.useState([]);
   const [loading,    setLoading] = React.useState(false);
-  const [selected,   setSelected]= React.useState(null); // { run, check }
-  const [filter,     setFilter]  = React.useState("failed"); // all | failed | clean
+  const [selected,   setSelected]= React.useState(null);
+  const [filter,     setFilter]  = React.useState("all");
+  const [wfFilter,   setWfFilter]= React.useState("all");
 
   const load = async () => {
     setLoading(true);
     try {
-      const res = await fetch(`${API}/api/workflow-results/recent?limit=50`);
+      const res = await fetch(`${API}/api/workflow-results/recent?limit=100`);
       const d   = await res.json();
       if (Array.isArray(d.runs)) setRuns(d.runs);
     } catch(e) {}
@@ -9754,13 +9992,11 @@ function ResultsTab({ onNavigate }) {
 
   React.useEffect(()=>{ load(); }, []);
 
-  // Check for deep-link in URL hash: #results/run_id/check_id
   React.useEffect(()=>{
     const hash = window.location.hash;
     if (hash.startsWith("#results/")) {
       const [,runId, checkId] = hash.split("/");
       if (runId && checkId) {
-        // find in runs
         const run = runs.find(r=>r.run_id===runId);
         const chk = (run?.check_results||[]).find(c=>c.id===checkId||c.name===checkId);
         if (run && chk) { setSelected({run, check:chk}); setView("detail"); }
@@ -9779,107 +10015,362 @@ function ResultsTab({ onNavigate }) {
     />
   );
 
-  // ── List view ─────────────────────────────────────────────────────────────
+  // ── Derived data ───────────────────────────────────────────────────────────
+  const allWorkflows = [...new Set(runs.map(r=>r.workflow_name).filter(Boolean))].sort();
+
   const filtered = runs.filter(r=>{
-    if (filter==="failed") return r.status !== "clean";
-    if (filter==="clean")  return r.status === "clean";
+    if (filter==="failed" && r.status==="clean") return false;
+    if (filter==="clean"  && r.status!=="clean") return false;
+    if (wfFilter!=="all"  && r.workflow_name!==wfFilter) return false;
     return true;
   });
 
   const totalFailed = runs.reduce((s,r)=>s+(r.failed||0), 0);
   const totalChecks = runs.reduce((s,r)=>s+(r.total_checks||0), 0);
+  const passRate = runs.length
+    ? Math.round(runs.filter(r=>r.status==="clean").length / runs.length * 100)
+    : null;
+
+  // ── Export all filtered runs as CSV ───────────────────────────────────────
+  const exportCsv = () => {
+    const cols = ["run_id","workflow_name","status","started_at","duration_ms","total_checks","failed","triggered_by"];
+    const rows = filtered.map(r => cols.map(c => {
+      const v = r[c] == null ? "" : String(r[c]);
+      return v.includes(",") || v.includes('"') ? `"${v.replace(/"/g,'""')}"` : v;
+    }).join(","));
+    const csv = [cols.join(","), ...rows].join("\n");
+    const blob = new Blob([csv], {type:"text/csv"});
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href=url; a.download="wizi-results.csv"; a.click();
+    URL.revokeObjectURL(url);
+  };
+
+  // ── Sparkline trend data — last 30 runs grouped by day ────────────────────
+  const trendData = React.useMemo(() => {
+    const byDay = {};
+    runs.slice(0,100).forEach(r => {
+      const day = (r.started_at||"").slice(0,10);
+      if (!day) return;
+      if (!byDay[day]) byDay[day] = { day, total:0, failed:0, clean:0 };
+      byDay[day].total++;
+      if (r.status==="clean") byDay[day].clean++;
+      else byDay[day].failed++;
+    });
+    return Object.values(byDay).sort((a,b)=>a.day>b.day?1:-1).slice(-14);
+  }, [runs]);
+
+  // ── Per-workflow pass rate ─────────────────────────────────────────────────
+  const wfStats = React.useMemo(() => {
+    const m = {};
+    runs.forEach(r => {
+      if (!r.workflow_name) return;
+      if (!m[r.workflow_name]) m[r.workflow_name] = { name:r.workflow_name, total:0, clean:0, lastRun:null, lastStatus:null };
+      m[r.workflow_name].total++;
+      if (r.status==="clean") m[r.workflow_name].clean++;
+      if (!m[r.workflow_name].lastRun || r.started_at > m[r.workflow_name].lastRun) {
+        m[r.workflow_name].lastRun = r.started_at;
+        m[r.workflow_name].lastStatus = r.status;
+      }
+    });
+    return Object.values(m).map(w => ({
+      ...w,
+      passRate: w.total ? Math.round(w.clean/w.total*100) : 0
+    })).sort((a,b)=>a.passRate-b.passRate);
+  }, [runs]);
+
+  // ── Inline sparkline SVG ───────────────────────────────────────────────────
+  const MiniSparkline = ({ data, color }) => {
+    if (!data || data.length < 2) return null;
+    const W=80, H=24, pad=2;
+    const vals = data.map(d => d.clean/Math.max(d.total,1));
+    const maxV = Math.max(...vals, 0.01);
+    const pts = vals.map((v,i) => {
+      const x = pad + (i/(vals.length-1))*(W-pad*2);
+      const y = H - pad - (v/maxV)*(H-pad*2);
+      return `${x},${y}`;
+    }).join(" ");
+    return (
+      <svg width={W} height={H} style={{overflow:"visible"}}>
+        <polyline points={pts} fill="none" stroke={color} strokeWidth={1.5}
+          strokeLinecap="round" strokeLinejoin="round"/>
+      </svg>
+    );
+  };
 
   return (
-    <div style={{ overflowY:"auto", padding:"24px 28px" }}>
+    <div style={{ display:"flex", flexDirection:"column", height:"100%", overflow:"hidden" }}>
+
       {/* Header */}
-      <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom:20 }}>
-        <div>
-          <div style={{ fontSize:22, fontWeight:800, color:T.text, letterSpacing:"-0.02em" }}>Results</div>
-          <div style={{ fontSize:12, color:T.muted, marginTop:2 }}>
-            {runs.length} runs · {totalFailed} failed checks · {totalChecks} total checks
+      <div style={{ padding:"18px 24px 14px", borderBottom:`1px solid ${T.border}`,
+        background:T.surface, flexShrink:0 }}>
+        <div style={{ display:"flex", alignItems:"center", gap:12, flexWrap:"wrap" }}>
+          <div>
+            <div style={{ fontSize:20, fontWeight:800, color:T.text, letterSpacing:"-0.02em" }}>
+              Results
+            </div>
+            <div style={{ fontSize:11, color:T.muted, marginTop:1 }}>
+              {runs.length} runs · {totalFailed} failed checks
+              {passRate!==null && ` · ${passRate}% pass rate`}
+            </div>
+          </div>
+
+          {/* KPI chips */}
+          <div style={{ display:"flex", gap:8, flexWrap:"wrap" }}>
+            {[
+              { label:"Total runs",   value:runs.length,   color:T.accent },
+              { label:"Pass rate",    value:passRate!=null?`${passRate}%`:"—", color:T.green },
+              { label:"Failed checks",value:totalFailed,   color:T.red },
+              { label:"Workflows",    value:allWorkflows.length, color:T.purple },
+            ].map(k=>(
+              <div key={k.label} style={{ padding:"6px 12px", borderRadius:8,
+                border:`1px solid ${k.color}25`, background:`${k.color}08`,
+                textAlign:"center" }}>
+                <div style={{ fontSize:16, fontWeight:800, color:k.color }}>{k.value}</div>
+                <div style={{ fontSize:9, color:T.muted, textTransform:"uppercase",
+                  letterSpacing:"0.05em" }}>{k.label}</div>
+              </div>
+            ))}
+          </div>
+
+          <div style={{ marginLeft:"auto", display:"flex", gap:8, alignItems:"center" }}>
+            {/* View toggle */}
+            <div style={{ display:"flex", border:`1px solid ${T.border}`, borderRadius:7, overflow:"hidden" }}>
+              {[["list","☰ List"],["trends","📈 Trends"]].map(([v,l])=>(
+                <button key={v} onClick={()=>setView(v)}
+                  style={{ padding:"5px 12px", border:"none", cursor:"pointer", fontSize:11,
+                    background:view===v?T.accent:"transparent",
+                    color:view===v?"white":T.muted, transition:"all 0.1s",
+                    fontFamily:"inherit", fontWeight:view===v?600:400 }}>
+                  {l}
+                </button>
+              ))}
+            </div>
+            <Btn size="sm" variant="ghost" onClick={exportCsv} title="Export CSV">
+              <Upload size={10}/> CSV
+            </Btn>
+            <Btn size="sm" variant="ghost" onClick={load} disabled={loading}>
+              {loading?<Spinner size={10}/>:<RefreshCw size={10}/>}
+            </Btn>
           </div>
         </div>
-        <div style={{ display:"flex", gap:8 }}>
-          {["all","failed","clean"].map(f=>(
-            <button key={f} onClick={()=>setFilter(f)}
-              style={{ padding:"5px 14px", borderRadius:99, fontSize:11, cursor:"pointer",
-                border:`1px solid ${filter===f?T.accent:T.border}`,
-                background:filter===f?`${T.accent}10`:"transparent",
-                color:filter===f?T.accent:T.muted, fontWeight:filter===f?700:400 }}>
-              {f==="all"?"All":f==="failed"?"Failed":"Clean"}
-            </button>
-          ))}
-          <Btn size="sm" variant="ghost" onClick={load} disabled={loading}>
-            {loading?<Spinner size={10}/>:<RefreshCw size={10}/>}
-          </Btn>
+
+        {/* Filters row */}
+        <div style={{ display:"flex", gap:8, marginTop:12, flexWrap:"wrap", alignItems:"center" }}>
+          <div style={{ display:"flex", gap:4 }}>
+            {["all","failed","clean"].map(f=>(
+              <button key={f} onClick={()=>setFilter(f)}
+                style={{ padding:"4px 12px", borderRadius:99, fontSize:11, cursor:"pointer",
+                  border:`1px solid ${filter===f?T.accent:T.border}`,
+                  background:filter===f?`${T.accent}10`:"transparent",
+                  color:filter===f?T.accent:T.muted, fontWeight:filter===f?700:400 }}>
+                {f==="all"?"All":f==="failed"?"Failed":"Clean"}
+              </button>
+            ))}
+          </div>
+          {allWorkflows.length > 1 && (
+            <select value={wfFilter} onChange={e=>setWfFilter(e.target.value)}
+              style={{ padding:"5px 10px", borderRadius:7, fontSize:11,
+                border:`1px solid ${T.border}`, background:T.surface, color:T.text,
+                outline:"none", fontFamily:"inherit" }}>
+              <option value="all">All workflows</option>
+              {allWorkflows.map(w=><option key={w} value={w}>{w}</option>)}
+            </select>
+          )}
+          <span style={{ fontSize:11, color:T.muted, marginLeft:"auto" }}>
+            Showing {filtered.length} of {runs.length}
+          </span>
         </div>
       </div>
 
-      {/* Run cards */}
-      <div style={{ display:"flex", flexDirection:"column", gap:12 }}>
-        {filtered.length===0 && (
-          <div style={{ textAlign:"center", padding:"50px 0", color:T.dim, fontSize:13 }}>
-            {loading ? <Spinner size={24}/> : "No runs found"}
-          </div>
-        )}
-        {filtered.map(run=>{
-          const failedChecks = (run.check_results||[]).filter(c=>!c.passed);
-          const passedChecks = (run.check_results||[]).filter(c=>c.passed);
-          const dur = run.duration_ms ? (run.duration_ms<1000?`${run.duration_ms}ms`:`${(run.duration_ms/1000).toFixed(1)}s`) : null;
+      <div style={{ flex:1, overflowY:"auto" }}>
 
-          return (
-            <div key={run.run_id} style={{ background:T.card, borderRadius:12,
-              border:`1px solid ${T.border}`,
-              borderLeft:`3px solid ${run.status==="clean"?T.green:T.red}`,
-              boxShadow:"0 1px 4px rgba(0,0,0,0.05)" }}>
+        {/* ── TRENDS VIEW ─────────────────────────────────────────────── */}
+        {view==="trends" && (
+          <div style={{ padding:"20px 24px", display:"flex", flexDirection:"column", gap:20 }}>
 
-              {/* Run header */}
-              <div style={{ padding:"14px 18px", borderBottom:`1px solid ${T.border}20` }}>
-                <div style={{ display:"flex", alignItems:"center", gap:10 }}>
-                  <div style={{ flex:1 }}>
-                    <div style={{ display:"flex", alignItems:"center", gap:8 }}>
-                      <span style={{ fontSize:13, fontWeight:700, color:T.text }}>
-                        {run.workflow_name}
-                      </span>
-                      <Badge label={run.status==="clean"?"✓ Clean":`${run.failed||0} failed`}
-                        color={run.status==="clean"?T.green:T.red}/>
-                      {run.triggered_by==="cron" && <Badge label="scheduled" color={T.muted}/>}
-                    </div>
-                    <div style={{ fontSize:10, color:T.muted, marginTop:2 }}>
-                      {run.started_at?.slice(0,16)?.replace("T"," ")}
-                      {dur && ` · ${dur}`}
-                      {` · ${run.total_checks||0} checks`}
-                    </div>
-                  </div>
+            {/* Daily trend bar chart */}
+            {trendData.length > 0 && (
+              <div style={{ background:T.surface, borderRadius:12,
+                border:`1px solid ${T.border}`, padding:"18px 20px" }}>
+                <div style={{ fontSize:13, fontWeight:700, color:T.text, marginBottom:16 }}>
+                  Daily Run Results (last {trendData.length} days)
+                </div>
+                <div style={{ display:"flex", gap:3, alignItems:"flex-end", height:100 }}>
+                  {trendData.map((d,i) => {
+                    const maxT = Math.max(...trendData.map(x=>x.total), 1);
+                    const totalH = Math.round((d.total/maxT)*90);
+                    const failH  = Math.round((d.failed/Math.max(d.total,1))*totalH);
+                    const cleanH = totalH - failH;
+                    return (
+                      <div key={d.day} title={`${d.day}: ${d.clean}/${d.total} passed`}
+                        style={{ flex:1, display:"flex", flexDirection:"column",
+                          alignItems:"center", gap:1, cursor:"default" }}>
+                        <div style={{ width:"100%", display:"flex", flexDirection:"column",
+                          gap:1, height:totalH }}>
+                          {failH > 0 && (
+                            <div style={{ height:failH, background:T.red,
+                              borderRadius:"3px 3px 0 0", opacity:0.85 }}/>
+                          )}
+                          {cleanH > 0 && (
+                            <div style={{ height:cleanH, background:T.green,
+                              borderRadius: failH?"0":"3px 3px 0 0", opacity:0.8 }}/>
+                          )}
+                        </div>
+                        <div style={{ fontSize:8, color:T.dim, transform:"rotate(-45deg)",
+                          transformOrigin:"top center", marginTop:4, whiteSpace:"nowrap" }}>
+                          {d.day.slice(5)}
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+                <div style={{ display:"flex", gap:12, marginTop:24, fontSize:10 }}>
+                  <span><span style={{display:"inline-block",width:10,height:10,borderRadius:2,background:T.green,marginRight:5}}/>Passed</span>
+                  <span><span style={{display:"inline-block",width:10,height:10,borderRadius:2,background:T.red,marginRight:5}}/>Failed</span>
                 </div>
               </div>
+            )}
 
-              {/* Check pills */}
-              {(run.check_results||[]).length > 0 && (
-                <div style={{ padding:"10px 18px", display:"flex", gap:8, flexWrap:"wrap" }}>
-                  {(run.check_results||[]).map(chk=>(
-                    <button key={chk.id||chk.name}
-                      onClick={()=>{ setSelected({run, check:chk}); setView("detail"); }}
-                      style={{ display:"flex", alignItems:"center", gap:6,
-                        padding:"5px 12px", borderRadius:7, cursor:"pointer", fontSize:11,
-                        border:`1px solid ${chk.passed?T.green+"30":T.red+"40"}`,
-                        background:chk.passed?`${T.green}06`:`${T.red}06`,
-                        color:chk.passed?T.green:T.red, fontWeight:500,
-                        transition:"all 0.1s" }}
-                      onMouseEnter={e=>e.currentTarget.style.opacity="0.75"}
-                      onMouseLeave={e=>e.currentTarget.style.opacity="1"}>
-                      {chk.passed ? <Check size={10}/> : <X size={10}/>}
-                      {chk.name}
-                      {!chk.passed && chk.row_count > 0 && (
-                        <span style={{ fontWeight:700 }}>· {chk.row_count}</span>
-                      )}
-                    </button>
-                  ))}
+            {/* Per-workflow pass rate table */}
+            {wfStats.length > 0 && (
+              <div style={{ background:T.surface, borderRadius:12,
+                border:`1px solid ${T.border}`, padding:"18px 20px" }}>
+                <div style={{ fontSize:13, fontWeight:700, color:T.text, marginBottom:14 }}>
+                  Per-Workflow Pass Rate
                 </div>
-              )}
-            </div>
-          );
-        })}
+                <table style={{ width:"100%", borderCollapse:"collapse" }}>
+                  <thead>
+                    <tr style={{ borderBottom:`1px solid ${T.border}` }}>
+                      {["Workflow","Runs","Pass Rate","Trend (last 14d)","Last Run","Status"].map(h=>(
+                        <th key={h} style={{ padding:"6px 10px", textAlign:"left", fontSize:10,
+                          fontWeight:700, color:T.muted, textTransform:"uppercase",
+                          letterSpacing:"0.05em" }}>{h}</th>
+                      ))}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {wfStats.map(w => {
+                      const wfTrend = trendData.map(d => {
+                        const wfRuns = runs.filter(r=>r.workflow_name===w.name&&r.started_at?.startsWith(d.day));
+                        return { day:d.day, total:wfRuns.length, clean:wfRuns.filter(r=>r.status==="clean").length };
+                      });
+                      const barColor = w.passRate>=90?T.green:w.passRate>=70?T.yellow:T.red;
+                      return (
+                        <tr key={w.name} style={{ borderBottom:`1px solid ${T.border}30` }}>
+                          <td style={{ padding:"10px 10px", fontSize:12, fontWeight:600,
+                            color:T.text, maxWidth:200 }}>
+                            <div style={{ overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>
+                              {w.name}
+                            </div>
+                          </td>
+                          <td style={{ padding:"10px 10px", fontSize:12, color:T.muted }}>
+                            {w.total}
+                          </td>
+                          <td style={{ padding:"10px 10px" }}>
+                            <div style={{ display:"flex", alignItems:"center", gap:8 }}>
+                              <div style={{ width:80, height:6, background:T.border,
+                                borderRadius:99, overflow:"hidden" }}>
+                                <div style={{ height:"100%", width:`${w.passRate}%`,
+                                  background:barColor, borderRadius:99,
+                                  transition:"width 0.4s" }}/>
+                              </div>
+                              <span style={{ fontSize:12, fontWeight:700, color:barColor,
+                                minWidth:36 }}>{w.passRate}%</span>
+                            </div>
+                          </td>
+                          <td style={{ padding:"10px 10px" }}>
+                            <MiniSparkline data={wfTrend} color={barColor}/>
+                          </td>
+                          <td style={{ padding:"10px 10px", fontSize:11, color:T.muted,
+                            fontFamily:"monospace" }}>
+                            {w.lastRun?.slice(0,16)?.replace("T"," ")||"—"}
+                          </td>
+                          <td style={{ padding:"10px 10px" }}>
+                            <Badge
+                              label={w.lastStatus==="clean"?"✓ Clean":`✗ Failed`}
+                              color={w.lastStatus==="clean"?T.green:T.red}/>
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            )}
+
+            {trendData.length===0 && wfStats.length===0 && (
+              <div style={{ textAlign:"center", padding:"64px", color:T.muted }}>
+                <BarChart2 size={40} style={{ opacity:0.2, marginBottom:12 }}/>
+                <div style={{ fontSize:14, fontWeight:600 }}>No trend data yet</div>
+                <div style={{ fontSize:12, marginTop:4 }}>Run some workflows to see trends here</div>
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* ── LIST VIEW ────────────────────────────────────────────────── */}
+        {view==="list" && (
+          <div style={{ padding:"16px 24px", display:"flex", flexDirection:"column", gap:10 }}>
+            {filtered.length===0 && (
+              <div style={{ textAlign:"center", padding:"50px 0", color:T.dim, fontSize:13 }}>
+                {loading ? <Spinner size={24}/> : "No runs match the current filter"}
+              </div>
+            )}
+            {filtered.map(run=>{
+              const dur = run.duration_ms ? (run.duration_ms<1000?`${run.duration_ms}ms`:`${(run.duration_ms/1000).toFixed(1)}s`) : null;
+              return (
+                <div key={run.run_id} style={{ background:T.card, borderRadius:12,
+                  border:`1px solid ${T.border}`,
+                  borderLeft:`3px solid ${run.status==="clean"?T.green:T.red}`,
+                  boxShadow:"0 1px 4px rgba(0,0,0,0.04)" }}>
+                  <div style={{ padding:"12px 18px", borderBottom:`1px solid ${T.border}20` }}>
+                    <div style={{ display:"flex", alignItems:"center", gap:10 }}>
+                      <div style={{ flex:1 }}>
+                        <div style={{ display:"flex", alignItems:"center", gap:8, flexWrap:"wrap" }}>
+                          <span style={{ fontSize:13, fontWeight:700, color:T.text }}>
+                            {run.workflow_name}
+                          </span>
+                          <Badge label={run.status==="clean"?"✓ Clean":`${run.failed||0} failed`}
+                            color={run.status==="clean"?T.green:T.red}/>
+                          {run.triggered_by==="cron" && <Badge label="⏰ scheduled" color={T.muted}/>}
+                        </div>
+                        <div style={{ fontSize:10, color:T.muted, marginTop:2 }}>
+                          {run.started_at?.slice(0,16)?.replace("T"," ")}
+                          {dur && ` · ${dur}`}
+                          {` · ${run.total_checks||0} checks`}
+                        </div>
+                      </div>
+                      <Btn size="sm" variant="ghost"
+                        onClick={()=>{ setSelected({run,check:(run.check_results||[])[0]}); setView("detail"); }}>
+                        <Eye size={10}/> Detail
+                      </Btn>
+                    </div>
+                  </div>
+                  {(run.check_results||[]).length > 0 && (
+                    <div style={{ padding:"8px 18px", display:"flex", gap:6, flexWrap:"wrap" }}>
+                      {(run.check_results||[]).map(chk=>(
+                        <button key={chk.id||chk.name}
+                          onClick={()=>{ setSelected({run, check:chk}); setView("detail"); }}
+                          style={{ display:"flex", alignItems:"center", gap:5,
+                            padding:"4px 10px", borderRadius:6, cursor:"pointer", fontSize:10,
+                            border:`1px solid ${chk.passed?T.green+"30":T.red+"40"}`,
+                            background:chk.passed?`${T.green}06`:`${T.red}06`,
+                            color:chk.passed?T.green:T.red, fontWeight:500 }}>
+                          {chk.passed ? <Check size={9}/> : <X size={9}/>}
+                          {chk.name}
+                          {!chk.passed && chk.row_count > 0 && (
+                            <span style={{ fontWeight:700 }}>·{chk.row_count}</span>
+                          )}
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        )}
       </div>
     </div>
   );
@@ -10484,7 +10975,7 @@ function FolderTree({ folders, selected, onSelect, onAdd, onRename, onDelete, da
 
 
 // ─── DataflowRow ──────────────────────────────────────────────────────────────
-function DataflowRow({ df, onStar, onOpen, onDelete, onDuplicate, onMove, folders, T }) {
+function DataflowRow({ df, onStar, onOpen, onDelete, onDuplicate, onMove, folders, T, isSelected, onToggleSelect }) {
   const [menuOpen, setMenuOpen] = React.useState(false);
   const menuRef = React.useRef(null);
 
@@ -10512,6 +11003,12 @@ function DataflowRow({ df, onStar, onOpen, onDelete, onDuplicate, onMove, folder
       onMouseEnter={e => e.currentTarget.style.background=`${T.accent}06`}
       onMouseLeave={e => e.currentTarget.style.background="transparent"}
     >
+      {/* Select checkbox */}
+      <td style={{ padding:"10px 6px 10px 14px", width:32 }} onClick={e=>e.stopPropagation()}>
+        <input type="checkbox" checked={isSelected||false}
+          onChange={()=>onToggleSelect(df.id)}
+          style={{ cursor:"pointer", accentColor:T.accent }}/>
+      </td>
       {/* Star */}
       <td style={{ padding:"10px 6px 10px 14px", width:32 }} onClick={e=>e.stopPropagation()}>
         <button onClick={() => onStar(df.id)}
@@ -11290,6 +11787,47 @@ function DataflowsTab({ onNavigate }) {
   const [viewModal, setViewModal]   = React.useState(null); // df object
   const [formModal, setFormModal]   = React.useState(null); // null | df | {} for new
   const [moveModal, setMoveModal]   = React.useState(null); // df to move
+  const [selectedIds, setSelectedIds] = React.useState(new Set()); // bulk selection
+  const [bulkRunning, setBulkRunning] = React.useState(false);
+
+  const toggleSelect = (id) => setSelectedIds(p => {
+    const n = new Set(p); n.has(id) ? n.delete(id) : n.add(id); return n;
+  });
+  const toggleSelectAll = () => {
+    if (selectedIds.size === visibleDataflows.length) setSelectedIds(new Set());
+    else setSelectedIds(new Set(visibleDataflows.map(d=>d.id)));
+  };
+
+  const bulkDelete = () => {
+    if (!confirm(`Delete ${selectedIds.size} dataflows?`)) return;
+    selectedIds.forEach(id => { deleteDataflow(id); });
+    setSelectedIds(new Set());
+  };
+  const bulkStar = () => {
+    setDataflows(p => p.map(d => selectedIds.has(d.id) ? {...d, starred:true} : d));
+    setSelectedIds(new Set());
+  };
+  const bulkMoveTo = (folderId) => {
+    const now = new Date().toISOString();
+    setDataflows(p => p.map(d => selectedIds.has(d.id) ? {...d, folder_id:folderId, updated_at:now} : d));
+    setSelectedIds(new Set());
+  };
+  const bulkRun = async () => {
+    setBulkRunning(true);
+    const ids = [...selectedIds];
+    for (const id of ids) {
+      const df = dataflows.find(d=>d.id===id);
+      if (df) await runDataflow(df);
+    }
+    setBulkRunning(false);
+    setSelectedIds(new Set());
+  };
+  const bulkTag = (tag) => {
+    setDataflows(p => p.map(d => selectedIds.has(d.id)
+      ? {...d, tags:[...new Set([...(d.tags||[]), tag])]}
+      : d
+    ));
+  };
 
   // ── Derived ───────────────────────────────────────────────────────────────
   const allTags = React.useMemo(() => {
@@ -11581,6 +12119,46 @@ function DataflowsTab({ onNavigate }) {
           </Btn>
         </div>
 
+        {/* Bulk action bar */}
+        {selectedIds.size > 0 && (
+          <div style={{ padding:"8px 20px", background:"#1C1917",
+            display:"flex", alignItems:"center", gap:10, flexShrink:0, flexWrap:"wrap" }}>
+            <span style={{ fontSize:12, fontWeight:700, color:"white" }}>
+              {selectedIds.size} selected
+            </span>
+            <div style={{ display:"flex", gap:6, flexWrap:"wrap" }}>
+              <Btn size="sm" onClick={bulkRun} disabled={bulkRunning}
+                style={{ background:"#10B981", color:"white", border:"none" }}>
+                {bulkRunning?<Spinner size={10} color="white"/>:<Play size={10}/>}
+                Run all
+              </Btn>
+              <Btn size="sm" onClick={bulkStar}
+                style={{ background:"rgba(255,255,255,0.12)", color:"#FCD34D", border:"1px solid rgba(255,255,255,0.15)" }}>
+                ★ Star all
+              </Btn>
+              {folders.filter(f=>f.id!=="f_root").length > 0 && (
+                <select
+                  onChange={e=>{ if(e.target.value) { bulkMoveTo(e.target.value); e.target.value=""; }}}
+                  style={{ padding:"4px 8px", borderRadius:6, fontSize:11,
+                    background:"rgba(255,255,255,0.12)", color:"white",
+                    border:"1px solid rgba(255,255,255,0.15)", cursor:"pointer" }}>
+                  <option value="">📁 Move to…</option>
+                  {folders.map(f=><option key={f.id} value={f.id}>{f.name}</option>)}
+                </select>
+              )}
+              <Btn size="sm" onClick={bulkDelete}
+                style={{ background:"rgba(239,68,68,0.2)", color:"#FCA5A5", border:"1px solid rgba(239,68,68,0.3)" }}>
+                <Trash2 size={10}/> Delete
+              </Btn>
+            </div>
+            <button onClick={()=>setSelectedIds(new Set())}
+              style={{ marginLeft:"auto", background:"none", border:"none",
+                cursor:"pointer", color:"rgba(255,255,255,0.5)", fontSize:11 }}>
+              ✕ Deselect all
+            </button>
+          </div>
+        )}
+
         {/* Tag pills row */}
         {allTags.length > 0 && (
           <div style={{ padding:"8px 20px", borderBottom:`1px solid ${T.border}`,
@@ -11621,7 +12199,12 @@ function DataflowsTab({ onNavigate }) {
             <table style={{ width:"100%", borderCollapse:"collapse" }}>
               <thead style={{ position:"sticky", top:0, zIndex:10 }}>
                 <tr style={{ background:T.surface, borderBottom:`2px solid ${T.border}` }}>
-                  <th style={{ width:32, padding:"10px 6px 10px 14px" }}/>
+                  <th style={{ width:32, padding:"10px 6px 10px 14px" }}>
+                    <input type="checkbox"
+                      checked={visibleDataflows.length>0 && selectedIds.size===visibleDataflows.length}
+                      onChange={toggleSelectAll}
+                      style={{ cursor:"pointer", accentColor:T.accent }}/>
+                  </th>
                   <th style={{ width:36, padding:"10px 6px" }}>
                     <span style={{ fontSize:9, color:T.muted, fontWeight:700,
                       textTransform:"uppercase", letterSpacing:"0.05em" }}>Actions</span>
@@ -11663,6 +12246,8 @@ function DataflowsTab({ onNavigate }) {
                     onMove={(df) => setMoveModal(df)}
                     folders={folders}
                     T={T}
+                    isSelected={selectedIds.has(df.id)}
+                    onToggleSelect={toggleSelect}
                   />
                 ))}
               </tbody>
@@ -12368,8 +12953,10 @@ function SchedulerTab({ onNavigate }) {
   };
 
   // Run a schedule now (fire all its workflows + dataflows)
+  const { add: addNotif } = useNotif();
   const runNow = async (sch) => {
     setRunning(p=>({...p,[sch.id]:true}));
+    addNotif(`Schedule "${sch.name}" started`, "run");
     const results = [];
     try {
       for (const wfId of (sch.workflow_ids||[])) {
@@ -12393,7 +12980,9 @@ function SchedulerTab({ onNavigate }) {
         : s
       ));
       setRunResults(p=>({...p,[sch.id]:{results,ran_at:now,passed:allPass}}));
-    } catch(e){}
+      if (allPass) addNotif(`"${sch.name}" completed — all checks passed ✓`, "success");
+      else addNotif(`"${sch.name}" completed — some checks failed`, "error", { persistent:true });
+    } catch(e){ addNotif(`"${sch.name}" run error`, "error"); }
     setRunning(p=>({...p,[sch.id]:false}));
   };
 
@@ -13037,6 +13626,7 @@ export default function WiziAgentApp() {
   ).length;
 
   return (
+    <NotifProvider>
     <SchemaCtx.Provider value={schemaStr}>
     <ThemeCtx.Provider value={T}>
       {paletteOpen && (
@@ -13159,5 +13749,6 @@ export default function WiziAgentApp() {
       )}
     </ThemeCtx.Provider>
     </SchemaCtx.Provider>
+    </NotifProvider>
   );
 }

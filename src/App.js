@@ -1653,6 +1653,7 @@ function DashboardTab({ onNavigate }) {
 
 function MorningBriefTab({ onNavigate, onIssueFound }) {
   const T = useT();
+  const [activeBriefView, setActiveBriefView] = React.useState("brief"); // brief | sla
   const [checklist, setChecklist] = useLocal("wz_onboarding", {
     scanned:false, monitored:false, slack:false, workflow:false, triage:false
   });
@@ -1757,7 +1758,22 @@ function MorningBriefTab({ onNavigate, onIssueFound }) {
   const otherTables = monTables.filter(t => !t.primary);
 
   return (
-    <div className="fade-in" style={{ overflowY:"auto", padding:"28px 32px", maxWidth:1000 }}>
+    <div className="fade-in" style={{ display:"flex", flexDirection:"column", height:"100%", overflow:"hidden" }}>
+      {/* Sub-view bar */}
+      <div style={{ display:"flex", gap:0, borderBottom:`1px solid ${T.border}`, flexShrink:0, paddingLeft:28 }}>
+        {[{id:"brief",label:"Daily Brief"},{id:"sla",label:"SLA Tracker"}].map(tab=>(
+          <button key={tab.id} onClick={()=>setActiveBriefView(tab.id)}
+            style={{ padding:"10px 20px", fontSize:12, fontWeight:activeBriefView===tab.id?600:400,
+              color:activeBriefView===tab.id?T.accent:T.muted, background:"none",
+              border:"none", cursor:"pointer",
+              borderBottom:activeBriefView===tab.id?`2px solid ${T.accent}`:"2px solid transparent",
+              marginBottom:-1 }}>
+            {tab.label}
+          </button>
+        ))}
+      </div>
+      {activeBriefView==="sla" ? <SlaTracker/> : (
+      <div style={{ flex:1, overflowY:"auto", padding:"28px 32px", maxWidth:1000 }}>
       {/* Header row */}
       <div style={{ display:"flex", alignItems:"flex-start", justifyContent:"space-between", marginBottom:28 }}>
         <div>
@@ -2143,6 +2159,8 @@ function MorningBriefTab({ onNavigate, onIssueFound }) {
           </div>
         </div>
       )}
+      </div>
+      )}
     </div>
   );
 }
@@ -2526,9 +2544,10 @@ Rows affected: ${issue.count}
         {/* ── View tabs ──────────────────────────────────────────────────────── */}
         <div style={{ display:"flex", gap:0, borderBottom:`1px solid ${T.border}` }}>
           {[
-            { id:"issues", label:`Issues${issues.length>0?" ("+issues.length+")":""}` },
-            { id:"data",   label:"Data Preview" },
-            { id:"log",    label:`Log${log.length>0?" ("+log.length+")":""}` },
+            { id:"issues",   label:`Issues${issues.length>0?" ("+issues.length+")":""}` },
+            { id:"data",     label:"Data Preview" },
+            { id:"log",      label:`Log${log.length>0?" ("+log.length+")":""}` },
+            { id:"coverage", label:"Coverage Map" },
           ].map(tab => (
             <button key={tab.id} onClick={()=>{
                 setActiveView(tab.id);
@@ -3029,6 +3048,9 @@ Rows affected: ${issue.count}
 
         {/* MONITOR VIEW */}
         {activeView==="monitor" && <div style={{marginTop:8}}><MonitorTab/></div>}
+
+        {/* COVERAGE MAP VIEW */}
+        {activeView==="coverage" && <CoverageMap/>}
 
         {/* ══════════════════════════════════════════════════════════════════ */}
         {/* LOG VIEW                                                           */}
@@ -4814,6 +4836,7 @@ function ConfigureTab() {
         </div>
         <EvalsInline/>
       </Card>
+      <DigestPanel/>
     </div>
   );
 }
@@ -5843,6 +5866,795 @@ const SOP_GATES = [
   { num:5, label:"Resume Mage & GDS Copies",  phase:"finalize"    },
 ];
 
+// ═══════════════════════════════════════════════════════════════════════════════
+// 1. PIPELINE COVERAGE MAP — sub-view inside Triage tab
+// ═══════════════════════════════════════════════════════════════════════════════
+function CoverageMap() {
+  const T = useT();
+  const [data,       setData]    = React.useState(null);
+  const [loading,    setLoading] = React.useState(false);
+  const [days,       setDays]    = React.useState(14);
+  const [account,    setAccount] = React.useState("all");
+  const [accounts,   setAccounts]= React.useState([]);
+  const [pivot,      setPivot]   = React.useState("account"); // account | report_type
+  const [hover,      setHover]   = React.useState(null);
+
+  const STATUS_COLOR = {
+    replicated: "#22c55e",
+    processed:  "#6366f1",
+    failed:     "#ef4444",
+    pending:    "#eab308",
+    missing:    "#e2e8f0",
+  };
+  const STATUS_LABEL = {
+    replicated: "Replicated ✓",
+    processed:  "Processed",
+    failed:     "Failed ✗",
+    pending:    "Pending",
+    missing:    "No data",
+  };
+
+  const load = async () => {
+    setLoading(true);
+    try {
+      const acct = account !== "all" ? `&account_id=${account}` : "";
+      const res  = await fetch(`${API}/api/coverage/matrix?days=${days}${acct}`);
+      const d    = await res.json();
+      setData(d);
+      if (d.accounts) setAccounts(d.accounts);
+    } catch(e) {}
+    setLoading(false);
+  };
+
+  React.useEffect(() => { load(); }, [days, account]);
+
+  const cellKey = (acct, rt, dt) => `${acct}|${rt}|${dt}`;
+  const getCell = (acct, rt, dt) => data?.cells?.[cellKey(acct,rt,dt)];
+
+  const rows    = pivot === "account" ? (data?.accounts||[]) : (data?.report_types||[]);
+  const cols    = data?.dates || [];
+  const rowLabel = (r) => pivot==="account" ? r : r?.replace("_REPORT","")?.replace(/_/g," ") || r;
+
+  return (
+    <div style={{ overflowY:"auto", padding:"20px 24px" }}>
+      {/* Header */}
+      <div style={{ display:"flex", alignItems:"center", gap:12, marginBottom:16, flexWrap:"wrap" }}>
+        <div style={{ fontSize:16, fontWeight:700, color:T.text }}>Pipeline Coverage Map</div>
+        <div style={{ marginLeft:"auto", display:"flex", gap:8, alignItems:"center", flexWrap:"wrap" }}>
+          <select value={days} onChange={e=>setDays(Number(e.target.value))}
+            style={{ padding:"4px 8px", borderRadius:6, fontSize:11, border:`1px solid ${T.border}`,
+              background:T.surface, color:T.text, outline:"none" }}>
+            {[7,14,30].map(d=><option key={d} value={d}>Last {d} days</option>)}
+          </select>
+          <select value={account} onChange={e=>setAccount(e.target.value)}
+            style={{ padding:"4px 8px", borderRadius:6, fontSize:11, border:`1px solid ${T.border}`,
+              background:T.surface, color:T.text, outline:"none" }}>
+            <option value="all">All accounts</option>
+            {accounts.map(a=><option key={a} value={a}>{a}</option>)}
+          </select>
+          <div style={{ display:"flex", gap:0, border:`1px solid ${T.border}`, borderRadius:6, overflow:"hidden" }}>
+            {["account","report_type"].map(p=>(
+              <button key={p} onClick={()=>setPivot(p)}
+                style={{ padding:"4px 10px", fontSize:11, cursor:"pointer", border:"none",
+                  background:pivot===p?T.accent:"transparent",
+                  color:pivot===p?"white":T.muted }}>
+                By {p==="account"?"Account":"Report Type"}
+              </button>
+            ))}
+          </div>
+          <Btn onClick={load} size="sm" variant="ghost" disabled={loading}>
+            {loading?<Spinner size={10}/>:<RefreshCw size={10}/>}
+          </Btn>
+        </div>
+      </div>
+
+      {/* Summary stats */}
+      {data?.summary && (
+        <div style={{ display:"flex", gap:10, marginBottom:16 }}>
+          {[
+            { label:"Covered",  value:data.summary.covered,  color:T.green },
+            { label:"Failed",   value:data.summary.failed,   color:T.red },
+            { label:"Missing",  value:data.summary.missing,  color:T.muted },
+            { label:"Expected", value:data.summary.total_expected, color:T.text },
+          ].map(s=>(
+            <div key={s.label} style={{ padding:"8px 14px", borderRadius:8,
+              background:T.surface, border:`1px solid ${T.border}`, textAlign:"center" }}>
+              <div style={{ fontSize:18, fontWeight:800, color:s.color }}>{s.value}</div>
+              <div style={{ fontSize:10, color:T.muted }}>{s.label}</div>
+            </div>
+          ))}
+          <div style={{ padding:"8px 14px", borderRadius:8,
+            background:T.surface, border:`1px solid ${T.border}`, textAlign:"center" }}>
+            <div style={{ fontSize:18, fontWeight:800, color:T.accent }}>
+              {data.summary.total_expected > 0
+                ? Math.round((data.summary.covered/data.summary.total_expected)*100)
+                : 0}%
+            </div>
+            <div style={{ fontSize:10, color:T.muted }}>Coverage</div>
+          </div>
+        </div>
+      )}
+
+      {/* Legend */}
+      <div style={{ display:"flex", gap:10, marginBottom:12, flexWrap:"wrap" }}>
+        {Object.entries(STATUS_COLOR).map(([k,c])=>(
+          <div key={k} style={{ display:"flex", alignItems:"center", gap:5, fontSize:10, color:T.muted }}>
+            <div style={{ width:12, height:12, borderRadius:2, background:c, flexShrink:0 }}/>
+            {STATUS_LABEL[k]}
+          </div>
+        ))}
+      </div>
+
+      {/* Matrix */}
+      {loading && !data && (
+        <div style={{ display:"flex", justifyContent:"center", padding:"40px 0" }}>
+          <Spinner size={24}/>
+        </div>
+      )}
+      {data && rows.length > 0 && (
+        <div style={{ overflowX:"auto" }}>
+          <table style={{ borderCollapse:"collapse", fontSize:10 }}>
+            <thead>
+              <tr>
+                <th style={{ padding:"4px 10px", textAlign:"left", fontWeight:700,
+                  color:T.muted, minWidth:140, position:"sticky", left:0,
+                  background:T.card, zIndex:1 }}>
+                  {pivot==="account"?"Account":"Report Type"}
+                </th>
+                {cols.map(dt=>(
+                  <th key={dt} style={{ padding:"4px 6px", fontWeight:600, color:T.muted,
+                    minWidth:28, textAlign:"center", whiteSpace:"nowrap" }}>
+                    {dt.slice(5)}
+                  </th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {rows.map(row=>(
+                <tr key={row}>
+                  <td style={{ padding:"3px 10px", fontFamily:"monospace", fontSize:10,
+                    color:T.text2, position:"sticky", left:0, background:T.card,
+                    borderRight:`1px solid ${T.border}`, whiteSpace:"nowrap" }}>
+                    {rowLabel(row)}
+                  </td>
+                  {cols.map(dt=>{
+                    const acct = pivot==="account" ? row : "all";
+                    const rt   = pivot==="account" ? null : row;
+                    // For account pivot, show best status across all report types for that date
+                    let cell = null;
+                    if (pivot==="account") {
+                      const rts = data.report_types||[];
+                      for (const r of rts) {
+                        const c = getCell(row, r, dt);
+                        if (!cell || (c && c.status==="replicated")) cell = c;
+                      }
+                    } else {
+                      const acts = data.accounts||[];
+                      for (const a of acts) {
+                        const c = getCell(a, row, dt);
+                        if (!cell || (c && c.status==="replicated")) cell = c;
+                      }
+                    }
+                    const status = cell?.status || "missing";
+                    const hk = `${row}|${dt}`;
+                    return (
+                      <td key={dt}
+                        onMouseEnter={()=>setHover({row, dt, cell, status})}
+                        onMouseLeave={()=>setHover(null)}
+                        style={{ padding:"3px 4px", textAlign:"center" }}>
+                        <div style={{ width:20, height:20, borderRadius:3, margin:"0 auto",
+                          background:STATUS_COLOR[status]||STATUS_COLOR.missing,
+                          opacity:status==="missing"?0.3:0.85,
+                          cursor:"pointer",
+                          outline:hover?.row===row&&hover?.dt===dt?`2px solid ${T.accent}`:"none" }}
+                          title={`${rowLabel(row)} · ${dt} · ${STATUS_LABEL[status]}${cell?.count?` · ${cell.count} records`:""}`}
+                        />
+                      </td>
+                    );
+                  })}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+      {data && rows.length === 0 && !loading && (
+        <div style={{ textAlign:"center", padding:"40px 0", color:T.dim, fontSize:12 }}>
+          No data found for the selected range
+        </div>
+      )}
+    </div>
+  );
+}
+
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// 2. SLA TRACKER — sub-view inside Daily Brief
+// ═══════════════════════════════════════════════════════════════════════════════
+function SlaTracker() {
+  const T = useT();
+  const [data,     setData]    = React.useState(null);
+  const [loading,  setLoading] = React.useState(false);
+  const [days,     setDays]    = React.useState(30);
+  const [editing,  setEditing] = React.useState(false);
+  const [thresh,   setThresh]  = React.useState({});
+  const [saving,   setSaving]  = React.useState(false);
+
+  const load = async () => {
+    setLoading(true);
+    try {
+      const res = await fetch(`${API}/api/digest/preview?days=${days}`);
+      const d   = await res.json();
+      setData(d);
+      setThresh(d.thresholds || {});
+    } catch(e) {}
+    setLoading(false);
+  };
+
+  React.useEffect(()=>{ load(); }, [days]);
+
+  const saveThresholds = async () => {
+    setSaving(true);
+    await fetch(`${API}/api/sla/thresholds`, {
+      method:"POST", headers:{"Content-Type":"application/json"},
+      body:JSON.stringify(thresh)
+    }).catch(()=>{});
+    setSaving(false);
+    setEditing(false);
+    load();
+  };
+
+  const history = data?.sla_history || [];
+  const summary = data?.sla_summary || {};
+  const hitRate = summary.hit_rate_pct || 0;
+
+  const barColor = (r) => r.hit_sla ? T.green : r.data_on_time===false||r.replication_on_time===false ? T.red : T.yellow;
+
+  return (
+    <div style={{ overflowY:"auto", padding:"20px 24px", maxWidth:900 }}>
+      <div style={{ display:"flex", alignItems:"center", gap:12, marginBottom:16 }}>
+        <div style={{ fontSize:16, fontWeight:700, color:T.text }}>SLA Tracker</div>
+        <div style={{ marginLeft:"auto", display:"flex", gap:8 }}>
+          <select value={days} onChange={e=>setDays(Number(e.target.value))}
+            style={{ padding:"4px 8px", borderRadius:6, fontSize:11, border:`1px solid ${T.border}`,
+              background:T.surface, color:T.text, outline:"none" }}>
+            {[7,14,30,60].map(d=><option key={d} value={d}>Last {d} days</option>)}
+          </select>
+          <Btn size="sm" variant="ghost" onClick={()=>setEditing(p=>!p)}>⚙ Thresholds</Btn>
+          <Btn size="sm" variant="ghost" onClick={load} disabled={loading}>
+            {loading?<Spinner size={10}/>:<RefreshCw size={10}/>}
+          </Btn>
+        </div>
+      </div>
+
+      {/* Threshold editor */}
+      {editing && (
+        <div style={{ padding:"14px 18px", borderRadius:10, marginBottom:16,
+          background:T.surface, border:`1px solid ${T.border}` }}>
+          <div style={{ fontSize:12, fontWeight:700, color:T.text, marginBottom:10 }}>SLA Thresholds (IST)</div>
+          <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:10 }}>
+            {Object.entries(thresh).map(([k,v])=>(
+              <div key={k}>
+                <label style={{ fontSize:10, fontWeight:600, color:T.muted, display:"block", marginBottom:3 }}>
+                  {k.replace(/_/g," ")}
+                </label>
+                <input value={v} onChange={e=>setThresh(p=>({...p,[k]:e.target.value}))}
+                  placeholder="HH:MM"
+                  style={{ padding:"5px 8px", borderRadius:6, fontSize:12, width:"100%",
+                    border:`1px solid ${T.border}`, background:T.card, color:T.text,
+                    outline:"none", boxSizing:"border-box" }}/>
+              </div>
+            ))}
+          </div>
+          <div style={{ marginTop:10, display:"flex", gap:8 }}>
+            <Btn size="sm" onClick={saveThresholds} disabled={saving}>
+              {saving?<Spinner size={10}/>:<Check size={10}/>} Save
+            </Btn>
+            <Btn size="sm" variant="ghost" onClick={()=>setEditing(false)}>Cancel</Btn>
+          </div>
+        </div>
+      )}
+
+      {/* Summary KPIs */}
+      {data && (
+        <div style={{ display:"flex", gap:10, marginBottom:20, flexWrap:"wrap" }}>
+          {[
+            { label:"SLA Hit Rate", value:`${hitRate}%`,
+              color: hitRate>=90?T.green:hitRate>=70?T.orange:T.red },
+            { label:"Days On Time", value:`${summary.days_hit_sla||0}/${summary.days_tracked||0}`,
+              color: T.text },
+            { label:"Last Sent",    value: data.last_sent ? data.last_sent.slice(0,10) : "Never",
+              color: T.muted },
+          ].map(s=>(
+            <div key={s.label} style={{ padding:"12px 18px", borderRadius:10,
+              background:T.surface, border:`1px solid ${T.border}` }}>
+              <div style={{ fontSize:22, fontWeight:800, color:s.color }}>{s.value}</div>
+              <div style={{ fontSize:10, color:T.muted, marginTop:2 }}>{s.label}</div>
+            </div>
+          ))}
+
+          {/* Hit rate bar */}
+          <div style={{ flex:1, minWidth:200, padding:"12px 18px", borderRadius:10,
+            background:T.surface, border:`1px solid ${T.border}` }}>
+            <div style={{ fontSize:10, fontWeight:600, color:T.muted, marginBottom:6 }}>
+              SLA Hit Rate — {days} days
+            </div>
+            <div style={{ height:8, background:T.border, borderRadius:99 }}>
+              <div style={{ height:"100%", width:`${hitRate}%`, borderRadius:99,
+                background: hitRate>=90?T.green:hitRate>=70?T.orange:T.red,
+                transition:"width 0.5s" }}/>
+            </div>
+            <div style={{ display:"flex", justifyContent:"space-between",
+              fontSize:9, color:T.dim, marginTop:4 }}>
+              <span>0%</span><span>50%</span><span>100%</span>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Per-day history */}
+      {history.length > 0 && (
+        <div>
+          <div style={{ fontSize:11, fontWeight:700, color:T.muted, textTransform:"uppercase",
+            letterSpacing:"0.05em", marginBottom:10 }}>Daily SLA Status</div>
+
+          {/* Sparkline */}
+          <div style={{ display:"flex", gap:3, marginBottom:14, alignItems:"flex-end",
+            flexWrap:"wrap" }}>
+            {[...history].reverse().map((r,i)=>(
+              <div key={i} title={`${r.date} · ${r.hit_sla?"✓ SLA met":"✗ SLA missed"}${r.arrived_ist?` · arrived ${r.arrived_ist} IST`:""}`}
+                style={{ width:14, height: r.hit_sla?28:r.data_on_time===false?40:34,
+                  borderRadius:3, background:barColor(r), flexShrink:0,
+                  cursor:"default", opacity:0.8 }}/>
+            ))}
+          </div>
+
+          {/* Table */}
+          <div style={{ overflowX:"auto", borderRadius:10, border:`1px solid ${T.border}` }}>
+            <table style={{ borderCollapse:"collapse", fontSize:11, width:"100%" }}>
+              <thead>
+                <tr style={{ background:`${T.accent}08` }}>
+                  {["Date","Total","Processed","Failed","Replicated","Data Arrived","Replicated At","SLA"].map(h=>(
+                    <th key={h} style={{ padding:"6px 12px", textAlign:"left", fontWeight:700,
+                      fontSize:9, color:T.muted, textTransform:"uppercase",
+                      letterSpacing:"0.04em", borderBottom:`1px solid ${T.border}`,
+                      whiteSpace:"nowrap" }}>{h}</th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {history.map((r,i)=>(
+                  <tr key={i} style={{ borderBottom:`1px solid ${T.border}20` }}>
+                    <td style={{ padding:"6px 12px", fontFamily:"monospace", color:T.text2 }}>{r.date}</td>
+                    <td style={{ padding:"6px 12px", color:T.text }}>{r.total}</td>
+                    <td style={{ padding:"6px 12px", color:T.green }}>{r.processed}</td>
+                    <td style={{ padding:"6px 12px", color:r.failed>0?T.red:T.muted }}>{r.failed}</td>
+                    <td style={{ padding:"6px 12px", color:T.accent }}>{r.replicated}</td>
+                    <td style={{ padding:"6px 12px", fontFamily:"monospace",
+                      color:r.data_on_time===true?T.green:r.data_on_time===false?T.red:T.muted }}>
+                      {r.arrived_ist || "—"}
+                    </td>
+                    <td style={{ padding:"6px 12px", fontFamily:"monospace",
+                      color:r.replication_on_time===true?T.green:r.replication_on_time===false?T.red:T.muted }}>
+                      {r.replicated_ist || "—"}
+                    </td>
+                    <td style={{ padding:"6px 12px" }}>
+                      <Badge label={r.hit_sla?"✓ Met":"✗ Missed"}
+                        color={r.hit_sla?T.green:T.red}/>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+      {loading && !data && (
+        <div style={{ display:"flex", justifyContent:"center", padding:"40px 0" }}>
+          <Spinner size={24}/>
+        </div>
+      )}
+    </div>
+  );
+}
+
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// 3. CHECK LIBRARY — sub-view inside Workflows Builder + Library panel
+// ═══════════════════════════════════════════════════════════════════════════════
+function CheckLibrary({ onUse, standalone }) {
+  const T = useT();
+  const [checks,   setChecks]   = React.useState([]);
+  const [loading,  setLoading]  = React.useState(false);
+  const [search,   setSearch]   = React.useState("");
+  const [tagFilter,setTagFilter]= React.useState("all");
+  const [saving,   setSaving]   = React.useState(false);
+  const [form,     setForm]     = React.useState(null); // null | check object being added
+
+  const load = async () => {
+    setLoading(true);
+    try {
+      const res = await fetch(`${API}/api/check-library`);
+      const d   = await res.json();
+      if (Array.isArray(d.checks)) setChecks(d.checks);
+    } catch(e) {}
+    setLoading(false);
+  };
+
+  React.useEffect(()=>{ load(); }, []);
+
+  const allTags = [...new Set(checks.flatMap(c=>c.tags||[]))];
+  const filtered = checks.filter(c=>{
+    if (tagFilter!=="all" && !(c.tags||[]).includes(tagFilter)) return false;
+    if (search && !`${c.name} ${c.desc} ${c.table_hint}`.toLowerCase().includes(search.toLowerCase())) return false;
+    return true;
+  });
+
+  const saveToLibrary = async () => {
+    if (!form?.name || !form?.sql) return;
+    setSaving(true);
+    await fetch(`${API}/api/check-library`, {
+      method:"POST", headers:{"Content-Type":"application/json"},
+      body:JSON.stringify(form)
+    }).catch(()=>{});
+    setSaving(false);
+    setForm(null);
+    load();
+  };
+
+  const deleteCheck = async (id) => {
+    await fetch(`${API}/api/check-library/${id}`, {method:"DELETE"}).catch(()=>{});
+    setChecks(p=>p.filter(c=>c.id!==id));
+  };
+
+  const inp = { width:"100%", padding:"6px 10px", borderRadius:6, fontSize:11,
+    border:`1px solid ${T.border}`, background:T.surface, color:T.text,
+    fontFamily:"inherit", outline:"none", boxSizing:"border-box" };
+
+  return (
+    <div style={{ display:"flex", flexDirection:"column",
+      ...(standalone ? { overflowY:"auto", padding:"20px 24px" } : { height:"100%", overflow:"hidden" }) }}>
+
+      {/* Header */}
+      <div style={{ display:"flex", alignItems:"center", gap:10, marginBottom:14, flexShrink:0 }}>
+        {standalone && <div style={{ fontSize:16, fontWeight:700, color:T.text }}>Check Library</div>}
+        <input value={search} onChange={e=>setSearch(e.target.value)}
+          placeholder="Search checks…"
+          style={{ ...inp, flex:1 }}/>
+        <Btn size="sm" onClick={()=>setForm({name:"",desc:"",sql:"",pass_condition:"rows = 0",
+          severity:"high",tags:[],table_hint:""})}
+          style={{ flexShrink:0 }}>
+          <Plus size={10}/> Add
+        </Btn>
+        <Btn size="sm" variant="ghost" onClick={load} disabled={loading} style={{ flexShrink:0 }}>
+          {loading?<Spinner size={10}/>:<RefreshCw size={10}/>}
+        </Btn>
+      </div>
+
+      {/* Tags */}
+      {allTags.length > 0 && (
+        <div style={{ display:"flex", gap:5, flexWrap:"wrap", marginBottom:10, flexShrink:0 }}>
+          {["all",...allTags].map(tag=>(
+            <button key={tag} onClick={()=>setTagFilter(tag)}
+              style={{ padding:"2px 10px", borderRadius:99, fontSize:10, cursor:"pointer",
+                border:`1px solid ${tagFilter===tag?T.accent:T.border}`,
+                background:tagFilter===tag?`${T.accent}10`:"transparent",
+                color:tagFilter===tag?T.accent:T.muted, fontWeight:tagFilter===tag?700:400 }}>
+              {tag}
+            </button>
+          ))}
+        </div>
+      )}
+
+      {/* Add form */}
+      {form && (
+        <div style={{ padding:"12px 14px", borderRadius:10, marginBottom:12,
+          background:T.surface, border:`1px solid ${T.accent}30`, flexShrink:0 }}>
+          <div style={{ fontSize:11, fontWeight:700, color:T.accent, marginBottom:10 }}>New Library Check</div>
+          <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:8, marginBottom:8 }}>
+            <div>
+              <label style={{ fontSize:10, fontWeight:600, color:T.muted, display:"block", marginBottom:2 }}>Name *</label>
+              <input value={form.name} onChange={e=>setForm(p=>({...p,name:e.target.value}))} style={inp} placeholder="e.g. Null ASINs in Orders"/>
+            </div>
+            <div>
+              <label style={{ fontSize:10, fontWeight:600, color:T.muted, display:"block", marginBottom:2 }}>Table hint</label>
+              <input value={form.table_hint} onChange={e=>setForm(p=>({...p,table_hint:e.target.value}))} style={inp} placeholder="mws.orders"/>
+            </div>
+          </div>
+          <div style={{ marginBottom:8 }}>
+            <label style={{ fontSize:10, fontWeight:600, color:T.muted, display:"block", marginBottom:2 }}>SQL *</label>
+            <textarea value={form.sql} rows={3} onChange={e=>setForm(p=>({...p,sql:e.target.value}))}
+              style={{...inp, fontFamily:"monospace", resize:"vertical"}}
+              placeholder="SELECT COUNT(*) FROM mws.orders WHERE asin IS NULL"/>
+          </div>
+          <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr 1fr", gap:8, marginBottom:8 }}>
+            <div>
+              <label style={{ fontSize:10, fontWeight:600, color:T.muted, display:"block", marginBottom:2 }}>Pass when</label>
+              <select value={form.pass_condition} onChange={e=>setForm(p=>({...p,pass_condition:e.target.value}))} style={inp}>
+                {PASS_CONDITIONS.map(o=><option key={o.value} value={o.value}>{o.label}</option>)}
+              </select>
+            </div>
+            <div>
+              <label style={{ fontSize:10, fontWeight:600, color:T.muted, display:"block", marginBottom:2 }}>Severity</label>
+              <select value={form.severity} onChange={e=>setForm(p=>({...p,severity:e.target.value}))} style={inp}>
+                {["critical","high","medium","low"].map(s=><option key={s} value={s}>{s}</option>)}
+              </select>
+            </div>
+            <div>
+              <label style={{ fontSize:10, fontWeight:600, color:T.muted, display:"block", marginBottom:2 }}>Tags (comma-sep)</label>
+              <input value={(form.tags||[]).join(",")} onChange={e=>setForm(p=>({...p,tags:e.target.value.split(",").map(t=>t.trim()).filter(Boolean)}))} style={inp} placeholder="freshness, nulls"/>
+            </div>
+          </div>
+          <div style={{ display:"flex", gap:8 }}>
+            <Btn size="sm" onClick={saveToLibrary} disabled={saving||!form.name||!form.sql}>
+              {saving?<Spinner size={10}/>:<Check size={10}/>} Save to Library
+            </Btn>
+            <Btn size="sm" variant="ghost" onClick={()=>setForm(null)}>Cancel</Btn>
+          </div>
+        </div>
+      )}
+
+      {/* Checks list */}
+      <div style={{ ...(standalone ? {} : { flex:1, overflowY:"auto" }), display:"flex", flexDirection:"column", gap:6 }}>
+        {loading && checks.length===0 && (
+          <div style={{ textAlign:"center", padding:"30px 0" }}><Spinner size={20}/></div>
+        )}
+        {!loading && filtered.length===0 && (
+          <div style={{ textAlign:"center", padding:"30px 0", color:T.dim, fontSize:11 }}>
+            {checks.length===0 ? "No checks in library yet — add your first one" : "No checks match"}
+          </div>
+        )}
+        {filtered.map(chk=>(
+          <div key={chk.id} style={{ padding:"10px 14px", borderRadius:8,
+            background:T.card, border:`1px solid ${T.border}`,
+            borderLeft:`3px solid ${SEV_COLOR[chk.severity]||T.muted}` }}>
+            <div style={{ display:"flex", alignItems:"flex-start", gap:10 }}>
+              <div style={{ flex:1, minWidth:0 }}>
+                <div style={{ display:"flex", alignItems:"center", gap:7, marginBottom:3 }}>
+                  <span style={{ fontSize:12, fontWeight:700, color:T.text }}>{chk.name}</span>
+                  <Badge label={chk.severity} color={SEV_COLOR[chk.severity]||T.muted}/>
+                  {(chk.tags||[]).map(tag=>(
+                    <span key={tag} style={{ fontSize:9, padding:"1px 6px", borderRadius:99,
+                      background:`${T.accent}10`, color:T.accent }}>{tag}</span>
+                  ))}
+                </div>
+                {chk.desc && <div style={{ fontSize:10, color:T.muted, marginBottom:4 }}>{chk.desc}</div>}
+                <div style={{ fontSize:10, color:T.dim, fontFamily:"monospace",
+                  overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>
+                  {chk.sql}
+                </div>
+                <div style={{ fontSize:10, color:T.dim, marginTop:3 }}>
+                  Pass: <code style={{ fontFamily:"monospace", color:T.accent }}>{chk.pass_condition}</code>
+                  {chk.table_hint && <> · <span style={{ color:T.muted }}>{chk.table_hint}</span></>}
+                </div>
+              </div>
+              <div style={{ display:"flex", gap:5, flexShrink:0 }}>
+                {onUse && (
+                  <Btn size="sm" onClick={()=>onUse(chk)}
+                    style={{ background:`${T.accent}10`, color:T.accent, border:`1px solid ${T.accent}30` }}>
+                    + Use
+                  </Btn>
+                )}
+                <Btn size="sm" variant="muted" onClick={()=>deleteCheck(chk.id)}>
+                  <Trash2 size={10}/>
+                </Btn>
+              </div>
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// 4. DIFF VIEW — inside WorkflowDetail, comparing two runs
+// ═══════════════════════════════════════════════════════════════════════════════
+function RunDiff({ runA, runB, onClose }) {
+  const T = useT();
+  const [diff,    setDiff]    = React.useState(null);
+  const [loading, setLoading] = React.useState(false);
+  const [error,   setError]   = React.useState(null);
+
+  React.useEffect(()=>{
+    if (!runA?.run_id || !runB?.run_id) return;
+    setLoading(true); setError(null);
+    fetch(`${API}/api/workflow-runs/diff?run_id_a=${runA.run_id}&run_id_b=${runB.run_id}`)
+      .then(r=>r.json())
+      .then(d=>{ if(d.error) setError(d.error); else setDiff(d); })
+      .catch(e=>setError(e.message))
+      .finally(()=>setLoading(false));
+  }, [runA?.run_id, runB?.run_id]);
+
+  const kindIcon = (d) => {
+    if (d.regression) return { icon:"↓", color:T.red,    label:"Regression" };
+    if (d.fixed)      return { icon:"↑", color:T.green,  label:"Fixed" };
+    if (d.kind==="added")   return { icon:"+", color:T.accent, label:"New check" };
+    if (d.kind==="removed") return { icon:"−", color:T.muted,  label:"Removed" };
+    return { icon:"·", color:T.dim, label:"Unchanged" };
+  };
+
+  return (
+    <div style={{ position:"fixed", inset:0, background:"rgba(0,0,0,0.4)", zIndex:1000,
+      display:"flex", alignItems:"center", justifyContent:"center" }}
+      onClick={e=>{ if(e.target===e.currentTarget) onClose(); }}>
+      <div style={{ background:T.card, borderRadius:14, width:"min(760px,95vw)",
+        maxHeight:"85vh", display:"flex", flexDirection:"column",
+        border:`1px solid ${T.border}`, boxShadow:"0 20px 60px rgba(0,0,0,0.2)" }}>
+
+        {/* Modal header */}
+        <div style={{ padding:"16px 20px", borderBottom:`1px solid ${T.border}`,
+          display:"flex", alignItems:"center", gap:12, flexShrink:0 }}>
+          <div style={{ flex:1 }}>
+            <div style={{ fontSize:14, fontWeight:700, color:T.text }}>Run Comparison</div>
+            <div style={{ fontSize:11, color:T.muted, marginTop:2 }}>
+              {runA.started_at?.slice(0,16)?.replace("T"," ")} vs {runB.started_at?.slice(0,16)?.replace("T"," ")}
+            </div>
+          </div>
+          <button onClick={onClose} style={{ background:"none", border:"none",
+            cursor:"pointer", color:T.muted, fontSize:18 }}>×</button>
+        </div>
+
+        <div style={{ flex:1, overflowY:"auto", padding:"16px 20px" }}>
+          {loading && <div style={{ textAlign:"center", padding:"30px 0" }}><Spinner size={20}/></div>}
+          {error && <div style={{ color:T.red, fontSize:12 }}>Error: {error}</div>}
+
+          {diff && (
+            <>
+              {/* Summary */}
+              <div style={{ display:"flex", gap:10, marginBottom:16 }}>
+                {[
+                  { label:"Regressions", value:diff.summary.regressions, color:T.red },
+                  { label:"Fixed",       value:diff.summary.fixes,       color:T.green },
+                  { label:"Unchanged",   value:diff.summary.unchanged,   color:T.muted },
+                  { label:"Total",       value:diff.summary.total_checks, color:T.text },
+                ].map(s=>(
+                  <div key={s.label} style={{ padding:"8px 14px", borderRadius:8,
+                    background:T.surface, border:`1px solid ${T.border}`, textAlign:"center" }}>
+                    <div style={{ fontSize:18, fontWeight:800, color:s.color }}>{s.value}</div>
+                    <div style={{ fontSize:10, color:T.muted }}>{s.label}</div>
+                  </div>
+                ))}
+              </div>
+
+              {/* Run headers */}
+              <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:10, marginBottom:14 }}>
+                {[
+                  { label:"Run A (older)", run:diff.run_a },
+                  { label:"Run B (newer)", run:diff.run_b },
+                ].map(({label,run})=>(
+                  <div key={label} style={{ padding:"10px 14px", borderRadius:8,
+                    background:run.status==="clean"?`${T.green}08`:`${T.red}08`,
+                    border:`1px solid ${run.status==="clean"?T.green:T.red}25` }}>
+                    <div style={{ fontSize:10, fontWeight:700, color:T.muted, marginBottom:3 }}>{label}</div>
+                    <div style={{ fontSize:12, fontWeight:700,
+                      color:run.status==="clean"?T.green:T.red }}>
+                      {run.status==="clean"?"✓ Clean":`${run.failed} failed`}
+                    </div>
+                    <div style={{ fontSize:10, color:T.dim }}>
+                      {run.started_at?.slice(0,16)?.replace("T"," ")}
+                    </div>
+                  </div>
+                ))}
+              </div>
+
+              {/* Per-check diffs */}
+              <div style={{ display:"flex", flexDirection:"column", gap:6 }}>
+                {diff.diffs.map((d,i)=>{
+                  const { icon, color, label } = kindIcon(d);
+                  return (
+                    <div key={i} style={{ display:"flex", alignItems:"center", gap:10,
+                      padding:"8px 12px", borderRadius:8,
+                      background:T.surface, border:`1px solid ${T.border}` }}>
+                      <div style={{ width:24, height:24, borderRadius:6, flexShrink:0,
+                        background:`${color}15`,
+                        display:"flex", alignItems:"center", justifyContent:"center",
+                        fontSize:14, fontWeight:800, color }}>
+                        {icon}
+                      </div>
+                      <div style={{ flex:1 }}>
+                        <div style={{ fontSize:12, fontWeight:600, color:T.text }}>{d.name}</div>
+                        <div style={{ fontSize:10, color:T.muted }}>
+                          {d.kind==="changed" && (
+                            <>
+                              {d.a_passed?"✓":"✗"} → {d.b_passed?"✓":"✗"}
+                              {" · "}
+                              {d.a_rows??"-"} → {d.b_rows??"-"} rows
+                              {d.row_delta !== 0 && (
+                                <span style={{ color:d.row_delta>0?T.red:T.green, fontWeight:700, marginLeft:4 }}>
+                                  ({d.row_delta>0?"+":""}{d.row_delta})
+                                </span>
+                              )}
+                            </>
+                          )}
+                          {d.kind==="added" && "New in Run B"}
+                          {d.kind==="removed" && "Removed in Run B"}
+                        </div>
+                      </div>
+                      <Badge label={label} color={color}/>
+                    </div>
+                  );
+                })}
+              </div>
+            </>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// 5. SCHEDULED DIGEST — panel inside Configure tab
+// ═══════════════════════════════════════════════════════════════════════════════
+function DigestPanel() {
+  const T = useT();
+  const [preview, setPreview]  = React.useState(null);
+  const [sending, setSending]  = React.useState(false);
+  const [sent,    setSent]     = React.useState(null);
+  const [days,    setDays]     = React.useState(7);
+
+  React.useEffect(()=>{
+    fetch(`${API}/api/digest/preview?days=${days}`)
+      .then(r=>r.json()).then(setPreview).catch(()=>{});
+  }, [days]);
+
+  const sendNow = async () => {
+    setSending(true); setSent(null);
+    const res  = await fetch(`${API}/api/digest/send`, {
+      method:"POST", headers:{"Content-Type":"application/json"},
+      body:JSON.stringify({ days })
+    }).catch(()=>({}));
+    const data = await res.json?.() || {};
+    setSent(data);
+    setSending(false);
+  };
+
+  const sla = preview?.sla_summary || {};
+  const hitRate = sla.hit_rate_pct || 0;
+
+  return (
+    <div style={{ padding:"14px 18px", borderRadius:10,
+      background:T.surface, border:`1px solid ${T.border}`, marginBottom:14 }}>
+      <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom:12 }}>
+        <div style={{ fontSize:12, fontWeight:700, color:T.text }}>📊 Scheduled Report Digest</div>
+        <select value={days} onChange={e=>setDays(Number(e.target.value))}
+          style={{ padding:"3px 8px", borderRadius:6, fontSize:11, border:`1px solid ${T.border}`,
+            background:T.card, color:T.text, outline:"none" }}>
+          {[7,14,30].map(d=><option key={d} value={d}>Last {d} days</option>)}
+        </select>
+      </div>
+
+      {preview && (
+        <div style={{ fontSize:11, color:T.text2, marginBottom:12, lineHeight:1.6 }}>
+          <div>SLA Hit Rate: <strong style={{ color:hitRate>=90?T.green:hitRate>=70?T.orange:T.red }}>{hitRate}%</strong></div>
+          <div>Days on time: {sla.days_hit_sla||0}/{sla.days_tracked||0}</div>
+          {preview.last_sent && <div style={{ color:T.muted }}>Last sent: {preview.last_sent.slice(0,10)}</div>}
+        </div>
+      )}
+
+      {sent && (
+        <div style={{ padding:"6px 10px", borderRadius:6, marginBottom:10, fontSize:11,
+          background:sent.error?`${T.red}08`:`${T.green}08`,
+          border:`1px solid ${sent.error?T.red:T.green}25`,
+          color:sent.error?T.red:T.green }}>
+          {sent.error ? `✗ ${sent.error}` : `✓ Digest sent — ${sent.hit_rate}% SLA hit rate`}
+        </div>
+      )}
+
+      <Btn onClick={sendNow} disabled={sending} size="sm">
+        {sending?<Spinner size={10} color="white"/>:null} Send Digest to Slack
+      </Btn>
+      <div style={{ fontSize:10, color:T.dim, marginTop:6 }}>
+        Auto-sends weekly if SLACK_WEBHOOK_URL is configured. Add <code style={{ fontFamily:"monospace" }}>0 9 * * 1</code> cron on Railway.
+      </div>
+    </div>
+  );
+}
+
+
 function AdsSopTab() {
   const T = useT();
   const [running,    setRunning]   = React.useState(false);
@@ -6723,6 +7535,18 @@ Respond ONLY with JSON array (no markdown):
     </div>
   );
 
+  if (view==="library") return (
+    <div style={{ display:"flex", flexDirection:"column", height:"100%", overflow:"hidden" }}>
+      <div style={{ padding:"10px 20px", borderBottom:`1px solid ${T.border}`, flexShrink:0 }}>
+        <Btn onClick={()=>setView("list")} variant="ghost" size="sm">← Workflows</Btn>
+      </div>
+      <CheckLibrary standalone={true} onUse={(chk)=>{
+        setEditing(p => p ? {...p, checks:[...(p.checks||[]),{...chk,id:Date.now().toString(36)}]} : {name:"",desc:"",schedule:"every 30 min",enabled:true,checks:[{...chk,id:Date.now().toString(36)}],tables:[],db_key:"default",slack_channel:""});
+        setView("builder");
+      }}/>
+    </div>
+  );
+
   if (view==="sop") return (
     <div style={{ display:"flex", flexDirection:"column", height:"100%", overflow:"hidden" }}>
       <div style={{ padding:"10px 20px", borderBottom:`1px solid #E2E8F0`, flexShrink:0 }}>
@@ -6765,6 +7589,9 @@ Respond ONLY with JSON array (no markdown):
               <Clock size={11}/> All Runs ({runHistory.length})
             </Btn>
           )}
+          <Btn onClick={()=>setView("library")} variant="ghost" size="sm">
+            📚 Library
+          </Btn>
           <Btn onClick={()=>setShowTemplates(p=>!p)} variant="ghost" size="sm">
             📋 Templates
           </Btn>
@@ -7052,6 +7879,8 @@ Respond ONLY with JSON array (no markdown):
 function WorkflowDetail({ wf, history, liveRun, onBack, onEdit, onRun, running }) {
   const T = useT();
   const [selectedRun, setSelectedRun] = React.useState(liveRun || history[0] || null);
+  const [compareRun,  setCompareRun]  = React.useState(null); // run to compare against
+  const [showDiff,    setShowDiff]    = React.useState(false);
 
   React.useEffect(() => {
     if (liveRun) setSelectedRun(liveRun);
@@ -7092,7 +7921,8 @@ function WorkflowDetail({ wf, history, liveRun, onBack, onEdit, onRun, running }
                 onClick={()=>setSelectedRun(run)}
                 style={{ padding:"10px 16px", borderBottom:`1px solid ${T.border}`,
                   cursor:"pointer", borderLeft:`3px solid ${run.status==="clean"?T.green:T.red}`,
-                  background:selectedRun?.run_id===run.run_id?`${T.accent}06`:"transparent" }}>
+                  background:selectedRun?.run_id===run.run_id?`${T.accent}06`:"transparent",
+                  position:"relative" }}>
                 <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between",
                   marginBottom:3 }}>
                   <div style={{ display:"flex", alignItems:"center", gap:5 }}>
@@ -7124,7 +7954,41 @@ function WorkflowDetail({ wf, history, liveRun, onBack, onEdit, onRun, running }
             Select a run to see results
           </div>
         ) : (
-          <RunDetail run={selectedRun} T={T} dur={dur} fmt={fmt}/>
+          <>
+            {history.length > 1 && (
+              <div style={{ padding:"8px 20px", borderBottom:`1px solid ${T.border}`,
+                display:"flex", alignItems:"center", gap:8, flexShrink:0, background:T.surface }}>
+                <span style={{ fontSize:11, color:T.muted }}>Compare with:</span>
+                <select onChange={e=>{
+                    const r = history.find(h=>h.run_id===e.target.value);
+                    setCompareRun(r||null);
+                  }}
+                  defaultValue=""
+                  style={{ padding:"3px 8px", borderRadius:6, fontSize:11,
+                    border:`1px solid ${T.border}`, background:T.card,
+                    color:T.text, outline:"none" }}>
+                  <option value="">— select run —</option>
+                  {history.filter(r=>r.run_id!==selectedRun.run_id).map(r=>(
+                    <option key={r.run_id} value={r.run_id}>
+                      {r.started_at?.slice(0,16)?.replace("T"," ")} · {r.status==="clean"?"✓":"✗"}
+                    </option>
+                  ))}
+                </select>
+                {compareRun && (
+                  <Btn size="sm" onClick={()=>setShowDiff(true)}
+                    style={{ background:`${T.accent}10`, color:T.accent, border:`1px solid ${T.accent}30` }}>
+                    View Diff
+                  </Btn>
+                )}
+              </div>
+            )}
+            <div style={{ flex:1, overflowY:"auto", padding:"20px 24px" }}>
+              <RunDetail run={selectedRun} T={T} dur={dur} fmt={fmt}/>
+            </div>
+            {showDiff && compareRun && (
+              <RunDiff runA={compareRun} runB={selectedRun} onClose={()=>setShowDiff(false)}/>
+            )}
+          </>
         )}
       </div>
     </div>

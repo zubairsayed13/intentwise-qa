@@ -5,7 +5,7 @@ import {
   RefreshCw, Terminal, Plus, Trash2, Play, Eye, Filter,
   TrendingUp, TrendingDown, Minus, Zap, Shield, Activity,
   BarChart2, FileText, GitBranch, Lock, ChevronDown, X,
-  ArrowRight, Check, Loader, Hash, Table, Columns, Upload
+  ArrowRight, Check, Loader, Hash, Table, Columns, Upload, Layers, Clock
 } from 'lucide-react';
 
 // ─── Constants ────────────────────────────────────────────────────────────────
@@ -300,13 +300,15 @@ const GLOBAL_CSS = `
 
 // ─── Nav items ────────────────────────────────────────────────────────────────
 const NAV = [
-  { id:"brief",     label:"Daily Brief",    icon:Zap,          shortcut:"1" },
-  { id:"triage",    label:"Triage & Monitor", icon:AlertTriangle,shortcut:"3" },
-  { id:"workflows", label:"Workflows",      icon:GitBranch,    shortcut:"4" },
-  { id:"approvals", label:"Approvals & Activity", icon:Lock, shortcut:"A" },
-  { id:"config",    label:"Configure",      icon:Settings,     shortcut:"7" },
-  { id:"query",     label:"Data Explorer", icon:Database,     shortcut:"8" },
-  { id:"results",   label:"Results",        icon:BarChart2,    shortcut:"9" },
+  { id:"brief",     label:"Daily Brief",       icon:Zap,           shortcut:"1" },
+  { id:"triage",    label:"Triage & Monitor",  icon:AlertTriangle, shortcut:"3" },
+  { id:"workflows", label:"Workflows",         icon:GitBranch,     shortcut:"4" },
+  { id:"dataflows", label:"Dataflows",         icon:Layers,        shortcut:"5" },
+  { id:"approvals", label:"Approvals & Activity", icon:Lock,       shortcut:"A" },
+  { id:"config",    label:"Configure",         icon:Settings,      shortcut:"7" },
+  { id:"query",     label:"Data Explorer",     icon:Database,      shortcut:"8" },
+  { id:"results",   label:"Results",           icon:BarChart2,     shortcut:"9" },
+  { id:"scheduler", label:"Scheduler",         icon:Clock,         shortcut:"S" },
 ];
 
 // ─── Sidebar ──────────────────────────────────────────────────────────────────
@@ -6270,7 +6272,8 @@ function CheckLibrary({ onUse, standalone }) {
   const [search,   setSearch]   = React.useState("");
   const [tagFilter,setTagFilter]= React.useState("all");
   const [saving,   setSaving]   = React.useState(false);
-  const [form,     setForm]     = React.useState(null); // null | check object being added
+  const [form,     setForm]     = React.useState(null); // null | check object being added/edited
+  const [editId,   setEditId]   = React.useState(null); // id of check being edited
 
   const load = async () => {
     setLoading(true);
@@ -6294,13 +6297,20 @@ function CheckLibrary({ onUse, standalone }) {
   const saveToLibrary = async () => {
     if (!form?.name || !form?.sql) return;
     setSaving(true);
+    const payload = { ...form, id: editId || form.id || `chk_${Date.now().toString(36)}` };
     await fetch(`${API}/api/check-library`, {
       method:"POST", headers:{"Content-Type":"application/json"},
-      body:JSON.stringify(form)
+      body:JSON.stringify(payload)
     }).catch(()=>{});
     setSaving(false);
     setForm(null);
+    setEditId(null);
     load();
+  };
+
+  const startEdit = (chk) => {
+    setForm({ ...chk });
+    setEditId(chk.id);
   };
 
   const deleteCheck = async (id) => {
@@ -6322,8 +6332,8 @@ function CheckLibrary({ onUse, standalone }) {
         <input value={search} onChange={e=>setSearch(e.target.value)}
           placeholder="Search checks…"
           style={{ ...inp, flex:1 }}/>
-        <Btn size="sm" onClick={()=>setForm({name:"",desc:"",sql:"",pass_condition:"rows = 0",
-          severity:"high",tags:[],table_hint:""})}
+        <Btn size="sm" onClick={()=>{ setForm({name:"",desc:"",sql:"",pass_condition:"rows = 0",
+          severity:"high",tags:[],table_hint:""}); setEditId(null); }}
           style={{ flexShrink:0 }}>
           <Plus size={10}/> Add
         </Btn>
@@ -6351,7 +6361,9 @@ function CheckLibrary({ onUse, standalone }) {
       {form && (
         <div style={{ padding:"12px 14px", borderRadius:10, marginBottom:12,
           background:T.surface, border:`1px solid ${T.accent}30`, flexShrink:0 }}>
-          <div style={{ fontSize:11, fontWeight:700, color:T.accent, marginBottom:10 }}>New Library Check</div>
+          <div style={{ fontSize:11, fontWeight:700, color:T.accent, marginBottom:10 }}>
+            {editId ? "✏️ Edit Check" : "New Library Check"}
+          </div>
           <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:8, marginBottom:8 }}>
             <div>
               <label style={{ fontSize:10, fontWeight:600, color:T.muted, display:"block", marginBottom:2 }}>Name *</label>
@@ -6371,9 +6383,10 @@ function CheckLibrary({ onUse, standalone }) {
           <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr 1fr", gap:8, marginBottom:8 }}>
             <div>
               <label style={{ fontSize:10, fontWeight:600, color:T.muted, display:"block", marginBottom:2 }}>Pass when</label>
-              <select value={form.pass_condition} onChange={e=>setForm(p=>({...p,pass_condition:e.target.value}))} style={inp}>
-                {PASS_CONDITIONS.map(o=><option key={o.value} value={o.value}>{o.label}</option>)}
-              </select>
+              <PassConditionPicker
+                value={form.pass_condition || "rows = 0"}
+                onChange={v => setForm(p=>({...p, pass_condition:v}))}
+              />
             </div>
             <div>
               <label style={{ fontSize:10, fontWeight:600, color:T.muted, display:"block", marginBottom:2 }}>Severity</label>
@@ -6388,9 +6401,9 @@ function CheckLibrary({ onUse, standalone }) {
           </div>
           <div style={{ display:"flex", gap:8 }}>
             <Btn size="sm" onClick={saveToLibrary} disabled={saving||!form.name||!form.sql}>
-              {saving?<Spinner size={10}/>:<Check size={10}/>} Save to Library
+              {saving?<Spinner size={10}/>:<Check size={10}/>} {editId ? "Update Check" : "Save to Library"}
             </Btn>
-            <Btn size="sm" variant="ghost" onClick={()=>setForm(null)}>Cancel</Btn>
+            <Btn size="sm" variant="ghost" onClick={()=>{setForm(null);setEditId(null);}}>Cancel</Btn>
           </div>
         </div>
       )}
@@ -6436,6 +6449,9 @@ function CheckLibrary({ onUse, standalone }) {
                     + Use
                   </Btn>
                 )}
+                <Btn size="sm" variant="ghost" onClick={()=>startEdit(chk)} title="Edit this check">
+                  ✏️
+                </Btn>
                 <Btn size="sm" variant="muted" onClick={()=>deleteCheck(chk.id)}>
                   <Trash2 size={10}/>
                 </Btn>
@@ -7674,12 +7690,72 @@ const SCHEDULE_OPTS = [
 ];
 
 const PASS_CONDITIONS = [
-  { value:"rows = 0",  label:"No rows returned (rows = 0)" },
-  { value:"rows > 0",  label:"At least one row (rows > 0)" },
-  { value:"rows > 1",  label:"More than 1 row" },
-  { value:"value = 0", label:"Returned value equals 0" },
-  { value:"value > 0", label:"Returned value greater than 0" },
+  { value:"rows = 0",    label:"rows = 0  — no bad records returned" },
+  { value:"rows > 0",    label:"rows > 0  — data must be present" },
+  { value:"rows > 1",    label:"rows > 1  — more than one row" },
+  { value:"rows > 10",   label:"rows > 10 — at least 10 rows" },
+  { value:"rows > 100",  label:"rows > 100 — at least 100 rows" },
+  { value:"value = 0",   label:"value = 0  — first cell equals zero" },
+  { value:"value > 0",   label:"value > 0  — first cell greater than zero" },
+  { value:"value > 1",   label:"value > 1  — first cell greater than one" },
+  { value:"value >= 95", label:"value ≥ 95 — percentage / score threshold" },
+  { value:"custom",      label:"✏ Custom expression…" },
 ];
+
+// Helper: render a smart pass-condition picker (dropdown + optional freetext)
+function PassConditionPicker({ value, onChange, style }) {
+  const T = useT();
+  // Detect if current value matches a preset
+  const isPreset = PASS_CONDITIONS.some(p => p.value !== "custom" && p.value === value);
+  const isCustom = !isPreset;
+  const [mode, setMode] = React.useState(isCustom ? "custom" : "preset");
+  const [customVal, setCustomVal] = React.useState(isCustom ? value : "");
+
+  const inp = {
+    padding:"6px 10px", borderRadius:6, fontSize:11,
+    border:`1px solid ${T.border}`, background:T.surface, color:T.text,
+    fontFamily:"inherit", outline:"none", boxSizing:"border-box",
+    width:"100%", ...style,
+  };
+
+  const handlePresetChange = (v) => {
+    if (v === "custom") { setMode("custom"); }
+    else { setMode("preset"); onChange(v); }
+  };
+  const handleCustomChange = (v) => {
+    setCustomVal(v);
+    onChange(v);
+  };
+
+  return (
+    <div style={{ display:"flex", flexDirection:"column", gap:5 }}>
+      <select
+        value={mode === "custom" ? "custom" : value}
+        onChange={e => handlePresetChange(e.target.value)}
+        style={inp}
+      >
+        {PASS_CONDITIONS.map(o => (
+          <option key={o.value} value={o.value}>{o.label}</option>
+        ))}
+      </select>
+      {mode === "custom" && (
+        <div>
+          <input
+            value={customVal}
+            onChange={e => handleCustomChange(e.target.value)}
+            placeholder='e.g. rows > 50  or  value >= 0.95  or  rows = 0'
+            style={{ ...inp, fontFamily:"monospace", fontSize:11 }}
+            onFocus={e => e.target.style.borderColor = T.accent}
+            onBlur={e => e.target.style.borderColor = T.border}
+          />
+          <div style={{ fontSize:9, color:T.muted, marginTop:3 }}>
+            Format: <code style={{fontFamily:"monospace"}}>rows OP N</code> or <code style={{fontFamily:"monospace"}}>value OP N</code> — e.g. <code style={{fontFamily:"monospace"}}>rows &gt; 50</code>, <code style={{fontFamily:"monospace"}}>value &gt;= 0.9</code>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
 
 const SEV_COLOR = { critical:"#ef4444", high:"#f97316", medium:"#eab308", low:"#06b6d4", info:"#6366f1" };
 const SEV_BG    = { critical:"#fef2f2", high:"#fff7ed", medium:"#fefce8", low:"#ecfeff", info:"#eef2ff" };
@@ -8827,35 +8903,108 @@ Rules: sql must be SELECT only. pass_condition options: "rows = 0", "rows > 0", 
             </div>
           </div>
 
-          {/* Existing checks */}
+          {/* Existing checks — inline editable */}
           {wf.checks.length > 0 && (
-            <div style={{ display:"flex", flexDirection:"column", gap:6, marginBottom:14 }}>
-              {wf.checks.map((chk,i)=>(
-                <div key={chk.id} style={{ display:"flex", alignItems:"center", gap:8,
-                  padding:"8px 12px", borderRadius:8,
-                  background:`${SEV_COLOR[chk.severity]||T.muted}06`,
-                  border:`1px solid ${SEV_COLOR[chk.severity]||T.muted}20` }}>
-                  <div style={{ flex:1, minWidth:0 }}>
-                    <div style={{ fontSize:12, fontWeight:700, color:T.text }}>{chk.name}</div>
-                    <div style={{ fontSize:10, color:T.muted, fontFamily:"monospace",
-                      overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>
-                      {chk.sql}
-                    </div>
-                    <div style={{ fontSize:10, color:T.dim, marginTop:1 }}>
-                      Pass when: <code style={{ fontFamily:"monospace", color:T.accent }}>{chk.pass_condition}</code>
-                      {" · "}<Badge label={chk.severity} color={SEV_COLOR[chk.severity]||T.muted}/>
-                    </div>
+            <div style={{ display:"flex", flexDirection:"column", gap:8, marginBottom:14 }}>
+              {wf.checks.map((chk,i)=>{
+                const isEditing = editing === chk.id;
+                const updateField = (k,v) => setWf(p=>({...p, checks:p.checks.map(c=>c.id===chk.id?{...c,[k]:v}:c)}));
+                return (
+                  <div key={chk.id} style={{ borderRadius:8, overflow:"hidden",
+                    border:`1px solid ${isEditing ? T.accent : SEV_COLOR[chk.severity]||T.muted}40`,
+                    background: isEditing ? `${T.accent}04` : `${SEV_COLOR[chk.severity]||T.muted}04` }}>
+                    {/* Collapsed row */}
+                    {!isEditing && (
+                      <div style={{ display:"flex", alignItems:"center", gap:8, padding:"9px 12px" }}>
+                        <div style={{ width:6, height:6, borderRadius:"50%", flexShrink:0,
+                          background: SEV_COLOR[chk.severity]||T.muted }}/>
+                        <div style={{ flex:1, minWidth:0 }}>
+                          <div style={{ fontSize:12, fontWeight:700, color:T.text }}>{chk.name}</div>
+                          <div style={{ fontSize:10, color:T.muted, fontFamily:"monospace",
+                            overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>
+                            {chk.sql}
+                          </div>
+                          <div style={{ fontSize:10, color:T.dim, marginTop:1 }}>
+                            Pass when: <code style={{ fontFamily:"monospace", color:T.accent }}>{chk.pass_condition}</code>
+                            {" · "}<Badge label={chk.severity} color={SEV_COLOR[chk.severity]||T.muted}/>
+                          </div>
+                        </div>
+                        <div style={{ display:"flex", gap:4, flexShrink:0 }}>
+                          <button onClick={()=>setEditingCk(chk.id)} title="Edit"
+                            style={{ background:"none", border:`1px solid ${T.border}`, borderRadius:5,
+                              cursor:"pointer", color:T.muted, fontSize:11, padding:"2px 8px",
+                              transition:"all 0.1s" }}
+                            onMouseEnter={e=>{e.currentTarget.style.borderColor=T.accent;e.currentTarget.style.color=T.accent;}}
+                            onMouseLeave={e=>{e.currentTarget.style.borderColor=T.border;e.currentTarget.style.color=T.muted;}}>
+                            ✏️ Edit
+                          </button>
+                          <button onClick={()=>moveCheck(chk.id,-1)} disabled={i===0}
+                            style={{ background:"none", border:"none", cursor:i===0?"not-allowed":"pointer",
+                              color:T.dim, fontSize:12, opacity:i===0?0.3:1 }}>↑</button>
+                          <button onClick={()=>moveCheck(chk.id,1)} disabled={i===wf.checks.length-1}
+                            style={{ background:"none", border:"none", cursor:i===wf.checks.length-1?"not-allowed":"pointer",
+                              color:T.dim, fontSize:12, opacity:i===wf.checks.length-1?0.3:1 }}>↓</button>
+                          <button onClick={()=>removeCheck(chk.id)}
+                            style={{ background:"none", border:"none", cursor:"pointer", color:T.red, fontSize:14 }}>×</button>
+                        </div>
+                      </div>
+                    )}
+                    {/* Expanded inline editor */}
+                    {isEditing && (
+                      <div style={{ padding:"12px 14px", display:"flex", flexDirection:"column", gap:8 }}>
+                        <div style={{ fontSize:11, fontWeight:700, color:T.accent, marginBottom:2 }}>
+                          ✏️ Editing: {chk.name || "check"}
+                        </div>
+                        <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:8 }}>
+                          <div>
+                            <label style={{ fontSize:10, fontWeight:600, color:T.muted, display:"block", marginBottom:2 }}>Name</label>
+                            <input value={chk.name} onChange={e=>updateField("name",e.target.value)}
+                              style={{ width:"100%", padding:"6px 10px", borderRadius:6, fontSize:11,
+                                border:`1px solid ${T.border}`, background:T.surface, color:T.text,
+                                fontFamily:"inherit", outline:"none", boxSizing:"border-box" }}
+                              onFocus={e=>e.target.style.borderColor=T.accent}
+                              onBlur={e=>e.target.style.borderColor=T.border}/>
+                          </div>
+                          <div>
+                            <label style={{ fontSize:10, fontWeight:600, color:T.muted, display:"block", marginBottom:2 }}>Severity</label>
+                            <select value={chk.severity} onChange={e=>updateField("severity",e.target.value)}
+                              style={{ width:"100%", padding:"6px 10px", borderRadius:6, fontSize:11,
+                                border:`1px solid ${T.border}`, background:T.surface, color:T.text,
+                                fontFamily:"inherit", outline:"none" }}>
+                              {["critical","high","medium","low"].map(s=><option key={s} value={s}>{s}</option>)}
+                            </select>
+                          </div>
+                        </div>
+                        <div>
+                          <label style={{ fontSize:10, fontWeight:600, color:T.muted, display:"block", marginBottom:2 }}>SQL Query</label>
+                          <textarea value={chk.sql} rows={3} onChange={e=>updateField("sql",e.target.value)}
+                            style={{ width:"100%", padding:"6px 10px", borderRadius:6, fontSize:11,
+                              border:`1px solid ${T.border}`, background:T.surface, color:T.text,
+                              fontFamily:"monospace", outline:"none", boxSizing:"border-box", resize:"vertical" }}
+                            onFocus={e=>e.target.style.borderColor=T.accent}
+                            onBlur={e=>e.target.style.borderColor=T.border}/>
+                        </div>
+                        <div>
+                          <label style={{ fontSize:10, fontWeight:600, color:T.muted, display:"block", marginBottom:2 }}>Pass when</label>
+                          <PassConditionPicker
+                            value={chk.pass_condition || "rows = 0"}
+                            onChange={v => updateField("pass_condition", v)}
+                          />
+                        </div>
+                        <div style={{ display:"flex", gap:6 }}>
+                          <Btn size="sm" onClick={()=>setEditingCk(null)}
+                            style={{ background:T.green, color:"white", border:"none" }}>
+                            <Check size={10}/> Done
+                          </Btn>
+                          <Btn size="sm" variant="muted" onClick={()=>removeCheck(chk.id)}>
+                            <Trash2 size={10}/> Remove
+                          </Btn>
+                        </div>
+                      </div>
+                    )}
                   </div>
-                  <div style={{ display:"flex", gap:4, flexShrink:0 }}>
-                    <button onClick={()=>moveCheck(chk.id,-1)} disabled={i===0}
-                      style={{ background:"none", border:"none", cursor:"pointer", color:T.dim, fontSize:12 }}>↑</button>
-                    <button onClick={()=>moveCheck(chk.id,1)} disabled={i===wf.checks.length-1}
-                      style={{ background:"none", border:"none", cursor:"pointer", color:T.dim, fontSize:12 }}>↓</button>
-                    <button onClick={()=>removeCheck(chk.id)}
-                      style={{ background:"none", border:"none", cursor:"pointer", color:T.red, fontSize:12 }}>×</button>
-                  </div>
-                </div>
-              ))}
+                );
+              })}
             </div>
           )}
 
@@ -8895,10 +9044,10 @@ Rules: sql must be SELECT only. pass_condition options: "rows = 0", "rows > 0", 
               <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:6 }}>
                 <div>
                   <label style={{ fontSize:10, fontWeight:600, color:T.text2, display:"block", marginBottom:2 }}>Pass When</label>
-                  <select value={checkDraft.pass_condition}
-                    onChange={e=>setDraft(p=>({...p,pass_condition:e.target.value}))} style={inp}>
-                    {PASS_CONDITIONS.map(o=><option key={o.value} value={o.value}>{o.label}</option>)}
-                  </select>
+                  <PassConditionPicker
+                    value={checkDraft.pass_condition || "rows = 0"}
+                    onChange={v => setDraft(p=>({...p, pass_condition:v}))}
+                  />
                 </div>
                 <div>
                   <label style={{ fontSize:10, fontWeight:600, color:T.text2, display:"block", marginBottom:2 }}>Severity</label>
@@ -10040,6 +10189,2642 @@ function ResultDetail({ run, check, allChecks, onBack, onSelectCheck, onNavigate
   );
 }
 
+// ─── Dataflows Storage Key ────────────────────────────────────────────────────
+const DF_STORAGE_KEY = "wz_dataflows_v1";
+const DF_FOLDERS_KEY = "wz_df_folders_v1";
+
+// ─── Default Folder Structure ─────────────────────────────────────────────────
+const DEFAULT_FOLDERS = [
+  { id:"f_root",   name:"Dataflows",            parent:null,      expanded:true  },
+  { id:"f_mws",    name:"MWS Data Checks",       parent:"f_root",  expanded:false },
+  { id:"f_ads",    name:"Ads & Campaigns",        parent:"f_root",  expanded:false },
+  { id:"f_inv",    name:"Inventory Checks",       parent:"f_root",  expanded:false },
+  { id:"f_sla",    name:"SLA & Freshness",        parent:"f_root",  expanded:false },
+  { id:"f_custom", name:"Custom",                 parent:"f_root",  expanded:false },
+];
+
+// ─── Priority levels ──────────────────────────────────────────────────────────
+const PRIORITIES = ["None","Low","Medium","High","Critical"];
+
+// ─── Helpers ──────────────────────────────────────────────────────────────────
+function timeAgo(iso) {
+  if (!iso) return "—";
+  const d = new Date(iso);
+  const now = new Date();
+  const diff = Math.floor((now - d) / 1000);
+  if (diff < 60)   return "just now";
+  if (diff < 3600) return `${Math.floor(diff/60)}m ago`;
+  if (diff < 86400)return `${Math.floor(diff/3600)}h ago`;
+  if (diff < 604800)return `${Math.floor(diff/86400)}d ago`;
+  if (diff < 2592000)return `${Math.floor(diff/604800)}w ago`;
+  return `${Math.floor(diff/2592000)}mo ago`;
+}
+
+function uid() {
+  return `df_${Date.now().toString(36)}_${Math.random().toString(36).slice(2,6)}`;
+}
+
+// ─── FolderTree ───────────────────────────────────────────────────────────────
+function FolderTree({ folders, selected, onSelect, onAdd, onRename, onDelete, dataflows }) {
+  const T = useT();
+  const [expanded, setExpanded] = React.useState(() => {
+    const m = {};
+    folders.forEach(f => { m[f.id] = f.expanded ?? false; });
+    return m;
+  });
+  const [renaming, setRenaming] = React.useState(null); // folder id
+  const [newName, setNewName]   = React.useState("");
+  const [ctxMenu, setCtxMenu]   = React.useState(null); // {x,y,folderId}
+
+  const roots = folders.filter(f => f.parent === null);
+  const children = (id) => folders.filter(f => f.parent === id);
+
+  const countInFolder = (fid) => {
+    const direct = dataflows.filter(d => d.folder_id === fid).length;
+    const sub = children(fid).reduce((acc, c) => acc + countInFolder(c.id), 0);
+    return direct + sub;
+  };
+
+  const toggle = (id) => setExpanded(p => ({ ...p, [id]: !p[id] }));
+
+  const startRename = (f) => {
+    setRenaming(f.id);
+    setNewName(f.name);
+    setCtxMenu(null);
+  };
+  const commitRename = (f) => {
+    if (newName.trim()) onRename(f.id, newName.trim());
+    setRenaming(null);
+  };
+
+  const renderFolder = (f, depth = 0) => {
+    const isOpen   = expanded[f.id];
+    const isActive = selected === f.id;
+    const kids     = children(f.id);
+    const count    = countInFolder(f.id);
+
+    return (
+      <div key={f.id}>
+        <div
+          onContextMenu={e => { e.preventDefault(); setCtxMenu({x:e.clientX,y:e.clientY,folderId:f.id}); }}
+          style={{ display:"flex", alignItems:"center", gap:5,
+            padding:`5px ${8 + depth*14}px 5px 8px`,
+            borderRadius:6, cursor:"pointer", userSelect:"none",
+            background: isActive ? `${T.accent}15` : "transparent",
+            transition:"background 0.1s",
+          }}
+          onMouseEnter={e => { if(!isActive) e.currentTarget.style.background="rgba(255,255,255,0.05)"; }}
+          onMouseLeave={e => { if(!isActive) e.currentTarget.style.background="transparent"; }}
+          onClick={() => { toggle(f.id); onSelect(f.id); }}
+        >
+          {/* expand arrow */}
+          {kids.length > 0 ? (
+            <span style={{ color: isActive ? T.navActiveText : "rgba(255,255,255,0.35)",
+              fontSize:9, transition:"transform 0.15s", display:"inline-block",
+              transform: isOpen ? "rotate(90deg)" : "rotate(0)" }}>▶</span>
+          ) : (
+            <span style={{ width:9 }}/>
+          )}
+          {/* folder icon */}
+          <span style={{ fontSize:12 }}>{isOpen ? "📂" : "📁"}</span>
+          {/* name */}
+          {renaming === f.id ? (
+            <input
+              autoFocus
+              value={newName}
+              onChange={e => setNewName(e.target.value)}
+              onKeyDown={e => { if(e.key==="Enter") commitRename(f); if(e.key==="Escape") setRenaming(null); }}
+              onBlur={() => commitRename(f)}
+              onClick={e => e.stopPropagation()}
+              style={{ flex:1, fontSize:11, padding:"1px 5px", borderRadius:4,
+                border:`1px solid ${T.accent}`, background:"rgba(255,255,255,0.12)",
+                color:"white", outline:"none", fontFamily:"inherit" }}
+            />
+          ) : (
+            <span style={{ flex:1, fontSize:11, fontWeight:isActive?600:400,
+              color: isActive ? T.navActiveText : "rgba(255,255,255,0.7)",
+              overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>
+              {f.name}
+            </span>
+          )}
+          {/* count badge */}
+          {count > 0 && (
+            <span style={{ fontSize:9, color:"rgba(255,255,255,0.3)",
+              background:"rgba(255,255,255,0.08)", borderRadius:99,
+              padding:"0 5px", flexShrink:0 }}>
+              {count}
+            </span>
+          )}
+        </div>
+        {/* children */}
+        {isOpen && kids.map(k => renderFolder(k, depth + 1))}
+      </div>
+    );
+  };
+
+  return (
+    <div style={{ height:"100%", display:"flex", flexDirection:"column" }}>
+      {/* Header */}
+      <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between",
+        padding:"12px 10px 8px", flexShrink:0 }}>
+        <span style={{ fontSize:11, fontWeight:700, color:"rgba(255,255,255,0.5)",
+          textTransform:"uppercase", letterSpacing:"0.06em" }}>Folders</span>
+        <button onClick={onAdd}
+          title="New folder"
+          style={{ background:"none", border:`1px solid rgba(255,255,255,0.15)`,
+            borderRadius:5, padding:"3px 7px", cursor:"pointer",
+            color:"rgba(255,255,255,0.5)", fontSize:10, display:"flex",
+            alignItems:"center", gap:3, transition:"all 0.1s" }}
+          onMouseEnter={e=>{e.currentTarget.style.borderColor="rgba(255,255,255,0.4)";e.currentTarget.style.color="white";}}
+          onMouseLeave={e=>{e.currentTarget.style.borderColor="rgba(255,255,255,0.15)";e.currentTarget.style.color="rgba(255,255,255,0.5)";}}>
+          <span style={{fontSize:14,lineHeight:1}}>+</span>
+        </button>
+      </div>
+
+      {/* "All" shortcut */}
+      <div
+        onClick={() => onSelect(null)}
+        style={{ display:"flex", alignItems:"center", gap:7,
+          padding:"5px 8px", borderRadius:6, cursor:"pointer",
+          margin:"0 0 4px",
+          background: selected === null ? `${T.accent}15` : "transparent",
+          transition:"background 0.1s" }}
+        onMouseEnter={e=>{if(selected!==null)e.currentTarget.style.background="rgba(255,255,255,0.05)";}}
+        onMouseLeave={e=>{if(selected!==null)e.currentTarget.style.background="transparent";}}
+      >
+        <span style={{fontSize:12}}>🗂️</span>
+        <span style={{ fontSize:11, fontWeight:selected===null?700:400,
+          color: selected===null ? T.navActiveText : "rgba(255,255,255,0.65)" }}>
+          All Dataflows
+        </span>
+        <span style={{ marginLeft:"auto", fontSize:9, color:"rgba(255,255,255,0.3)",
+          background:"rgba(255,255,255,0.08)", borderRadius:99, padding:"0 5px" }}>
+          {dataflows.length}
+        </span>
+      </div>
+
+      {/* ⭐ Starred */}
+      <div
+        onClick={() => onSelect("__starred__")}
+        style={{ display:"flex", alignItems:"center", gap:7,
+          padding:"5px 8px", borderRadius:6, cursor:"pointer",
+          margin:"0 0 8px",
+          background: selected === "__starred__" ? `${T.accent}15` : "transparent",
+          transition:"background 0.1s" }}
+        onMouseEnter={e=>{if(selected!=="__starred__")e.currentTarget.style.background="rgba(255,255,255,0.05)";}}
+        onMouseLeave={e=>{if(selected!=="__starred__")e.currentTarget.style.background="transparent";}}
+      >
+        <span style={{fontSize:12}}>⭐</span>
+        <span style={{ fontSize:11, fontWeight:selected==="__starred__"?700:400,
+          color: selected==="__starred__" ? T.navActiveText : "rgba(255,255,255,0.65)" }}>
+          Starred
+        </span>
+        <span style={{ marginLeft:"auto", fontSize:9, color:"rgba(255,255,255,0.3)",
+          background:"rgba(255,255,255,0.08)", borderRadius:99, padding:"0 5px" }}>
+          {dataflows.filter(d=>d.starred).length}
+        </span>
+      </div>
+
+      <div style={{ height:1, background:"rgba(255,255,255,0.06)", margin:"0 0 4px" }}/>
+
+      {/* Folder tree */}
+      <div style={{ flex:1, overflowY:"auto" }}>
+        {roots.map(f => renderFolder(f))}
+      </div>
+
+      {/* Context menu */}
+      {ctxMenu && (
+        <div
+          style={{ position:"fixed", left:ctxMenu.x, top:ctxMenu.y,
+            background:"#1C1917", border:"1px solid rgba(255,255,255,0.15)",
+            borderRadius:8, padding:"4px", zIndex:999,
+            boxShadow:"0 8px 24px rgba(0,0,0,0.4)", minWidth:160 }}
+          onMouseLeave={() => setCtxMenu(null)}
+        >
+          {[
+            { label:"✏️ Rename", action:() => startRename(folders.find(f=>f.id===ctxMenu.folderId)) },
+            { label:"➕ New subfolder", action:() => { onAdd(ctxMenu.folderId); setCtxMenu(null); } },
+            { label:"🗑️ Delete", action:() => { onDelete(ctxMenu.folderId); setCtxMenu(null); }, danger:true },
+          ].map(item => (
+            <button key={item.label} onClick={item.action}
+              style={{ display:"block", width:"100%", padding:"7px 12px",
+                background:"none", border:"none", cursor:"pointer", textAlign:"left",
+                fontSize:11, borderRadius:5, fontFamily:"inherit",
+                color: item.danger ? "#F87171" : "rgba(255,255,255,0.75)",
+                transition:"background 0.1s" }}
+              onMouseEnter={e=>e.currentTarget.style.background="rgba(255,255,255,0.08)"}
+              onMouseLeave={e=>e.currentTarget.style.background="none"}>
+              {item.label}
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+
+// ─── DataflowRow ──────────────────────────────────────────────────────────────
+function DataflowRow({ df, onStar, onOpen, onDelete, onDuplicate, onMove, folders, T }) {
+  const [menuOpen, setMenuOpen] = React.useState(false);
+  const menuRef = React.useRef(null);
+
+  React.useEffect(() => {
+    if (!menuOpen) return;
+    const handler = (e) => {
+      if (menuRef.current && !menuRef.current.contains(e.target)) setMenuOpen(false);
+    };
+    document.addEventListener("mousedown", handler);
+    return () => document.removeEventListener("mousedown", handler);
+  }, [menuOpen]);
+
+  const priorityColor = {
+    None:     T.dim,
+    Low:      T.cyan,
+    Medium:   T.yellow,
+    High:     T.orange,
+    Critical: T.red,
+  }[df.priority || "None"] || T.dim;
+
+  return (
+    <tr
+      style={{ borderBottom:`1px solid ${T.border}`, cursor:"pointer",
+        transition:"background 0.08s" }}
+      onMouseEnter={e => e.currentTarget.style.background=`${T.accent}06`}
+      onMouseLeave={e => e.currentTarget.style.background="transparent"}
+    >
+      {/* Star */}
+      <td style={{ padding:"10px 6px 10px 14px", width:32 }} onClick={e=>e.stopPropagation()}>
+        <button onClick={() => onStar(df.id)}
+          style={{ background:"none", border:"none", cursor:"pointer",
+            fontSize:14, lineHeight:1, color: df.starred ? "#F59E0B" : T.border2,
+            transition:"color 0.15s" }}
+          title={df.starred ? "Unstar" : "Star"}>
+          {df.starred ? "★" : "☆"}
+        </button>
+      </td>
+
+      {/* Actions (⋯ menu) */}
+      <td style={{ padding:"10px 6px", width:36, position:"relative" }} onClick={e=>e.stopPropagation()}>
+        <div ref={menuRef} style={{ position:"relative" }}>
+          <button onClick={() => setMenuOpen(p=>!p)}
+            style={{ background:"none", border:`1px solid ${menuOpen?T.border2:T.border}`,
+              borderRadius:5, padding:"2px 7px", cursor:"pointer",
+              color:T.muted, fontSize:12, lineHeight:1, transition:"all 0.1s" }}
+            onMouseEnter={e=>{e.currentTarget.style.borderColor=T.accent;e.currentTarget.style.color=T.accent;}}
+            onMouseLeave={e=>{if(!menuOpen){e.currentTarget.style.borderColor=T.border;e.currentTarget.style.color=T.muted;}}}>
+            •••
+          </button>
+          {menuOpen && (
+            <div style={{ position:"absolute", left:0, top:"100%", marginTop:4,
+              background:T.card, border:`1px solid ${T.border}`,
+              borderRadius:8, padding:"4px", zIndex:99,
+              boxShadow:"0 8px 24px rgba(0,0,0,0.12)", minWidth:170 }}>
+              {[
+                { label:"▶  Run now",        action:() => { onOpen(df,"run"); setMenuOpen(false); } },
+                { label:"✏️  Edit",            action:() => { onOpen(df,"edit"); setMenuOpen(false); } },
+                { label:"📋  Duplicate",       action:() => { onDuplicate(df); setMenuOpen(false); } },
+                { label:"📁  Move to folder…", action:() => { onMove(df); setMenuOpen(false); } },
+                { label:"🗑️  Delete",          action:() => { onDelete(df.id); setMenuOpen(false); }, danger:true },
+              ].map(item => (
+                <button key={item.label} onClick={item.action}
+                  style={{ display:"block", width:"100%", padding:"7px 11px",
+                    background:"none", border:"none", cursor:"pointer", textAlign:"left",
+                    fontSize:11, borderRadius:5, fontFamily:"inherit",
+                    color:item.danger?T.red:T.text2, transition:"background 0.1s" }}
+                  onMouseEnter={e=>e.currentTarget.style.background=`${item.danger?T.red:T.accent}10`}
+                  onMouseLeave={e=>e.currentTarget.style.background="none"}>
+                  {item.label}
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
+      </td>
+
+      {/* Name + description */}
+      <td style={{ padding:"10px 14px" }} onClick={() => onOpen(df,"view")}>
+        <div style={{ fontSize:12, fontWeight:600, color:T.accent,
+          textDecoration:"none" }}>
+          {df.name}
+        </div>
+        {df.desc && (
+          <div style={{ fontSize:10, color:T.muted, marginTop:2,
+            overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap", maxWidth:360 }}>
+            {df.desc}
+          </div>
+        )}
+      </td>
+
+      {/* Check count */}
+      <td style={{ padding:"10px 14px", textAlign:"center", width:90 }}
+          onClick={() => onOpen(df,"view")}>
+        <span style={{ fontSize:13, fontWeight:700, color:T.text2 }}>
+          {df.checks?.length || 0}
+        </span>
+      </td>
+
+      {/* Tags */}
+      <td style={{ padding:"10px 8px", width:180 }} onClick={() => onOpen(df,"view")}>
+        <div style={{ display:"flex", gap:4, flexWrap:"wrap" }}>
+          {(df.tags||[]).slice(0,3).map(tag => (
+            <span key={tag} style={{ fontSize:9, padding:"1px 7px",
+              borderRadius:99, fontWeight:600,
+              background:`${T.accent}12`, color:T.accent,
+              border:`1px solid ${T.accent}25` }}>
+              {tag}
+            </span>
+          ))}
+          {(df.tags||[]).length > 3 && (
+            <span style={{ fontSize:9, color:T.dim }}>+{df.tags.length-3}</span>
+          )}
+        </div>
+      </td>
+
+      {/* Owner */}
+      <td style={{ padding:"10px 14px", width:130 }} onClick={() => onOpen(df,"view")}>
+        <div style={{ display:"flex", alignItems:"center", gap:5 }}>
+          <div style={{ width:20, height:20, borderRadius:"50%",
+            background:`${T.accent}20`, display:"flex", alignItems:"center",
+            justifyContent:"center", fontSize:9, fontWeight:700, color:T.accent, flexShrink:0 }}>
+            {(df.owner||"?")[0].toUpperCase()}
+          </div>
+          <span style={{ fontSize:11, color:T.text2, overflow:"hidden",
+            textOverflow:"ellipsis", whiteSpace:"nowrap" }}>
+            {df.owner || "—"}
+          </span>
+        </div>
+      </td>
+
+      {/* Priority */}
+      <td style={{ padding:"10px 14px", width:100 }} onClick={() => onOpen(df,"view")}>
+        <div style={{ display:"flex", alignItems:"center", gap:4 }}>
+          <span style={{ fontSize:10, color:priorityColor, fontWeight:600 }}>
+            {df.priority && df.priority !== "None" ? `! ` : ""}
+          </span>
+          <span style={{ fontSize:11, color: df.priority && df.priority!=="None" ? priorityColor : T.dim }}>
+            {df.priority || "None"}
+          </span>
+        </div>
+      </td>
+
+      {/* Updated */}
+      <td style={{ padding:"10px 14px", width:130 }} onClick={() => onOpen(df,"view")}>
+        <div style={{ display:"flex", alignItems:"center", gap:5 }}>
+          <span style={{ fontSize:11, color:T.muted }}>{timeAgo(df.updated_at)}</span>
+        </div>
+      </td>
+    </tr>
+  );
+}
+
+
+// ─── DataflowDetailModal ──────────────────────────────────────────────────────
+function DataflowDetailModal({ df: dfProp, onClose, onSave, onRun, T }) {
+  const [df, setDf]         = React.useState(dfProp);
+  const [tab, setTab]       = React.useState("overview"); // overview | checks | history
+  const [running, setRunning] = React.useState(false);
+  const [runResult, setRunResult] = React.useState(null);
+  const [editingCkId, setEditingCkId] = React.useState(null);
+  const [saving, setSaving]   = React.useState(false);
+  const [saveMsg, setSaveMsg] = React.useState("");
+
+  const updateCheckField = (idx, key, val) => {
+    setDf(p => ({ ...p, checks: p.checks.map((c,i) => i===idx ? {...c,[key]:val} : c) }));
+  };
+  const removeCheckAt = (idx) => {
+    setDf(p => ({ ...p, checks: p.checks.filter((_,i) => i!==idx) }));
+  };
+  const addNewCheck = () => {
+    setDf(p => ({
+      ...p,
+      checks: [...(p.checks||[]), { name:"New Check", sql:"", pass_condition:"rows = 0", severity:"high" }]
+    }));
+    setEditingCkId((df.checks||[]).length); // open last item
+  };
+  const moveCheckAt = (idx, dir) => {
+    setDf(p => {
+      const arr = [...p.checks];
+      const j = idx + dir;
+      if (j < 0 || j >= arr.length) return p;
+      [arr[idx], arr[j]] = [arr[j], arr[idx]];
+      return { ...p, checks: arr };
+    });
+  };
+
+  const saveChecks = async () => {
+    setSaving(true);
+    const updated = { ...df, updated_at: new Date().toISOString() };
+    await onSave(updated);
+    setSaveMsg("✓ Saved");
+    setTimeout(() => setSaveMsg(""), 2500);
+    setSaving(false);
+    setEditingCkId(null);
+  };
+
+  const handleRun = async () => {
+    setRunning(true);
+    setTab("history");
+    const result = await onRun(df);
+    setRunResult(result);
+    setRunning(false);
+  };
+  const dfChecks = df.checks || [];
+
+  const passCount = runResult?.results?.filter(r=>r.status==="pass").length || 0;
+  const failCount = runResult?.results?.filter(r=>r.status!=="pass").length || 0;
+
+  return (
+    <div style={{ position:"fixed", inset:0, background:"rgba(0,0,0,0.55)",
+      display:"flex", alignItems:"center", justifyContent:"center", zIndex:200 }}
+      onClick={e => { if(e.target===e.currentTarget) onClose(); }}>
+      <div style={{ background:T.surface, borderRadius:14, width:"min(860px,95vw)",
+        maxHeight:"88vh", display:"flex", flexDirection:"column",
+        border:`1px solid ${T.border}`, boxShadow:"0 24px 64px rgba(0,0,0,0.18)",
+        overflow:"hidden" }}>
+
+        {/* Header */}
+        <div style={{ padding:"20px 24px 0", borderBottom:`1px solid ${T.border}`, flexShrink:0 }}>
+          <div style={{ display:"flex", alignItems:"flex-start", gap:12, marginBottom:16 }}>
+            <div style={{ width:40, height:40, borderRadius:10, flexShrink:0,
+              background:`linear-gradient(135deg, ${T.accent}25, ${T.purple}25)`,
+              border:`1px solid ${T.accent}30`,
+              display:"flex", alignItems:"center", justifyContent:"center",
+              fontSize:18 }}>
+              🔍
+            </div>
+            <div style={{ flex:1, minWidth:0 }}>
+              <div style={{ fontSize:16, fontWeight:700, color:T.text }}>{df.name}</div>
+              {df.desc && <div style={{ fontSize:12, color:T.muted, marginTop:2 }}>{df.desc}</div>}
+              <div style={{ display:"flex", gap:6, marginTop:6, flexWrap:"wrap" }}>
+                {(df.tags||[]).map(tag => (
+                  <span key={tag} style={{ fontSize:9, padding:"2px 8px", borderRadius:99,
+                    background:`${T.accent}12`, color:T.accent, border:`1px solid ${T.accent}25`,
+                    fontWeight:600 }}>{tag}</span>
+                ))}
+                {df.schedule && (
+                  <span style={{ fontSize:9, padding:"2px 8px", borderRadius:99,
+                    background:`${T.purple}12`, color:T.purple, border:`1px solid ${T.purple}25`,
+                    fontWeight:600 }}>🕐 {df.schedule}</span>
+                )}
+              </div>
+            </div>
+            <div style={{ display:"flex", gap:8, flexShrink:0, alignItems:"center" }}>
+              <Btn onClick={handleRun} disabled={running} size="sm"
+                style={{ background:`linear-gradient(135deg,${T.accent},${T.purple})`, color:"white", border:"none" }}>
+                {running ? <Spinner size={10} color="white"/> : <span>▶</span>}
+                {running ? "Running…" : "Run"}
+              </Btn>
+              <button onClick={onClose}
+                style={{ background:"none", border:"none", cursor:"pointer", color:T.muted,
+                  fontSize:18, lineHeight:1, padding:"4px" }}>×</button>
+            </div>
+          </div>
+
+          {/* Tab nav */}
+          <div style={{ display:"flex", gap:0 }}>
+            {[["overview","📋 Overview"],["checks","✅ Checks"],["history","📊 Run History"]].map(([id,label]) => (
+              <button key={id} onClick={() => setTab(id)}
+                style={{ padding:"8px 16px", background:"none", border:"none",
+                  cursor:"pointer", fontSize:12, fontWeight:tab===id?700:400,
+                  color:tab===id?T.accent:T.muted, fontFamily:"inherit",
+                  borderBottom:`2px solid ${tab===id?T.accent:"transparent"}`,
+                  transition:"all 0.15s" }}>
+                {label}
+              </button>
+            ))}
+          </div>
+        </div>
+
+        {/* Body */}
+        <div style={{ flex:1, overflowY:"auto", padding:"20px 24px" }}>
+
+          {tab==="overview" && (
+            <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:16 }}>
+              {[
+                { label:"Checks", value:df.checks?.length||0 },
+                { label:"Owner", value:df.owner||"—" },
+                { label:"Priority", value:df.priority||"None" },
+                { label:"Schedule", value:df.schedule||"Manual" },
+                { label:"DB Connection", value:df.db_key||"default" },
+                { label:"Last Updated", value:timeAgo(df.updated_at) },
+                { label:"Created", value:timeAgo(df.created_at) },
+                { label:"Tags", value:(df.tags||[]).join(", ")||"—" },
+              ].map(item => (
+                <div key={item.label} style={{ padding:"12px 14px", borderRadius:8,
+                  border:`1px solid ${T.border}`, background:T.bg }}>
+                  <div style={{ fontSize:10, fontWeight:700, color:T.muted,
+                    textTransform:"uppercase", letterSpacing:"0.06em", marginBottom:4 }}>
+                    {item.label}
+                  </div>
+                  <div style={{ fontSize:13, fontWeight:600, color:T.text }}>{String(item.value)}</div>
+                </div>
+              ))}
+            </div>
+          )}
+
+          {tab==="checks" && (
+            <div>
+              {/* toolbar */}
+              <div style={{ display:"flex", alignItems:"center", gap:8, marginBottom:14 }}>
+                <span style={{ fontSize:13, fontWeight:700, color:T.text }}>
+                  SQL Checks
+                </span>
+                <span style={{ fontSize:10, color:T.muted, background:T.border,
+                  borderRadius:99, padding:"1px 8px" }}>{dfChecks.length}</span>
+                <div style={{ marginLeft:"auto", display:"flex", gap:6, alignItems:"center" }}>
+                  {saveMsg && <span style={{ fontSize:11, color:T.green, fontWeight:600 }}>{saveMsg}</span>}
+                  <Btn size="sm" variant="ghost" onClick={addNewCheck}>
+                    <Plus size={10}/> Add Check
+                  </Btn>
+                  <Btn size="sm" onClick={saveChecks} disabled={saving}
+                    style={{ background:`linear-gradient(135deg,${T.accent},${T.purple})`, color:"white", border:"none" }}>
+                    {saving ? <Spinner size={10} color="white"/> : <Check size={10}/>}
+                    {saving ? "Saving…" : "Save to Redshift"}
+                  </Btn>
+                </div>
+              </div>
+
+              {dfChecks.length === 0 && (
+                <div style={{ textAlign:"center", padding:"32px", color:T.muted, fontSize:13 }}>
+                  No checks configured yet.{" "}
+                  <button onClick={addNewCheck}
+                    style={{ color:T.accent, background:"none", border:"none", cursor:"pointer", fontWeight:600 }}>
+                    Add the first one →
+                  </button>
+                </div>
+              )}
+
+              <div style={{ display:"flex", flexDirection:"column", gap:8 }}>
+                {dfChecks.map((chk, i) => {
+                  const isEd = editingCkId === i;
+                  const sevColor = chk.severity==="critical"?T.red:chk.severity==="high"?T.orange:chk.severity==="medium"?T.yellow:T.cyan;
+                  const inpSt = { width:"100%", padding:"6px 10px", borderRadius:6, fontSize:11,
+                    border:`1px solid ${T.border}`, background:T.surface, color:T.text,
+                    fontFamily:"inherit", outline:"none", boxSizing:"border-box" };
+                  return (
+                    <div key={i} style={{ borderRadius:9, overflow:"hidden",
+                      border:`1px solid ${isEd ? T.accent : T.border}`,
+                      background: isEd ? `${T.accent}04` : T.bg,
+                      transition:"border-color 0.15s" }}>
+
+                      {/* Collapsed view */}
+                      {!isEd && (
+                        <div style={{ display:"flex", alignItems:"center", gap:10, padding:"10px 14px" }}>
+                          <div style={{ width:4, alignSelf:"stretch", borderRadius:2,
+                            background:sevColor, flexShrink:0 }}/>
+                          <span style={{ fontSize:10, fontWeight:700, color:T.muted,
+                            background:T.border, borderRadius:4, padding:"1px 6px", flexShrink:0 }}>
+                            #{i+1}
+                          </span>
+                          <div style={{ flex:1, minWidth:0 }}>
+                            <div style={{ fontSize:12, fontWeight:700, color:T.text }}>{chk.name||"Unnamed"}</div>
+                            <div style={{ fontSize:10, color:T.muted, fontFamily:"monospace",
+                              overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap", marginTop:1 }}>
+                              {chk.sql||"—"}
+                            </div>
+                            <div style={{ fontSize:10, color:T.dim, marginTop:2, display:"flex", gap:8 }}>
+                              <span>Pass when: <code style={{fontFamily:"monospace",color:T.green}}>{chk.pass_condition||"rows = 0"}</code></span>
+                              <span style={{ padding:"0 6px", borderRadius:99, fontSize:9, fontWeight:700,
+                                background:`${sevColor}15`, color:sevColor }}>{chk.severity||"high"}</span>
+                            </div>
+                          </div>
+                          <div style={{ display:"flex", gap:4, flexShrink:0 }}>
+                            <button onClick={()=>setEditingCkId(i)} title="Edit"
+                              style={{ background:"none", border:`1px solid ${T.border}`, borderRadius:5,
+                                cursor:"pointer", color:T.muted, fontSize:10, padding:"3px 9px",
+                                transition:"all 0.1s" }}
+                              onMouseEnter={e=>{e.currentTarget.style.borderColor=T.accent;e.currentTarget.style.color=T.accent;}}
+                              onMouseLeave={e=>{e.currentTarget.style.borderColor=T.border;e.currentTarget.style.color=T.muted;}}>
+                              ✏️ Edit
+                            </button>
+                            <button onClick={()=>moveCheckAt(i,-1)} disabled={i===0}
+                              style={{ background:"none", border:"none", cursor:i===0?"not-allowed":"pointer",
+                                color:T.dim, fontSize:13, opacity:i===0?0.3:1 }}>↑</button>
+                            <button onClick={()=>moveCheckAt(i,1)} disabled={i===dfChecks.length-1}
+                              style={{ background:"none", border:"none", cursor:i===dfChecks.length-1?"not-allowed":"pointer",
+                                color:T.dim, fontSize:13, opacity:i===dfChecks.length-1?0.3:1 }}>↓</button>
+                            <button onClick={()=>removeCheckAt(i)}
+                              style={{ background:"none", border:"none", cursor:"pointer",
+                                color:T.red, fontSize:16, lineHeight:1 }}>×</button>
+                          </div>
+                        </div>
+                      )}
+
+                      {/* Expanded inline editor */}
+                      {isEd && (
+                        <div style={{ padding:"14px 16px", display:"flex", flexDirection:"column", gap:10 }}>
+                          <div style={{ fontSize:11, fontWeight:700, color:T.accent }}>
+                            ✏️ Editing Check #{i+1}
+                          </div>
+                          <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:10 }}>
+                            <div>
+                              <label style={{ fontSize:10, fontWeight:600, color:T.muted, display:"block", marginBottom:2 }}>Name</label>
+                              <input value={chk.name} onChange={e=>updateCheckField(i,"name",e.target.value)}
+                                style={inpSt}
+                                onFocus={e=>e.target.style.borderColor=T.accent}
+                                onBlur={e=>e.target.style.borderColor=T.border}/>
+                            </div>
+                            <div>
+                              <label style={{ fontSize:10, fontWeight:600, color:T.muted, display:"block", marginBottom:2 }}>Severity</label>
+                              <select value={chk.severity||"high"} onChange={e=>updateCheckField(i,"severity",e.target.value)}
+                                style={inpSt}>
+                                {["critical","high","medium","low"].map(s=><option key={s} value={s}>{s}</option>)}
+                              </select>
+                            </div>
+                          </div>
+                          <div>
+                            <label style={{ fontSize:10, fontWeight:600, color:T.muted, display:"block", marginBottom:2 }}>SQL Query</label>
+                            <textarea value={chk.sql} rows={4} onChange={e=>updateCheckField(i,"sql",e.target.value)}
+                              style={{...inpSt, fontFamily:"monospace", resize:"vertical"}}
+                              onFocus={e=>e.target.style.borderColor=T.accent}
+                              onBlur={e=>e.target.style.borderColor=T.border}/>
+                          </div>
+                          <div>
+                            <label style={{ fontSize:10, fontWeight:600, color:T.muted, display:"block", marginBottom:2 }}>Pass when</label>
+                            <PassConditionPicker
+                              value={chk.pass_condition||"rows = 0"}
+                              onChange={v => updateCheckField(i,"pass_condition",v)}
+                            />
+                          </div>
+                          <div style={{ display:"flex", gap:6 }}>
+                            <Btn size="sm" onClick={()=>setEditingCkId(null)}
+                              style={{ background:T.green, color:"white", border:"none" }}>
+                              <Check size={10}/> Done editing
+                            </Btn>
+                            <Btn size="sm" variant="muted" onClick={()=>removeCheckAt(i)}>
+                              <Trash2 size={10}/> Remove
+                            </Btn>
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+
+              {dfChecks.length > 0 && (
+                <div style={{ marginTop:14, paddingTop:14, borderTop:`1px solid ${T.border}`,
+                  display:"flex", justifyContent:"flex-end", gap:8, alignItems:"center" }}>
+                  {saveMsg && <span style={{ fontSize:11, color:T.green, fontWeight:600 }}>{saveMsg}</span>}
+                  <Btn size="sm" variant="ghost" onClick={addNewCheck}>
+                    <Plus size={10}/> Add Check
+                  </Btn>
+                  <Btn size="sm" onClick={saveChecks} disabled={saving}
+                    style={{ background:`linear-gradient(135deg,${T.accent},${T.purple})`, color:"white", border:"none" }}>
+                    {saving ? <Spinner size={10} color="white"/> : <Check size={10}/>}
+                    {saving ? "Saving…" : "Save to Redshift"}
+                  </Btn>
+                </div>
+              )}
+            </div>
+          )}
+
+          {tab==="history" && (
+            <div>
+              {running && (
+                <div style={{ textAlign:"center", padding:"32px" }}>
+                  <Spinner size={28} style={{ margin:"0 auto 12px" }}/>
+                  <div style={{ fontSize:14, fontWeight:700, color:T.text, marginTop:12 }}>Running checks…</div>
+                  <div style={{ fontSize:12, color:T.muted, marginTop:4 }}>
+                    Executing {df.checks?.length||0} checks
+                  </div>
+                </div>
+              )}
+              {runResult && !running && (
+                <div>
+                  {/* Summary bar */}
+                  <div style={{ display:"flex", gap:10, marginBottom:16 }}>
+                    {[
+                      { label:"Passed", value:passCount, color:T.green },
+                      { label:"Failed", value:failCount, color:T.red },
+                      { label:"Total",  value:runResult.results?.length||0, color:T.accent },
+                    ].map(s => (
+                      <div key={s.label} style={{ flex:1, padding:"10px 14px",
+                        borderRadius:8, border:`1px solid ${s.color}25`,
+                        background:`${s.color}08`, textAlign:"center" }}>
+                        <div style={{ fontSize:22, fontWeight:800, color:s.color }}>{s.value}</div>
+                        <div style={{ fontSize:10, color:T.muted }}>{s.label}</div>
+                      </div>
+                    ))}
+                  </div>
+                  {/* Results */}
+                  {(runResult.results||[]).map((r,i) => (
+                    <div key={i} style={{ padding:"10px 14px", borderRadius:8,
+                      border:`1px solid ${r.status==="pass"?T.green:T.red}25`,
+                      background:`${r.status==="pass"?T.green:T.red}05`,
+                      marginBottom:8 }}>
+                      <div style={{ display:"flex", alignItems:"center", gap:8 }}>
+                        <span style={{ fontSize:14 }}>{r.status==="pass"?"✅":"❌"}</span>
+                        <span style={{ fontSize:12, fontWeight:600, color:T.text }}>{r.name}</span>
+                        <span style={{ marginLeft:"auto", fontSize:10, color:T.muted,
+                          fontFamily:"monospace" }}>
+                          {r.row_count!=null ? `${r.row_count} rows` : ""}
+                          {r.duration_ms ? ` · ${r.duration_ms}ms` : ""}
+                        </span>
+                      </div>
+                      {r.error && (
+                        <div style={{ fontSize:10, color:T.red, marginTop:6,
+                          fontFamily:"monospace", padding:"4px 8px", background:`${T.red}08`,
+                          borderRadius:4 }}>{r.error}</div>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              )}
+              {!runResult && !running && (
+                <div style={{ textAlign:"center", padding:"40px", color:T.muted }}>
+                  <div style={{ fontSize:32, marginBottom:8 }}>📊</div>
+                  <div style={{ fontSize:13 }}>Click Run to execute this dataflow</div>
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+
+// ─── DataflowFormModal — Create / Edit ────────────────────────────────────────
+function DataflowFormModal({ initial, folders, onSave, onClose, T }) {
+  const blank = {
+    id:"", name:"", desc:"", folder_id:"f_root",
+    tags:[], priority:"None", schedule:"manual",
+    owner:"admin", db_key:"default",
+    checks:[{ name:"", sql:"", pass_condition:"rows = 0", severity:"high" }],
+  };
+  const [form, setForm]   = React.useState(initial ? { ...blank, ...initial,
+    tags: Array.isArray(initial.tags) ? initial.tags : [] } : blank);
+  const [tagInput, setTagInput] = React.useState((initial?.tags||[]).join(", "));
+  const [saving, setSaving] = React.useState(false);
+
+  const field = (k, v) => setForm(p => ({ ...p, [k]:v }));
+
+  const addCheck = () => setForm(p => ({
+    ...p, checks:[...p.checks, { name:"", sql:"", pass_condition:"rows = 0", severity:"high" }]
+  }));
+  const removeCheck = (i) => setForm(p => ({ ...p, checks:p.checks.filter((_,idx)=>idx!==i) }));
+  const updateCheck = (i, k, v) => setForm(p => ({
+    ...p, checks:p.checks.map((c,idx)=>idx===i?{...c,[k]:v}:c)
+  }));
+
+  const handleSave = async () => {
+    if (!form.name.trim()) return;
+    setSaving(true);
+    const tags = tagInput.split(",").map(t=>t.trim()).filter(Boolean);
+    const now  = new Date().toISOString();
+    const saved = {
+      ...form,
+      id: form.id || uid(),
+      tags,
+      updated_at: now,
+      created_at: form.created_at || now,
+      starred: form.starred || false,
+    };
+    await onSave(saved);
+    setSaving(false);
+  };
+
+  const inp = {
+    width:"100%", padding:"7px 10px", borderRadius:6, fontSize:11,
+    border:`1px solid ${T.border}`, background:T.bg, color:T.text,
+    fontFamily:"inherit", outline:"none", boxSizing:"border-box",
+  };
+
+  const Label = ({ children }) => (
+    <label style={{ fontSize:10, fontWeight:700, color:T.muted, display:"block",
+      marginBottom:3, textTransform:"uppercase", letterSpacing:"0.05em" }}>
+      {children}
+    </label>
+  );
+
+  return (
+    <div style={{ position:"fixed", inset:0, background:"rgba(0,0,0,0.55)",
+      display:"flex", alignItems:"center", justifyContent:"center", zIndex:200 }}
+      onClick={e => { if(e.target===e.currentTarget) onClose(); }}>
+      <div style={{ background:T.surface, borderRadius:14, width:"min(740px,95vw)",
+        maxHeight:"90vh", display:"flex", flexDirection:"column",
+        border:`1px solid ${T.border}`, boxShadow:"0 24px 64px rgba(0,0,0,0.18)",
+        overflow:"hidden" }}>
+
+        {/* Header */}
+        <div style={{ padding:"20px 24px", borderBottom:`1px solid ${T.border}`,
+          display:"flex", alignItems:"center", gap:12, flexShrink:0 }}>
+          <div style={{ flex:1 }}>
+            <div style={{ fontSize:15, fontWeight:700, color:T.text }}>
+              {initial?.id ? "Edit Dataflow" : "Create Dataflow"}
+            </div>
+            <div style={{ fontSize:11, color:T.muted, marginTop:1 }}>
+              {initial?.id ? "Update the checks and settings for this dataflow" : "Configure a new dataflow with SQL checks"}
+            </div>
+          </div>
+          <button onClick={onClose}
+            style={{ background:"none", border:"none", cursor:"pointer",
+              color:T.muted, fontSize:20, lineHeight:1 }}>×</button>
+        </div>
+
+        {/* Body */}
+        <div style={{ flex:1, overflowY:"auto", padding:"20px 24px" }}>
+
+          {/* Row 1: Name + Folder */}
+          <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:12, marginBottom:14 }}>
+            <div>
+              <Label>Name *</Label>
+              <input value={form.name} onChange={e=>field("name",e.target.value)}
+                placeholder="e.g. Daily Orders Null Check"
+                style={inp} autoFocus
+                onFocus={e=>e.target.style.borderColor=T.accent}
+                onBlur={e=>e.target.style.borderColor=T.border}/>
+            </div>
+            <div>
+              <Label>Folder</Label>
+              <select value={form.folder_id} onChange={e=>field("folder_id",e.target.value)} style={inp}>
+                {folders.map(f => (
+                  <option key={f.id} value={f.id}>{f.name}</option>
+                ))}
+              </select>
+            </div>
+          </div>
+
+          {/* Description */}
+          <div style={{ marginBottom:14 }}>
+            <Label>Description</Label>
+            <input value={form.desc} onChange={e=>field("desc",e.target.value)}
+              placeholder="What does this dataflow check?"
+              style={inp}
+              onFocus={e=>e.target.style.borderColor=T.accent}
+              onBlur={e=>e.target.style.borderColor=T.border}/>
+          </div>
+
+          {/* Row 2: Owner, Priority, Schedule, DB */}
+          <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr 1fr 1fr", gap:12, marginBottom:14 }}>
+            <div>
+              <Label>Owner</Label>
+              <input value={form.owner} onChange={e=>field("owner",e.target.value)}
+                placeholder="admin" style={inp}
+                onFocus={e=>e.target.style.borderColor=T.accent}
+                onBlur={e=>e.target.style.borderColor=T.border}/>
+            </div>
+            <div>
+              <Label>Priority</Label>
+              <select value={form.priority||"None"} onChange={e=>field("priority",e.target.value)} style={inp}>
+                {PRIORITIES.map(p=><option key={p} value={p}>{p}</option>)}
+              </select>
+            </div>
+            <div>
+              <Label>Schedule</Label>
+              <select value={form.schedule||"manual"} onChange={e=>field("schedule",e.target.value)} style={inp}>
+                {["manual","every 15 min","every 30 min","every 1 hour","every 6 hours","daily","custom"].map(s=>(
+                  <option key={s} value={s}>{s}</option>
+                ))}
+              </select>
+            </div>
+            <div>
+              <Label>DB Connection</Label>
+              <select value={form.db_key||"default"} onChange={e=>field("db_key",e.target.value)} style={inp}>
+                <option value="default">default</option>
+              </select>
+            </div>
+          </div>
+
+          {/* Tags */}
+          <div style={{ marginBottom:20 }}>
+            <Label>Tags (comma-separated)</Label>
+            <input value={tagInput} onChange={e=>setTagInput(e.target.value)}
+              placeholder="freshness, nulls, orders, ads"
+              style={inp}
+              onFocus={e=>e.target.style.borderColor=T.accent}
+              onBlur={e=>e.target.style.borderColor=T.border}/>
+          </div>
+
+          {/* Checks */}
+          <div style={{ borderTop:`1px solid ${T.border}`, paddingTop:16 }}>
+            <div style={{ display:"flex", alignItems:"center", gap:8, marginBottom:14 }}>
+              <span style={{ fontSize:13, fontWeight:700, color:T.text }}>
+                SQL Checks
+              </span>
+              <span style={{ fontSize:10, color:T.muted, background:T.border,
+                borderRadius:99, padding:"1px 8px" }}>
+                {form.checks.length}
+              </span>
+              <Btn onClick={addCheck} size="sm" variant="ghost" style={{ marginLeft:"auto" }}>
+                <span style={{fontSize:12}}>+</span> Add Check
+              </Btn>
+            </div>
+
+            <div style={{ display:"flex", flexDirection:"column", gap:12 }}>
+              {form.checks.map((chk, i) => (
+                <div key={i} style={{ border:`1px solid ${T.border}`, borderRadius:8,
+                  padding:"12px 14px", background:T.bg, position:"relative" }}>
+                  <div style={{ display:"flex", gap:8, marginBottom:8 }}>
+                    <span style={{ fontSize:9, fontWeight:700, color:T.muted,
+                      background:T.border, borderRadius:4, padding:"2px 7px",
+                      flexShrink:0, alignSelf:"center" }}>#{i+1}</span>
+                    <input value={chk.name} onChange={e=>updateCheck(i,"name",e.target.value)}
+                      placeholder="Check name…"
+                      style={{...inp, flex:1}}
+                      onFocus={e=>e.target.style.borderColor=T.accent}
+                      onBlur={e=>e.target.style.borderColor=T.border}/>
+                    <select value={chk.severity} onChange={e=>updateCheck(i,"severity",e.target.value)}
+                      style={{...inp, width:100}}>
+                      {["critical","high","medium","low"].map(s=><option key={s} value={s}>{s}</option>)}
+                    </select>
+                    {form.checks.length > 1 && (
+                      <button onClick={()=>removeCheck(i)}
+                        style={{ background:"none", border:`1px solid ${T.border}`, borderRadius:5,
+                          cursor:"pointer", color:T.red, padding:"4px 8px", fontSize:12,
+                          transition:"all 0.1s" }}
+                        onMouseEnter={e=>{e.currentTarget.style.background=`${T.red}10`;e.currentTarget.style.borderColor=T.red;}}
+                        onMouseLeave={e=>{e.currentTarget.style.background="none";e.currentTarget.style.borderColor=T.border;}}>
+                        ×
+                      </button>
+                    )}
+                  </div>
+                  <textarea value={chk.sql} onChange={e=>updateCheck(i,"sql",e.target.value)}
+                    rows={3} placeholder="SELECT COUNT(*) FROM mws.orders WHERE …"
+                    style={{...inp, fontFamily:"monospace", resize:"vertical", marginBottom:6}}
+                    onFocus={e=>e.target.style.borderColor=T.accent}
+                    onBlur={e=>e.target.style.borderColor=T.border}/>
+                  <div>
+                    <label style={{ fontSize:10, fontWeight:600, color:T.muted, display:"block", marginBottom:2 }}>Pass when</label>
+                    <PassConditionPicker
+                      value={chk.pass_condition || "rows = 0"}
+                      onChange={v => updateCheck(i, "pass_condition", v)}
+                    />
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+
+        {/* Footer */}
+        <div style={{ padding:"14px 24px", borderTop:`1px solid ${T.border}`,
+          display:"flex", gap:8, justifyContent:"flex-end", flexShrink:0 }}>
+          <Btn onClick={onClose} variant="muted">Cancel</Btn>
+          <Btn onClick={handleSave} disabled={saving||!form.name.trim()}
+            style={{ background:`linear-gradient(135deg,${T.accent},${T.purple})`,
+              color:"white", border:"none" }}>
+            {saving ? <Spinner size={11} color="white"/> : <Check size={11}/>}
+            {saving ? "Saving…" : (initial?.id ? "Save Changes" : "Create Dataflow")}
+          </Btn>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+
+// ─── MoveFolderModal ──────────────────────────────────────────────────────────
+function MoveFolderModal({ df, folders, onMove, onClose, T }) {
+  const [target, setTarget] = React.useState(df.folder_id || "f_root");
+  return (
+    <div style={{ position:"fixed", inset:0, background:"rgba(0,0,0,0.5)",
+      display:"flex", alignItems:"center", justifyContent:"center", zIndex:300 }}>
+      <div style={{ background:T.surface, borderRadius:12, width:360, padding:"24px",
+        border:`1px solid ${T.border}`, boxShadow:"0 16px 48px rgba(0,0,0,0.15)" }}>
+        <div style={{ fontSize:14, fontWeight:700, color:T.text, marginBottom:16 }}>
+          Move "{df.name}"
+        </div>
+        <div style={{ display:"flex", flexDirection:"column", gap:6, marginBottom:20 }}>
+          {folders.map(f => (
+            <button key={f.id} onClick={() => setTarget(f.id)}
+              style={{ display:"flex", alignItems:"center", gap:8, padding:"8px 12px",
+                borderRadius:7, border:`1px solid ${target===f.id?T.accent:T.border}`,
+                background:target===f.id?`${T.accent}10`:"transparent",
+                cursor:"pointer", textAlign:"left", fontFamily:"inherit",
+                transition:"all 0.1s" }}>
+              <span style={{fontSize:14}}>📁</span>
+              <span style={{ fontSize:12, color:T.text }}>{f.name}</span>
+              {target===f.id && <Check size={12} style={{ marginLeft:"auto", color:T.accent }}/>}
+            </button>
+          ))}
+        </div>
+        <div style={{ display:"flex", gap:8, justifyContent:"flex-end" }}>
+          <Btn onClick={onClose} variant="muted" size="sm">Cancel</Btn>
+          <Btn onClick={()=>onMove(df.id, target)} size="sm">Move here</Btn>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// MAIN DataflowsTab COMPONENT
+// ═══════════════════════════════════════════════════════════════════════════════
+function DataflowsTab({ onNavigate }) {
+  const T = useT();
+
+  // ── State ─────────────────────────────────────────────────────────────────
+  const [dataflows, setDataflows] = useLocal(DF_STORAGE_KEY, []);
+  const [folders,   setFolders]   = useLocal(DF_FOLDERS_KEY, DEFAULT_FOLDERS);
+
+  const [selectedFolder, setSelectedFolder] = React.useState(null); // null=all, "__starred__"=starred, fid=folder
+  const [search,         setSearch]         = React.useState("");
+  const [sortBy,         setSortBy]         = React.useState("updated_at"); // name|checks|updated_at|priority
+  const [sortDir,        setSortDir]        = React.useState("desc");
+  const [filterTag,      setFilterTag]      = React.useState("all");
+
+  const [viewModal, setViewModal]   = React.useState(null); // df object
+  const [formModal, setFormModal]   = React.useState(null); // null | df | {} for new
+  const [moveModal, setMoveModal]   = React.useState(null); // df to move
+
+  // ── Derived ───────────────────────────────────────────────────────────────
+  const allTags = React.useMemo(() => {
+    return [...new Set(dataflows.flatMap(d => d.tags || []))].sort();
+  }, [dataflows]);
+
+  const visibleDataflows = React.useMemo(() => {
+    let list = [...dataflows];
+
+    // Folder filter
+    if (selectedFolder === "__starred__") {
+      list = list.filter(d => d.starred);
+    } else if (selectedFolder !== null) {
+      // include selected folder and all sub-folders
+      const getSubFolderIds = (id) => {
+        const subs = folders.filter(f => f.parent === id).map(f => f.id);
+        return [id, ...subs.flatMap(s => getSubFolderIds(s))];
+      };
+      const ids = getSubFolderIds(selectedFolder);
+      list = list.filter(d => ids.includes(d.folder_id));
+    }
+
+    // Tag filter
+    if (filterTag !== "all") {
+      list = list.filter(d => (d.tags||[]).includes(filterTag));
+    }
+
+    // Search
+    if (search.trim()) {
+      const q = search.toLowerCase();
+      list = list.filter(d =>
+        d.name?.toLowerCase().includes(q) ||
+        d.desc?.toLowerCase().includes(q) ||
+        (d.tags||[]).some(t => t.toLowerCase().includes(q)) ||
+        d.owner?.toLowerCase().includes(q)
+      );
+    }
+
+    // Sort
+    list.sort((a, b) => {
+      let va = a[sortBy], vb = b[sortBy];
+      if (sortBy === "checks") { va = a.checks?.length||0; vb = b.checks?.length||0; }
+      if (sortBy === "priority") {
+        const order = {Critical:4,High:3,Medium:2,Low:1,None:0};
+        va = order[a.priority||"None"]||0; vb = order[b.priority||"None"]||0;
+      }
+      if (typeof va === "string") va = va?.toLowerCase()||"";
+      if (typeof vb === "string") vb = vb?.toLowerCase()||"";
+      const cmp = va > vb ? 1 : va < vb ? -1 : 0;
+      return sortDir === "asc" ? cmp : -cmp;
+    });
+
+    return list;
+  }, [dataflows, selectedFolder, filterTag, search, sortBy, sortDir, folders]);
+
+  // ── Folder Actions ────────────────────────────────────────────────────────
+  const addFolder = (parentId = "f_root") => {
+    const name = prompt("Folder name:");
+    if (!name?.trim()) return;
+    const newF = { id:uid().replace("df_","f_"), name:name.trim(), parent:parentId, expanded:false };
+    setFolders(p => [...p, newF]);
+  };
+  const renameFolder = (id, name) => {
+    setFolders(p => p.map(f => f.id === id ? {...f, name} : f));
+  };
+  const deleteFolder = (id) => {
+    if (!confirm("Delete this folder? Dataflows inside will stay but become unorganized.")) return;
+    setFolders(p => p.filter(f => f.id !== id && f.parent !== id));
+    setDataflows(p => p.map(d => d.folder_id === id ? {...d, folder_id:"f_root"} : d));
+    if (selectedFolder === id) setSelectedFolder(null);
+  };
+
+  // ── Dataflow Actions ──────────────────────────────────────────────────────
+  const saveDataflow = async (df) => {
+    setDataflows(p => {
+      const idx = p.findIndex(d => d.id === df.id);
+      return idx >= 0 ? p.map((d,i) => i===idx ? df : d) : [...p, df];
+    });
+    setFormModal(null);
+    // Also sync to backend if available
+    try {
+      await fetch(`${API}/api/dataflows`, {
+        method:"POST", headers:{"Content-Type":"application/json"},
+        body:JSON.stringify(df)
+      });
+    } catch(e) {}
+  };
+
+  const deleteDataflow = (id) => {
+    if (!confirm("Delete this dataflow?")) return;
+    setDataflows(p => p.filter(d => d.id !== id));
+    fetch(`${API}/api/dataflows/${id}`, { method:"DELETE" }).catch(()=>{});
+  };
+
+  const starDataflow = (id) => {
+    setDataflows(p => p.map(d => d.id===id ? {...d, starred:!d.starred} : d));
+  };
+
+  const duplicateDataflow = (df) => {
+    const now = new Date().toISOString();
+    const copy = { ...df, id:uid(), name:`${df.name} (copy)`,
+      starred:false, created_at:now, updated_at:now };
+    setDataflows(p => [...p, copy]);
+  };
+
+  const moveDataflow = (id, folderId) => {
+    const now = new Date().toISOString();
+    setDataflows(p => p.map(d =>
+      d.id===id ? {...d, folder_id:folderId, updated_at:now} : d
+    ));
+    setMoveModal(null);
+  };
+
+  const runDataflow = async (df) => {
+    try {
+      const res = await fetch(`${API}/api/monitor/run-checks`, {
+        method:"POST", headers:{"Content-Type":"application/json"},
+        body: JSON.stringify({ checks: df.checks || [] })
+      });
+      const data = await res.json();
+      // Update last_run_at
+      const now = new Date().toISOString();
+      setDataflows(p => p.map(d =>
+        d.id===df.id ? {...d, last_run_at:now, last_run_status:data.overall} : d
+      ));
+      return data;
+    } catch(e) {
+      return { error: e.message, results:[] };
+    }
+  };
+
+  const openDataflow = (df, mode="view") => {
+    if (mode === "edit") { setFormModal(df); return; }
+    if (mode === "run")  { setViewModal(df); return; }
+    setViewModal(df);
+  };
+
+  // ── Sort toggle ───────────────────────────────────────────────────────────
+  const handleSort = (col) => {
+    if (sortBy === col) setSortDir(d => d==="asc"?"desc":"asc");
+    else { setSortBy(col); setSortDir("desc"); }
+  };
+  const SortIcon = ({ col }) => {
+    if (sortBy !== col) return <span style={{color:T.dim,fontSize:9}}>↕</span>;
+    return <span style={{color:T.accent,fontSize:9}}>{sortDir==="asc"?"↑":"↓"}</span>;
+  };
+
+  // ── Seed defaults if empty ────────────────────────────────────────────────
+  React.useEffect(() => {
+    if (dataflows.length > 0) return;
+    const now = new Date().toISOString();
+    const seeds = [
+      {
+        id:"df_seed_1", name:"Daily_Data_Availability", folder_id:"f_mws",
+        desc:"Checks for Data availability for Key MWS reports",
+        tags:["freshness","mws"], owner:"admin", priority:"High", schedule:"daily",
+        db_key:"default", starred:true, created_at:now, updated_at:now,
+        checks:[
+          { name:"MWS report data today", sql:"SELECT COUNT(*) FROM mws.report WHERE download_date=CURRENT_DATE", pass_condition:"rows > 0", severity:"critical" },
+          { name:"Failed downloads today", sql:"SELECT COUNT(*) FROM mws.report WHERE status='failed' AND download_date=CURRENT_DATE", pass_condition:"rows = 0", severity:"high" },
+        ],
+      },
+      {
+        id:"df_seed_2", name:"Key Reports Duplicate Check", folder_id:"f_mws",
+        desc:"", tags:["duplicates","orders"], owner:"datagaps-new",
+        priority:"None", schedule:"daily", db_key:"default", starred:true,
+        created_at:now, updated_at:now,
+        checks:[
+          { name:"Duplicate order IDs", sql:"SELECT COUNT(*) FROM (SELECT amazon_order_id FROM mws.orders GROUP BY amazon_order_id HAVING COUNT(*)>1) x", pass_condition:"rows = 0", severity:"high" },
+        ],
+      },
+      {
+        id:"df_seed_3", name:"Inventory Health Check", folder_id:"f_inv",
+        desc:"Detect negative or out-of-stock inventory", tags:["inventory","nulls"],
+        owner:"datagaps-new", priority:"Medium", schedule:"every 6 hours",
+        db_key:"default", starred:false, created_at:now, updated_at:now,
+        checks:[
+          { name:"Negative inventory", sql:"SELECT COUNT(*) FROM mws.inventory WHERE available < 0", pass_condition:"rows = 0", severity:"high" },
+          { name:"No NULL ASINs in inventory", sql:"SELECT COUNT(*) FROM mws.inventory WHERE asin IS NULL", pass_condition:"rows = 0", severity:"medium" },
+        ],
+      },
+      {
+        id:"df_seed_4", name:"Sales Data Freshness", folder_id:"f_sla",
+        desc:"Ensure sales data is not stale", tags:["freshness","sla","sales"],
+        owner:"datagaps-new", priority:"Critical", schedule:"daily",
+        db_key:"default", starred:false, created_at:now, updated_at:now,
+        checks:[
+          { name:"Sales data < 3 days old", sql:"SELECT CASE WHEN MAX(sale_date) >= CURRENT_DATE - 3 THEN 1 ELSE 0 END AS fresh FROM mws.sales_and_traffic_by_date", pass_condition:"value > 0", severity:"critical" },
+        ],
+      },
+      {
+        id:"df_seed_5", name:"Campaign Report Data Present", folder_id:"f_ads",
+        desc:"Ads data must be available after 3:30 PM IST", tags:["ads","freshness"],
+        owner:"datagaps-new", priority:"High", schedule:"every 30 min",
+        db_key:"default", starred:false, created_at:now, updated_at:now,
+        checks:[
+          { name:"Campaign report data present", sql:"SELECT COUNT(*) FROM public.tbl_amzn_campaign_report WHERE report_date=(SELECT MAX(report_date) FROM public.tbl_amzn_campaign_report)", pass_condition:"rows > 0", severity:"critical" },
+        ],
+      },
+    ];
+    setDataflows(seeds);
+  }, []);
+
+  // ── Folder label for breadcrumb ───────────────────────────────────────────
+  const selectedFolderLabel = selectedFolder === null ? "All Dataflows"
+    : selectedFolder === "__starred__" ? "⭐ Starred"
+    : folders.find(f=>f.id===selectedFolder)?.name || "Folder";
+
+  // ── Render ────────────────────────────────────────────────────────────────
+  return (
+    <div style={{ display:"flex", height:"100vh", overflow:"hidden" }}>
+
+      {/* Left Sidebar — Folders */}
+      <div style={{ width:240, flexShrink:0,
+        background:"#1C1917", /* matches Wizi's sidebar */
+        borderRight:`1px solid rgba(255,255,255,0.06)`,
+        display:"flex", flexDirection:"column",
+        overflowY:"auto" }}>
+        <FolderTree
+          folders={folders}
+          selected={selectedFolder}
+          onSelect={setSelectedFolder}
+          onAdd={addFolder}
+          onRename={renameFolder}
+          onDelete={deleteFolder}
+          dataflows={dataflows}
+        />
+      </div>
+
+      {/* Main content */}
+      <div style={{ flex:1, display:"flex", flexDirection:"column", overflow:"hidden" }}>
+
+        {/* Top bar */}
+        <div style={{ padding:"14px 20px", borderBottom:`1px solid ${T.border}`,
+          background:T.surface, display:"flex", alignItems:"center",
+          gap:12, flexShrink:0, flexWrap:"wrap" }}>
+
+          {/* Title / breadcrumb */}
+          <div>
+            <div style={{ fontSize:18, fontWeight:700, color:T.text }}>Dataflows</div>
+            <div style={{ fontSize:10, color:T.muted, marginTop:1 }}>
+              {selectedFolderLabel} · {visibleDataflows.length} dataflow{visibleDataflows.length!==1?"s":""}
+            </div>
+          </div>
+
+          {/* Search */}
+          <div style={{ flex:1, maxWidth:380, position:"relative", marginLeft:"auto" }}>
+            <Search size={13} style={{ position:"absolute", left:10, top:"50%",
+              transform:"translateY(-50%)", color:T.muted, pointerEvents:"none" }}/>
+            <input
+              value={search}
+              onChange={e => setSearch(e.target.value)}
+              placeholder="Search dataflows…"
+              style={{ width:"100%", paddingLeft:32, paddingRight:12, paddingTop:7, paddingBottom:7,
+                borderRadius:8, border:`1px solid ${T.border}`,
+                background:T.bg, color:T.text, fontSize:12,
+                fontFamily:"inherit", outline:"none", boxSizing:"border-box" }}
+              onFocus={e=>e.target.style.borderColor=T.accent}
+              onBlur={e=>e.target.style.borderColor=T.border}
+            />
+          </div>
+
+          {/* Tag filter */}
+          {allTags.length > 0 && (
+            <select value={filterTag} onChange={e=>setFilterTag(e.target.value)}
+              style={{ padding:"6px 10px", borderRadius:7, fontSize:11,
+                border:`1px solid ${T.border}`, background:T.surface, color:T.text,
+                outline:"none", fontFamily:"inherit" }}>
+              <option value="all">All tags</option>
+              {allTags.map(t => <option key={t} value={t}>{t}</option>)}
+            </select>
+          )}
+
+          {/* Refresh */}
+          <button title="Refresh"
+            style={{ background:"none", border:`1px solid ${T.border}`, borderRadius:7,
+              padding:"6px 10px", cursor:"pointer", color:T.muted, display:"flex",
+              alignItems:"center", transition:"all 0.1s" }}
+            onMouseEnter={e=>{e.currentTarget.style.borderColor=T.accent;e.currentTarget.style.color=T.accent;}}
+            onMouseLeave={e=>{e.currentTarget.style.borderColor=T.border;e.currentTarget.style.color=T.muted;}}>
+            <RefreshCw size={13}/>
+          </button>
+
+          {/* Create */}
+          <Btn onClick={() => setFormModal({})}
+            style={{ background:`linear-gradient(135deg,${T.accent},${T.purple})`,
+              color:"white", border:"none", flexShrink:0 }}>
+            <Plus size={13}/> Create Dataflow
+          </Btn>
+        </div>
+
+        {/* Tag pills row */}
+        {allTags.length > 0 && (
+          <div style={{ padding:"8px 20px", borderBottom:`1px solid ${T.border}`,
+            background:T.surface, display:"flex", gap:5, flexWrap:"wrap",
+            flexShrink:0, overflowX:"auto" }}>
+            {["all", ...allTags].map(tag => (
+              <button key={tag} onClick={() => setFilterTag(tag)}
+                style={{ padding:"2px 10px", borderRadius:99, fontSize:10,
+                  cursor:"pointer", fontWeight:filterTag===tag?700:400,
+                  border:`1px solid ${filterTag===tag?T.accent:T.border}`,
+                  background:filterTag===tag?`${T.accent}12`:"transparent",
+                  color:filterTag===tag?T.accent:T.muted, transition:"all 0.1s",
+                  fontFamily:"inherit", whiteSpace:"nowrap" }}>
+                {tag === "all" ? "All" : tag}
+              </button>
+            ))}
+          </div>
+        )}
+
+        {/* Table */}
+        <div style={{ flex:1, overflowY:"auto" }}>
+          {visibleDataflows.length === 0 ? (
+            <div style={{ textAlign:"center", padding:"64px 24px" }}>
+              <div style={{ fontSize:40, marginBottom:12 }}>📭</div>
+              <div style={{ fontSize:15, fontWeight:700, color:T.text, marginBottom:6 }}>
+                {search ? `No dataflows matching "${search}"` : "No dataflows yet"}
+              </div>
+              <div style={{ fontSize:12, color:T.muted, marginBottom:20 }}>
+                {search ? "Try a different search term" : "Create your first dataflow to get started"}
+              </div>
+              {!search && (
+                <Btn onClick={() => setFormModal({})}>
+                  <Plus size={12}/> Create Dataflow
+                </Btn>
+              )}
+            </div>
+          ) : (
+            <table style={{ width:"100%", borderCollapse:"collapse" }}>
+              <thead style={{ position:"sticky", top:0, zIndex:10 }}>
+                <tr style={{ background:T.surface, borderBottom:`2px solid ${T.border}` }}>
+                  <th style={{ width:32, padding:"10px 6px 10px 14px" }}/>
+                  <th style={{ width:36, padding:"10px 6px" }}>
+                    <span style={{ fontSize:9, color:T.muted, fontWeight:700,
+                      textTransform:"uppercase", letterSpacing:"0.05em" }}>Actions</span>
+                  </th>
+                  {[
+                    { col:"name",       label:"Dataflows" },
+                    { col:"checks",     label:"Components" },
+                    { col:"tags",       label:"Tags",     noSort:true },
+                    { col:"owner",      label:"Owner" },
+                    { col:"priority",   label:"Priority" },
+                    { col:"updated_at", label:"Updated date" },
+                  ].map(h => (
+                    <th key={h.col}
+                      onClick={() => !h.noSort && handleSort(h.col)}
+                      style={{ padding:"10px 14px", textAlign:"left", cursor:h.noSort?"default":"pointer",
+                        userSelect:"none", transition:"background 0.1s" }}
+                      onMouseEnter={e=>{if(!h.noSort)e.currentTarget.style.background=`${T.accent}08`;}}
+                      onMouseLeave={e=>e.currentTarget.style.background="transparent"}>
+                      <div style={{ display:"flex", alignItems:"center", gap:4 }}>
+                        <span style={{ fontSize:10, fontWeight:700, color:T.muted,
+                          textTransform:"uppercase", letterSpacing:"0.05em" }}>
+                          {h.label}
+                        </span>
+                        {!h.noSort && <SortIcon col={h.col}/>}
+                      </div>
+                    </th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {visibleDataflows.map(df => (
+                  <DataflowRow
+                    key={df.id}
+                    df={df}
+                    onStar={starDataflow}
+                    onOpen={openDataflow}
+                    onDelete={deleteDataflow}
+                    onDuplicate={duplicateDataflow}
+                    onMove={(df) => setMoveModal(df)}
+                    folders={folders}
+                    T={T}
+                  />
+                ))}
+              </tbody>
+            </table>
+          )}
+        </div>
+
+        {/* Pagination bar */}
+        <div style={{ padding:"10px 20px", borderTop:`1px solid ${T.border}`,
+          background:T.surface, display:"flex", alignItems:"center",
+          justifyContent:"flex-end", flexShrink:0 }}>
+          <span style={{ fontSize:11, color:T.muted }}>
+            1 of 1 pages (Displaying {visibleDataflows.length} dataflow{visibleDataflows.length!==1?"s":""})
+          </span>
+        </div>
+      </div>
+
+      {/* ── Modals ── */}
+      {viewModal && (
+        <DataflowDetailModal
+          df={viewModal}
+          onClose={() => setViewModal(null)}
+          onSave={saveDataflow}
+          onRun={runDataflow}
+          T={T}
+        />
+      )}
+
+      {formModal !== null && (
+        <DataflowFormModal
+          initial={formModal?.id ? formModal : null}
+          folders={folders}
+          onSave={saveDataflow}
+          onClose={() => setFormModal(null)}
+          T={T}
+        />
+      )}
+
+      {moveModal && (
+        <MoveFolderModal
+          df={moveModal}
+          folders={folders.filter(f=>f.id!=="f_root"||true)}
+          onMove={moveDataflow}
+          onClose={() => setMoveModal(null)}
+          T={T}
+        />
+      )}
+    </div>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// SCHEDULER TAB
+// ═══════════════════════════════════════════════════════════════════════════════
+
+const SCH_STORAGE_KEY = "wz_schedules_v1";
+
+// ── Cron expression builder helpers ──────────────────────────────────────────
+function cronToHuman(expr) {
+  if (!expr) return "—";
+  const e = expr.trim().toLowerCase();
+  if (e === "manual") return "Manual";
+  if (e.startsWith("every")) {
+    const m = e.match(/every\s+(\d+)\s*(min|minute|hour|hr)/);
+    if (m) {
+      const n = m[1], u = m[2];
+      return u.startsWith("h") ? `Every ${n} hour${n>1?"s":""}` : `Every ${n} min`;
+    }
+  }
+  if (e.includes("ist") || e.includes("utc")) {
+    const parts = expr.trim().split(" ");
+    const time = parts[0];
+    const tz = parts.find(p => p.match(/ist|utc/i)) || "IST";
+    const dow = parts.find(p => p.match(/mon|tue|wed|thu|fri|sat|sun/i));
+    const prefix = dow ? `${dow.charAt(0).toUpperCase()+dow.slice(1)} at` : "Daily at";
+    return `${prefix} ${time} ${tz.toUpperCase()}`;
+  }
+  // 5-part cron
+  const parts = expr.trim().split(/\s+/);
+  if (parts.length === 5) {
+    const [min, hr, dom, mon, dow] = parts;
+    if (dom === "*" && mon === "*") {
+      const days = ["Sun","Mon","Tue","Wed","Thu","Fri","Sat"];
+      const time = `${hr.padStart(2,"0")}:${min.padStart(2,"0")} UTC`;
+      if (dow === "*") return `Daily at ${time}`;
+      if (dow === "1-5") return `Weekdays at ${time}`;
+      const dayNames = dow.split(",").map(d => days[parseInt(d)] || d).join(", ");
+      return `${dayNames} at ${time}`;
+    }
+  }
+  return expr;
+}
+
+function cronNextRun(expr) {
+  if (!expr || expr === "manual") return null;
+  const now = new Date();
+  const e = expr.trim().toLowerCase();
+  try {
+    const m = e.match(/every\s+(\d+)\s*(min|minute|hour|hr)/);
+    if (m) {
+      const n = parseInt(m[1]);
+      const ms = m[2].startsWith("h") ? n*3600000 : n*60000;
+      return new Date(now.getTime() + ms);
+    }
+    const parts = expr.trim().split(/\s+/);
+    if (parts.length === 5) {
+      const [min, hr] = parts;
+      const next = new Date(now);
+      next.setUTCHours(parseInt(hr), parseInt(min), 0, 0);
+      if (next <= now) next.setUTCDate(next.getUTCDate() + 1);
+      return next;
+    }
+    // HH:MM IST
+    if (expr.toUpperCase().includes("IST")) {
+      const timePart = expr.trim().split(" ")[0];
+      const [h, mn] = timePart.split(":").map(Number);
+      const utcH = h - 5, utcMn = mn - 30;
+      const next = new Date(now);
+      next.setUTCHours(utcH < 0 ? utcH+24 : utcH, utcMn < 0 ? utcMn+60 : utcMn, 0, 0);
+      if (next <= now) next.setUTCDate(next.getUTCDate() + 1);
+      return next;
+    }
+  } catch(e) {}
+  return null;
+}
+
+function fmtDateTime(d) {
+  if (!d) return "—";
+  const dt = typeof d === "string" ? new Date(d) : d;
+  if (isNaN(dt)) return "—";
+  return dt.toISOString().slice(0,16).replace("T"," ");
+}
+
+// ── CronBuilder — fully visual cron expression builder ───────────────────────
+function CronBuilder({ value, onChange }) {
+  const T = useT();
+
+  // Parse incoming value to determine mode
+  const parseMode = (v) => {
+    if (!v || v === "manual") return "manual";
+    const e = v.trim().toLowerCase();
+    if (e.match(/every\s+\d+\s*min/)) return "interval_min";
+    if (e.match(/every\s+\d+\s*(hour|hr)/)) return "interval_hr";
+    if (e.toUpperCase().includes("IST")) return "daily_ist";
+    if (v.trim().split(/\s+/).length === 5) return "cron5";
+    return "manual";
+  };
+
+  const [mode, setMode] = React.useState(() => parseMode(value));
+  const [intervalMin, setIntervalMin] = React.useState(() => {
+    const m = (value||"").match(/every\s+(\d+)\s*min/i);
+    return m ? parseInt(m[1]) : 30;
+  });
+  const [intervalHr, setIntervalHr] = React.useState(() => {
+    const m = (value||"").match(/every\s+(\d+)\s*(hour|hr)/i);
+    return m ? parseInt(m[1]) : 1;
+  });
+  const [dailyTime, setDailyTime] = React.useState(() => {
+    if ((value||"").toUpperCase().includes("IST")) return value.split(" ")[0];
+    return "08:00";
+  });
+  const [cronDow, setCronDow] = React.useState(() => {
+    const parts = (value||"").trim().split(/\s+/);
+    return parts.length === 5 ? parts[4] : "*";
+  });
+  const [cronHr, setCronHr] = React.useState(() => {
+    const parts = (value||"").trim().split(/\s+/);
+    return parts.length === 5 ? parts[1] : "8";
+  });
+  const [cronMin, setCronMin] = React.useState(() => {
+    const parts = (value||"").trim().split(/\s+/);
+    return parts.length === 5 ? parts[0] : "0";
+  });
+  const [customExpr, setCustomExpr] = React.useState(
+    parseMode(value) === "cron5" && value ? value : ""
+  );
+  const [tz, setTz] = React.useState("IST");
+
+  // Build expression from current state
+  React.useEffect(() => {
+    let expr = "manual";
+    if (mode === "interval_min") expr = `every ${intervalMin} min`;
+    else if (mode === "interval_hr") expr = `every ${intervalHr} hour`;
+    else if (mode === "daily_ist") expr = `${dailyTime} ${tz}`;
+    else if (mode === "cron5") {
+      const dow = cronDow || "*";
+      expr = `${cronMin} ${cronHr} * * ${dow}`;
+      if (customExpr.trim()) expr = customExpr.trim();
+    }
+    else if (mode === "manual") expr = "manual";
+    onChange(expr);
+  }, [mode, intervalMin, intervalHr, dailyTime, tz, cronDow, cronHr, cronMin, customExpr]);
+
+  const sel = {
+    padding:"5px 8px", borderRadius:6, fontSize:11,
+    border:`1px solid ${T.border}`, background:T.surface, color:T.text,
+    fontFamily:"inherit", outline:"none",
+  };
+  const inp = { ...sel, width:"100%", boxSizing:"border-box" };
+
+  const MODES = [
+    { id:"interval_min", label:"Every N minutes" },
+    { id:"interval_hr",  label:"Every N hours"   },
+    { id:"daily_ist",    label:"Daily at time"   },
+    { id:"cron5",        label:"Weekly / custom" },
+    { id:"manual",       label:"Manual only"     },
+  ];
+
+  const DOW_OPTIONS = [
+    { v:"*",    l:"Every day"   },
+    { v:"1-5",  l:"Weekdays"    },
+    { v:"1",    l:"Monday"      },
+    { v:"2",    l:"Tuesday"     },
+    { v:"3",    l:"Wednesday"   },
+    { v:"4",    l:"Thursday"    },
+    { v:"5",    l:"Friday"      },
+    { v:"6",    l:"Saturday"    },
+    { v:"0",    l:"Sunday"      },
+    { v:"1,3,5",l:"Mon/Wed/Fri" },
+    { v:"2,4",  l:"Tue/Thu"     },
+  ];
+
+  return (
+    <div style={{ border:`1px solid ${T.border}`, borderRadius:9, overflow:"hidden" }}>
+      {/* Mode tabs */}
+      <div style={{ display:"flex", borderBottom:`1px solid ${T.border}`, background:T.bg }}>
+        {MODES.map(m => (
+          <button key={m.id} onClick={() => setMode(m.id)}
+            style={{ flex:1, padding:"7px 4px", border:"none", cursor:"pointer",
+              fontFamily:"inherit", fontSize:10, fontWeight:mode===m.id?700:400,
+              background: mode===m.id ? T.surface : "transparent",
+              color: mode===m.id ? T.accent : T.muted,
+              borderBottom: mode===m.id ? `2px solid ${T.accent}` : "2px solid transparent",
+              transition:"all 0.12s" }}>
+            {m.label}
+          </button>
+        ))}
+      </div>
+
+      {/* Mode-specific controls */}
+      <div style={{ padding:"14px 16px", background:T.surface }}>
+        {mode === "interval_min" && (
+          <div style={{ display:"flex", alignItems:"center", gap:10, flexWrap:"wrap" }}>
+            <span style={{ fontSize:12, color:T.text2 }}>Run every</span>
+            <select value={intervalMin} onChange={e=>setIntervalMin(Number(e.target.value))} style={sel}>
+              {[5,10,15,20,30,45,60].map(n=><option key={n} value={n}>{n}</option>)}
+            </select>
+            <span style={{ fontSize:12, color:T.text2 }}>minutes</span>
+            <span style={{ fontSize:11, color:T.muted, marginLeft:"auto",
+              background:`${T.accent}10`, borderRadius:6, padding:"3px 10px",
+              border:`1px solid ${T.accent}25` }}>
+              → every {intervalMin} min
+            </span>
+          </div>
+        )}
+
+        {mode === "interval_hr" && (
+          <div style={{ display:"flex", alignItems:"center", gap:10, flexWrap:"wrap" }}>
+            <span style={{ fontSize:12, color:T.text2 }}>Run every</span>
+            <select value={intervalHr} onChange={e=>setIntervalHr(Number(e.target.value))} style={sel}>
+              {[1,2,3,4,6,8,12,24].map(n=><option key={n} value={n}>{n}</option>)}
+            </select>
+            <span style={{ fontSize:12, color:T.text2 }}>hour{intervalHr>1?"s":""}</span>
+            <span style={{ fontSize:11, color:T.muted, marginLeft:"auto",
+              background:`${T.accent}10`, borderRadius:6, padding:"3px 10px",
+              border:`1px solid ${T.accent}25` }}>
+              → every {intervalHr}h
+            </span>
+          </div>
+        )}
+
+        {mode === "daily_ist" && (
+          <div style={{ display:"flex", alignItems:"center", gap:10, flexWrap:"wrap" }}>
+            <span style={{ fontSize:12, color:T.text2 }}>Run daily at</span>
+            <input type="time" value={dailyTime} onChange={e=>setDailyTime(e.target.value)}
+              style={{ ...sel, width:"auto" }}/>
+            <select value={tz} onChange={e=>setTz(e.target.value)} style={sel}>
+              <option value="IST">IST (UTC+5:30)</option>
+              <option value="UTC">UTC</option>
+            </select>
+            <span style={{ fontSize:11, color:T.muted, marginLeft:"auto",
+              background:`${T.accent}10`, borderRadius:6, padding:"3px 10px",
+              border:`1px solid ${T.accent}25` }}>
+              → Daily at {dailyTime} {tz}
+            </span>
+          </div>
+        )}
+
+        {mode === "cron5" && (
+          <div style={{ display:"flex", flexDirection:"column", gap:10 }}>
+            <div style={{ display:"flex", alignItems:"center", gap:10, flexWrap:"wrap" }}>
+              <span style={{ fontSize:12, color:T.text2 }}>Run on</span>
+              <select value={cronDow} onChange={e=>setCronDow(e.target.value)} style={sel}>
+                {DOW_OPTIONS.map(o=><option key={o.v} value={o.v}>{o.l}</option>)}
+              </select>
+              <span style={{ fontSize:12, color:T.text2 }}>at</span>
+              <select value={cronHr} onChange={e=>setCronHr(e.target.value)} style={sel}>
+                {Array.from({length:24},(_,i)=>(
+                  <option key={i} value={String(i)}>{String(i).padStart(2,"0")}:00 UTC</option>
+                ))}
+              </select>
+              <span style={{ fontSize:12, color:T.text2 }}>:</span>
+              <select value={cronMin} onChange={e=>setCronMin(e.target.value)} style={sel}>
+                {[0,5,10,15,20,25,30,35,40,45,50,55].map(n=>(
+                  <option key={n} value={String(n)}>{String(n).padStart(2,"0")}</option>
+                ))}
+              </select>
+            </div>
+            <div style={{ borderTop:`1px solid ${T.border}`, paddingTop:10 }}>
+              <div style={{ fontSize:10, fontWeight:600, color:T.muted, marginBottom:5 }}>
+                Or enter raw 5-part cron (overrides above):
+              </div>
+              <input value={customExpr} onChange={e=>setCustomExpr(e.target.value)}
+                placeholder="e.g. 0 8 * * 1,3,5  — Mon/Wed/Fri at 08:00 UTC"
+                style={inp}
+                onFocus={e=>e.target.style.borderColor=T.accent}
+                onBlur={e=>e.target.style.borderColor=T.border}/>
+              <div style={{ fontSize:9, color:T.dim, marginTop:4 }}>
+                Format: min(0-59) hour(0-23) dom(*) month(*) dow(0-7, 1-5, 1,3,5…)
+              </div>
+            </div>
+          </div>
+        )}
+
+        {mode === "manual" && (
+          <div style={{ fontSize:12, color:T.muted, textAlign:"center", padding:"8px 0" }}>
+            This schedule will only run when triggered manually.
+          </div>
+        )}
+      </div>
+
+      {/* Preview */}
+      {mode !== "manual" && (
+        <div style={{ padding:"8px 14px", background:`${T.accent}06`,
+          borderTop:`1px solid ${T.accent}20`, display:"flex", alignItems:"center", gap:8 }}>
+          <span style={{ fontSize:10, color:T.muted }}>Preview:</span>
+          <span style={{ fontSize:11, fontWeight:600, color:T.accent }}>
+            {cronToHuman(value)}
+          </span>
+          {cronNextRun(value) && (
+            <>
+              <span style={{ fontSize:10, color:T.dim }}>· Next run:</span>
+              <span style={{ fontSize:11, color:T.text2, fontFamily:"monospace" }}>
+                {fmtDateTime(cronNextRun(value))} UTC
+              </span>
+            </>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+
+// ── Schedule Form Modal ───────────────────────────────────────────────────────
+function ScheduleFormModal({ initial, workflows, dataflows, onSave, onClose, onRefresh, T }) {
+  const blank = {
+    id:"", name:"", schedule:"every 30 min", trigger_type:"Daily",
+    workflow_ids:[], dataflow_ids:[], owner:"admin",
+    enabled:true, slack_channel:"", notes:"",
+  };
+  const [form, setForm] = React.useState(initial ? {...blank,...initial} : blank);
+  const [saving, setSaving] = React.useState(false);
+  const field = (k,v) => setForm(p=>({...p,[k]:v}));
+
+  const toggleWf = (id) => field("workflow_ids",
+    form.workflow_ids.includes(id)
+      ? form.workflow_ids.filter(x=>x!==id)
+      : [...form.workflow_ids, id]
+  );
+  const toggleDf = (id) => field("dataflow_ids",
+    form.dataflow_ids.includes(id)
+      ? form.dataflow_ids.filter(x=>x!==id)
+      : [...form.dataflow_ids, id]
+  );
+
+  const handleSave = async () => {
+    if (!form.name.trim()) return;
+    setSaving(true);
+    const now = new Date().toISOString();
+    const saved = {
+      ...form,
+      id: form.id || `sch_${Date.now().toString(36)}`,
+      created_at: form.created_at || now,
+      updated_at: now,
+    };
+    await onSave(saved);
+    setSaving(false);
+  };
+
+  const inp = { width:"100%", padding:"7px 10px", borderRadius:6, fontSize:11,
+    border:`1px solid ${T.border}`, background:T.bg, color:T.text,
+    fontFamily:"inherit", outline:"none", boxSizing:"border-box" };
+  const Label = ({children}) => (
+    <label style={{ fontSize:10, fontWeight:700, color:T.muted, display:"block",
+      marginBottom:3, textTransform:"uppercase", letterSpacing:"0.05em" }}>
+      {children}
+    </label>
+  );
+
+  const totalItems = form.workflow_ids.length + form.dataflow_ids.length;
+
+  return (
+    <div style={{ position:"fixed", inset:0, background:"rgba(0,0,0,0.55)",
+      display:"flex", alignItems:"center", justifyContent:"center", zIndex:300 }}
+      onClick={e=>{ if(e.target===e.currentTarget) onClose(); }}>
+      <div style={{ background:T.surface, borderRadius:14, width:"min(820px,96vw)",
+        maxHeight:"92vh", display:"flex", flexDirection:"column",
+        border:`1px solid ${T.border}`, boxShadow:"0 24px 64px rgba(0,0,0,0.2)",
+        overflow:"hidden" }}>
+
+        {/* Header */}
+        <div style={{ padding:"20px 24px", borderBottom:`1px solid ${T.border}`,
+          display:"flex", alignItems:"center", gap:12, flexShrink:0 }}>
+          <div style={{ width:38, height:38, borderRadius:9, flexShrink:0,
+            background:`linear-gradient(135deg,${T.accent}25,${T.purple}25)`,
+            border:`1px solid ${T.accent}30`,
+            display:"flex", alignItems:"center", justifyContent:"center", fontSize:18 }}>
+            🕐
+          </div>
+          <div style={{ flex:1 }}>
+            <div style={{ fontSize:15, fontWeight:700, color:T.text }}>
+              {initial?.id ? "Edit Schedule" : "Add Schedule"}
+            </div>
+            <div style={{ fontSize:11, color:T.muted }}>
+              Pick workflows/dataflows and define when they run
+            </div>
+          </div>
+          <button onClick={onClose}
+            style={{ background:"none", border:"none", cursor:"pointer",
+              color:T.muted, fontSize:20, lineHeight:1 }}>×</button>
+        </div>
+
+        {/* Body */}
+        <div style={{ flex:1, overflowY:"auto", padding:"20px 24px",
+          display:"flex", flexDirection:"column", gap:18 }}>
+
+          {/* Row 1: Name + Owner */}
+          <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:12 }}>
+            <div>
+              <Label>Schedule Name *</Label>
+              <input value={form.name} onChange={e=>field("name",e.target.value)}
+                placeholder="e.g. Daily MWS Data Check"
+                autoFocus style={inp}
+                onFocus={e=>e.target.style.borderColor=T.accent}
+                onBlur={e=>e.target.style.borderColor=T.border}/>
+            </div>
+            <div>
+              <Label>Owner</Label>
+              <input value={form.owner} onChange={e=>field("owner",e.target.value)}
+                placeholder="admin" style={inp}
+                onFocus={e=>e.target.style.borderColor=T.accent}
+                onBlur={e=>e.target.style.borderColor=T.border}/>
+            </div>
+          </div>
+
+          {/* Schedule builder */}
+          <div>
+            <Label>Schedule / Trigger</Label>
+            <CronBuilder value={form.schedule} onChange={v=>field("schedule",v)}/>
+          </div>
+
+          {/* Workflows to run */}
+          <div>
+            <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom:3 }}>
+            <Label>Workflows to run ({form.workflow_ids.length} selected)</Label>
+            <button onClick={onRefresh} title="Sync latest workflows & dataflows"
+              style={{ background:"none", border:"none", cursor:"pointer",
+                color:T.muted, fontSize:10, display:"flex", alignItems:"center", gap:3 }}>
+              <RefreshCw size={10}/> Sync
+            </button>
+          </div>
+            {workflows.length === 0 ? (
+              <div style={{ fontSize:11, color:T.muted, padding:"10px 0" }}>
+                No workflows found. Create workflows first.
+              </div>
+            ) : (
+              <div style={{ display:"flex", flexDirection:"column", gap:5,
+                maxHeight:200, overflowY:"auto", border:`1px solid ${T.border}`,
+                borderRadius:8, padding:"6px" }}>
+                {workflows.map(wf => {
+                  const sel = form.workflow_ids.includes(wf.id);
+                  return (
+                    <div key={wf.id} onClick={() => toggleWf(wf.id)}
+                      style={{ display:"flex", alignItems:"center", gap:9,
+                        padding:"7px 10px", borderRadius:6, cursor:"pointer",
+                        background: sel ? `${T.accent}10` : "transparent",
+                        border:`1px solid ${sel ? T.accent : "transparent"}`,
+                        transition:"all 0.1s" }}>
+                      <div style={{ width:16, height:16, borderRadius:4, flexShrink:0,
+                        border:`1.5px solid ${sel?T.accent:T.border2}`,
+                        background:sel?T.accent:"transparent",
+                        display:"flex", alignItems:"center", justifyContent:"center" }}>
+                        {sel && <Check size={10} color="white" strokeWidth={3}/>}
+                      </div>
+                      <div style={{ flex:1, minWidth:0 }}>
+                        <div style={{ fontSize:12, fontWeight:600, color:T.text }}>{wf.name}</div>
+                        <div style={{ fontSize:10, color:T.muted }}>
+                          {wf.checks?.length||0} checks · {wf.schedule||"manual"}
+                        </div>
+                      </div>
+                      <span style={{ fontSize:9, padding:"1px 7px", borderRadius:99,
+                        background:`${wf.enabled?T.green:T.muted}15`,
+                        color:wf.enabled?T.green:T.muted, fontWeight:600 }}>
+                        {wf.enabled?"enabled":"disabled"}
+                      </span>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+
+          {/* Dataflows to run */}
+          <div>
+            <Label>Dataflows to run ({form.dataflow_ids.length} selected)</Label>
+            {dataflows.length === 0 ? (
+              <div style={{ fontSize:11, color:T.muted, padding:"10px 0" }}>
+                No dataflows found.
+              </div>
+            ) : (
+              <div style={{ display:"flex", flexDirection:"column", gap:5,
+                maxHeight:200, overflowY:"auto", border:`1px solid ${T.border}`,
+                borderRadius:8, padding:"6px" }}>
+                {dataflows.map(df => {
+                  const sel = form.dataflow_ids.includes(df.id);
+                  return (
+                    <div key={df.id} onClick={() => toggleDf(df.id)}
+                      style={{ display:"flex", alignItems:"center", gap:9,
+                        padding:"7px 10px", borderRadius:6, cursor:"pointer",
+                        background: sel ? `${T.accent}10` : "transparent",
+                        border:`1px solid ${sel ? T.accent : "transparent"}`,
+                        transition:"all 0.1s" }}>
+                      <div style={{ width:16, height:16, borderRadius:4, flexShrink:0,
+                        border:`1.5px solid ${sel?T.accent:T.border2}`,
+                        background:sel?T.accent:"transparent",
+                        display:"flex", alignItems:"center", justifyContent:"center" }}>
+                        {sel && <Check size={10} color="white" strokeWidth={3}/>}
+                      </div>
+                      <div style={{ flex:1, minWidth:0 }}>
+                        <div style={{ fontSize:12, fontWeight:600, color:T.text }}>{df.name}</div>
+                        <div style={{ fontSize:10, color:T.muted }}>
+                          {df.checks?.length||0} checks · {df.schedule||"manual"}
+                        </div>
+                      </div>
+                      {(df.tags||[]).slice(0,2).map(t=>(
+                        <span key={t} style={{ fontSize:9, padding:"1px 7px", borderRadius:99,
+                          background:`${T.accent}10`, color:T.accent }}>{t}</span>
+                      ))}
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+
+          {/* Notes */}
+          <div>
+            <Label>Notes (optional)</Label>
+            <input value={form.notes} onChange={e=>field("notes",e.target.value)}
+              placeholder="What does this schedule do?"
+              style={inp}
+              onFocus={e=>e.target.style.borderColor=T.accent}
+              onBlur={e=>e.target.style.borderColor=T.border}/>
+          </div>
+
+          {/* Slack */}
+          <div>
+            <Label>Slack webhook (optional — override)</Label>
+            <input value={form.slack_channel} onChange={e=>field("slack_channel",e.target.value)}
+              placeholder="https://hooks.slack.com/services/…"
+              style={inp}
+              onFocus={e=>e.target.style.borderColor=T.accent}
+              onBlur={e=>e.target.style.borderColor=T.border}/>
+          </div>
+
+          {/* Enabled toggle */}
+          <div style={{ display:"flex", alignItems:"center", gap:8 }}>
+            <div onClick={() => field("enabled", !form.enabled)}
+              style={{ width:36, height:20, borderRadius:99, cursor:"pointer",
+                background: form.enabled ? T.green : T.border2,
+                position:"relative", transition:"background 0.2s", flexShrink:0 }}>
+              <div style={{ width:16, height:16, borderRadius:"50%", background:"white",
+                position:"absolute", top:2, transition:"left 0.2s",
+                left: form.enabled ? 18 : 2, boxShadow:"0 1px 3px rgba(0,0,0,0.2)" }}/>
+            </div>
+            <span style={{ fontSize:12, color:T.text2 }}>
+              {form.enabled ? "Enabled — will run on schedule" : "Disabled — will not auto-run"}
+            </span>
+          </div>
+        </div>
+
+        {/* Footer */}
+        <div style={{ padding:"14px 24px", borderTop:`1px solid ${T.border}`,
+          display:"flex", gap:8, justifyContent:"space-between", alignItems:"center",
+          flexShrink:0 }}>
+          <div style={{ fontSize:11, color:T.muted }}>
+            {totalItems > 0
+              ? `${totalItems} item${totalItems!==1?"s":""} selected · ${cronToHuman(form.schedule)}`
+              : "Select at least one workflow or dataflow"}
+          </div>
+          <div style={{ display:"flex", gap:8 }}>
+            <Btn onClick={onClose} variant="muted">Cancel</Btn>
+            <Btn onClick={handleSave}
+              disabled={saving||!form.name.trim()||(form.workflow_ids.length+form.dataflow_ids.length===0)}
+              style={{ background:`linear-gradient(135deg,${T.accent},${T.purple})`,
+                color:"white", border:"none" }}>
+              {saving?<Spinner size={11} color="white"/>:<Check size={11}/>}
+              {saving?"Saving…": initial?.id ? "Update Schedule" : "Add Schedule"}
+            </Btn>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+
+// ── SchedulerTab ──────────────────────────────────────────────────────────────
+function SchedulerTab({ onNavigate }) {
+  const T = useT();
+  const [schedules,  setSchedules]  = useLocal(SCH_STORAGE_KEY, []);
+  const [workflows,  setWorkflows]  = React.useState([]);
+  const [dataflows,  setDataflows]  = useLocal(DF_STORAGE_KEY, []);
+  const [search,     setSearch]     = React.useState("");
+  const [filterStatus, setFilter]   = React.useState("all"); // all|enabled|disabled
+  const [formModal,  setFormModal]  = React.useState(null);  // null | {} | schedule
+  const [running,    setRunning]    = React.useState({});    // {id:bool}
+  const [runResults, setRunResults] = React.useState({});    // {id: last result}
+  const [view,       setView]       = React.useState("list"); // list | calendar
+  const [sortBy,     setSortBy]     = React.useState("name");
+  const [sortDir,    setSortDir]    = React.useState("asc");
+
+  // ── Load all live data from backend on mount + provide refresh ────────────
+  const loadAll = React.useCallback(async () => {
+    // 1. Workflows — from backend (source of truth, includes newly created ones)
+    try {
+      const wfRes  = await fetch(`${API}/api/custom-workflows`);
+      const wfData = await wfRes.json();
+      if (Array.isArray(wfData)) setWorkflows(wfData);
+    } catch(e) {}
+
+    // 2. Dataflows — try backend first, fall back to localStorage
+    try {
+      const dfRes  = await fetch(`${API}/api/dataflows`);
+      const dfData = await dfRes.json();
+      if (Array.isArray(dfData)) {
+        setDataflows(dfData);   // also updates localStorage via useLocal setter
+      }
+    } catch(e) {
+      // localStorage already loaded via useLocal — no action needed
+    }
+
+    // 3. Schedules — sync from backend (so multiple sessions share state)
+    try {
+      const schRes  = await fetch(`${API}/api/schedules`);
+      const schData = await schRes.json();
+      if (Array.isArray(schData) && schData.length > 0) {
+        // Merge: backend wins for any overlapping ids
+        setSchedules(local => {
+          const merged = { ...Object.fromEntries(local.map(s=>[s.id,s])) };
+          schData.forEach(s => { merged[s.id] = s; });
+          return Object.values(merged);
+        });
+      }
+    } catch(e) {}
+  }, []);
+
+  React.useEffect(() => {
+    loadAll();
+    // Auto-refresh every 30s so last_triggered timestamps stay fresh
+    const id = setInterval(loadAll, 30000);
+    return () => clearInterval(id);
+  }, []);
+
+  // Sync schedules to backend
+  const saveSchedule = async (sch) => {
+    // Optimistic local update
+    setSchedules(p => {
+      const idx = p.findIndex(s=>s.id===sch.id);
+      return idx>=0 ? p.map((s,i)=>i===idx?sch:s) : [...p, sch];
+    });
+    setFormModal(null);
+    // Persist to backend
+    try {
+      await fetch(`${API}/api/schedules`, {
+        method:"POST", headers:{"Content-Type":"application/json"},
+        body:JSON.stringify(sch)
+      });
+    } catch(e){}
+    // Re-sync everything so newly created workflows/dataflows appear
+    loadAll();
+  };
+
+  const deleteSchedule = (id) => {
+    if (!confirm("Delete this schedule?")) return;
+    setSchedules(p=>p.filter(s=>s.id!==id));
+    fetch(`${API}/api/schedules/${id}`, {method:"DELETE"}).catch(()=>{});
+  };
+
+  const toggleEnabled = (id) => {
+    setSchedules(p=>p.map(s=>s.id===id?{...s,enabled:!s.enabled,updated_at:new Date().toISOString()}:s));
+  };
+
+  // Run a schedule now (fire all its workflows + dataflows)
+  const runNow = async (sch) => {
+    setRunning(p=>({...p,[sch.id]:true}));
+    const results = [];
+    try {
+      for (const wfId of (sch.workflow_ids||[])) {
+        try {
+          const r = await fetch(`${API}/api/custom-workflows/${wfId}/run/v2`, {method:"POST"});
+          const d = await r.json();
+          results.push({type:"workflow", id:wfId, status:d.overall||d.status, name:d.workflow_name||wfId});
+        } catch(e) { results.push({type:"workflow", id:wfId, status:"error"}); }
+      }
+      for (const dfId of (sch.dataflow_ids||[])) {
+        try {
+          const r = await fetch(`${API}/api/dataflows/${dfId}/run`, {method:"POST"});
+          const d = await r.json();
+          results.push({type:"dataflow", id:dfId, status:d.overall||d.status, name:dfId});
+        } catch(e) { results.push({type:"dataflow", id:dfId, status:"error"}); }
+      }
+      const now = new Date().toISOString();
+      const allPass = results.every(r=>r.status==="pass"||r.status==="clean");
+      setSchedules(p=>p.map(s=>s.id===sch.id
+        ? {...s, last_triggered:now, last_status:allPass?"pass":"fail"}
+        : s
+      ));
+      setRunResults(p=>({...p,[sch.id]:{results,ran_at:now,passed:allPass}}));
+    } catch(e){}
+    setRunning(p=>({...p,[sch.id]:false}));
+  };
+
+  // Filtered + sorted
+  const visible = React.useMemo(() => {
+    let list = [...schedules];
+    if (filterStatus==="enabled")  list = list.filter(s=>s.enabled!==false);
+    if (filterStatus==="disabled") list = list.filter(s=>s.enabled===false);
+    if (search.trim()) {
+      const q = search.toLowerCase();
+      list = list.filter(s =>
+        s.name?.toLowerCase().includes(q) ||
+        s.owner?.toLowerCase().includes(q) ||
+        cronToHuman(s.schedule).toLowerCase().includes(q)
+      );
+    }
+    list.sort((a,b)=>{
+      let va=a[sortBy]||"", vb=b[sortBy]||"";
+      if (typeof va==="string") va=va.toLowerCase();
+      if (typeof vb==="string") vb=vb.toLowerCase();
+      const c = va>vb?1:va<vb?-1:0;
+      return sortDir==="asc"?c:-c;
+    });
+    return list;
+  }, [schedules, filterStatus, search, sortBy, sortDir]);
+
+  const handleSort = (col) => {
+    if (sortBy===col) setSortDir(d=>d==="asc"?"desc":"asc");
+    else { setSortBy(col); setSortDir("asc"); }
+  };
+  const SortArrow = ({col}) => sortBy!==col
+    ? <span style={{color:T.dim,fontSize:9}}>↕</span>
+    : <span style={{color:T.accent,fontSize:9}}>{sortDir==="asc"?"↑":"↓"}</span>;
+
+  const statusDot = (sch) => {
+    if (sch.enabled===false) return { color:"#9CA3AF", label:"Disabled" };
+    const last = sch.last_status;
+    if (!last) return { color:"#9CA3AF", label:"Idle" };
+    if (last==="pass"||last==="clean") return { color:"#10B981", label:"Passing" };
+    return { color:"#EF4444", label:"Failing" };
+  };
+
+  // get human-readable names for assigned workflows/dataflows
+  const getItemNames = (sch) => {
+    const wfNames = (sch.workflow_ids||[]).map(id =>
+      workflows.find(w=>w.id===id)?.name || id
+    );
+    const dfNames = (sch.dataflow_ids||[]).map(id =>
+      dataflows.find(d=>d.id===id)?.name || id
+    );
+    return [...wfNames, ...dfNames];
+  };
+
+  return (
+    <div style={{ height:"100vh", display:"flex", flexDirection:"column", overflow:"hidden" }}>
+
+      {/* Top bar */}
+      <div style={{ padding:"14px 20px", borderBottom:`1px solid ${T.border}`,
+        background:T.surface, display:"flex", alignItems:"center",
+        gap:12, flexShrink:0, flexWrap:"wrap" }}>
+
+        {/* Title + view toggle */}
+        <div style={{ display:"flex", alignItems:"center", gap:10 }}>
+          <div>
+            <div style={{ fontSize:18, fontWeight:700, color:T.text }}>Scheduler</div>
+            <div style={{ fontSize:10, color:T.muted }}>{schedules.length} schedule{schedules.length!==1?"s":""}</div>
+          </div>
+          {/* List / Calendar toggle */}
+          <div style={{ display:"flex", border:`1px solid ${T.border}`, borderRadius:6,
+            overflow:"hidden", marginLeft:8 }}>
+            {[["list","☰"],["calendar","▦"]].map(([v,icon])=>(
+              <button key={v} onClick={()=>setView(v)}
+                style={{ padding:"5px 10px", border:"none", cursor:"pointer",
+                  background:view===v?T.accent:"transparent",
+                  color:view===v?"white":T.muted, fontSize:13, transition:"all 0.1s" }}>
+                {icon}
+              </button>
+            ))}
+          </div>
+        </div>
+
+        {/* Search */}
+        <div style={{ flex:1, maxWidth:360, position:"relative", marginLeft:"auto" }}>
+          <Search size={13} style={{ position:"absolute", left:10, top:"50%",
+            transform:"translateY(-50%)", color:T.muted, pointerEvents:"none" }}/>
+          <input value={search} onChange={e=>setSearch(e.target.value)}
+            placeholder="Search Scheduler…"
+            style={{ width:"100%", paddingLeft:32, paddingRight:12, paddingTop:7, paddingBottom:7,
+              borderRadius:8, border:`1px solid ${T.border}`, background:T.bg,
+              color:T.text, fontSize:12, fontFamily:"inherit", outline:"none",
+              boxSizing:"border-box" }}
+            onFocus={e=>e.target.style.borderColor=T.accent}
+            onBlur={e=>e.target.style.borderColor=T.border}/>
+        </div>
+
+        {/* Status filter */}
+        <div style={{ display:"flex", gap:0, border:`1px solid ${T.border}`,
+          borderRadius:6, overflow:"hidden" }}>
+          {[["all","All"],["enabled","Enabled"],["disabled","Disabled"]].map(([v,l])=>(
+            <button key={v} onClick={()=>setFilter(v)}
+              style={{ padding:"5px 12px", border:"none", cursor:"pointer", fontSize:11,
+                background:filterStatus===v?T.accent:"transparent",
+                color:filterStatus===v?"white":T.muted, transition:"all 0.1s",
+                fontFamily:"inherit" }}>
+              {l}
+            </button>
+          ))}
+        </div>
+
+        {/* Refresh */}
+        <button title="Refresh — sync latest workflows & dataflows" onClick={loadAll}
+          style={{ background:"none", border:`1px solid ${T.border}`, borderRadius:7,
+            padding:"6px 10px", cursor:"pointer", color:T.muted,
+            display:"flex", alignItems:"center", transition:"all 0.1s" }}
+          onMouseEnter={e=>{e.currentTarget.style.borderColor=T.accent;e.currentTarget.style.color=T.accent;}}
+          onMouseLeave={e=>{e.currentTarget.style.borderColor=T.border;e.currentTarget.style.color=T.muted;}}>
+          <RefreshCw size={13}/>
+        </button>
+
+        {/* Add */}
+        <Btn onClick={()=>setFormModal({})}
+          style={{ background:`linear-gradient(135deg,${T.accent},${T.purple})`,
+            color:"white", border:"none", flexShrink:0 }}>
+          <Plus size={13}/> Add Schedule
+        </Btn>
+      </div>
+
+      {/* Table */}
+      {view==="list" && (
+        <div style={{ flex:1, overflowY:"auto" }}>
+          {visible.length===0 ? (
+            <div style={{ textAlign:"center", padding:"64px 24px" }}>
+              <div style={{ fontSize:40, marginBottom:12 }}>🕐</div>
+              <div style={{ fontSize:15, fontWeight:700, color:T.text, marginBottom:6 }}>
+                {search ? `No schedules matching "${search}"` : "No schedules yet"}
+              </div>
+              <div style={{ fontSize:12, color:T.muted, marginBottom:20 }}>
+                Create a schedule to automate your workflows and dataflows
+              </div>
+              {!search && (
+                <Btn onClick={()=>setFormModal({})}>
+                  <Plus size={12}/> Add Schedule
+                </Btn>
+              )}
+            </div>
+          ) : (
+            <table style={{ width:"100%", borderCollapse:"collapse" }}>
+              <thead style={{ position:"sticky", top:0, zIndex:10 }}>
+                <tr style={{ background:T.surface, borderBottom:`2px solid ${T.border}` }}>
+                  {[
+                    {col:"name",          label:"Name",           w:200},
+                    {col:"_tasks",         label:"Scheduled Task",  w:200, noSort:true},
+                    {col:"_trigger_type",  label:"Trigger Type",    w:100, noSort:true},
+                    {col:"last_triggered", label:"Last Triggered",  w:160},
+                    {col:"_next",          label:"Next Triggered",  w:160, noSort:true},
+                    {col:"schedule",       label:"Expression",      w:140},
+                    {col:"_status",        label:"Status",          w:80,  noSort:true},
+                    {col:"owner",          label:"Owner",           w:120},
+                    {col:"_actions",       label:"Actions",         w:80,  noSort:true},
+                  ].map(h=>(
+                    <th key={h.col}
+                      onClick={()=>!h.noSort&&handleSort(h.col)}
+                      style={{ padding:"10px 14px", textAlign:"left", width:h.w,
+                        cursor:h.noSort?"default":"pointer", userSelect:"none" }}
+                      onMouseEnter={e=>{if(!h.noSort)e.currentTarget.style.background=`${T.accent}08`;}}
+                      onMouseLeave={e=>e.currentTarget.style.background="transparent"}>
+                      <div style={{ display:"flex", alignItems:"center", gap:4 }}>
+                        <span style={{ fontSize:10, fontWeight:700, color:T.muted,
+                          textTransform:"uppercase", letterSpacing:"0.05em" }}>
+                          {h.label}
+                        </span>
+                        {!h.noSort && <SortArrow col={h.col}/>}
+                      </div>
+                    </th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {visible.map(sch=>{
+                  const dot = statusDot(sch);
+                  const itemNames = getItemNames(sch);
+                  const next = cronNextRun(sch.schedule);
+                  const isRunning = running[sch.id];
+                  const lastResult = runResults[sch.id];
+                  return (
+                    <tr key={sch.id}
+                      style={{ borderBottom:`1px solid ${T.border}`, transition:"background 0.08s" }}
+                      onMouseEnter={e=>e.currentTarget.style.background=`${T.accent}05`}
+                      onMouseLeave={e=>e.currentTarget.style.background="transparent"}>
+
+                      {/* Name */}
+                      <td style={{ padding:"12px 14px" }}>
+                        <div style={{ fontSize:12, fontWeight:600, color:T.accent,
+                          cursor:"pointer" }}
+                          onClick={()=>setFormModal(sch)}>
+                          {sch.name}
+                        </div>
+                        {sch.notes && (
+                          <div style={{ fontSize:10, color:T.muted, marginTop:2,
+                            overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap",
+                            maxWidth:190 }}>{sch.notes}</div>
+                        )}
+                        {lastResult && (
+                          <div style={{ fontSize:9, marginTop:3,
+                            color:lastResult.passed?T.green:T.red }}>
+                            {lastResult.passed?"✓ Last run passed":"✗ Last run failed"}
+                          </div>
+                        )}
+                      </td>
+
+                      {/* Scheduled Task */}
+                      <td style={{ padding:"12px 14px" }}>
+                        {itemNames.length===0 ? (
+                          <span style={{ fontSize:10, color:T.dim }}>—</span>
+                        ) : (
+                          <div style={{ display:"flex", flexDirection:"column", gap:2 }}>
+                            {itemNames.slice(0,2).map((nm,i)=>(
+                              <div key={i} style={{ fontSize:11, color:T.text2,
+                                overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap",
+                                maxWidth:190 }}>
+                                <span style={{ fontSize:9, marginRight:4, color:T.muted }}>
+                                  {i < (sch.workflow_ids||[]).length ? "⚙" : "🔍"}
+                                </span>
+                                {nm}
+                              </div>
+                            ))}
+                            {itemNames.length>2 && (
+                              <div style={{ fontSize:9, color:T.muted }}>
+                                +{itemNames.length-2} more
+                              </div>
+                            )}
+                          </div>
+                        )}
+                      </td>
+
+                      {/* Trigger type */}
+                      <td style={{ padding:"12px 14px" }}>
+                        <span style={{ fontSize:11, color:T.text2 }}>
+                          {sch.schedule==="manual" ? "Manual" :
+                           sch.schedule?.match(/every\s+\d+\s*min/i) ? "Interval" :
+                           sch.schedule?.match(/every\s+\d+\s*(hour|hr)/i) ? "Hourly" :
+                           "Daily"}
+                        </span>
+                      </td>
+
+                      {/* Last triggered */}
+                      <td style={{ padding:"12px 14px" }}>
+                        <span style={{ fontSize:11, color:T.muted, fontFamily:"monospace" }}>
+                          {sch.last_triggered ? fmtDateTime(sch.last_triggered) : "—"}
+                        </span>
+                      </td>
+
+                      {/* Next triggered */}
+                      <td style={{ padding:"12px 14px" }}>
+                        <span style={{ fontSize:11,
+                          color:next&&sch.enabled!==false?T.text2:T.dim,
+                          fontFamily:"monospace" }}>
+                          {sch.enabled===false ? "—" : next ? fmtDateTime(next) : "—"}
+                        </span>
+                      </td>
+
+                      {/* Expression */}
+                      <td style={{ padding:"12px 14px" }}>
+                        <div style={{ fontSize:11, color:T.text2, fontFamily:"monospace",
+                          background:T.bg, borderRadius:5, padding:"2px 8px",
+                          display:"inline-block", border:`1px solid ${T.border}` }}>
+                          {sch.schedule||"manual"}
+                        </div>
+                      </td>
+
+                      {/* Status dot */}
+                      <td style={{ padding:"12px 14px" }}>
+                        <div style={{ display:"flex", alignItems:"center", gap:6 }}>
+                          <div
+                            onClick={()=>toggleEnabled(sch.id)}
+                            title={dot.label + " — click to toggle"}
+                            style={{ width:14, height:14, borderRadius:"50%",
+                              background:dot.color, cursor:"pointer",
+                              boxShadow:`0 0 0 3px ${dot.color}25`,
+                              transition:"all 0.2s",
+                              animation: isRunning ? "pulse 1s infinite" : "none" }}/>
+                          <span style={{ fontSize:9, color:T.dim }}>{dot.label}</span>
+                        </div>
+                      </td>
+
+                      {/* Owner */}
+                      <td style={{ padding:"12px 14px" }}>
+                        <div style={{ display:"flex", alignItems:"center", gap:5 }}>
+                          <div style={{ width:20, height:20, borderRadius:"50%",
+                            background:`${T.accent}20`, display:"flex", alignItems:"center",
+                            justifyContent:"center", fontSize:9, fontWeight:700,
+                            color:T.accent, flexShrink:0 }}>
+                            {(sch.owner||"?")[0].toUpperCase()}
+                          </div>
+                          <span style={{ fontSize:11, color:T.text2 }}>{sch.owner||"—"}</span>
+                        </div>
+                      </td>
+
+                      {/* Actions */}
+                      <td style={{ padding:"12px 14px" }}>
+                        <div style={{ display:"flex", gap:5, alignItems:"center" }}>
+                          <button
+                            onClick={()=>runNow(sch)}
+                            disabled={isRunning||(sch.workflow_ids?.length+sch.dataflow_ids?.length===0)}
+                            title="Run now"
+                            style={{ background:`${T.accent}12`, border:`1px solid ${T.accent}30`,
+                              borderRadius:6, padding:"4px 9px", cursor:"pointer",
+                              color:T.accent, fontSize:11, display:"flex",
+                              alignItems:"center", gap:4, transition:"all 0.1s" }}
+                            onMouseEnter={e=>{e.currentTarget.style.background=T.accent;e.currentTarget.style.color="white";}}
+                            onMouseLeave={e=>{e.currentTarget.style.background=`${T.accent}12`;e.currentTarget.style.color=T.accent;}}>
+                            {isRunning?<Spinner size={10}/>:<span>▶</span>}
+                          </button>
+                          <button
+                            onClick={()=>setFormModal(sch)}
+                            title="Edit"
+                            style={{ background:"none", border:`1px solid ${T.border}`,
+                              borderRadius:6, padding:"4px 9px", cursor:"pointer",
+                              color:T.muted, fontSize:11, transition:"all 0.1s" }}
+                            onMouseEnter={e=>{e.currentTarget.style.borderColor=T.accent;e.currentTarget.style.color=T.accent;}}
+                            onMouseLeave={e=>{e.currentTarget.style.borderColor=T.border;e.currentTarget.style.color=T.muted;}}>
+                            •••
+                          </button>
+                          <button
+                            onClick={()=>deleteSchedule(sch.id)}
+                            title="Delete"
+                            style={{ background:"none", border:`1px solid ${T.border}`,
+                              borderRadius:6, padding:"4px 7px", cursor:"pointer",
+                              color:T.red, fontSize:12, transition:"all 0.1s" }}
+                            onMouseEnter={e=>{e.currentTarget.style.background=`${T.red}10`;e.currentTarget.style.borderColor=T.red;}}
+                            onMouseLeave={e=>{e.currentTarget.style.background="none";e.currentTarget.style.borderColor=T.border;}}>
+                            ×
+                          </button>
+                        </div>
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          )}
+        </div>
+      )}
+
+      {/* Calendar view */}
+      {view==="calendar" && (
+        <div style={{ flex:1, overflowY:"auto", padding:"20px 24px" }}>
+          <SchedulerCalendar schedules={schedules} T={T} onEdit={setFormModal}/>
+        </div>
+      )}
+
+      {/* Pagination bar */}
+      <div style={{ padding:"10px 20px", borderTop:`1px solid ${T.border}`,
+        background:T.surface, display:"flex", alignItems:"center",
+        justifyContent:"space-between", flexShrink:0 }}>
+        <div style={{ fontSize:11, color:T.muted }}>
+          {visible.length} of {schedules.length} schedule{schedules.length!==1?"s":""}
+          {schedules.length>0 && ` · ${schedules.filter(s=>s.enabled!==false).length} enabled`}
+        </div>
+        <div style={{ fontSize:11, color:T.muted }}>
+          1 of 1 pages (Displaying {visible.length} schedules)
+        </div>
+      </div>
+
+      {/* Modal */}
+      {formModal !== null && (
+        <ScheduleFormModal
+          initial={formModal?.id ? formModal : null}
+          workflows={workflows}
+          dataflows={dataflows}
+          onSave={saveSchedule}
+          onClose={()=>setFormModal(null)}
+          onRefresh={loadAll}
+          T={T}
+        />
+      )}
+    </div>
+  );
+}
+
+
+// ── Calendar heatmap view ─────────────────────────────────────────────────────
+function SchedulerCalendar({ schedules, T, onEdit }) {
+  const now = new Date();
+  const year = now.getFullYear();
+  const month = now.getMonth();
+  const daysInMonth = new Date(year, month+1, 0).getDate();
+  const firstDow = new Date(year, month, 1).getDay();
+  const monthName = now.toLocaleString("default",{month:"long"});
+
+  // Build a map: day → schedules running that day
+  const daySchedules = {};
+  for (let d=1; d<=daysInMonth; d++) {
+    const dt = new Date(year, month, d);
+    const dow = dt.getDay(); // 0=Sun
+    daySchedules[d] = schedules.filter(sch => {
+      if (sch.enabled===false) return false;
+      const e = (sch.schedule||"").trim().toLowerCase();
+      if (e==="manual") return false;
+      if (e.match(/every\s+\d+\s*min|every\s+\d+\s*(hour|hr)/)) return true;
+      // check 5-part cron dow
+      const parts = e.split(/\s+/);
+      if (parts.length===5) {
+        const dowPart = parts[4];
+        if (dowPart==="*") return true;
+        if (dowPart==="1-5") return dow>=1&&dow<=5;
+        const days = dowPart.split(",").map(Number);
+        return days.includes(dow);
+      }
+      if (e.includes("ist")||e.includes("utc")) return true;
+      return false;
+    });
+  }
+
+  const weeks = [];
+  let week = Array(firstDow).fill(null);
+  for (let d=1; d<=daysInMonth; d++) {
+    week.push(d);
+    if (week.length===7) { weeks.push(week); week=[]; }
+  }
+  if (week.length) { while(week.length<7) week.push(null); weeks.push(week); }
+
+  return (
+    <div>
+      <div style={{ fontSize:15, fontWeight:700, color:T.text, marginBottom:16 }}>
+        {monthName} {year}
+      </div>
+      {/* Day headers */}
+      <div style={{ display:"grid", gridTemplateColumns:"repeat(7,1fr)", gap:4, marginBottom:4 }}>
+        {["Sun","Mon","Tue","Wed","Thu","Fri","Sat"].map(d=>(
+          <div key={d} style={{ textAlign:"center", fontSize:10, fontWeight:700,
+            color:T.muted, textTransform:"uppercase", letterSpacing:"0.05em" }}>{d}</div>
+        ))}
+      </div>
+      {/* Weeks */}
+      {weeks.map((week,wi)=>(
+        <div key={wi} style={{ display:"grid", gridTemplateColumns:"repeat(7,1fr)", gap:4, marginBottom:4 }}>
+          {week.map((day,di)=>{
+            if (!day) return <div key={di}/>;
+            const schsToday = daySchedules[day]||[];
+            const isToday = day===now.getDate();
+            const intensity = Math.min(schsToday.length/5,1);
+            return (
+              <div key={di}
+                style={{ padding:"8px 6px", borderRadius:8, minHeight:72,
+                  border:`1px solid ${isToday?T.accent:T.border}`,
+                  background: schsToday.length>0
+                    ? `rgba(${T.accent==="EAB308"?234:schsToday.length>3?99:52},${T.accent==="EAB308"?179:schsToday.length>3?102:211},${T.accent==="EAB308"?8:235},${0.05+intensity*0.12})`
+                    : T.surface,
+                  position:"relative", transition:"all 0.1s" }}
+                onMouseEnter={e=>e.currentTarget.style.borderColor=T.accent}
+                onMouseLeave={e=>e.currentTarget.style.borderColor=isToday?T.accent:T.border}>
+                <div style={{ fontSize:11, fontWeight:isToday?800:500,
+                  color:isToday?T.accent:T.text2, marginBottom:4 }}>
+                  {day}
+                  {isToday && <span style={{ fontSize:8, marginLeft:4,
+                    background:T.accent, color:"white", borderRadius:3,
+                    padding:"0 3px" }}>TODAY</span>}
+                </div>
+                {schsToday.slice(0,3).map((s,i)=>(
+                  <div key={i} onClick={()=>onEdit(s)}
+                    style={{ fontSize:8, color:T.accent, marginBottom:2,
+                      overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap",
+                      cursor:"pointer", padding:"1px 4px", borderRadius:3,
+                      background:`${T.accent}15` }}>
+                    {s.name}
+                  </div>
+                ))}
+                {schsToday.length>3 && (
+                  <div style={{ fontSize:8, color:T.dim }}>+{schsToday.length-3} more</div>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      ))}
+      <div style={{ marginTop:16, display:"flex", gap:16, flexWrap:"wrap" }}>
+        {schedules.filter(s=>s.enabled!==false&&s.schedule!=="manual").slice(0,6).map(s=>(
+          <div key={s.id} onClick={()=>onEdit(s)}
+            style={{ display:"flex", alignItems:"center", gap:6, cursor:"pointer",
+              fontSize:11, color:T.text2 }}>
+            <div style={{ width:8, height:8, borderRadius:"50%", background:T.accent }}/>
+            {s.name} · <span style={{ color:T.muted }}>{cronToHuman(s.schedule)}</span>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 export default function WiziAgentApp() {
   const [themeKey,  setThemeKey]  = useLocal("wz_theme", "light");
   const [activeTab, setActiveTab] = useLocal("wz_tab",   "brief");
@@ -10291,10 +13076,12 @@ export default function WiziAgentApp() {
           {activeTab==="brief"     && <><AiBriefPanel/><MorningBriefTab onNavigate={navigateTo} onIssueFound={setIssues}/></>}
           {activeTab==="triage"    && <TriageTab initialIssues={issues}/>}
           {activeTab==="workflows" && <WorkflowsTab navigateTo={navigateTo}/>}
+          {activeTab==="dataflows" && <DataflowsTab onNavigate={navigateTo}/>}
           {activeTab==="approvals" && <ApprovalsActivityTab onNavigate={navigateTo}/>}
           {activeTab==="config"    && <ConfigureTab/>}
           {activeTab==="query"     && <QueryTab/>}
           {activeTab==="results"   && <ResultsTab onNavigate={navigateTo}/>}
+          {activeTab==="scheduler" && <SchedulerTab onNavigate={navigateTo}/>}
         </main>
         </ThemeCtx.Provider>
       </div>

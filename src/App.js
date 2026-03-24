@@ -304,7 +304,7 @@ const NAV = [
   { id:"triage",    label:"Triage & Monitor",  icon:AlertTriangle, shortcut:"3" },
   { id:"workflows", label:"Workflows",         icon:GitBranch,     shortcut:"4" },
   { id:"dataflows", label:"Dataflows",         icon:Layers,        shortcut:"5" },
-  { id:"approvals", label:"Approvals & Activity", icon:Lock,       shortcut:"A" },
+  { id:"approvals", label:"Approvals",            icon:Lock,       shortcut:"A" },
   { id:"config",    label:"Configure",         icon:Settings,      shortcut:"7" },
   { id:"query",     label:"Data Explorer",     icon:Database,      shortcut:"8" },
   { id:"results",   label:"Results",           icon:BarChart2,     shortcut:"9" },
@@ -3044,9 +3044,12 @@ Rows affected: ${issue.count}
             {!previewLoading && !preview && (
               <div style={{ textAlign:"center", padding:"48px 0", color:T.muted }}>
                 <Database size={28} color={T.border} style={{ margin:"0 auto 10px", display:"block" }}/>
-                <div style={{ fontSize:13 }}>No data loaded</div>
+                <div style={{ fontSize:13, fontWeight:600, color:T.text }}>No data loaded</div>
+                <div style={{ fontSize:11, marginTop:4 }}>
+                  Make sure <code style={{fontFamily:"monospace"}}>{selectedTable}</code> exists and is accessible.
+                </div>
                 <Btn onClick={()=>loadPreview(previewLimit)} size="sm" variant="ghost"
-                  style={{ marginTop:10 }}>
+                  style={{ marginTop:12 }}>
                   <RefreshCw size={10}/> Load Data
                 </Btn>
               </div>
@@ -3102,30 +3105,18 @@ Rows affected: ${issue.count}
 // Persistent unified activity feed — every WiziAgent action, fix, gate, Slack msg
 function ApprovalsActivityTab({ onNavigate }) {
   const T = useT();
-  const [view, setView] = React.useState("approvals"); // approvals | activity
-
   return (
     <div className="fade-in" style={{ display:"flex", flexDirection:"column",
       height:"calc(100vh - 2px)", overflow:"hidden" }}>
-      {/* Sub-tab bar */}
-      <div style={{ display:"flex", gap:0, borderBottom:`1px solid ${T.border}`,
-        paddingLeft:32, flexShrink:0, background:"white" }}>
-        {[
-          { id:"approvals", label:"Approvals" },
-          { id:"activity",  label:"Activity"  },
-        ].map(tab=>(
-          <button key={tab.id} onClick={()=>setView(tab.id)}
-            style={{ padding:"10px 22px", fontSize:12, fontWeight:view===tab.id?700:400,
-              color:view===tab.id?T.accent:T.muted, background:"none", border:"none",
-              cursor:"pointer", borderBottom:view===tab.id?`2px solid ${T.accent}`:"2px solid transparent",
-              marginBottom:-1, transition:"all 0.12s" }}>
-            {tab.label}
-          </button>
-        ))}
+      <div style={{ padding:"16px 28px 0", borderBottom:`1px solid ${T.border}`,
+        flexShrink:0, background:T.surface }}>
+        <div style={{ fontSize:18, fontWeight:700, color:T.text, marginBottom:2 }}>Approvals</div>
+        <div style={{ fontSize:11, color:T.muted, paddingBottom:12 }}>
+          Pending gates and fixes that require manual approval
+        </div>
       </div>
       <div style={{ flex:1, overflowY:"auto" }}>
-        {view==="approvals" && <ApprovalQueueTab onNavigate={onNavigate}/>}
-        {view==="activity"  && <ActivityTab onNavigate={onNavigate}/>}
+        <ApprovalQueueTab onNavigate={onNavigate}/>
       </div>
     </div>
   );
@@ -3146,7 +3137,7 @@ function ApprovalQueueTab({ onNavigate }) {
         if (token && dec==="pending") {
           items.push({
             id:`sop-gate${i}`, type:"sop_gate",
-            title:`Ads SOP — Gate ${i}`,
+            title:`Ads Check — Gate ${i}`,
             detail:["Pause Mage Jobs","Data Available","Proceed with Refreshes",
                     "Run Product Summary","Resume Mage & GDS Copies"][i-1],
             token, source:"workflows", urgency:"high",
@@ -3269,7 +3260,7 @@ function ActivityTab({ onNavigate }) {
         if (sopResult[`gate${i}_token`] && sopResult[`gate${i}_decision`]==="pending") {
           items.push({
             id:`sop-gate${i}`, urgency:"high", icon:"🔒",
-            title:`Ads SOP — Gate ${i} Pending`,
+            title:`Ads Check — Gate ${i} Pending`,
             detail:["Pause Mage Jobs","Data Available","Proceed with Refreshes",
                     "Run Product Summary","Resume Mage & GDS Copies"][i-1],
             token: sopResult[`gate${i}_token`],
@@ -5854,7 +5845,7 @@ Return ONLY valid Redshift SQL, no explanation, no markdown, no backticks.`,
 
 // ─── Workflows Tab ────────────────────────────────────────────────────────────
 // ─── Ads SOP Tab ──────────────────────────────────────────────────────────────
-// Runs the Ads Download Failure SOP as a multi-agent LangGraph workflow.
+// Runs the Daily Ads Data Availability Check as a multi-agent LangGraph workflow.
 // Timeline: Data expected 3:30 PM → Downstream 4:00 PM → Complete ~7:00 PM IST
 const SOP_PHASES = [
   { id:"detection",    label:"Detection",      icon:"🔍", agents:["DataAvailabilityAgent"] },
@@ -6692,6 +6683,9 @@ function SopConfigPanel({ config, setConfig, onSave, saving, msg, onClose, T }) 
 
   const SECTIONS = [
     {id:"detection", label:"🔍 Detection Checks"},
+    {id:"gate2",     label:"✅ Gate 2 Validation"},
+    {id:"timing",    label:"⏱ Timing & Trigger"},
+    {id:"alerts",    label:"🔔 Notifications"},
     {id:"mage",      label:"⏸ Mage Packages"},
     {id:"refresh",   label:"🔄 Refresh Jobs"},
     {id:"copy",      label:"▶ GDS Copy Jobs"},
@@ -6711,6 +6705,18 @@ function SopConfigPanel({ config, setConfig, onSave, saving, msg, onClose, T }) 
   }));
   const removeDetCheck = (i) => setConfig(p=>({
     ...p, detection_checks: (p.detection_checks||[]).filter((_,j)=>j!==i)
+  }));
+
+  // ── Gate 2 validation checks ────────────────────────────────────────────────
+  const addGate2Check = () => setConfig(p=>({...p, gate2_checks:[
+    ...(p.gate2_checks||[]),
+    {id:Date.now().toString(36), name:"New Check", sql:"", pass_condition:"rows > 0", severity:"critical"}
+  ]}));
+  const updateGate2Check = (i, field, val) => setConfig(p=>({
+    ...p, gate2_checks:(p.gate2_checks||[]).map((c,j)=>j===i?{...c,[field]:val}:c)
+  }));
+  const removeGate2Check = (i) => setConfig(p=>({
+    ...p, gate2_checks:(p.gate2_checks||[]).filter((_,j)=>j!==i)
   }));
 
   // ── Mage packages ───────────────────────────────────────────────────────────
@@ -6810,7 +6816,7 @@ function SopConfigPanel({ config, setConfig, onSave, saving, msg, onClose, T }) 
           {section==="detection" && (
             <div>
               <div style={{ fontSize:11, color:T.muted, marginBottom:12, lineHeight:1.5 }}>
-                SQL checks run at the Detection phase. If any check fails, the SOP proceeds.
+                SQL checks run at the Detection phase. If any check fails, the the check proceeds.
                 Pass condition: <code style={{fontFamily:"monospace"}}>rows = 0</code> means "fail if any rows found",
                 <code style={{fontFamily:"monospace"}}> rows {'>'} 0</code> means "fail if no data".
               </div>
@@ -6996,6 +7002,73 @@ function SopConfigPanel({ config, setConfig, onSave, saving, msg, onClose, T }) 
           )}
 
           {/* ── ADS TABLES ──────────────────────────────────────────────── */}
+          {/* ── GATE 2 VALIDATION CHECKS ────────────────────────────────── */}
+          {section==="gate2" && (
+            <div>
+              <div style={{ fontSize:11, color:T.muted, marginBottom:12, lineHeight:1.5 }}>
+                Custom SQL checks run at the <strong>Gate 2: Data Available</strong> validation step.
+                These run after Mage is paused, to confirm data has arrived before proceeding.
+                Each check should return rows when data is <strong>present</strong> (use <code style={{fontFamily:"monospace"}}>rows {">"} 0</code>)
+                or return empty when there's a problem (use <code style={{fontFamily:"monospace"}}>rows = 0</code>).
+              </div>
+              <div style={{ display:"flex", flexDirection:"column", gap:12 }}>
+                {(config.gate2_checks||[]).length === 0 && (
+                  <div style={{ padding:"16px", textAlign:"center", color:T.muted,
+                    fontSize:12, border:`1px dashed ${T.border}`, borderRadius:8 }}>
+                    No custom Gate 2 checks yet. The default validation uses the Ads Tables list above.
+                    Add checks here to override or supplement it.
+                  </div>
+                )}
+                {(config.gate2_checks||[]).map((chk,i)=>(
+                  <div key={chk.id||i} style={{ padding:"12px 14px", borderRadius:8,
+                    border:`1px solid ${T.border}`, background:T.surface }}>
+                    <div style={{ display:"flex", gap:8, marginBottom:8 }}>
+                      <div style={{ flex:1 }}>
+                        <label style={{ fontSize:10, fontWeight:600, color:T.muted, display:"block", marginBottom:2 }}>Check Name</label>
+                        <input value={chk.name}
+                          onChange={e=>updateGate2Check(i,"name",e.target.value)}
+                          placeholder="e.g. Campaign report data present for yesterday"
+                          style={inp}
+                          onFocus={e=>e.target.style.borderColor=T.accent}
+                          onBlur={e=>e.target.style.borderColor=T.border}/>
+                      </div>
+                      <div style={{ width:200 }}>
+                        <label style={{ fontSize:10, fontWeight:600, color:T.muted, display:"block", marginBottom:2 }}>Pass When</label>
+                        <PassConditionPicker
+                          value={chk.pass_condition||"rows > 0"}
+                          onChange={v=>updateGate2Check(i,"pass_condition",v)}
+                        />
+                      </div>
+                      <div style={{ width:110 }}>
+                        <label style={{ fontSize:10, fontWeight:600, color:T.muted, display:"block", marginBottom:2 }}>Severity</label>
+                        <select value={chk.severity||"critical"}
+                          onChange={e=>updateGate2Check(i,"severity",e.target.value)}
+                          style={inp}>
+                          {["critical","high","medium","low"].map(s=><option key={s} value={s}>{s}</option>)}
+                        </select>
+                      </div>
+                      <button onClick={()=>removeGate2Check(i)}
+                        style={{ background:"none", border:"none", cursor:"pointer",
+                          color:T.red, fontSize:16, alignSelf:"flex-end", paddingBottom:4 }}>×</button>
+                    </div>
+                    <div>
+                      <label style={{ fontSize:10, fontWeight:600, color:T.muted, display:"block", marginBottom:2 }}>SQL Query</label>
+                      <textarea value={chk.sql} rows={3}
+                        onChange={e=>updateGate2Check(i,"sql",e.target.value)}
+                        placeholder="SELECT COUNT(*) FROM public.tbl_amzn_campaign_report WHERE report_date = CURRENT_DATE - 1"
+                        style={{...ta, width:"100%"}}
+                        onFocus={e=>e.target.style.borderColor=T.accent}
+                        onBlur={e=>e.target.style.borderColor=T.border}/>
+                    </div>
+                  </div>
+                ))}
+              </div>
+              <Btn size="sm" onClick={addGate2Check} style={{ marginTop:10 }}>
+                <Plus size={10}/> Add Gate 2 Check
+              </Btn>
+            </div>
+          )}
+
           {section==="tables" && (
             <div>
               <div style={{ fontSize:11, color:T.muted, marginBottom:12 }}>
@@ -7035,6 +7108,122 @@ function SopConfigPanel({ config, setConfig, onSave, saving, msg, onClose, T }) 
               </div>
             </div>
           )}
+          {/* ── TIMING & TRIGGER ────────────────────────────────────── */}
+          {section==="timing" && (
+            <div style={{ display:"flex", flexDirection:"column", gap:18 }}>
+              <div style={{ fontSize:11, color:T.muted, lineHeight:1.5 }}>
+                Configure when the check auto-triggers and how long each gate waits before timing out.
+              </div>
+
+              {/* Auto-trigger time */}
+              <div style={{ padding:"14px 16px", borderRadius:8, border:`1px solid ${T.border}`, background:T.surface }}>
+                <div style={{ fontSize:12, fontWeight:700, color:T.text, marginBottom:10 }}>Auto-Trigger Time (IST)</div>
+                <div style={{ display:"flex", alignItems:"center", gap:10 }}>
+                  <input type="time"
+                    value={config.trigger_time_ist||"16:00"}
+                    onChange={e=>setConfig(p=>({...p, trigger_time_ist:e.target.value}))}
+                    style={{...inp, width:"auto"}}/>
+                  <span style={{ fontSize:11, color:T.muted }}>
+                    The check auto-triggers at this time daily if no run has occurred today.
+                  </span>
+                </div>
+              </div>
+
+              {/* Per-gate timeouts */}
+              <div style={{ padding:"14px 16px", borderRadius:8, border:`1px solid ${T.border}`, background:T.surface }}>
+                <div style={{ fontSize:12, fontWeight:700, color:T.text, marginBottom:4 }}>Gate Timeouts (minutes)</div>
+                <div style={{ fontSize:11, color:T.muted, marginBottom:12 }}>
+                  Each gate waits this long for approval before timing out and auto-proceeding.
+                </div>
+                <div style={{ display:"flex", flexDirection:"column", gap:8 }}>
+                  {[1,2,3,4,5].map(n => {
+                    const label = (config.gate_labels||{})[`gate${n}`] ||
+                      ["Pause Mage Jobs","Data Available","Proceed with Refreshes","Run Product Summary","Resume Mage & GDS Copies"][n-1];
+                    const val = ((config.gate_timeouts||{})[`gate${n}`]) ?? [15,90,30,30,30][n-1];
+                    return (
+                      <div key={n} style={{ display:"flex", alignItems:"center", gap:10 }}>
+                        <div style={{ width:24, height:24, borderRadius:6,
+                          background:`${T.accent}12`, display:"flex", alignItems:"center",
+                          justifyContent:"center", fontSize:12, fontWeight:700,
+                          color:T.accent, flexShrink:0 }}>{n}</div>
+                        <span style={{ flex:1, fontSize:12, color:T.text2 }}>{label}</span>
+                        <input type="number" min={1} max={480} value={val}
+                          onChange={e=>setConfig(p=>({...p,
+                            gate_timeouts:{...(p.gate_timeouts||{}), [`gate${n}`]:Number(e.target.value)}
+                          }))}
+                          style={{...inp, width:80, textAlign:"center"}}/>
+                        <span style={{ fontSize:11, color:T.muted }}>min</span>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+
+              {/* Validation threshold */}
+              <div style={{ padding:"14px 16px", borderRadius:8, border:`1px solid ${T.border}`, background:T.surface }}>
+                <div style={{ fontSize:12, fontWeight:700, color:T.text, marginBottom:4 }}>Validation Pass Threshold</div>
+                <div style={{ fontSize:11, color:T.muted, marginBottom:10 }}>
+                  Minimum account coverage % required for a table to pass Gate 2 validation. Default: 80%.
+                </div>
+                <div style={{ display:"flex", alignItems:"center", gap:10 }}>
+                  <input type="range" min={50} max={100} step={5}
+                    value={config.validation_threshold_pct||80}
+                    onChange={e=>setConfig(p=>({...p, validation_threshold_pct:Number(e.target.value)}))}
+                    style={{ flex:1 }}/>
+                  <span style={{ fontSize:14, fontWeight:700, color:T.accent, minWidth:40 }}>
+                    {config.validation_threshold_pct||80}%
+                  </span>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* ── NOTIFICATIONS ────────────────────────────────────────────── */}
+          {section==="alerts" && (
+            <div style={{ display:"flex", flexDirection:"column", gap:16 }}>
+              <div style={{ fontSize:11, color:T.muted, lineHeight:1.5 }}>
+                Configure Slack notifications for this check. The webhook URL is set via the
+                <code style={{fontFamily:"monospace", margin:"0 4px"}}>SLACK_WEBHOOK_URL</code>
+                environment variable.
+              </div>
+
+              {/* Gate pending alerts toggle */}
+              <div style={{ padding:"14px 16px", borderRadius:8, border:`1px solid ${T.border}`, background:T.surface }}>
+                <div style={{ display:"flex", alignItems:"center", gap:10, marginBottom:6 }}>
+                  <div onClick={()=>setConfig(p=>({...p, slack_gate_alerts:!p.slack_gate_alerts}))}
+                    style={{ width:36, height:20, borderRadius:99, cursor:"pointer",
+                      background:(config.slack_gate_alerts!==false)?T.green:T.border2,
+                      position:"relative", transition:"background 0.2s", flexShrink:0 }}>
+                    <div style={{ width:16, height:16, borderRadius:"50%", background:"white",
+                      position:"absolute", top:2, transition:"left 0.2s",
+                      left:(config.slack_gate_alerts!==false)?18:2,
+                      boxShadow:"0 1px 3px rgba(0,0,0,0.2)" }}/>
+                  </div>
+                  <div>
+                    <div style={{ fontSize:12, fontWeight:600, color:T.text }}>
+                      Alert on gate pending
+                    </div>
+                    <div style={{ fontSize:10, color:T.muted }}>
+                      Send a Slack message each time a gate requires approval
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              {/* Completion notification — always on, just informational */}
+              <div style={{ padding:"14px 16px", borderRadius:8, border:`1px solid ${T.border}`,
+                background:`${T.green}04` }}>
+                <div style={{ fontSize:12, fontWeight:600, color:T.text, marginBottom:4 }}>
+                  ✅ Completion summary — always sent
+                </div>
+                <div style={{ fontSize:11, color:T.muted }}>
+                  A full summary is always sent to Slack when the check completes, including gates approved,
+                  tables validated, and jobs triggered.
+                </div>
+              </div>
+            </div>
+          )}
+
         </div>
       </div>
       </div>
@@ -7107,14 +7296,40 @@ function AdsSopTab() {
 
   const [runId,      setRunId]      = React.useState(null);
   const [gateTimeout,setGateTimeout]= useLocal("wz_sop_gate_timeout", 30);
-  const pollRef = React.useRef(null);
+  const pollRef   = React.useRef(null);
+  const [showHistory, setShowHistory] = React.useState(false);
+  const [history,     setHistory]     = React.useState([]);
+  const [histLoading, setHistLoading] = React.useState(false);
+
+  const loadHistory = async () => {
+    setHistLoading(true);
+    try {
+      const r = await fetch(`${API}/api/workflow/ads-sop/history?limit=30`);
+      const d = await r.json();
+      if (d.runs) setHistory(d.runs);
+    } catch(e) {}
+    setHistLoading(false);
+  };
 
   const pollState = React.useCallback(async (rid) => {
     try {
       const res  = await fetch(`${API}/api/workflow/ads-sop/${rid}`);
       const data = await res.json();
       if (data.error) return;
-      setResult(data);
+      // Merge: preserve any optimistic gate decisions already set locally
+      // (backend may lag behind optimistic UI update)
+      setResult(prev => {
+        if (!prev) return data;
+        const merged = {...data};
+        for (let i = 1; i <= 5; i++) {
+          const key = `gate${i}_decision`;
+          // Keep local decision if already approved/rejected and backend still says pending
+          if (prev[key] && prev[key] !== "pending" && data[key] === "pending") {
+            merged[key] = prev[key];
+          }
+        }
+        return merged;
+      });
       // Stop polling on terminal states
       const terminal = ["complete","stopped","error","complete_no_issues","finalizing"];
       if (terminal.includes(data.status)) {
@@ -7135,7 +7350,7 @@ function AdsSopTab() {
           const terminal = ["complete","stopped","error","complete_no_issues"];
           if (!terminal.includes(data.run.status)) {
             setRunning(true);
-            pollRef.current = setInterval(()=>pollState(data.run.run_id), 3000);
+            pollRef.current = setInterval(()=>pollState(data.run.run_id), 8000);
           }
         }
       }).catch(()=>{});
@@ -7155,7 +7370,7 @@ function AdsSopTab() {
       if (data.error) throw new Error(data.error);
       setRunId(data.run_id);
       // Start polling
-      pollRef.current = setInterval(()=>pollState(data.run_id), 3000);
+      pollRef.current = setInterval(()=>pollState(data.run_id), 8000);
     } catch(e) {
       setResult({ error:e.message, status:"error", trace:[{node:"sop",ts:"",msg:e.message,level:"error"}] });
       setRunning(false);
@@ -7164,6 +7379,7 @@ function AdsSopTab() {
 
   const forceAllGates = async () => {
     if (!runId) return;
+    if (!confirm("Force all pending gates? This will auto-approve every remaining gate and proceed to completion without manual review.")) return;
     await fetch(`${API}/api/workflow/sop-gate-force`, {
       method:"POST", headers:{"Content-Type":"application/json"},
       body:JSON.stringify({ run_id: runId })
@@ -7174,6 +7390,8 @@ function AdsSopTab() {
   const submitGate = async (token, decision) => {
     if (!token) return;
     setSubmitting(p => ({...p,[token]:true}));
+    // Pause polling to prevent overwriting the optimistic update
+    if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null; }
     try {
       const res  = await fetch(`${API}/api/workflow/sop-gate`, {
         method:"POST", headers:{"Content-Type":"application/json"},
@@ -7181,29 +7399,57 @@ function AdsSopTab() {
       });
       const data = await res.json();
       if (data.error) throw new Error(data.error);
-      // Optimistically update result
-      setResult(p => {
-        if (!p) return p;
-        const updated = {...p};
-        for (let i = 1; i <= 5; i++) {
-          if (p[`gate${i}_token`] === token) {
-            updated[`gate${i}_decision`] = decision;
+      // Apply server response directly if available, otherwise use optimistic
+      if (data.run_id || data.state) {
+        setResult(data.state || data);
+      } else {
+        setResult(p => {
+          if (!p) return p;
+          const updated = {...p};
+          for (let i = 1; i <= 5; i++) {
+            if (p[`gate${i}_token`] === token) {
+              updated[`gate${i}_decision`] = decision;
+            }
           }
+          return updated;
+        });
+      }
+      // Resume polling after 4s (enough time for backend to process)
+      setTimeout(() => {
+        if (runId) {
+          pollRef.current = setInterval(()=>pollState(runId), 8000);
         }
-        return updated;
-      });
+      }, 4000);
     } catch(e) { alert(`Gate submit failed: ${e.message}`); }
     setSubmitting(p => ({...p,[token]:false}));
   };
 
   // ── Render helpers ─────────────────────────────────────────────────────────
   const GatePanel = ({ gateNum, token, decision, label }) => {
-    if (!token || decision === "skipped") return null;
+    if (decision === "skipped") return null;
     const isPending  = decision === "pending";
     const isApproved = decision === "approved";
     const isRejected = decision === "rejected";
     const isTimeout  = decision === "timeout";
     const busy = submitting[token];
+    // Show upcoming gate (no token yet, no decision)
+    if (!token && !isPending && !isApproved && !isRejected && !isTimeout) {
+      return (
+        <Card style={{ padding:"12px 18px", marginBottom:10,
+          borderColor:`${T.border}`, background:T.surface, opacity:0.6 }}>
+          <div style={{ display:"flex", alignItems:"center", gap:12 }}>
+            <div style={{ width:32, height:32, borderRadius:8, flexShrink:0,
+              background:T.border, display:"flex", alignItems:"center",
+              justifyContent:"center", fontSize:14, fontWeight:800, color:T.dim }}>
+              {gateNum}
+            </div>
+            <div style={{ fontSize:12, color:T.muted }}>
+              🔒 Gate {gateNum}: {label} <span style={{fontSize:10}}>— not yet reached</span>
+            </div>
+          </div>
+        </Card>
+      );
+    }
 
     // Countdown timer for pending gates
     const [elapsed, setElapsed] = React.useState(0);
@@ -7252,7 +7498,10 @@ function AdsSopTab() {
             )}
           </div>
           {isPending && (
-            <div style={{ display:"flex", flexDirection:"column", gap:5, flexShrink:0 }}>
+            <div style={{ display:"flex", flexDirection:"column", gap:5, flexShrink:0, maxWidth:180 }}>
+              <div style={{ fontSize:9, color:T.muted, textAlign:"right", marginBottom:2 }}>
+                Approving: <strong style={{color:T.text}}>{label}</strong>
+              </div>
               <div style={{ display:"flex", gap:5 }}>
                 <Btn onClick={()=>submitGate(token,"approve")} variant="success" size="sm" disabled={busy}>
                   {busy?<Spinner size={10} color="white"/>:<Check size={10}/>} Approve
@@ -7269,7 +7518,24 @@ function AdsSopTab() {
           )}
           {isApproved && <Badge label="approved" color={T.green}/>}
           {isRejected && <Badge label="rejected" color={T.red}/>}
-          {isTimeout  && <Badge label="timed out" color={T.orange}/>}
+          {isTimeout && (
+            <div style={{ display:"flex", alignItems:"center", gap:6 }}>
+              <Badge label="timed out" color={T.orange}/>
+              <Btn size="sm" variant="ghost"
+                style={{ fontSize:10, color:T.orange, borderColor:`${T.orange}30` }}
+                onClick={async ()=>{
+                  try {
+                    await fetch(`${API}/api/workflow/sop-gate/extend`,{
+                      method:"POST", headers:{"Content-Type":"application/json"},
+                      body:JSON.stringify({token, extend_minutes:30})
+                    });
+                    setResult(p=>p?{...p,[`gate${gateNum}_decision`]:"pending"}:p);
+                  } catch(e){}
+                }}>
+                +30m Extend
+              </Btn>
+            </div>
+          )}
         </div>
       </Card>
     );
@@ -7428,6 +7694,9 @@ function AdsSopTab() {
               ⚡ Force All Gates
             </Btn>
           )}
+          <Btn onClick={()=>{ setShowHistory(p=>!p); if(!showHistory) loadHistory(); }} size="sm" variant="ghost">
+            📋 History
+          </Btn>
           <Btn onClick={()=>setShowConfig(p=>!p)} size="sm" variant="ghost">
             ⚙ Configure
           </Btn>
@@ -7435,7 +7704,7 @@ function AdsSopTab() {
             style={{ background:running?T.border:`linear-gradient(135deg,${T.accent},${T.purple})`,
               color:"white", border:"none" }}>
             {running?<Spinner size={12} color="white"/>:<Play size={12}/>}
-            {running?"SOP Running…":"▶ Trigger SOP"}
+            {running?"Check Running…":"▶ Start Check"}
           </Btn>
         </div>
       </div>
@@ -7444,7 +7713,7 @@ function AdsSopTab() {
       <Card style={{ padding:"14px 20px", marginBottom:20 }}>
         <div style={{ fontSize:10, fontWeight:700, color:T.muted, marginBottom:10,
           textTransform:"uppercase", letterSpacing:"0.06em" }}>
-          SOP Timeline (IST)
+          Check Timeline (IST)
         </div>
         <div style={{ display:"flex", alignItems:"center", gap:0 }}>
           {SOP_PHASES.map((ph, i) => {
@@ -7488,6 +7757,64 @@ function AdsSopTab() {
         </div>
       </Card>
 
+      {/* ── HISTORY PANEL ────────────────────────────────────────────────── */}
+      {showHistory && (
+        <Card style={{ padding:"16px 20px", marginBottom:14 }}>
+          <div style={{ display:"flex", alignItems:"center", gap:8, marginBottom:12 }}>
+            <span style={{ fontSize:13, fontWeight:700, color:T.text }}>📋 Run History</span>
+            <span style={{ fontSize:10, color:T.muted }}>({history.length} runs)</span>
+            <Btn size="sm" variant="ghost" onClick={loadHistory} disabled={histLoading}
+              style={{ marginLeft:"auto" }}>
+              {histLoading?<Spinner size={10}/>:<RefreshCw size={10}/>}
+            </Btn>
+          </div>
+          {history.length === 0 && !histLoading && (
+            <div style={{ fontSize:12, color:T.muted, textAlign:"center", padding:"12px 0" }}>
+              No past runs found
+            </div>
+          )}
+          {histLoading && <div style={{ textAlign:"center", padding:"12px 0" }}><Spinner size={16}/></div>}
+          <div style={{ display:"flex", flexDirection:"column", gap:6, maxHeight:340, overflowY:"auto" }}>
+            {history.map((run,i) => {
+              const statusColor = run.status==="complete"?T.green:run.status==="complete_no_issues"?T.cyan:run.status==="stopped"?T.orange:run.status==="error"?T.red:T.muted;
+              const statusLabel = run.status==="complete"?"✓ Complete":run.status==="complete_no_issues"?"✓ No issues":run.status==="stopped"?"⛔ Stopped":run.status==="error"?"✗ Error":run.status?.replace(/_/g," ");
+              return (
+                <div key={run.run_id||i} style={{ padding:"9px 12px", borderRadius:8,
+                  border:`1px solid ${statusColor}25`, background:`${statusColor}05`,
+                  display:"flex", alignItems:"center", gap:10 }}>
+                  <div style={{ flex:1, minWidth:0 }}>
+                    <div style={{ display:"flex", alignItems:"center", gap:7, marginBottom:2 }}>
+                      <span style={{ fontSize:11, fontWeight:700, color:statusColor }}>{statusLabel}</span>
+                      {run.force_full && <span style={{ fontSize:9, color:T.muted, background:T.border, borderRadius:3, padding:"0 5px" }}>force-full</span>}
+                      {run.notified && <Badge label="Slack ✓" color={T.green}/>}
+                    </div>
+                    <div style={{ fontSize:10, color:T.muted, fontFamily:"monospace" }}>
+                      {run.started_at}
+                      {run.duration_min!=null && ` · ${run.duration_min}m`}
+                      {run.gates_approved!=null && ` · ${run.gates_approved}/5 gates`}
+                      {run.validation_pass!=null && ` · ${run.tables_passed}/${run.tables_checked} tables`}
+                    </div>
+                  </div>
+                  <button
+                    onClick={async ()=>{
+                      try {
+                        const r = await fetch(`${API}/api/workflow/ads-sop/${run.run_id}`);
+                        const d = await r.json();
+                        if (!d.error){ setResult(d); setShowHistory(false); }
+                      } catch(e) {}
+                    }}
+                    style={{ fontSize:10, color:T.accent, background:"none",
+                      border:`1px solid ${T.accent}30`, borderRadius:5,
+                      padding:"3px 9px", cursor:"pointer", flexShrink:0 }}>
+                    View →
+                  </button>
+                </div>
+              );
+            })}
+          </div>
+        </Card>
+      )}
+
       {/* ── CONFIG PANEL ─────────────────────────────────────────────────── */}
       {showConfig && config && (
         <SopConfigPanel
@@ -7504,9 +7831,9 @@ function AdsSopTab() {
       {/* Empty state */}
       {!result && !running && (
         <EmptyState icon={GitBranch}
-          title="SOP not yet triggered"
-          desc="Click ▶ Trigger SOP to start the Ads Download Failure workflow. The agent will detect issues, walk through all 5 approval gates, and guide you step by step."
-          action={<Btn onClick={runSop} size="sm">▶ Trigger SOP</Btn>}
+          title="Check not yet started"
+          desc="Click ▶ Start Check to run the Daily Ads Data Availability Check. The agent will detect issues, walk through all 5 approval gates, and guide you step by step."
+          action={<Btn onClick={runSop} size="sm">▶ Start Check</Btn>}
         />
       )}
 
@@ -7518,7 +7845,7 @@ function AdsSopTab() {
             <Spinner size={14} color={T.accent}/>
             <div>
               <span style={{ fontSize:13, fontWeight:700, color:T.accent }}>
-                SOP Running — {result.status?.replace(/_/g," ").replace("awaiting","⏳ awaiting")}
+                Check Running — {result.status?.replace(/_/g," ").replace("awaiting","⏳ awaiting")}
               </span>
               {runId && (
                 <span style={{ fontSize:10, color:T.muted, fontFamily:"monospace", marginLeft:8 }}>
@@ -7532,7 +7859,7 @@ function AdsSopTab() {
       {running && !result && (
         <Card style={{ padding:"20px 24px", textAlign:"center" }}>
           <Spinner size={28} style={{ margin:"0 auto 10px" }}/>
-          <div style={{ fontSize:13, fontWeight:700, color:T.text }}>Starting SOP…</div>
+          <div style={{ fontSize:13, fontWeight:700, color:T.text }}>Starting Check…</div>
         </Card>
       )}
 
@@ -7563,6 +7890,24 @@ function AdsSopTab() {
                     color:result.detection_result.missing?T.orange:T.green }}>
                     Detection — {result.detection_result.missing?"Issues Found":"Clean"}
                   </span>
+                  {!result.detection_result.missing && result.status==="complete_no_issues" && (
+                    <Btn size="sm" variant="ghost"
+                      onClick={async ()=>{
+                        setRunning(true); setResult(null); setRunId(null);
+                        if (pollRef.current){ clearInterval(pollRef.current); pollRef.current=null; }
+                        try {
+                          const res = await fetch(`${API}/api/workflow/ads-sop`,{
+                            method:"POST", headers:{"Content-Type":"application/json"},
+                            body:JSON.stringify({gate_timeout_min:Number(gateTimeout), force_full:true})
+                          });
+                          const data = await res.json();
+                          if (!data.error){ setRunId(data.run_id); pollRef.current=setInterval(()=>pollState(data.run_id),8000); }
+                        } catch(e){ setRunning(false); }
+                      }}
+                      style={{ marginLeft:"auto", fontSize:10, color:T.accent }}>
+                      ▶ Run Full Check Anyway
+                    </Btn>
+                  )}
                 </div>
                 <div style={{ display:"flex", flexDirection:"column", gap:4 }}>
                   {result.detection_result.details?.map((d,i) => (
@@ -7604,36 +7949,136 @@ function AdsSopTab() {
             <GatePanel gateNum={5} token={result.gate5_token}
               decision={result.gate5_decision} label="Resume Mage & GDS Copies"/>
 
+            {/* Resume from gate — shown when run is stopped/errored */}
+            {(result.status==="stopped"||result.status==="error") && (() => {
+              // Find first non-approved gate to resume from
+              const firstPending = [1,2,3,4,5].find(n=>
+                result[`gate${n}_decision`]!=="approved"
+              ) || 1;
+              return (
+                <Card style={{ padding:"12px 18px", borderColor:`${T.orange}40`,
+                  background:`${T.orange}05`, marginTop:4 }}>
+                  <div style={{ display:"flex", alignItems:"center", gap:10 }}>
+                    <span style={{ fontSize:13 }}>🔁</span>
+                    <div style={{ flex:1 }}>
+                      <div style={{ fontSize:12, fontWeight:700, color:T.orange }}>
+                        Resume without restarting
+                      </div>
+                      <div style={{ fontSize:10, color:T.muted, marginTop:1 }}>
+                        Picks up from Gate {firstPending} — preserves earlier detection &amp; validation results
+                      </div>
+                    </div>
+                    <div style={{ display:"flex", gap:6 }}>
+                      {[1,2,3,4,5].map(n=>(
+                        <Btn key={n} size="sm" variant="ghost"
+                          style={{ color:T.orange, borderColor:`${T.orange}30`, fontSize:10 }}
+                          onClick={async ()=>{
+                            setRunning(true); setResult(null); setRunId(null);
+                            if(pollRef.current){clearInterval(pollRef.current);pollRef.current=null;}
+                            try {
+                              const res = await fetch(`${API}/api/workflow/ads-sop/resume`,{
+                                method:"POST", headers:{"Content-Type":"application/json"},
+                                body:JSON.stringify({
+                                  from_run_id: result.run_id,
+                                  from_gate: n,
+                                  gate_timeout_min: Number(gateTimeout)
+                                })
+                              });
+                              const d = await res.json();
+                              if(!d.error){ setRunId(d.run_id); pollRef.current=setInterval(()=>pollState(d.run_id),8000); }
+                            } catch(e){ setRunning(false); }
+                          }}>
+                          G{n}
+                        </Btn>
+                      ))}
+                    </div>
+                  </div>
+                </Card>
+              );
+            })()}
+
             {/* Completion */}
-            {result.completion_summary && (
-              <Card style={{ padding:"16px 20px",
-                borderColor:`${T.green}40`, background:`${T.green}06` }}>
-                <div style={{ display:"flex", gap:10, alignItems:"center", marginBottom:6 }}>
-                  <span style={{ fontSize:18 }}>🎉</span>
-                  <span style={{ fontSize:13, fontWeight:700, color:T.green }}>SOP Complete</span>
-                  {result.notified && <Badge label="Slack notified" color={T.green}/>}
-                </div>
-                <pre style={{ fontSize:11, color:T.text2, fontFamily:T.monoFont,
-                  whiteSpace:"pre-wrap", margin:0 }}>
-                  {result.completion_summary}
-                </pre>
-              </Card>
-            )}
+            {result.completion_summary && (() => {
+              const sd = result.summary_data || {};
+              const kpis = [
+                { icon:"🔒", label:"Gates", value:`${sd.gates_approved??"-"}/${sd.gates_total??5}`, color:T.green },
+                { icon:"✅", label:"Tables", value:`${sd.tables_passed??"-"}/${sd.tables_total??"-"}`, color:T.accent },
+                { icon:"⏸", label:"Mage jobs", value:sd.mage_count??"-", color:T.purple },
+                { icon:"🔄", label:"Refreshes", value:sd.refresh_count??"-", color:T.cyan },
+                { icon:"▶", label:"GDS copies", value:sd.gds_count??"-", color:T.orange },
+                ...(sd.duration?[{ icon:"⏱", label:"Duration", value:sd.duration, color:T.muted }]:[]),
+              ];
+              return (
+                <Card style={{ padding:"16px 20px",
+                  borderColor:`${T.green}40`, background:`${T.green}06` }}>
+                  <div style={{ display:"flex", gap:10, alignItems:"center", marginBottom:14 }}>
+                    <span style={{ fontSize:18 }}>🎉</span>
+                    <span style={{ fontSize:13, fontWeight:700, color:T.green }}>Check Complete</span>
+                    {result.notified && <Badge label="Slack notified" color={T.green}/>}
+                  </div>
+                  <div style={{ display:"grid", gridTemplateColumns:"repeat(3,1fr)", gap:8, marginBottom:12 }}>
+                    {kpis.map(k=>(
+                      <div key={k.label} style={{ padding:"8px 10px", borderRadius:8,
+                        background:`${k.color}10`, border:`1px solid ${k.color}25`,
+                        textAlign:"center" }}>
+                        <div style={{ fontSize:16, marginBottom:2 }}>{k.icon}</div>
+                        <div style={{ fontSize:14, fontWeight:800, color:k.color }}>{k.value}</div>
+                        <div style={{ fontSize:9, color:T.muted, textTransform:"uppercase",
+                          letterSpacing:"0.05em" }}>{k.label}</div>
+                      </div>
+                    ))}
+                  </div>
+                  {sd.validation_results?.length > 0 && (
+                    <details style={{ marginTop:4 }}>
+                      <summary style={{ fontSize:10, color:T.muted, cursor:"pointer" }}>
+                        Table validation detail
+                      </summary>
+                      <div style={{ marginTop:6, display:"flex", flexDirection:"column", gap:3 }}>
+                        {sd.validation_results.map((r,i)=>(
+                          <div key={i} style={{ display:"flex", alignItems:"center", gap:8,
+                            fontSize:10, padding:"2px 0" }}>
+                            <Badge label={r.status} color={r.status==="PASS"?T.green:r.status==="FAIL"?T.red:T.yellow}/>
+                            <span style={{ color:T.text2 }}>{r.short||r.name}</span>
+                            {r.coverage_pct!=null && <span style={{ color:T.muted }}>{r.coverage_pct}% coverage</span>}
+                          </div>
+                        ))}
+                      </div>
+                    </details>
+                  )}
+                </Card>
+              );
+            })()}
           </div>
 
-          {/* Trace panel */}
+          {/* Trace panel — live scrolling */}
           <Card style={{ padding:"14px 16px", alignSelf:"start",
             position:"sticky", top:20 }}>
-            <div style={{ fontSize:11, fontWeight:700, color:T.muted, marginBottom:10,
-              textTransform:"uppercase", letterSpacing:"0.06em" }}>
-              Execution Trace
+            <div style={{ display:"flex", alignItems:"center", marginBottom:10 }}>
+              <span style={{ fontSize:11, fontWeight:700, color:T.muted,
+                textTransform:"uppercase", letterSpacing:"0.06em", flex:1 }}>
+                Execution Trace
+              </span>
+              {running && <span style={{ display:"flex", alignItems:"center", gap:4,
+                fontSize:9, color:T.accent }}>
+                <span style={{ width:6, height:6, borderRadius:"50%",
+                  background:T.accent, animation:"pulse 1.2s infinite", display:"inline-block" }}/>
+                Live
+              </span>}
+              <span style={{ fontSize:9, color:T.dim, marginLeft:8 }}>
+                {(result.trace||[]).length} steps
+              </span>
             </div>
-            <div style={{ display:"flex", flexDirection:"column", gap:4,
-              maxHeight:500, overflowY:"auto" }}>
+            <div style={{ display:"flex", flexDirection:"column", gap:3,
+              maxHeight:480, overflowY:"auto" }} ref={el=>{
+                if(el && running) el.scrollTop = el.scrollHeight;
+              }}>
               {(result.trace||[]).length === 0
                 ? <div style={{ fontSize:11, color:T.dim }}>No trace yet</div>
                 : (result.trace||[]).map((t,i) => (
-                  <div key={i} style={{ fontSize:10, lineHeight:1.6 }}>
+                  <div key={i} style={{ fontSize:10, lineHeight:1.5,
+                    padding:"3px 6px", borderRadius:5,
+                    background: t.level==="error"?`${T.red}08`:t.level==="warning"?`${T.yellow}06`:t.level==="success"?`${T.green}06`:"transparent",
+                    borderLeft: `2px solid ${t.level==="error"?T.red:t.level==="warning"?T.yellow:t.level==="success"?T.green:T.border}` }}>
                     <div style={{ display:"flex", gap:6, alignItems:"baseline" }}>
                       <span style={{ color:T.dim, fontFamily:T.monoFont,
                         fontSize:9, flexShrink:0 }}>{t.ts}</span>
@@ -7677,7 +8122,7 @@ const BUILTIN_WFS = [
   {
     id:"ads-sop", builtin:true,
     name:"Daily Ads Data Availability Check",
-    desc:"6 agents · 5 approval gates · Full download failure runbook from detection through validation, refresh, and GDS copy jobs.",
+    desc:"6 agents · 5 approval gates · Full data availability check from detection through validation, refresh, and GDS copy jobs.",
     schedule:"On demand", trigger:"manual",
     agents:["Detection","Pause Mage","Validation","Refresh","Resume & Copy","Finalize"],
     tables:["mws.report","public.tbl_amzn_*"], endpoint:"/api/workflow/ads-sop",
@@ -8092,37 +8537,9 @@ function WorkflowsTab({ navigateTo }) {
   const [aiSuggestions,  setAiSuggestions]  = useSession("wz_wfSuggestions", []);
   const [aiLoading,      setAiLoading]      = React.useState(false);
   const [showTemplates,  setShowTemplates]  = React.useState(false);
-  const [sopConfigOpen,  setSopConfigOpen]  = React.useState(false);
   const [selectedWfIds, setSelectedWfIds] = React.useState(new Set());
   const toggleWfSelect = (id) => setSelectedWfIds(p => { const n=new Set(p); n.has(id)?n.delete(id):n.add(id); return n; });
   const clearWfSelect = () => setSelectedWfIds(new Set());
-  const [sopConfig,      setSopConfig]      = React.useState(null);
-  const [sopConfigSaving,setSopConfigSaving]= React.useState(false);
-  const [sopConfigMsg,   setSopConfigMsg]   = React.useState(null);
-
-  // Load SOP config for the customize modal
-  const loadSopConfig = React.useCallback(async () => {
-    try {
-      const res = await fetch(`${API}/api/sop/config`);
-      const d   = await res.json();
-      if (!d.error) setSopConfig(d);
-    } catch(e) {}
-  }, []);
-
-  const saveSopConfig = async () => {
-    if (!sopConfig) return;
-    setSopConfigSaving(true); setSopConfigMsg(null);
-    try {
-      const res = await fetch(`${API}/api/sop/config`, {
-        method:"POST", headers:{"Content-Type":"application/json"},
-        body:JSON.stringify(sopConfig)
-      });
-      const d = await res.json();
-      setSopConfigMsg(d.saved ? "✓ Saved to Redshift" : "✗ Save failed");
-    } catch(e) { setSopConfigMsg("✗ " + e.message); }
-    setSopConfigSaving(false);
-    setTimeout(()=>setSopConfigMsg(null), 3000);
-  };
 
   // Seed built-in workflows into backend on first load if they don't exist yet
   const BUILTIN_SEEDS = [
@@ -8300,26 +8717,10 @@ Respond ONLY with JSON array (no markdown):
         <span style={{ fontSize:14, fontWeight:700, color:T.text }}>
           Daily Ads Data Availability Check
         </span>
-        <Btn size="sm" variant="ghost"
-          onClick={()=>{ loadSopConfig(); setSopConfigOpen(true); }}
-          style={{ marginLeft:"auto", color:T.orange, borderColor:`${T.orange}40` }}>
-          ⚙ Customize Workflow
-        </Btn>
       </div>
       <div style={{ flex:1, overflowY:"auto" }}>
         <AdsSopTab/>
       </div>
-      {sopConfigOpen && sopConfig && (
-        <SopConfigPanel
-          config={sopConfig}
-          setConfig={setSopConfig}
-          onSave={saveSopConfig}
-          saving={sopConfigSaving}
-          msg={sopConfigMsg}
-          onClose={()=>setSopConfigOpen(false)}
-          T={T}
-        />
-      )}
     </div>
   );
 
@@ -8434,20 +8835,14 @@ Respond ONLY with JSON array (no markdown):
                       <Btn onClick={()=>{ runBuiltin(wf); if(wf.id==="ads-sop") setView("sop"); }} disabled={isRunning} size="sm"
                         style={{ background:isRunning?T.border:accentColor, color:"white", border:"none" }}>
                         {isRunning?<Spinner size={10} color="white"/>:<Play size={10}/>}
-                        {wf.id==="ads-sop"?"Start SOP":"Run Now"}
+                        {wf.id==="ads-sop"?"Start Check":"Run Now"}
                       </Btn>
                       {wf.id==="ads-sop" && (
                         <Btn size="sm" variant="ghost" onClick={()=>setView("sop")}>
-                          Open SOP
+                          Open Check
                         </Btn>
                       )}
-                      {wf.id === "ads-sop" ? (
-                        <Btn size="sm" variant="ghost"
-                          onClick={()=>{ loadSopConfig(); setSopConfigOpen(true); }}
-                          style={{ color:T.orange, borderColor:`${T.orange}40` }}>
-                          ⚙ Customize
-                        </Btn>
-                      ) : (
+                      {wf.id !== "ads-sop" && (
                         <Btn onClick={()=>{
                             const backendWf = workflows.find(w=>w.id===wf.id);
                             setEditing(backendWf ? {...wf,...backendWf} : wf);
@@ -9829,147 +10224,432 @@ function AiBriefPanel() {
 
 
 // ── 3. FLOATING ASSISTANT — persistent AI chat with full context ───────────────
-function FloatingAssistant({ currentRun, currentTab }) {
+// ─── WiziAgent — Agentic assistant with real tool execution ──────────────────
+
+const TOOL_META = {
+  run_sql:           { icon:"🔍", label:"Running SQL",       color:"#6366F1" },
+  navigate:          { icon:"🧭", label:"Navigating",        color:"#8B5CF6" },
+  run_workflow:      { icon:"▶",  label:"Running workflow",  color:"#10B981" },
+  run_dataflow:      { icon:"▶",  label:"Running dataflow",  color:"#10B981" },
+  get_workflow_status:{ icon:"📋", label:"Checking workflows",color:"#6366F1" },
+  get_dataflows:     { icon:"📋", label:"Checking dataflows",color:"#6366F1" },
+  get_recent_results:{ icon:"📊", label:"Fetching results",  color:"#F59E0B" },
+  get_kpis:          { icon:"📈", label:"Fetching KPIs",     color:"#06B6D4" },
+  get_alerts:        { icon:"⚠️", label:"Checking alerts",   color:"#EF4444" },
+  get_triage_issues: { icon:"🔎", label:"Scanning issues",   color:"#EF4444" },
+  get_schema:        { icon:"🗄️", label:"Reading schema",    color:"#6B7280" },
+  create_dataflow:   { icon:"✨", label:"Creating dataflow", color:"#10B981" },
+  get_schedules:     { icon:"🕐", label:"Checking schedules",color:"#8B5CF6" },
+};
+
+// Render a tool result compactly
+function ToolResultBlock({ tool, result, T }) {
+  const meta = TOOL_META[tool] || { icon:"🔧", label:tool, color:T.accent };
+  const [expanded, setExpanded] = React.useState(false);
+
+  const summary = React.useMemo(() => {
+    if (!result) return "Done";
+    if (result.error) return `Error: ${result.error}`;
+    if (tool === "run_sql") {
+      if (result.row_count === 0) return "0 rows returned";
+      const cols = result.columns?.slice(0,3).join(", ") || "";
+      return `${result.row_count} row${result.row_count!==1?"s":""} · ${cols}`;
+    }
+    if (tool === "navigate") return `→ ${result.tab}`;
+    if (tool === "run_workflow" || tool === "run_dataflow") {
+      return result.status === "pass" || result.status === "clean"
+        ? `✓ All ${result.total_checks||0} checks passed`
+        : `✗ ${result.failed||0}/${result.total_checks||0} checks failed`;
+    }
+    if (tool === "get_recent_results" && Array.isArray(result)) {
+      const f = result.filter(r=>r.status!=="clean").length;
+      return `${result.length} runs · ${f} failed`;
+    }
+    if (tool === "get_kpis") {
+      const rev = result.sales?.total_sales;
+      return rev ? `Revenue: $${Number(rev).toLocaleString()}` : "KPIs loaded";
+    }
+    if (tool === "get_alerts" && Array.isArray(result)) {
+      return result.length === 0 ? "No alerts" : `${result.length} alert${result.length!==1?"s":""}`;
+    }
+    if (tool === "create_dataflow") return `Created: ${result.name} (${result.checks} checks)`;
+    if (Array.isArray(result)) return `${result.length} item${result.length!==1?"s":""}`;
+    return "Done";
+  }, [result, tool]);
+
+  const hasDetail = result && !result.error && tool === "run_sql" && result.rows?.length > 0;
+
+  return (
+    <div style={{ margin:"4px 0 6px 0" }}>
+      <div style={{ display:"flex", alignItems:"center", gap:6,
+        padding:"5px 10px", borderRadius:7,
+        background:`${meta.color}12`, border:`1px solid ${meta.color}25`,
+        fontSize:11 }}>
+        <span style={{ fontSize:13 }}>{meta.icon}</span>
+        <span style={{ color:meta.color, fontWeight:600 }}>{meta.label}</span>
+        <span style={{ color:"#6B7280", flex:1 }}>{summary}</span>
+        {hasDetail && (
+          <button onClick={()=>setExpanded(p=>!p)}
+            style={{ background:"none", border:"none", cursor:"pointer",
+              color:"#9CA3AF", fontSize:10 }}>
+            {expanded?"▲ hide":"▼ show"}
+          </button>
+        )}
+      </div>
+      {expanded && hasDetail && (
+        <div style={{ margin:"4px 0 0 0", borderRadius:6, overflow:"auto",
+          maxHeight:200, border:`1px solid ${T.border}` }}>
+          <table style={{ borderCollapse:"collapse", fontSize:10, width:"100%",
+            fontFamily:"monospace" }}>
+            <thead>
+              <tr style={{ background:`${meta.color}10` }}>
+                {result.columns.map(c=>(
+                  <th key={c} style={{ padding:"4px 8px", textAlign:"left",
+                    fontSize:9, fontWeight:700, color:"#6B7280",
+                    borderBottom:`1px solid ${T.border}`,
+                    textTransform:"uppercase", whiteSpace:"nowrap" }}>{c}</th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {result.rows.slice(0,10).map((row,i)=>(
+                <tr key={i}>
+                  {result.columns.map(c=>(
+                    <td key={c} style={{ padding:"3px 8px",
+                      borderBottom:`1px solid ${T.border}20`,
+                      color:row[c]===null?"#EF4444":"#374151",
+                      whiteSpace:"nowrap" }}>
+                      {row[c]===null?"NULL":String(row[c]).slice(0,40)}
+                    </td>
+                  ))}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+          {result.rows.length > 10 && (
+            <div style={{ padding:"3px 8px", fontSize:9, color:"#9CA3AF",
+              background:"#F9FAFB" }}>+{result.rows.length-10} more rows</div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// One message in the chat thread
+function AgentMessage({ msg, onNavigate, T }) {
+  if (msg.role === "user") {
+    return (
+      <div style={{ display:"flex", justifyContent:"flex-end", marginBottom:10 }}>
+        <div style={{ maxWidth:"82%", padding:"9px 13px", borderRadius:12,
+          borderBottomRightRadius:3, fontSize:12, lineHeight:1.5,
+          background:`linear-gradient(135deg,#6366F1,#8B5CF6)`,
+          color:"white", whiteSpace:"pre-wrap", wordBreak:"break-word" }}>
+          {msg.text}
+        </div>
+      </div>
+    );
+  }
+
+  if (msg.role === "thinking") {
+    return (
+      <div style={{ display:"flex", alignItems:"center", gap:7,
+        color:"#9CA3AF", fontSize:11, marginBottom:8, padding:"0 4px" }}>
+        <Spinner size={10}/>
+        <span style={{ fontStyle:"italic" }}>{msg.text||"Thinking…"}</span>
+      </div>
+    );
+  }
+
+  if (msg.role === "tool_call") {
+    const meta = TOOL_META[msg.tool] || { icon:"🔧", label:msg.tool, color:"#6B7280" };
+    return (
+      <div style={{ display:"flex", alignItems:"center", gap:6,
+        padding:"4px 10px", marginBottom:4, fontSize:11, color:"#9CA3AF" }}>
+        <span style={{ animation:"pulse 1s infinite" }}>{meta.icon}</span>
+        <span style={{ fontStyle:"italic" }}>{meta.label}…</span>
+      </div>
+    );
+  }
+
+  // assistant message (may have steps)
+  return (
+    <div style={{ marginBottom:12 }}>
+      {/* Tool results */}
+      {(msg.steps||[]).filter(s=>s.type==="tool_result").map((s,i)=>(
+        <ToolResultBlock key={i} tool={s.tool} result={s.result} T={T}/>
+      ))}
+
+      {/* Navigate actions as clickable chips */}
+      {(msg.actions||[]).filter(a=>a.type==="navigate").map((a,i)=>(
+        <div key={i}
+          onClick={()=>onNavigate(a.tab)}
+          style={{ display:"inline-flex", alignItems:"center", gap:5,
+            padding:"4px 12px", borderRadius:99, marginBottom:8, cursor:"pointer",
+            background:"#EEF2FF", color:"#6366F1", border:"1px solid #C7D2FE",
+            fontSize:11, fontWeight:600, transition:"all 0.1s" }}
+          onMouseEnter={e=>e.currentTarget.style.background="#E0E7FF"}
+          onMouseLeave={e=>e.currentTarget.style.background="#EEF2FF"}>
+          🧭 Go to {a.tab} →
+        </div>
+      ))}
+
+      {/* Created dataflow chip */}
+      {(msg.actions||[]).filter(a=>a.type==="created_dataflow").map((a,i)=>(
+        <div key={i}
+          onClick={()=>onNavigate("dataflows")}
+          style={{ display:"inline-flex", alignItems:"center", gap:5,
+            padding:"4px 12px", borderRadius:99, marginBottom:8, cursor:"pointer",
+            background:"#ECFDF5", color:"#10B981", border:"1px solid #A7F3D0",
+            fontSize:11, fontWeight:600 }}>
+          ✨ Dataflow created — view in Dataflows →
+        </div>
+      ))}
+
+      {/* Final text */}
+      {msg.text && (
+        <div style={{ padding:"9px 12px", borderRadius:10, borderBottomLeftRadius:3,
+          fontSize:12, lineHeight:1.6, color:"#0D1117",
+          background:"#FFFFFF", border:"1px solid #E8ECF0",
+          whiteSpace:"pre-wrap", wordBreak:"break-word",
+          maxWidth:"88%" }}>
+          {msg.text}
+        </div>
+      )}
+    </div>
+  );
+}
+
+const SUGGESTIONS = [
+  "What failed in the last 24 hours?",
+  "Run the daily data brief",
+  "Show me failed downloads today",
+  "Navigate to triage",
+  "What's my current inventory health?",
+  "Create a null check for mws.orders",
+  "What's the pass rate for my workflows?",
+  "Are there any stale tables?",
+];
+
+function FloatingAssistant({ currentRun, currentTab, onNavigate }) {
   const T = useT();
-  const [open,     setOpen]    = React.useState(false);
-  const [messages, setMessages]= React.useState([
-    { role:"assistant", text:"Hi! I'm WiziAgent. Ask me anything about your pipeline data or recent workflow results." }
+  const dbSchema = useSchema();
+  const { add: addNotif } = useNotif();
+
+  const [open,     setOpen]     = React.useState(false);
+  const [messages, setMessages] = React.useState([
+    { role:"assistant", text:"Hi! I'm WiziAgent. I can run queries, check your workflows, navigate the dashboard, and take real actions — just tell me what you need.", steps:[], actions:[] }
   ]);
-  const [input,    setInput]   = React.useState("");
-  const [loading,  setLoading] = React.useState(false);
+  const [input,    setInput]    = React.useState("");
+  const [loading,  setLoading]  = React.useState(false);
+  const [size,     setSize]     = React.useState("normal"); // normal | large
   const bottomRef = React.useRef(null);
+  const inputRef  = React.useRef(null);
 
   React.useEffect(()=>{
     if (bottomRef.current) bottomRef.current.scrollIntoView({behavior:"smooth"});
   }, [messages]);
 
-  const send = async () => {
-    const text = input.trim();
+  React.useEffect(()=>{
+    if (open && inputRef.current) inputRef.current.focus();
+  }, [open]);
+
+  const send = async (textOverride) => {
+    const text = (textOverride || input).trim();
     if (!text || loading) return;
     setInput("");
-    setMessages(p=>[...p, {role:"user", text}]);
+    const userMsg = { role:"user", text };
+    setMessages(p=>[...p, userMsg, { role:"thinking", text:"Working on it…" }]);
     setLoading(true);
 
-    // Build system context
-    const runContext = currentRun ? `
-Current workflow run: ${currentRun.workflow_name}
-Status: ${currentRun.status} (${currentRun.failed||0} failed / ${currentRun.total_checks||0} checks)
-Failed checks: ${(currentRun.check_results||[]).filter(c=>!c.passed).map(c=>`${c.name} (${c.row_count} rows)`).join(", ")||"none"}
-` : "";
-
-    const system = `You are WiziAgent, a data quality AI for an ecommerce analytics platform on Amazon Redshift.
-Key tables: mws.report (downloads, statuses, copy_status), mws.orders, mws.inventory, mws.sales_and_traffic_by_date, public.tbl_amzn_campaign_report.
-You help users understand data issues, write SQL checks, and suggest fixes.
-Be concise. If you write SQL, make it valid Redshift SQL.
-Current user tab: ${currentTab||"unknown"}.
-${runContext}`;
+    // Build history for context (last 6 turns)
+    const history = messages.slice(-6).map(m => ({
+      role: m.role === "user" ? "user" : "assistant",
+      content: m.text || (m.steps ? JSON.stringify(m.steps.map(s=>s.type==="tool_result"?{tool:s.tool,result:s.result}:null).filter(Boolean)) : "")
+    })).filter(h => h.content);
 
     try {
-      const history = messages.slice(-6).map(m=>({
-        role: m.role==="assistant"?"assistant":"user",
-        content: m.text
-      }));
-
-      const res = await fetch(`${API}/api/ai/chat`, {
+      const res = await fetch(`${API}/api/ai/agent`, {
         method:"POST", headers:{"Content-Type":"application/json"},
         body:JSON.stringify({
-          system,
-          messages:[...history, {role:"user", content:text}],
-          max_tokens:600
+          message: text,
+          history,
+          schema_ctx: dbSchema,
+          current_tab: currentTab,
         })
       });
-      const d = await res.json();
-      const reply = d?.content?.[0]?.text || "Sorry, I couldn't process that.";
-      setMessages(p=>[...p, {role:"assistant", text:reply}]);
+      const data = await res.json();
+
+      if (data.error) {
+        setMessages(p=>[...p.filter(m=>m.role!=="thinking"),
+          { role:"assistant", text:`Error: ${data.error}`, steps:[], actions:[] }]);
+        setLoading(false);
+        return;
+      }
+
+      // Execute UI actions
+      for (const action of (data.actions||[])) {
+        if (action.type === "navigate" && action.tab) {
+          onNavigate(action.tab);
+          addNotif(`WiziAgent navigated to ${action.tab}`, "info");
+        }
+        if (action.type === "run_complete") {
+          const ok = action.result?.status === "pass" || action.result?.status === "clean";
+          addNotif(ok ? "Workflow run completed ✓" : `Workflow run: ${action.result?.failed||0} checks failed`, ok?"success":"error");
+        }
+        if (action.type === "created_dataflow") {
+          addNotif(`Dataflow "${action.result?.name}" created`, "success");
+        }
+      }
+
+      setMessages(p=>[
+        ...p.filter(m=>m.role!=="thinking"),
+        { role:"assistant", text:data.final_message, steps:data.steps||[], actions:data.actions||[] }
+      ]);
     } catch(e) {
-      setMessages(p=>[...p, {role:"assistant", text:`Error: ${e.message}`}]);
+      setMessages(p=>[...p.filter(m=>m.role!=="thinking"),
+        { role:"assistant", text:`Connection error: ${e.message}`, steps:[], actions:[] }]);
     }
     setLoading(false);
   };
+
+  const panelW = size==="large" ? "min(640px,calc(100vw - 48px))" : "min(400px,calc(100vw - 48px))";
+  const panelH = size==="large" ? "min(680px,calc(100vh - 100px))" : "520px";
 
   return (
     <>
       {/* Floating button */}
       <button onClick={()=>setOpen(p=>!p)}
         style={{ position:"fixed", bottom:24, right:24, zIndex:1500,
-          width:48, height:48, borderRadius:"50%",
+          width:52, height:52, borderRadius:"50%",
           background:`linear-gradient(135deg,#6366f1,#8b5cf6)`,
-          border:"none", cursor:"pointer", boxShadow:"0 4px 20px rgba(99,102,241,0.4)",
+          border:"none", cursor:"pointer",
+          boxShadow:"0 4px 20px rgba(99,102,241,0.45)",
           display:"flex", alignItems:"center", justifyContent:"center",
-          fontSize:20, color:"white", transition:"transform 0.2s" }}
-        onMouseEnter={e=>e.currentTarget.style.transform="scale(1.1)"}
-        onMouseLeave={e=>e.currentTarget.style.transform="scale(1)"}>
+          fontSize:22, color:"white",
+          transition:"transform 0.2s, box-shadow 0.2s" }}
+        onMouseEnter={e=>{e.currentTarget.style.transform="scale(1.08)";e.currentTarget.style.boxShadow="0 6px 28px rgba(99,102,241,0.55)";}}
+        onMouseLeave={e=>{e.currentTarget.style.transform="scale(1)";e.currentTarget.style.boxShadow="0 4px 20px rgba(99,102,241,0.45)";}}>
         {open ? "×" : "🤖"}
       </button>
 
-      {/* Chat panel */}
       {open && (
-        <div style={{ position:"fixed", bottom:82, right:24, zIndex:1500,
-          width:"min(380px,calc(100vw - 48px))", height:480,
-          background:T.card, borderRadius:16,
-          border:`1px solid ${T.border}`,
-          boxShadow:"0 8px 40px rgba(0,0,0,0.2)",
-          display:"flex", flexDirection:"column", overflow:"hidden" }}>
+        <div style={{ position:"fixed", bottom:86, right:24, zIndex:1500,
+          width:panelW, height:panelH,
+          background:"#FFFFFF", borderRadius:16,
+          border:"1px solid #E8ECF0",
+          boxShadow:"0 12px 48px rgba(0,0,0,0.18)",
+          display:"flex", flexDirection:"column", overflow:"hidden",
+          transition:"width 0.2s, height 0.2s" }}>
 
           {/* Header */}
-          <div style={{ padding:"12px 16px", borderBottom:`1px solid ${T.border}`,
-            background:`linear-gradient(135deg,${T.accent}10,${T.purple}10)`,
-            flexShrink:0 }}>
-            <div style={{ fontSize:13, fontWeight:700, color:T.text }}>🤖 WiziAgent</div>
-            <div style={{ fontSize:10, color:T.muted, marginTop:1 }}>
-              AI assistant · knows your current context
+          <div style={{ padding:"12px 16px", flexShrink:0,
+            background:"linear-gradient(135deg,#6366F108,#8B5CF608)",
+            borderBottom:"1px solid #E8ECF0",
+            display:"flex", alignItems:"center", gap:8 }}>
+            <div style={{ width:30, height:30, borderRadius:8,
+              background:"linear-gradient(135deg,#6366F1,#8B5CF6)",
+              display:"flex", alignItems:"center", justifyContent:"center",
+              fontSize:15, flexShrink:0 }}>🤖</div>
+            <div style={{ flex:1 }}>
+              <div style={{ fontSize:13, fontWeight:700, color:"#0D1117" }}>
+                WiziAgent
+              </div>
+              <div style={{ fontSize:9, color:"#9CA3AF", marginTop:0 }}>
+                Can run queries · trigger workflows · navigate · create checks
+              </div>
             </div>
+            <button onClick={()=>setSize(s=>s==="large"?"normal":"large")}
+              title={size==="large"?"Shrink":"Expand"}
+              style={{ background:"none", border:"1px solid #E8ECF0", borderRadius:5,
+                cursor:"pointer", color:"#9CA3AF", padding:"3px 7px", fontSize:11 }}>
+              {size==="large"?"⊟":"⊞"}
+            </button>
+            <button onClick={()=>setMessages([messages[0]])}
+              title="Clear chat"
+              style={{ background:"none", border:"1px solid #E8ECF0", borderRadius:5,
+                cursor:"pointer", color:"#9CA3AF", padding:"3px 7px", fontSize:11 }}>
+              ↺
+            </button>
+            <button onClick={()=>setOpen(false)}
+              style={{ background:"none", border:"none", cursor:"pointer",
+                color:"#9CA3AF", fontSize:18, lineHeight:1 }}>×</button>
           </div>
 
           {/* Messages */}
-          <div style={{ flex:1, overflowY:"auto", padding:"12px 14px",
-            display:"flex", flexDirection:"column", gap:10 }}>
-            {messages.map((m,i)=>(
-              <div key={i} style={{ display:"flex",
-                justifyContent:m.role==="user"?"flex-end":"flex-start" }}>
-                <div style={{ maxWidth:"82%", padding:"9px 12px", borderRadius:10,
-                  fontSize:12, lineHeight:1.5,
-                  background:m.role==="user"
-                    ? `linear-gradient(135deg,${T.accent},${T.purple})`
-                    : T.surface,
-                  color:m.role==="user"?"white":T.text,
-                  border:m.role==="user"?"none":`1px solid ${T.border}`,
-                  borderBottomRightRadius:m.role==="user"?2:10,
-                  borderBottomLeftRadius:m.role==="assistant"?2:10,
-                  whiteSpace:"pre-wrap", wordBreak:"break-word" }}>
-                  {m.text}
+          <div style={{ flex:1, overflowY:"auto", padding:"14px 14px 8px" }}>
+
+            {/* Suggestion chips — only when just the welcome message */}
+            {messages.length === 1 && (
+              <div style={{ marginBottom:14 }}>
+                <div style={{ fontSize:10, color:"#9CA3AF", fontWeight:600,
+                  textTransform:"uppercase", letterSpacing:"0.05em", marginBottom:7 }}>
+                  Try asking…
+                </div>
+                <div style={{ display:"flex", flexWrap:"wrap", gap:5 }}>
+                  {SUGGESTIONS.map(s=>(
+                    <button key={s} onClick={()=>send(s)}
+                      style={{ fontSize:10, padding:"4px 10px", borderRadius:99,
+                        border:"1px solid #E0E7FF", background:"#F5F3FF",
+                        color:"#6366F1", cursor:"pointer", transition:"all 0.1s",
+                        fontFamily:"inherit" }}
+                      onMouseEnter={e=>{e.currentTarget.style.background="#EDE9FE";}}
+                      onMouseLeave={e=>{e.currentTarget.style.background="#F5F3FF";}}>
+                      {s}
+                    </button>
+                  ))}
                 </div>
               </div>
-            ))}
-            {loading && (
-              <div style={{ display:"flex", gap:6, alignItems:"center", color:T.muted, fontSize:11 }}>
-                <Spinner size={10}/> Thinking…
-              </div>
             )}
+
+            {messages.map((m,i)=>(
+              <AgentMessage key={i} msg={m} onNavigate={onNavigate} T={T}/>
+            ))}
             <div ref={bottomRef}/>
           </div>
 
           {/* Input */}
-          <div style={{ padding:"10px 12px", borderTop:`1px solid ${T.border}`,
-            display:"flex", gap:8, flexShrink:0 }}>
-            <input value={input} onChange={e=>setInput(e.target.value)}
-              onKeyDown={e=>{ if(e.key==="Enter"&&!e.shiftKey){ e.preventDefault(); send(); } }}
-              placeholder="Ask anything about your data…"
-              style={{ flex:1, padding:"7px 10px", borderRadius:8, fontSize:12,
-                border:`1px solid ${T.border}`, background:T.surface,
-                color:T.text, outline:"none", fontFamily:"inherit" }}/>
-            <Btn onClick={send} disabled={!input.trim()||loading} size="sm"
-              style={{ background:`linear-gradient(135deg,${T.accent},${T.purple})`,
-                color:"white", border:"none", flexShrink:0 }}>
-              {loading?<Spinner size={10} color="white"/>:<ArrowRight size={10}/>}
-            </Btn>
+          <div style={{ padding:"10px 12px", borderTop:"1px solid #E8ECF0",
+            flexShrink:0, background:"#FAFAFA" }}>
+            <div style={{ display:"flex", gap:8, alignItems:"flex-end" }}>
+              <textarea
+                ref={inputRef}
+                value={input}
+                onChange={e=>setInput(e.target.value)}
+                onKeyDown={e=>{
+                  if(e.key==="Enter"&&!e.shiftKey){ e.preventDefault(); send(); }
+                }}
+                placeholder="Ask me to run something, check your data, navigate…"
+                rows={1}
+                style={{ flex:1, padding:"8px 11px", borderRadius:9, fontSize:12,
+                  border:"1px solid #E8ECF0", background:"#FFFFFF",
+                  color:"#0D1117", outline:"none", fontFamily:"inherit",
+                  resize:"none", lineHeight:1.4, maxHeight:100, overflowY:"auto" }}
+                onInput={e=>{
+                  e.target.style.height="auto";
+                  e.target.style.height=Math.min(e.target.scrollHeight,100)+"px";
+                }}
+                onFocus={e=>e.target.style.borderColor="#6366F1"}
+                onBlur={e=>e.target.style.borderColor="#E8ECF0"}
+              />
+              <button onClick={()=>send()} disabled={!input.trim()||loading}
+                style={{ width:34, height:34, borderRadius:8, flexShrink:0,
+                  background:(!input.trim()||loading)?"#E8ECF0":"linear-gradient(135deg,#6366F1,#8B5CF6)",
+                  border:"none", cursor:(!input.trim()||loading)?"not-allowed":"pointer",
+                  display:"flex", alignItems:"center", justifyContent:"center",
+                  color:"white", transition:"all 0.15s" }}>
+                {loading ? <Spinner size={12} color="white"/> : <ArrowRight size={14}/>}
+              </button>
+            </div>
+            <div style={{ fontSize:9, color:"#C4C9D4", marginTop:5, textAlign:"center" }}>
+              Enter to send · Shift+Enter for newline · I can take real actions
+            </div>
           </div>
         </div>
       )}
     </>
   );
 }
-
 
 function ResultsTab({ onNavigate }) {
   const T = useT();
@@ -10004,7 +10684,7 @@ function ResultsTab({ onNavigate }) {
     }
   }, [runs]);
 
-  if (view==="detail" && selected) return (
+  if (view==="detail" && selected && selected.check) return (
     <ResultDetail
       run={selected.run}
       check={selected.check}
@@ -10342,7 +11022,7 @@ function ResultsTab({ onNavigate }) {
                         </div>
                       </div>
                       <Btn size="sm" variant="ghost"
-                        onClick={()=>{ setSelected({run,check:(run.check_results||[])[0]}); setView("detail"); }}>
+                        onClick={()=>{ const chk0=(run.check_results||[])[0]; if(chk0){ setSelected({run,check:chk0}); setView("detail"); } }}>
                         <Eye size={10}/> Detail
                       </Btn>
                     </div>
@@ -10677,6 +11357,14 @@ function ResultDetail({ run, check, allChecks, onBack, onSelectCheck, onNavigate
         )}
         {error && (
           <div style={{ padding:"20px", color:T.red, fontSize:12 }}>Error: {error}</div>
+        )}
+        {!loading && !error && !data && (
+          <div style={{ display:"flex", flexDirection:"column", alignItems:"center",
+            justifyContent:"center", height:"100%", gap:12, color:"#9CA3AF" }}>
+            <div style={{ fontSize:32 }}>📭</div>
+            <div style={{ fontSize:13, fontWeight:600, color:"#374151" }}>No row data available</div>
+            <div style={{ fontSize:11 }}>This check may not have returned row-level results, or the data has expired.</div>
+          </div>
         )}
         {!loading && !error && data && (
           <table style={{ borderCollapse:"collapse", fontSize:11, width:"100%",
@@ -13736,7 +14424,7 @@ export default function WiziAgentApp() {
       </div>
 
       {/* Floating AI assistant — always visible */}
-      <FloatingAssistant currentRun={lastRun} currentTab={activeTab}/>
+      <FloatingAssistant currentRun={lastRun} currentTab={activeTab} onNavigate={navigateTo}/>
 
       {/* Post-run AI panel — fires after failed runs */}
       {postRunPanel && (

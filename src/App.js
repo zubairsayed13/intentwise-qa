@@ -6656,12 +6656,401 @@ function DigestPanel() {
 }
 
 
+// ═══════════════════════════════════════════════════════════════════════════════
+// SOP CONFIG PANEL — configure all steps of the SOP
+// ═══════════════════════════════════════════════════════════════════════════════
+function SopConfigPanel({ config, setConfig, onSave, saving, msg, onClose, T }) {
+  const [section, setSection] = React.useState("detection"); // detection | mage | refresh | copy | tables | gates
+
+  const inp = {
+    width:"100%", padding:"7px 10px", borderRadius:6, fontSize:11,
+    border:`1px solid ${T.border}`, background:T.surface, color:T.text,
+    fontFamily:"inherit", outline:"none", boxSizing:"border-box"
+  };
+  const ta = {...inp, fontFamily:"monospace", resize:"vertical"};
+
+  const SECTIONS = [
+    {id:"detection", label:"🔍 Detection Checks"},
+    {id:"mage",      label:"⏸ Mage Packages"},
+    {id:"refresh",   label:"🔄 Refresh Jobs"},
+    {id:"copy",      label:"▶ GDS Copy Jobs"},
+    {id:"tables",    label:"📊 Ads Tables"},
+    {id:"gates",     label:"🔒 Gate Labels"},
+  ];
+
+  // ── Detection checks ────────────────────────────────────────────────────────
+  const addDetectionCheck = () => {
+    setConfig(p=>({...p, detection_checks:[
+      ...(p.detection_checks||[]),
+      {id:Date.now().toString(36), name:"New Check", sql:"", pass_condition:"rows > 0"}
+    ]}));
+  };
+  const updateDetCheck = (i, field, val) => setConfig(p=>({
+    ...p, detection_checks: (p.detection_checks||[]).map((c,j)=>j===i?{...c,[field]:val}:c)
+  }));
+  const removeDetCheck = (i) => setConfig(p=>({
+    ...p, detection_checks: (p.detection_checks||[]).filter((_,j)=>j!==i)
+  }));
+
+  // ── Mage packages ───────────────────────────────────────────────────────────
+  const addMagePkg = () => setConfig(p=>({
+    ...p, mage_packages:[...(p.mage_packages||[]),
+      {id:Date.now().toString(36), org:"", name:"", expected:"", pause_by:"", pause_url:"", status:"running"}]
+  }));
+  const updateMage = (i, field, val) => setConfig(p=>({
+    ...p, mage_packages:(p.mage_packages||[]).map((c,j)=>j===i?{...c,[field]:val}:c)
+  }));
+  const removeMage = (i) => setConfig(p=>({...p, mage_packages:(p.mage_packages||[]).filter((_,j)=>j!==i)}));
+
+  // ── AWS refresh jobs ────────────────────────────────────────────────────────
+  const addRefreshJob = () => setConfig(p=>({
+    ...p, aws_refresh_jobs:[...(p.aws_refresh_jobs||[]),
+      {id:Date.now().toString(36), name:"", type:"scheduled_query", region:"us-east-1", url:""}]
+  }));
+  const updateRefresh = (i, field, val) => setConfig(p=>({
+    ...p, aws_refresh_jobs:(p.aws_refresh_jobs||[]).map((c,j)=>j===i?{...c,[field]:val}:c)
+  }));
+  const removeRefresh = (i) => setConfig(p=>({...p, aws_refresh_jobs:(p.aws_refresh_jobs||[]).filter((_,j)=>j!==i)}));
+
+  // ── GDS copy jobs ───────────────────────────────────────────────────────────
+  const addCopyJob = () => setConfig(p=>({
+    ...p, gds_copy_jobs:[...(p.gds_copy_jobs||[]),
+      {id:Date.now().toString(36), name:"", destination:"BigQuery", pipeline_url:""}]
+  }));
+  const updateCopy = (i, field, val) => setConfig(p=>({
+    ...p, gds_copy_jobs:(p.gds_copy_jobs||[]).map((c,j)=>j===i?{...c,[field]:val}:c)
+  }));
+  const removeCopy = (i) => setConfig(p=>({...p, gds_copy_jobs:(p.gds_copy_jobs||[]).filter((_,j)=>j!==i)}));
+
+  // ── Ads tables ──────────────────────────────────────────────────────────────
+  const updateTables = (val) => setConfig(p=>({
+    ...p, ads_tables: val.split("\n").map(s=>s.trim()).filter(Boolean)
+  }));
+
+  // ── Gate labels ─────────────────────────────────────────────────────────────
+  const updateGateLabel = (key, val) => setConfig(p=>({
+    ...p, gate_labels:{...(p.gate_labels||{}), [key]:val}
+  }));
+
+  return (
+    <div style={{ background:T.card, border:`1px solid ${T.border}`, borderRadius:12,
+      marginBottom:20, overflow:"hidden" }}>
+
+      {/* Panel header */}
+      <div style={{ padding:"14px 20px", borderBottom:`1px solid ${T.border}`,
+        display:"flex", alignItems:"center", gap:10, background:`${T.accent}04` }}>
+        <div style={{ fontSize:13, fontWeight:700, color:T.text, flex:1 }}>
+          ⚙ Configure SOP Steps
+        </div>
+        {msg && (
+          <span style={{ fontSize:11, color:msg.startsWith("✓")?T.green:T.red,
+            padding:"3px 10px", borderRadius:6,
+            background:msg.startsWith("✓")?`${T.green}10`:`${T.red}10` }}>
+            {msg}
+          </span>
+        )}
+        <Btn size="sm" onClick={onSave} disabled={saving}
+          style={{ background:`linear-gradient(135deg,${T.accent},${T.purple})`,
+            color:"white", border:"none" }}>
+          {saving?<Spinner size={10} color="white"/>:<Check size={10}/>} Save All
+        </Btn>
+        <button onClick={onClose}
+          style={{ background:"none", border:"none", cursor:"pointer",
+            color:T.muted, fontSize:18 }}>×</button>
+      </div>
+
+      <div style={{ display:"flex", minHeight:400 }}>
+
+        {/* Left nav */}
+        <div style={{ width:200, flexShrink:0, borderRight:`1px solid ${T.border}`,
+          padding:"8px 0" }}>
+          {SECTIONS.map(s=>(
+            <button key={s.id} onClick={()=>setSection(s.id)}
+              style={{ display:"block", width:"100%", padding:"10px 16px",
+                textAlign:"left", fontSize:12, cursor:"pointer", border:"none",
+                fontWeight:section===s.id?700:400,
+                background:section===s.id?`${T.accent}08`:"transparent",
+                color:section===s.id?T.accent:T.text2,
+                borderLeft:section===s.id?`3px solid ${T.accent}`:"3px solid transparent" }}>
+              {s.label}
+            </button>
+          ))}
+        </div>
+
+        {/* Right content */}
+        <div style={{ flex:1, padding:"16px 20px", overflowY:"auto", maxHeight:500 }}>
+
+          {/* ── DETECTION CHECKS ────────────────────────────────────────── */}
+          {section==="detection" && (
+            <div>
+              <div style={{ fontSize:11, color:T.muted, marginBottom:12, lineHeight:1.5 }}>
+                SQL checks run at the Detection phase. If any check fails, the SOP proceeds.
+                Pass condition: <code style={{fontFamily:"monospace"}}>rows = 0</code> means "fail if any rows found",
+                <code style={{fontFamily:"monospace"}}> rows {'>'} 0</code> means "fail if no data".
+              </div>
+              <div style={{ display:"flex", flexDirection:"column", gap:12 }}>
+                {(config.detection_checks||[]).map((chk,i)=>(
+                  <div key={chk.id||i} style={{ padding:"12px 14px", borderRadius:8,
+                    border:`1px solid ${T.border}`, background:T.surface }}>
+                    <div style={{ display:"flex", gap:8, marginBottom:8 }}>
+                      <div style={{ flex:1 }}>
+                        <label style={{ fontSize:10, fontWeight:600, color:T.muted, display:"block", marginBottom:2 }}>Check Name</label>
+                        <input value={chk.name} onChange={e=>updateDetCheck(i,"name",e.target.value)} style={inp}/>
+                      </div>
+                      <div style={{ width:160 }}>
+                        <label style={{ fontSize:10, fontWeight:600, color:T.muted, display:"block", marginBottom:2 }}>Pass When</label>
+                        <select value={chk.pass_condition} onChange={e=>updateDetCheck(i,"pass_condition",e.target.value)} style={inp}>
+                          <option value="rows = 0">rows = 0 (no issues)</option>
+                          <option value="rows > 0">rows {'>'} 0 (data exists)</option>
+                          <option value="rows > 1">rows {'>'} 1</option>
+                          <option value="value > 0">value {'>'} 0</option>
+                        </select>
+                      </div>
+                      <button onClick={()=>removeDetCheck(i)}
+                        style={{ background:"none", border:"none", cursor:"pointer",
+                          color:T.red, fontSize:16, alignSelf:"flex-end", paddingBottom:4 }}>×</button>
+                    </div>
+                    <div>
+                      <label style={{ fontSize:10, fontWeight:600, color:T.muted, display:"block", marginBottom:2 }}>SQL Query</label>
+                      <textarea value={chk.sql} rows={3}
+                        onChange={e=>updateDetCheck(i,"sql",e.target.value)}
+                        placeholder="SELECT COUNT(*) FROM public.tbl_amzn_campaign_report WHERE report_date = CURRENT_DATE - 1"
+                        style={ta}/>
+                    </div>
+                  </div>
+                ))}
+              </div>
+              <Btn size="sm" onClick={addDetectionCheck} style={{ marginTop:10 }}>
+                <Plus size={10}/> Add Check
+              </Btn>
+            </div>
+          )}
+
+          {/* ── MAGE PACKAGES ───────────────────────────────────────────── */}
+          {section==="mage" && (
+            <div>
+              <div style={{ fontSize:11, color:T.muted, marginBottom:12 }}>
+                Configure Mage pipeline packages to pause. Add the API pause URL for each package.
+              </div>
+              <div style={{ display:"flex", flexDirection:"column", gap:10 }}>
+                {(config.mage_packages||[]).map((pkg,i)=>(
+                  <div key={pkg.id||i} style={{ padding:"12px 14px", borderRadius:8,
+                    border:`1px solid ${T.border}`, background:T.surface }}>
+                    <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:8, marginBottom:8 }}>
+                      <div>
+                        <label style={{ fontSize:10, fontWeight:600, color:T.muted, display:"block", marginBottom:2 }}>Org</label>
+                        <input value={pkg.org} onChange={e=>updateMage(i,"org",e.target.value)}
+                          placeholder="Bluewheel" style={inp}/>
+                      </div>
+                      <div>
+                        <label style={{ fontSize:10, fontWeight:600, color:T.muted, display:"block", marginBottom:2 }}>Package Name</label>
+                        <input value={pkg.name} onChange={e=>updateMage(i,"name",e.target.value)}
+                          placeholder="Campaign Summary" style={inp}/>
+                      </div>
+                      <div>
+                        <label style={{ fontSize:10, fontWeight:600, color:T.muted, display:"block", marginBottom:2 }}>Expected by (IST)</label>
+                        <input value={pkg.expected} onChange={e=>updateMage(i,"expected",e.target.value)}
+                          placeholder="4:35 PM" style={inp}/>
+                      </div>
+                      <div>
+                        <label style={{ fontSize:10, fontWeight:600, color:T.muted, display:"block", marginBottom:2 }}>Pause by (IST)</label>
+                        <input value={pkg.pause_by} onChange={e=>updateMage(i,"pause_by",e.target.value)}
+                          placeholder="4:20 PM" style={inp}/>
+                      </div>
+                    </div>
+                    <div style={{ display:"flex", gap:8, alignItems:"flex-end" }}>
+                      <div style={{ flex:1 }}>
+                        <label style={{ fontSize:10, fontWeight:600, color:T.muted, display:"block", marginBottom:2 }}>
+                          Mage Pause URL <span style={{ color:T.dim, fontWeight:400 }}>(optional — leave blank for manual checklist)</span>
+                        </label>
+                        <input value={pkg.pause_url||""} onChange={e=>updateMage(i,"pause_url",e.target.value)}
+                          placeholder="https://mage.example.com/api/pipelines/123/pause"
+                          style={inp}/>
+                      </div>
+                      <button onClick={()=>removeMage(i)}
+                        style={{ background:"none", border:"none", cursor:"pointer",
+                          color:T.red, fontSize:16, paddingBottom:2 }}>×</button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+              <Btn size="sm" onClick={addMagePkg} style={{ marginTop:10 }}>
+                <Plus size={10}/> Add Package
+              </Btn>
+            </div>
+          )}
+
+          {/* ── AWS REFRESH JOBS ────────────────────────────────────────── */}
+          {section==="refresh" && (
+            <div>
+              <div style={{ fontSize:11, color:T.muted, marginBottom:12 }}>
+                AWS refresh jobs to trigger. Add an API URL to trigger automatically, or leave blank for manual checklist.
+              </div>
+              <div style={{ display:"flex", flexDirection:"column", gap:10 }}>
+                {(config.aws_refresh_jobs||[]).map((job,i)=>(
+                  <div key={job.id||i} style={{ padding:"12px 14px", borderRadius:8,
+                    border:`1px solid ${T.border}`, background:T.surface }}>
+                    <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:8, marginBottom:8 }}>
+                      <div>
+                        <label style={{ fontSize:10, fontWeight:600, color:T.muted, display:"block", marginBottom:2 }}>Job Name</label>
+                        <input value={job.name} onChange={e=>updateRefresh(i,"name",e.target.value)}
+                          placeholder="Campaign Report Refresh" style={inp}/>
+                      </div>
+                      <div>
+                        <label style={{ fontSize:10, fontWeight:600, color:T.muted, display:"block", marginBottom:2 }}>Type</label>
+                        <select value={job.type} onChange={e=>updateRefresh(i,"type",e.target.value)} style={inp}>
+                          <option value="scheduled_query">Scheduled Query</option>
+                          <option value="aws_job">AWS Job</option>
+                          <option value="lambda">Lambda</option>
+                          <option value="glue">Glue Job</option>
+                        </select>
+                      </div>
+                    </div>
+                    <div style={{ display:"flex", gap:8, alignItems:"flex-end" }}>
+                      <div style={{ flex:1 }}>
+                        <label style={{ fontSize:10, fontWeight:600, color:T.muted, display:"block", marginBottom:2 }}>
+                          Trigger URL <span style={{ color:T.dim, fontWeight:400 }}>(optional)</span>
+                        </label>
+                        <input value={job.url||""} onChange={e=>updateRefresh(i,"url",e.target.value)}
+                          placeholder="https://..." style={inp}/>
+                      </div>
+                      <button onClick={()=>removeRefresh(i)}
+                        style={{ background:"none", border:"none", cursor:"pointer",
+                          color:T.red, fontSize:16, paddingBottom:2 }}>×</button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+              <Btn size="sm" onClick={addRefreshJob} style={{ marginTop:10 }}>
+                <Plus size={10}/> Add Job
+              </Btn>
+            </div>
+          )}
+
+          {/* ── GDS COPY JOBS ───────────────────────────────────────────── */}
+          {section==="copy" && (
+            <div>
+              <div style={{ fontSize:11, color:T.muted, marginBottom:12 }}>
+                GDS BigQuery copy jobs. Add Mage pipeline URL to trigger automatically.
+              </div>
+              <div style={{ display:"flex", flexDirection:"column", gap:10 }}>
+                {(config.gds_copy_jobs||[]).map((job,i)=>(
+                  <div key={job.id||i} style={{ padding:"12px 14px", borderRadius:8,
+                    border:`1px solid ${T.border}`, background:T.surface }}>
+                    <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:8, marginBottom:8 }}>
+                      <div>
+                        <label style={{ fontSize:10, fontWeight:600, color:T.muted, display:"block", marginBottom:2 }}>Job Name</label>
+                        <input value={job.name} onChange={e=>updateCopy(i,"name",e.target.value)}
+                          placeholder="Advertised Product" style={inp}/>
+                      </div>
+                      <div>
+                        <label style={{ fontSize:10, fontWeight:600, color:T.muted, display:"block", marginBottom:2 }}>Destination</label>
+                        <input value={job.destination} onChange={e=>updateCopy(i,"destination",e.target.value)}
+                          placeholder="BigQuery" style={inp}/>
+                      </div>
+                    </div>
+                    <div style={{ display:"flex", gap:8, alignItems:"flex-end" }}>
+                      <div style={{ flex:1 }}>
+                        <label style={{ fontSize:10, fontWeight:600, color:T.muted, display:"block", marginBottom:2 }}>
+                          Mage Pipeline URL <span style={{ color:T.dim, fontWeight:400 }}>(optional)</span>
+                        </label>
+                        <input value={job.pipeline_url||""} onChange={e=>updateCopy(i,"pipeline_url",e.target.value)}
+                          placeholder="https://mage.example.com/api/pipelines/456/pipeline_runs"
+                          style={inp}/>
+                      </div>
+                      <button onClick={()=>removeCopy(i)}
+                        style={{ background:"none", border:"none", cursor:"pointer",
+                          color:T.red, fontSize:16, paddingBottom:2 }}>×</button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+              <Btn size="sm" onClick={addCopyJob} style={{ marginTop:10 }}>
+                <Plus size={10}/> Add Copy Job
+              </Btn>
+            </div>
+          )}
+
+          {/* ── ADS TABLES ──────────────────────────────────────────────── */}
+          {section==="tables" && (
+            <div>
+              <div style={{ fontSize:11, color:T.muted, marginBottom:12 }}>
+                Redshift tables checked during validation (one per line).
+              </div>
+              <textarea
+                value={(config.ads_tables||[]).join("\n")}
+                onChange={e=>updateTables(e.target.value)}
+                rows={8}
+                style={{...ta, width:"100%"}}
+                placeholder={"public.tbl_amzn_campaign_report\npublic.tbl_amzn_product_ad_report\npublic.tbl_amzn_keyword_report\npublic.tbl_amzn_targets_report"}
+              />
+            </div>
+          )}
+
+          {/* ── GATE LABELS ─────────────────────────────────────────────── */}
+          {section==="gates" && (
+            <div>
+              <div style={{ fontSize:11, color:T.muted, marginBottom:12 }}>
+                Rename the 5 approval gates to match your team's terminology.
+              </div>
+              <div style={{ display:"flex", flexDirection:"column", gap:10 }}>
+                {[1,2,3,4,5].map(n=>(
+                  <div key={n} style={{ display:"flex", alignItems:"center", gap:10 }}>
+                    <div style={{ width:24, height:24, borderRadius:6,
+                      background:`${T.accent}12`, display:"flex", alignItems:"center",
+                      justifyContent:"center", fontSize:12, fontWeight:700,
+                      color:T.accent, flexShrink:0 }}>{n}</div>
+                    <input
+                      value={(config.gate_labels||{})[`gate${n}`]||""}
+                      onChange={e=>updateGateLabel(`gate${n}`, e.target.value)}
+                      style={{...inp, flex:1}}
+                      placeholder={["Pause Mage Jobs","Data Available","Proceed with Refreshes","Run Product Summary","Resume Mage & GDS Copies"][n-1]}
+                    />
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+
 function AdsSopTab() {
   const T = useT();
   const [running,    setRunning]   = React.useState(false);
   const [result,     setResult]    = useSession("wz_sopResult", null);
   const [gateInputs, setGateInputs]= React.useState({});  // token → decision in flight
   const [submitting, setSubmitting]= React.useState({});
+  const [showConfig, setShowConfig]= React.useState(false);
+  const [config,     setConfig]    = React.useState(null);
+  const [configSaving, setConfigSaving] = React.useState(false);
+  const [configMsg,  setConfigMsg] = React.useState(null);
+
+  // Load SOP config
+  React.useEffect(()=>{
+    fetch(`${API}/api/sop/config`).then(r=>r.json()).then(d=>{
+      if (!d.error) setConfig(d);
+    }).catch(()=>{});
+  }, []);
+
+  const saveConfig = async () => {
+    if (!config) return;
+    setConfigSaving(true); setConfigMsg(null);
+    try {
+      const res = await fetch(`${API}/api/sop/config`, {
+        method:"POST", headers:{"Content-Type":"application/json"},
+        body:JSON.stringify(config)
+      });
+      const d = await res.json();
+      if (d.saved) setConfigMsg("✓ Saved");
+      else setConfigMsg("✗ Save failed");
+    } catch(e) { setConfigMsg("✗ " + e.message); }
+    setConfigSaving(false);
+    setTimeout(()=>setConfigMsg(null), 2500);
+  };
 
   // ── Derive current phase from result ──────────────────────────────────────
   const currentPhase = React.useMemo(() => {
@@ -6989,10 +7378,10 @@ function AdsSopTab() {
       <div style={{ display:"flex", alignItems:"flex-start", justifyContent:"space-between", marginBottom:24 }}>
         <div>
           <div style={{ fontSize:22, fontWeight:700, color:T.text, letterSpacing:"-0.02em" }}>
-            Ads Download SOP
+            Daily Ads Data Availability Check
           </div>
           <div style={{ fontSize:13, color:T.muted, marginTop:3 }}>
-            6 agents · 5 approval gates · Triggered when ads data download fails
+            6 agents · 5 approval gates · Triggered when ads data fails
           </div>
         </div>
         <div style={{ display:"flex", gap:8, alignItems:"center" }}>
@@ -7014,6 +7403,9 @@ function AdsSopTab() {
               ⚡ Force All Gates
             </Btn>
           )}
+          <Btn onClick={()=>setShowConfig(p=>!p)} size="sm" variant="ghost">
+            ⚙ Configure
+          </Btn>
           <Btn onClick={running?undefined:runSop} disabled={running} size="sm"
             style={{ background:running?T.border:`linear-gradient(135deg,${T.accent},${T.purple})`,
               color:"white", border:"none" }}>
@@ -7070,6 +7462,19 @@ function AdsSopTab() {
           <span>5:00 PM</span><span>5:30 PM</span><span>6:30 PM</span><span>~7:00 PM</span>
         </div>
       </Card>
+
+      {/* ── CONFIG PANEL ─────────────────────────────────────────────────── */}
+      {showConfig && config && (
+        <SopConfigPanel
+          config={config}
+          setConfig={setConfig}
+          onSave={saveConfig}
+          saving={configSaving}
+          msg={configMsg}
+          onClose={()=>setShowConfig(false)}
+          T={T}
+        />
+      )}
 
       {/* Empty state */}
       {!result && !running && (
@@ -7246,7 +7651,7 @@ const BUILTIN_WFS = [
   },
   {
     id:"ads-sop", builtin:true,
-    name:"Ads Download SOP",
+    name:"Daily Ads Data Availability Check",
     desc:"6 agents · 5 approval gates · Full download failure runbook from detection through validation, refresh, and GDS copy jobs.",
     schedule:"On demand", trigger:"manual",
     agents:["Detection","Pause Mage","Validation","Refresh","Resume & Copy","Finalize"],
@@ -7397,7 +7802,7 @@ function WorkflowsTab({ navigateTo }) {
     },
     {
       id:"ads-sop", builtin_type:"system", enabled:true,
-      name:"Ads Download SOP",
+      name:"Daily Ads Data Availability Check",
       desc:"Full download failure runbook — detection through validation, refresh, and GDS copy jobs. Uses approval gates.",
       schedule:"manual",
       checks:[
@@ -7527,7 +7932,7 @@ Respond ONLY with JSON array (no markdown):
     <div style={{ display:"flex", flexDirection:"column", height:"100%", overflow:"hidden" }}>
       <WorkflowDetail
         wf={detailWf}
-        history={runHistory.filter(r=>r.workflow_id===detailWf.id)}
+        history={runHistory.filter(r=>r.workflow_id===detailWf.id).slice(0,10)}
         liveRun={liveRun}
         onBack={()=>{ setView("list"); setLiveRun(null); }}
         onEdit={()=>{ setEditing(detailWf); setView("builder"); }}

@@ -6749,14 +6749,19 @@ function SopConfigPanel({ config, setConfig, onSave, saving, msg, onClose, T }) 
   }));
 
   return (
-    <div style={{ background:T.card, border:`1px solid ${T.border}`, borderRadius:12,
-      marginBottom:20, overflow:"hidden" }}>
+    <div style={{ position:"fixed", inset:0, background:"rgba(0,0,0,0.55)",
+      display:"flex", alignItems:"center", justifyContent:"center", zIndex:200 }}
+      onClick={e=>{ if(e.target===e.currentTarget) onClose(); }}>
+      <div style={{ background:T.card, border:`1px solid ${T.border}`, borderRadius:14,
+        width:"min(980px,96vw)", maxHeight:"92vh", display:"flex", flexDirection:"column",
+        overflow:"hidden", boxShadow:"0 24px 64px rgba(0,0,0,0.22)" }}>
 
       {/* Panel header */}
-      <div style={{ padding:"14px 20px", borderBottom:`1px solid ${T.border}`,
-        display:"flex", alignItems:"center", gap:10, background:`${T.accent}04` }}>
-        <div style={{ fontSize:13, fontWeight:700, color:T.text, flex:1 }}>
-          ⚙ Configure SOP Steps
+      <div style={{ padding:"18px 24px", borderBottom:`1px solid ${T.border}`,
+        display:"flex", alignItems:"center", gap:10, background:`${T.accent}04`,
+        flexShrink:0 }}>
+        <div style={{ fontSize:15, fontWeight:700, color:T.text, flex:1 }}>
+          ⚙ Customize: Daily Ads Data Availability Workflow
         </div>
         {msg && (
           <span style={{ fontSize:11, color:msg.startsWith("✓")?T.green:T.red,
@@ -6775,7 +6780,7 @@ function SopConfigPanel({ config, setConfig, onSave, saving, msg, onClose, T }) 
             color:T.muted, fontSize:18 }}>×</button>
       </div>
 
-      <div style={{ display:"flex", minHeight:400 }}>
+      <div style={{ display:"flex", flex:1, minHeight:0, overflow:"hidden" }}>
 
         {/* Left nav */}
         <div style={{ width:200, flexShrink:0, borderRight:`1px solid ${T.border}`,
@@ -6813,14 +6818,12 @@ function SopConfigPanel({ config, setConfig, onSave, saving, msg, onClose, T }) 
                         <label style={{ fontSize:10, fontWeight:600, color:T.muted, display:"block", marginBottom:2 }}>Check Name</label>
                         <input value={chk.name} onChange={e=>updateDetCheck(i,"name",e.target.value)} style={inp}/>
                       </div>
-                      <div style={{ width:160 }}>
+                      <div style={{ width:200 }}>
                         <label style={{ fontSize:10, fontWeight:600, color:T.muted, display:"block", marginBottom:2 }}>Pass When</label>
-                        <select value={chk.pass_condition} onChange={e=>updateDetCheck(i,"pass_condition",e.target.value)} style={inp}>
-                          <option value="rows = 0">rows = 0 (no issues)</option>
-                          <option value="rows > 0">rows {'>'} 0 (data exists)</option>
-                          <option value="rows > 1">rows {'>'} 1</option>
-                          <option value="value > 0">value {'>'} 0</option>
-                        </select>
+                        <PassConditionPicker
+                          value={chk.pass_condition||"rows = 0"}
+                          onChange={v=>updateDetCheck(i,"pass_condition",v)}
+                        />
                       </div>
                       <button onClick={()=>removeDetCheck(i)}
                         style={{ background:"none", border:"none", cursor:"pointer",
@@ -7028,6 +7031,7 @@ function SopConfigPanel({ config, setConfig, onSave, saving, msg, onClose, T }) 
             </div>
           )}
         </div>
+      </div>
       </div>
     </div>
   );
@@ -7861,6 +7865,34 @@ function WorkflowsTab({ navigateTo }) {
   const [aiSuggestions,  setAiSuggestions]  = useSession("wz_wfSuggestions", []);
   const [aiLoading,      setAiLoading]      = React.useState(false);
   const [showTemplates,  setShowTemplates]  = React.useState(false);
+  const [sopConfigOpen,  setSopConfigOpen]  = React.useState(false);
+  const [sopConfig,      setSopConfig]      = React.useState(null);
+  const [sopConfigSaving,setSopConfigSaving]= React.useState(false);
+  const [sopConfigMsg,   setSopConfigMsg]   = React.useState(null);
+
+  // Load SOP config for the customize modal
+  const loadSopConfig = React.useCallback(async () => {
+    try {
+      const res = await fetch(`${API}/api/sop/config`);
+      const d   = await res.json();
+      if (!d.error) setSopConfig(d);
+    } catch(e) {}
+  }, []);
+
+  const saveSopConfig = async () => {
+    if (!sopConfig) return;
+    setSopConfigSaving(true); setSopConfigMsg(null);
+    try {
+      const res = await fetch(`${API}/api/sop/config`, {
+        method:"POST", headers:{"Content-Type":"application/json"},
+        body:JSON.stringify(sopConfig)
+      });
+      const d = await res.json();
+      setSopConfigMsg(d.saved ? "✓ Saved to Redshift" : "✗ Save failed");
+    } catch(e) { setSopConfigMsg("✗ " + e.message); }
+    setSopConfigSaving(false);
+    setTimeout(()=>setSopConfigMsg(null), 3000);
+  };
 
   // Seed built-in workflows into backend on first load if they don't exist yet
   const BUILTIN_SEEDS = [
@@ -8032,12 +8064,32 @@ Respond ONLY with JSON array (no markdown):
 
   if (view==="sop") return (
     <div style={{ display:"flex", flexDirection:"column", height:"100%", overflow:"hidden" }}>
-      <div style={{ padding:"10px 20px", borderBottom:`1px solid #E2E8F0`, flexShrink:0 }}>
+      <div style={{ padding:"10px 20px", borderBottom:`1px solid #E2E8F0`,
+        flexShrink:0, display:"flex", alignItems:"center", gap:10 }}>
         <Btn onClick={()=>setView("list")} variant="ghost" size="sm">← Workflows</Btn>
+        <span style={{ fontSize:14, fontWeight:700, color:T.text }}>
+          Daily Ads Data Availability Check
+        </span>
+        <Btn size="sm" variant="ghost"
+          onClick={()=>{ loadSopConfig(); setSopConfigOpen(true); }}
+          style={{ marginLeft:"auto", color:T.orange, borderColor:`${T.orange}40` }}>
+          ⚙ Customize Workflow
+        </Btn>
       </div>
       <div style={{ flex:1, overflowY:"auto" }}>
         <AdsSopTab/>
       </div>
+      {sopConfigOpen && sopConfig && (
+        <SopConfigPanel
+          config={sopConfig}
+          setConfig={setSopConfig}
+          onSave={saveSopConfig}
+          saving={sopConfigSaving}
+          msg={sopConfigMsg}
+          onClose={()=>setSopConfigOpen(false)}
+          T={T}
+        />
+      )}
     </div>
   );
 
@@ -8159,13 +8211,20 @@ Respond ONLY with JSON array (no markdown):
                           Open SOP
                         </Btn>
                       )}
-                      <Btn onClick={()=>{
-                          // Merge display entry with backend-loaded version (has real checks)
-                          const backendWf = workflows.find(w=>w.id===wf.id);
-                          setEditing(backendWf ? {...wf,...backendWf} : wf);
-                          setView("builder");
-                        }}
-                        size="sm" variant="ghost">✏ Edit</Btn>
+                      {wf.id === "ads-sop" ? (
+                        <Btn size="sm" variant="ghost"
+                          onClick={()=>{ loadSopConfig(); setSopConfigOpen(true); }}
+                          style={{ color:T.orange, borderColor:`${T.orange}40` }}>
+                          ⚙ Customize
+                        </Btn>
+                      ) : (
+                        <Btn onClick={()=>{
+                            const backendWf = workflows.find(w=>w.id===wf.id);
+                            setEditing(backendWf ? {...wf,...backendWf} : wf);
+                            setView("builder");
+                          }}
+                          size="sm" variant="ghost">✏ Edit</Btn>
+                      )}
                       <Btn onClick={()=>{ setDetail(wf); setLiveRun(null); setView("detail"); }}
                         size="sm" variant="ghost"><Eye size={10}/> History</Btn>
                     </div>

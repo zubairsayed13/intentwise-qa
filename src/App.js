@@ -306,6 +306,7 @@ const NAV = [
   { id:"approvals", label:"Approvals & Activity", icon:Lock, shortcut:"A" },
   { id:"config",    label:"Configure",      icon:Settings,     shortcut:"7" },
   { id:"query",     label:"Data Explorer", icon:Database,     shortcut:"8" },
+  { id:"results",   label:"Results",        icon:BarChart2,    shortcut:"9" },
 ];
 
 // ─── Sidebar ──────────────────────────────────────────────────────────────────
@@ -7279,7 +7280,7 @@ const SEV_COLOR = { critical:"#ef4444", high:"#f97316", medium:"#eab308", low:"#
 const SEV_BG    = { critical:"#fef2f2", high:"#fff7ed", medium:"#fefce8", low:"#ecfeff", info:"#eef2ff" };
 
 // ── WorkflowsTab — main entry point ──────────────────────────────────────────
-function WorkflowsTab() {
+function WorkflowsTab({ navigateTo }) {
   const T = useT();
   const dbSchema = useSchema();
 
@@ -7444,6 +7445,7 @@ function WorkflowsTab() {
           setLiveRun(data);
           setDetail(BUILTIN_WFS.find(b=>b.id==="daily-brief"));
           setView("detail");
+          onRunComplete?.(data);
         }
       } catch(e) {}
       setRunning(p=>({...p,"daily-brief":false}));
@@ -7907,6 +7909,16 @@ function WorkflowDetail({ wf, history, liveRun, onBack, onEdit, onRun, running }
             </Btn>
             <Btn onClick={onEdit} size="sm" variant="ghost">✏</Btn>
           </div>
+          {history.length > 0 && (
+            <Btn size="sm" variant="ghost" style={{ marginTop:6, width:"100%",
+              fontSize:10, justifyContent:"center", color:T.accent }}
+              onClick={()=>{
+                window.location.hash=`results/${history[0].run_id}/${(history[0].check_results||[])[0]?.id||(history[0].check_results||[])[0]?.name||''}`;
+                if(typeof navigateTo==="function") navigateTo("results");
+              }}>
+              📊 View in Results
+            </Btn>
+          )}
         </div>
 
         {/* Run list */}
@@ -7947,10 +7959,10 @@ function WorkflowDetail({ wf, history, liveRun, onBack, onEdit, onRun, running }
       </div>
 
       {/* Right: run detail */}
-      <div style={{ flex:1, overflowY:"auto", padding:"20px 24px", minWidth:0 }}>
+      <div style={{ flex:1, display:"flex", flexDirection:"column", overflow:"hidden", minWidth:0 }}>
         {!selectedRun ? (
           <div style={{ display:"flex", alignItems:"center", justifyContent:"center",
-            height:"100%", color:T.dim, fontSize:13 }}>
+            flex:1, color:T.dim, fontSize:13 }}>
             Select a run to see results
           </div>
         ) : (
@@ -8535,6 +8547,1094 @@ Rules: sql must be SELECT only. pass_condition options: "rows = 0", "rows > 0", 
 }
 
 
+// ═══════════════════════════════════════════════════════════════════════════════
+// RESULTS TAB — Full workflow run data viewer
+// ═══════════════════════════════════════════════════════════════════════════════
+// ═══════════════════════════════════════════════════════════════════════════════
+// WIZI ASSISTANT — AI-driven 3-surface system
+// 1. PostRunPanel  — pops up after workflow run with failures
+// 2. AiBriefPanel  — AI section in Daily Brief tab
+// 3. FloatingAssistant — persistent chat panel
+// ═══════════════════════════════════════════════════════════════════════════════
+
+// Shared hook — triggers AI analysis after a run
+function useRunAnalysis(run, enabled=true) {
+  const [analysis, setAnalysis] = React.useState(null);
+  const [loading,  setLoading]  = React.useState(false);
+  const [error,    setError]    = React.useState(null);
+
+  const analyse = React.useCallback(async (r) => {
+    if (!r || r.status==="clean" || !enabled) return;
+    setLoading(true); setError(null);
+    try {
+      const res = await fetch(`${API}/api/ai/analyse-run`, {
+        method:"POST", headers:{"Content-Type":"application/json"},
+        body:JSON.stringify({ run: r })
+      });
+      const d = await res.json();
+      if (d.error) setError(d.error);
+      else setAnalysis(d);
+    } catch(e) { setError(e.message); }
+    setLoading(false);
+  }, [enabled]);
+
+  React.useEffect(() => {
+    if (run && run.status!=="clean") analyse(run);
+  }, [run?.run_id]);
+
+  return { analysis, loading, error, analyse };
+}
+
+
+// ── 1. POST-RUN PANEL — modal that appears after a failed run ─────────────────
+function PostRunPanel({ run, onClose, onSendToTriage, onNavigateResults }) {
+  const T = useT();
+  const { analysis, loading, error } = useRunAnalysis(run, true);
+  const [followUpResults, setFollowUpResults] = React.useState({});
+  const [runningFollowUp, setRunningFollowUp] = React.useState({});
+  const [slackSent,       setSlackSent]       = React.useState(false);
+  const [sending,         setSending]         = React.useState(false);
+  const [activeTab,       setActiveTab]       = React.useState("analysis"); // analysis | followup | fix
+
+  const SEV = { critical:T.red, high:T.orange, medium:T.yellow, low:T.green };
+
+  const sendSlack = async () => {
+    if (!analysis?.notify_message) return;
+    setSending(true);
+    await fetch(`${API}/api/workflow-results/share-slack`, {
+      method:"POST", headers:{"Content-Type":"application/json"},
+      body:JSON.stringify({
+        run_id:run.run_id, check_name:"All checks",
+        workflow_name:run.workflow_name,
+        row_count:run.failed||0,
+        severity:analysis.severity_assessment||"high",
+        note:analysis.notify_message,
+        sql:""
+      })
+    }).catch(()=>{});
+    setSending(false); setSlackSent(true);
+  };
+
+  const runFollowUp = async (chk, i) => {
+    setRunningFollowUp(p=>({...p,[i]:true}));
+    const res = await fetch(`${API}/api/ai/run-follow-up`, {
+      method:"POST", headers:{"Content-Type":"application/json"},
+      body:JSON.stringify(chk)
+    }).then(r=>r.json()).catch(e=>({error:e.message}));
+    setFollowUpResults(p=>({...p,[i]:res}));
+    setRunningFollowUp(p=>({...p,[i]:false}));
+  };
+
+  const failedChecks = (run.check_results||[]).filter(c=>!c.passed);
+  const urgColor = SEV[analysis?.severity_assessment] || T.orange;
+
+  return (
+    <div style={{ position:"fixed", inset:0, background:"rgba(0,0,0,0.45)", zIndex:2000,
+      display:"flex", alignItems:"center", justifyContent:"center" }}
+      onClick={e=>{ if(e.target===e.currentTarget) onClose(); }}>
+      <div style={{ background:T.card, borderRadius:16, width:"min(680px,95vw)",
+        maxHeight:"88vh", display:"flex", flexDirection:"column",
+        border:`1px solid ${T.border}`, boxShadow:"0 24px 80px rgba(0,0,0,0.25)" }}>
+
+        {/* Header */}
+        <div style={{ padding:"18px 22px", borderBottom:`1px solid ${T.border}`,
+          display:"flex", alignItems:"center", gap:12, flexShrink:0 }}>
+          <div style={{ width:36, height:36, borderRadius:10,
+            background:`${urgColor}15`, display:"flex", alignItems:"center",
+            justifyContent:"center", fontSize:18 }}>
+            {analysis?.all_clear===false ? "⚠️" : loading ? "🤔" : "✅"}
+          </div>
+          <div style={{ flex:1 }}>
+            <div style={{ fontSize:14, fontWeight:700, color:T.text }}>
+              WiziAgent Analysis — {run.workflow_name}
+            </div>
+            <div style={{ fontSize:11, color:T.muted, marginTop:1 }}>
+              {run.failed||0} failed · {run.total_checks||0} total checks · {run.started_at?.slice(0,16)?.replace("T"," ")}
+            </div>
+          </div>
+          {analysis?.severity_assessment && (
+            <Badge label={analysis.severity_assessment} color={urgColor}/>
+          )}
+          <button onClick={onClose}
+            style={{ background:"none", border:"none", cursor:"pointer",
+              color:T.muted, fontSize:20, lineHeight:1 }}>×</button>
+        </div>
+
+        {/* Sub-tabs */}
+        <div style={{ display:"flex", gap:0, borderBottom:`1px solid ${T.border}`, flexShrink:0 }}>
+          {[
+            {id:"analysis", label:"AI Analysis"},
+            {id:"followup", label:`Follow-up (${(analysis?.follow_up_checks||[]).length})`},
+            {id:"fix",      label:"Fix SQL"},
+          ].map(tab=>(
+            <button key={tab.id} onClick={()=>setActiveTab(tab.id)}
+              style={{ padding:"9px 18px", fontSize:12, fontWeight:activeTab===tab.id?600:400,
+                color:activeTab===tab.id?T.accent:T.muted, background:"none", border:"none",
+                cursor:"pointer", borderBottom:activeTab===tab.id?`2px solid ${T.accent}`:"2px solid transparent",
+                marginBottom:-1 }}>
+              {tab.label}
+            </button>
+          ))}
+        </div>
+
+        {/* Body */}
+        <div style={{ flex:1, overflowY:"auto", padding:"18px 22px" }}>
+
+          {loading && (
+            <div style={{ display:"flex", gap:10, alignItems:"center",
+              padding:"20px 0", color:T.muted, fontSize:12 }}>
+              <Spinner size={16}/> WiziAgent is analysing the results…
+            </div>
+          )}
+
+          {error && !loading && (
+            <div style={{ color:T.red, fontSize:12, padding:"10px 0" }}>
+              AI analysis unavailable: {error}
+            </div>
+          )}
+
+          {/* Analysis tab */}
+          {activeTab==="analysis" && analysis && !loading && (
+            <div style={{ display:"flex", flexDirection:"column", gap:14 }}>
+
+              {/* Summary */}
+              <div style={{ padding:"14px 16px", borderRadius:10,
+                background:`${urgColor}08`, border:`1px solid ${urgColor}20` }}>
+                <div style={{ fontSize:11, fontWeight:700, color:urgColor, marginBottom:6,
+                  textTransform:"uppercase", letterSpacing:"0.05em" }}>Summary</div>
+                <div style={{ fontSize:13, color:T.text, lineHeight:1.6 }}>{analysis.summary}</div>
+              </div>
+
+              {/* Root cause */}
+              {analysis.root_cause && (
+                <div>
+                  <div style={{ fontSize:11, fontWeight:700, color:T.muted, marginBottom:5,
+                    textTransform:"uppercase", letterSpacing:"0.05em" }}>Root Cause</div>
+                  <div style={{ fontSize:12, color:T.text2, lineHeight:1.6,
+                    padding:"10px 14px", borderRadius:8, background:T.surface,
+                    border:`1px solid ${T.border}` }}>
+                    🔍 {analysis.root_cause}
+                  </div>
+                </div>
+              )}
+
+              {/* Failed checks summary */}
+              <div>
+                <div style={{ fontSize:11, fontWeight:700, color:T.muted, marginBottom:5,
+                  textTransform:"uppercase", letterSpacing:"0.05em" }}>
+                  Failed Checks ({failedChecks.length})
+                </div>
+                <div style={{ display:"flex", flexDirection:"column", gap:5 }}>
+                  {failedChecks.map((c,i)=>(
+                    <div key={i} style={{ display:"flex", alignItems:"center", gap:8,
+                      padding:"8px 12px", borderRadius:7, background:T.surface,
+                      border:`1px solid ${T.border}` }}>
+                      <X size={11} color={T.red}/>
+                      <span style={{ fontSize:12, color:T.text, flex:1 }}>{c.name}</span>
+                      <span style={{ fontSize:11, color:T.red, fontWeight:700 }}>
+                        {c.row_count} rows
+                      </span>
+                      <Badge label={c.severity||"high"} color={SEV_COLOR[c.severity]||T.muted}/>
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+              {/* Suggested actions */}
+              {(analysis.suggested_actions||[]).length > 0 && (
+                <div>
+                  <div style={{ fontSize:11, fontWeight:700, color:T.muted, marginBottom:5,
+                    textTransform:"uppercase", letterSpacing:"0.05em" }}>AI Recommends</div>
+                  <div style={{ display:"flex", flexDirection:"column", gap:4 }}>
+                    {analysis.suggested_actions.map((a,i)=>(
+                      <div key={i} style={{ fontSize:12, color:T.text2, display:"flex",
+                        gap:8, alignItems:"flex-start" }}>
+                        <span style={{ color:T.accent, flexShrink:0 }}>→</span> {a}
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* Follow-up checks tab */}
+          {activeTab==="followup" && (
+            <div style={{ display:"flex", flexDirection:"column", gap:10 }}>
+              {(!analysis?.follow_up_checks?.length) && !loading && (
+                <div style={{ color:T.dim, fontSize:12, textAlign:"center", padding:"20px 0" }}>
+                  {loading ? <Spinner size={16}/> : "No follow-up checks suggested"}
+                </div>
+              )}
+              {(analysis?.follow_up_checks||[]).map((chk,i)=>{
+                const res = followUpResults[i];
+                return (
+                  <div key={i} style={{ borderRadius:10, border:`1px solid ${T.border}`,
+                    overflow:"hidden" }}>
+                    <div style={{ padding:"12px 14px", background:T.surface }}>
+                      <div style={{ display:"flex", alignItems:"center", gap:8, marginBottom:5 }}>
+                        <span style={{ fontSize:12, fontWeight:700, color:T.text }}>{chk.name}</span>
+                        {res && (
+                          <Badge label={res.passed?"✓ Passed":"✗ Failed"}
+                            color={res.passed?T.green:T.red}/>
+                        )}
+                      </div>
+                      <div style={{ fontSize:11, color:T.muted, marginBottom:8 }}>{chk.reason}</div>
+                      <pre style={{ fontSize:10, fontFamily:"monospace", color:T.text2,
+                        background:T.card, padding:"8px 10px", borderRadius:6,
+                        border:`1px solid ${T.border}`, margin:0, whiteSpace:"pre-wrap" }}>
+                        {chk.sql}
+                      </pre>
+                      {res?.rows?.length > 0 && (
+                        <div style={{ marginTop:8, fontSize:10, color:T.muted }}>
+                          {res.row_count} rows · columns: {res.columns?.join(", ")}
+                        </div>
+                      )}
+                    </div>
+                    <div style={{ padding:"8px 14px", borderTop:`1px solid ${T.border}`,
+                      display:"flex", gap:8 }}>
+                      <Btn size="sm" onClick={()=>runFollowUp(chk,i)}
+                        disabled={!!runningFollowUp[i]}>
+                        {runningFollowUp[i]?<Spinner size={10}/>:<Play size={10}/>} Run Check
+                      </Btn>
+                      {res && !res.error && (
+                        <span style={{ fontSize:10, color:res.passed?T.green:T.red,
+                          display:"flex", alignItems:"center", gap:4 }}>
+                          {res.row_count} rows returned
+                        </span>
+                      )}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+
+          {/* Fix SQL tab */}
+          {activeTab==="fix" && (
+            <div>
+              {analysis?.fix_sql ? (
+                <div>
+                  <div style={{ fontSize:11, color:T.muted, marginBottom:8 }}>
+                    ⚠️ Review carefully before running. This SQL will modify data.
+                  </div>
+                  <pre style={{ fontSize:11, fontFamily:"monospace", color:T.text2,
+                    background:T.surface, padding:"14px 16px", borderRadius:10,
+                    border:`1px solid ${T.border}`, whiteSpace:"pre-wrap",
+                    margin:"0 0 12px" }}>
+                    {analysis.fix_sql}
+                  </pre>
+                  <Btn size="sm" onClick={()=>onSendToTriage?.(run, analysis?.fix_sql)}
+                    style={{ background:T.orange, color:"white", border:"none" }}>
+                    Send to Triage for review →
+                  </Btn>
+                </div>
+              ) : !loading && (
+                <div style={{ color:T.dim, fontSize:12, textAlign:"center", padding:"20px 0" }}>
+                  No safe fix SQL available for this issue
+                </div>
+              )}
+              {loading && <div style={{ textAlign:"center", padding:"20px 0" }}><Spinner size={20}/></div>}
+            </div>
+          )}
+        </div>
+
+        {/* Footer actions */}
+        <div style={{ padding:"14px 22px", borderTop:`1px solid ${T.border}`,
+          display:"flex", gap:8, flexShrink:0, flexWrap:"wrap" }}>
+          <Btn onClick={()=>onSendToTriage?.(run)}
+            style={{ background:T.orange, color:"white", border:"none" }}>
+            → Send to Triage
+          </Btn>
+          <Btn onClick={sendSlack} disabled={sending||slackSent} variant="ghost">
+            {sending?<Spinner size={10}/>:slackSent?"✓ Sent":"Notify Slack"}
+          </Btn>
+          {onNavigateResults && (
+            <Btn onClick={()=>{ onClose(); onNavigateResults(); }} variant="ghost">
+              📊 View Full Data
+            </Btn>
+          )}
+          <Btn onClick={onClose} variant="ghost" style={{ marginLeft:"auto" }}>Dismiss</Btn>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+
+// ── 2. AI BRIEF PANEL — AI section inside Daily Brief ─────────────────────────
+function AiBriefPanel() {
+  const T = useT();
+  const [brief,   setBrief]   = React.useState(null);
+  const [loading, setLoading] = React.useState(false);
+  const [error,   setError]   = React.useState(null);
+  const [expanded,setExpanded]= React.useState(true);
+
+  const load = async () => {
+    setLoading(true); setError(null);
+    try {
+      const res = await fetch(`${API}/api/ai/daily-brief`, {
+        method:"POST", headers:{"Content-Type":"application/json"}, body:"{}"
+      });
+      const d = await res.json();
+      if (d.error) setError(d.error);
+      else setBrief(d);
+    } catch(e) { setError(e.message); }
+    setLoading(false);
+  };
+
+  React.useEffect(()=>{ load(); }, []);
+
+  const URGENCY_COLOR = { critical:T.red, high:T.orange, medium:T.yellow, low:T.green };
+  const score = brief?.health_score;
+  const scoreColor = score>=80?T.green:score>=60?T.orange:T.red;
+
+  return (
+    <div style={{ padding:"16px 20px", borderRadius:12, marginBottom:20,
+      background:T.surface, border:`1px solid ${T.border}` }}>
+      <div style={{ display:"flex", alignItems:"center", gap:10, marginBottom: expanded?12:0 }}>
+        <div style={{ width:32, height:32, borderRadius:8,
+          background:`${T.purple}15`, display:"flex", alignItems:"center",
+          justifyContent:"center", fontSize:16 }}>🤖</div>
+        <div style={{ flex:1 }}>
+          <div style={{ fontSize:12, fontWeight:700, color:T.text }}>WiziAgent Brief</div>
+          {brief?.headline && (
+            <div style={{ fontSize:11, color:T.muted, marginTop:1 }}>{brief.headline}</div>
+          )}
+        </div>
+        {score !== undefined && (
+          <div style={{ textAlign:"center", padding:"4px 10px", borderRadius:8,
+            background:`${scoreColor}12`, border:`1px solid ${scoreColor}25` }}>
+            <div style={{ fontSize:18, fontWeight:800, color:scoreColor }}>{score}</div>
+            <div style={{ fontSize:9, color:T.muted }}>Health</div>
+          </div>
+        )}
+        <Btn size="sm" variant="ghost" onClick={load} disabled={loading}>
+          {loading?<Spinner size={10}/>:<RefreshCw size={10}/>}
+        </Btn>
+        <button onClick={()=>setExpanded(p=>!p)}
+          style={{ background:"none", border:"none", cursor:"pointer",
+            color:T.muted, fontSize:14 }}>
+          {expanded?"▴":"▾"}
+        </button>
+      </div>
+
+      {expanded && (
+        <>
+          {loading && (
+            <div style={{ display:"flex", gap:8, alignItems:"center",
+              color:T.muted, fontSize:11, padding:"8px 0" }}>
+              <Spinner size={12}/> Analysing pipeline health…
+            </div>
+          )}
+          {error && <div style={{ color:T.red, fontSize:11 }}>AI unavailable: {error}</div>}
+
+          {brief && !loading && (
+            <div style={{ display:"flex", flexDirection:"column", gap:8 }}>
+              {brief.all_clear ? (
+                <div style={{ display:"flex", alignItems:"center", gap:8,
+                  padding:"10px 14px", borderRadius:8,
+                  background:`${T.green}08`, border:`1px solid ${T.green}25` }}>
+                  <CheckCircle size={14} color={T.green}/>
+                  <span style={{ fontSize:12, color:T.green, fontWeight:600 }}>
+                    All clear — pipeline is healthy
+                  </span>
+                </div>
+              ) : (
+                (brief.priority_items||[]).map((item,i)=>(
+                  <div key={i} style={{ display:"flex", alignItems:"flex-start", gap:10,
+                    padding:"10px 14px", borderRadius:8,
+                    background:`${URGENCY_COLOR[item.urgency]||T.muted}08`,
+                    border:`1px solid ${URGENCY_COLOR[item.urgency]||T.muted}20` }}>
+                    <div style={{ width:20, height:20, borderRadius:"50%", flexShrink:0,
+                      background:`${URGENCY_COLOR[item.urgency]||T.muted}20`,
+                      display:"flex", alignItems:"center", justifyContent:"center",
+                      fontSize:10, fontWeight:800,
+                      color:URGENCY_COLOR[item.urgency]||T.muted }}>
+                      {item.priority}
+                    </div>
+                    <div style={{ flex:1 }}>
+                      <div style={{ fontSize:12, fontWeight:700, color:T.text }}>{item.title}</div>
+                      <div style={{ fontSize:11, color:T.muted, marginTop:2 }}>{item.detail}</div>
+                    </div>
+                    <Badge label={item.urgency} color={URGENCY_COLOR[item.urgency]||T.muted}/>
+                  </div>
+                ))
+              )}
+
+              {brief.recommendation && (
+                <div style={{ fontSize:11, color:T.accent, padding:"8px 14px",
+                  borderRadius:8, background:`${T.accent}06`,
+                  border:`1px solid ${T.accent}15`, marginTop:2 }}>
+                  💡 {brief.recommendation}
+                </div>
+              )}
+            </div>
+          )}
+        </>
+      )}
+    </div>
+  );
+}
+
+
+// ── 3. FLOATING ASSISTANT — persistent AI chat with full context ───────────────
+function FloatingAssistant({ currentRun, currentTab }) {
+  const T = useT();
+  const [open,     setOpen]    = React.useState(false);
+  const [messages, setMessages]= React.useState([
+    { role:"assistant", text:"Hi! I'm WiziAgent. Ask me anything about your pipeline data or recent workflow results." }
+  ]);
+  const [input,    setInput]   = React.useState("");
+  const [loading,  setLoading] = React.useState(false);
+  const bottomRef = React.useRef(null);
+
+  React.useEffect(()=>{
+    if (bottomRef.current) bottomRef.current.scrollIntoView({behavior:"smooth"});
+  }, [messages]);
+
+  const send = async () => {
+    const text = input.trim();
+    if (!text || loading) return;
+    setInput("");
+    setMessages(p=>[...p, {role:"user", text}]);
+    setLoading(true);
+
+    // Build system context
+    const runContext = currentRun ? `
+Current workflow run: ${currentRun.workflow_name}
+Status: ${currentRun.status} (${currentRun.failed||0} failed / ${currentRun.total_checks||0} checks)
+Failed checks: ${(currentRun.check_results||[]).filter(c=>!c.passed).map(c=>`${c.name} (${c.row_count} rows)`).join(", ")||"none"}
+` : "";
+
+    const system = `You are WiziAgent, a data quality AI for an ecommerce analytics platform on Amazon Redshift.
+Key tables: mws.report (downloads, statuses, copy_status), mws.orders, mws.inventory, mws.sales_and_traffic_by_date, public.tbl_amzn_campaign_report.
+You help users understand data issues, write SQL checks, and suggest fixes.
+Be concise. If you write SQL, make it valid Redshift SQL.
+Current user tab: ${currentTab||"unknown"}.
+${runContext}`;
+
+    try {
+      const history = messages.slice(-6).map(m=>({
+        role: m.role==="assistant"?"assistant":"user",
+        content: m.text
+      }));
+
+      const res = await fetch(`${API}/api/ai/chat`, {
+        method:"POST", headers:{"Content-Type":"application/json"},
+        body:JSON.stringify({
+          system,
+          messages:[...history, {role:"user", content:text}],
+          max_tokens:600
+        })
+      });
+      const d = await res.json();
+      const reply = d?.content?.[0]?.text || "Sorry, I couldn't process that.";
+      setMessages(p=>[...p, {role:"assistant", text:reply}]);
+    } catch(e) {
+      setMessages(p=>[...p, {role:"assistant", text:`Error: ${e.message}`}]);
+    }
+    setLoading(false);
+  };
+
+  return (
+    <>
+      {/* Floating button */}
+      <button onClick={()=>setOpen(p=>!p)}
+        style={{ position:"fixed", bottom:24, right:24, zIndex:1500,
+          width:48, height:48, borderRadius:"50%",
+          background:`linear-gradient(135deg,#6366f1,#8b5cf6)`,
+          border:"none", cursor:"pointer", boxShadow:"0 4px 20px rgba(99,102,241,0.4)",
+          display:"flex", alignItems:"center", justifyContent:"center",
+          fontSize:20, color:"white", transition:"transform 0.2s" }}
+        onMouseEnter={e=>e.currentTarget.style.transform="scale(1.1)"}
+        onMouseLeave={e=>e.currentTarget.style.transform="scale(1)"}>
+        {open ? "×" : "🤖"}
+      </button>
+
+      {/* Chat panel */}
+      {open && (
+        <div style={{ position:"fixed", bottom:82, right:24, zIndex:1500,
+          width:"min(380px,calc(100vw - 48px))", height:480,
+          background:T.card, borderRadius:16,
+          border:`1px solid ${T.border}`,
+          boxShadow:"0 8px 40px rgba(0,0,0,0.2)",
+          display:"flex", flexDirection:"column", overflow:"hidden" }}>
+
+          {/* Header */}
+          <div style={{ padding:"12px 16px", borderBottom:`1px solid ${T.border}`,
+            background:`linear-gradient(135deg,${T.accent}10,${T.purple}10)`,
+            flexShrink:0 }}>
+            <div style={{ fontSize:13, fontWeight:700, color:T.text }}>🤖 WiziAgent</div>
+            <div style={{ fontSize:10, color:T.muted, marginTop:1 }}>
+              AI assistant · knows your current context
+            </div>
+          </div>
+
+          {/* Messages */}
+          <div style={{ flex:1, overflowY:"auto", padding:"12px 14px",
+            display:"flex", flexDirection:"column", gap:10 }}>
+            {messages.map((m,i)=>(
+              <div key={i} style={{ display:"flex",
+                justifyContent:m.role==="user"?"flex-end":"flex-start" }}>
+                <div style={{ maxWidth:"82%", padding:"9px 12px", borderRadius:10,
+                  fontSize:12, lineHeight:1.5,
+                  background:m.role==="user"
+                    ? `linear-gradient(135deg,${T.accent},${T.purple})`
+                    : T.surface,
+                  color:m.role==="user"?"white":T.text,
+                  border:m.role==="user"?"none":`1px solid ${T.border}`,
+                  borderBottomRightRadius:m.role==="user"?2:10,
+                  borderBottomLeftRadius:m.role==="assistant"?2:10,
+                  whiteSpace:"pre-wrap", wordBreak:"break-word" }}>
+                  {m.text}
+                </div>
+              </div>
+            ))}
+            {loading && (
+              <div style={{ display:"flex", gap:6, alignItems:"center", color:T.muted, fontSize:11 }}>
+                <Spinner size={10}/> Thinking…
+              </div>
+            )}
+            <div ref={bottomRef}/>
+          </div>
+
+          {/* Input */}
+          <div style={{ padding:"10px 12px", borderTop:`1px solid ${T.border}`,
+            display:"flex", gap:8, flexShrink:0 }}>
+            <input value={input} onChange={e=>setInput(e.target.value)}
+              onKeyDown={e=>{ if(e.key==="Enter"&&!e.shiftKey){ e.preventDefault(); send(); } }}
+              placeholder="Ask anything about your data…"
+              style={{ flex:1, padding:"7px 10px", borderRadius:8, fontSize:12,
+                border:`1px solid ${T.border}`, background:T.surface,
+                color:T.text, outline:"none", fontFamily:"inherit" }}/>
+            <Btn onClick={send} disabled={!input.trim()||loading} size="sm"
+              style={{ background:`linear-gradient(135deg,${T.accent},${T.purple})`,
+                color:"white", border:"none", flexShrink:0 }}>
+              {loading?<Spinner size={10} color="white"/>:<ArrowRight size={10}/>}
+            </Btn>
+          </div>
+        </div>
+      )}
+    </>
+  );
+}
+
+
+function ResultsTab({ onNavigate }) {
+  const T = useT();
+  const [view,       setView]    = React.useState("list"); // list | detail
+  const [runs,       setRuns]    = React.useState([]);
+  const [loading,    setLoading] = React.useState(false);
+  const [selected,   setSelected]= React.useState(null); // { run, check }
+  const [filter,     setFilter]  = React.useState("failed"); // all | failed | clean
+
+  const load = async () => {
+    setLoading(true);
+    try {
+      const res = await fetch(`${API}/api/workflow-results/recent?limit=50`);
+      const d   = await res.json();
+      if (Array.isArray(d.runs)) setRuns(d.runs);
+    } catch(e) {}
+    setLoading(false);
+  };
+
+  React.useEffect(()=>{ load(); }, []);
+
+  // Check for deep-link in URL hash: #results/run_id/check_id
+  React.useEffect(()=>{
+    const hash = window.location.hash;
+    if (hash.startsWith("#results/")) {
+      const [,runId, checkId] = hash.split("/");
+      if (runId && checkId) {
+        // find in runs
+        const run = runs.find(r=>r.run_id===runId);
+        const chk = (run?.check_results||[]).find(c=>c.id===checkId||c.name===checkId);
+        if (run && chk) { setSelected({run, check:chk}); setView("detail"); }
+      }
+    }
+  }, [runs]);
+
+  if (view==="detail" && selected) return (
+    <ResultDetail
+      run={selected.run}
+      check={selected.check}
+      allChecks={selected.run.check_results||[]}
+      onBack={()=>{ setView("list"); setSelected(null); window.location.hash=""; }}
+      onSelectCheck={(chk)=>setSelected(p=>({...p, check:chk}))}
+      onNavigate={onNavigate}
+    />
+  );
+
+  // ── List view ─────────────────────────────────────────────────────────────
+  const filtered = runs.filter(r=>{
+    if (filter==="failed") return r.status !== "clean";
+    if (filter==="clean")  return r.status === "clean";
+    return true;
+  });
+
+  const totalFailed = runs.reduce((s,r)=>s+(r.failed||0), 0);
+  const totalChecks = runs.reduce((s,r)=>s+(r.total_checks||0), 0);
+
+  return (
+    <div style={{ overflowY:"auto", padding:"24px 28px" }}>
+      {/* Header */}
+      <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom:20 }}>
+        <div>
+          <div style={{ fontSize:22, fontWeight:800, color:T.text, letterSpacing:"-0.02em" }}>Results</div>
+          <div style={{ fontSize:12, color:T.muted, marginTop:2 }}>
+            {runs.length} runs · {totalFailed} failed checks · {totalChecks} total checks
+          </div>
+        </div>
+        <div style={{ display:"flex", gap:8 }}>
+          {["all","failed","clean"].map(f=>(
+            <button key={f} onClick={()=>setFilter(f)}
+              style={{ padding:"5px 14px", borderRadius:99, fontSize:11, cursor:"pointer",
+                border:`1px solid ${filter===f?T.accent:T.border}`,
+                background:filter===f?`${T.accent}10`:"transparent",
+                color:filter===f?T.accent:T.muted, fontWeight:filter===f?700:400 }}>
+              {f==="all"?"All":f==="failed"?"Failed":"Clean"}
+            </button>
+          ))}
+          <Btn size="sm" variant="ghost" onClick={load} disabled={loading}>
+            {loading?<Spinner size={10}/>:<RefreshCw size={10}/>}
+          </Btn>
+        </div>
+      </div>
+
+      {/* Run cards */}
+      <div style={{ display:"flex", flexDirection:"column", gap:12 }}>
+        {filtered.length===0 && (
+          <div style={{ textAlign:"center", padding:"50px 0", color:T.dim, fontSize:13 }}>
+            {loading ? <Spinner size={24}/> : "No runs found"}
+          </div>
+        )}
+        {filtered.map(run=>{
+          const failedChecks = (run.check_results||[]).filter(c=>!c.passed);
+          const passedChecks = (run.check_results||[]).filter(c=>c.passed);
+          const dur = run.duration_ms ? (run.duration_ms<1000?`${run.duration_ms}ms`:`${(run.duration_ms/1000).toFixed(1)}s`) : null;
+
+          return (
+            <div key={run.run_id} style={{ background:T.card, borderRadius:12,
+              border:`1px solid ${T.border}`,
+              borderLeft:`3px solid ${run.status==="clean"?T.green:T.red}`,
+              boxShadow:"0 1px 4px rgba(0,0,0,0.05)" }}>
+
+              {/* Run header */}
+              <div style={{ padding:"14px 18px", borderBottom:`1px solid ${T.border}20` }}>
+                <div style={{ display:"flex", alignItems:"center", gap:10 }}>
+                  <div style={{ flex:1 }}>
+                    <div style={{ display:"flex", alignItems:"center", gap:8 }}>
+                      <span style={{ fontSize:13, fontWeight:700, color:T.text }}>
+                        {run.workflow_name}
+                      </span>
+                      <Badge label={run.status==="clean"?"✓ Clean":`${run.failed||0} failed`}
+                        color={run.status==="clean"?T.green:T.red}/>
+                      {run.triggered_by==="cron" && <Badge label="scheduled" color={T.muted}/>}
+                    </div>
+                    <div style={{ fontSize:10, color:T.muted, marginTop:2 }}>
+                      {run.started_at?.slice(0,16)?.replace("T"," ")}
+                      {dur && ` · ${dur}`}
+                      {` · ${run.total_checks||0} checks`}
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              {/* Check pills */}
+              {(run.check_results||[]).length > 0 && (
+                <div style={{ padding:"10px 18px", display:"flex", gap:8, flexWrap:"wrap" }}>
+                  {(run.check_results||[]).map(chk=>(
+                    <button key={chk.id||chk.name}
+                      onClick={()=>{ setSelected({run, check:chk}); setView("detail"); }}
+                      style={{ display:"flex", alignItems:"center", gap:6,
+                        padding:"5px 12px", borderRadius:7, cursor:"pointer", fontSize:11,
+                        border:`1px solid ${chk.passed?T.green+"30":T.red+"40"}`,
+                        background:chk.passed?`${T.green}06`:`${T.red}06`,
+                        color:chk.passed?T.green:T.red, fontWeight:500,
+                        transition:"all 0.1s" }}
+                      onMouseEnter={e=>e.currentTarget.style.opacity="0.75"}
+                      onMouseLeave={e=>e.currentTarget.style.opacity="1"}>
+                      {chk.passed ? <Check size={10}/> : <X size={10}/>}
+                      {chk.name}
+                      {!chk.passed && chk.row_count > 0 && (
+                        <span style={{ fontWeight:700 }}>· {chk.row_count}</span>
+                      )}
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+
+// ── ResultDetail — full data view for one check ───────────────────────────────
+function ResultDetail({ run, check, allChecks, onBack, onSelectCheck, onNavigate }) {
+  const T = useT();
+  const [data,      setData]     = React.useState(null);
+  const [loading,   setLoading]  = React.useState(false);
+  const [error,     setError]    = React.useState(null);
+  const [page,      setPage]     = React.useState(0);
+  const [note,      setNote]     = React.useState("");
+  const [noteEdit,  setNoteEdit] = React.useState(false);
+  const [noteSaving,setNoteSave] = React.useState(false);
+  const [sharing,   setSharing]  = React.useState(false);
+  const [shareMsg,  setShareMsg] = React.useState(null);
+  const [sortCol,   setSortCol]  = React.useState(null);
+  const [sortDir,   setSortDir]  = React.useState("asc");
+  const [search,    setSearch]   = React.useState("");
+  const [showStats, setShowStats]= React.useState(false);
+  const LIMIT = 100;
+
+  const load = async (offset=0) => {
+    setLoading(true); setError(null);
+    try {
+      const res = await fetch(
+        `${API}/api/workflow-results/full?run_id=${run.run_id}&check_id=${encodeURIComponent(check.id||check.name)}&limit=${LIMIT}&offset=${offset}`
+      );
+      const d = await res.json();
+      if (d.error) { setError(d.error); }
+      else {
+        setData(d);
+        setNote(d.note || "");
+        // Set deep-link hash
+        window.location.hash = `results/${run.run_id}/${check.id||check.name}`;
+      }
+    } catch(e) { setError(e.message); }
+    setLoading(false);
+  };
+
+  React.useEffect(()=>{ setPage(0); load(0); }, [check.id, check.name]);
+
+  const goPage = (p) => { setPage(p); load(p * LIMIT); };
+
+  // Sort + search rows client-side
+  const displayRows = React.useMemo(()=>{
+    if (!data?.rows) return [];
+    let rows = [...data.rows];
+    if (search) {
+      rows = rows.filter(r=>
+        Object.values(r).some(v=>String(v??'').toLowerCase().includes(search.toLowerCase()))
+      );
+    }
+    if (sortCol) {
+      rows.sort((a,b)=>{
+        const av = a[sortCol] ?? '', bv = b[sortCol] ?? '';
+        const cmp = String(av).localeCompare(String(bv), undefined, {numeric:true});
+        return sortDir==="asc" ? cmp : -cmp;
+      });
+    }
+    return rows;
+  }, [data?.rows, search, sortCol, sortDir]);
+
+  const toggleSort = (col) => {
+    if (sortCol===col) setSortDir(d=>d==="asc"?"desc":"asc");
+    else { setSortCol(col); setSortDir("asc"); }
+  };
+
+  // Download CSV
+  const downloadCSV = () => {
+    if (!data?.rows?.length) return;
+    const cols  = data.columns;
+    const lines = [cols.join(","),
+      ...data.rows.map(r=>cols.map(c=>{
+        const v = r[c] ?? '';
+        return `"${String(v).replace(/"/g,'""')}"`;
+      }).join(","))
+    ];
+    const blob = new Blob([lines.join("\n")], {type:"text/csv"});
+    const url  = URL.createObjectURL(blob);
+    const a    = document.createElement("a");
+    a.href = url;
+    a.download = `${run.workflow_name}_${check.name}_${run.started_at?.slice(0,10)}.csv`.replace(/\s/g,"_");
+    a.click();
+    URL.revokeObjectURL(url);
+  };
+
+  // Copy shareable link
+  const copyLink = () => {
+    const url = `${window.location.origin}${window.location.pathname}#results/${run.run_id}/${check.id||check.name}`;
+    navigator.clipboard.writeText(url).catch(()=>{});
+    setShareMsg("Link copied!");
+    setTimeout(()=>setShareMsg(null), 2000);
+  };
+
+  // Share to Slack
+  const shareSlack = async () => {
+    setSharing(true);
+    const res = await fetch(`${API}/api/workflow-results/share-slack`, {
+      method:"POST", headers:{"Content-Type":"application/json"},
+      body:JSON.stringify({
+        run_id: run.run_id, check_name: check.name,
+        workflow_name: run.workflow_name,
+        row_count: data?.total_rows ?? check.row_count ?? 0,
+        severity: check.severity, note, sql: data?.sql || check.sql || "",
+      })
+    }).catch(()=>({json:async()=>({error:"Network error"})}));
+    const d = await res.json();
+    setShareMsg(d.error ? `✗ ${d.error}` : "✓ Sent to Slack");
+    setTimeout(()=>setShareMsg(null), 3000);
+    setSharing(false);
+  };
+
+  // Save note
+  const saveNote = async () => {
+    setNoteSave(true);
+    await fetch(`${API}/api/workflow-results/note`, {
+      method:"POST", headers:{"Content-Type":"application/json"},
+      body:JSON.stringify({ run_id:run.run_id, check_id:check.id||check.name, note })
+    }).catch(()=>{});
+    setNoteSave(false);
+    setNoteEdit(false);
+  };
+
+  // Send to Triage
+  const sendToTriage = () => {
+    onNavigate("triage");
+  };
+
+  const inp = { padding:"6px 10px", borderRadius:6, fontSize:11, border:`1px solid ${T.border}`,
+    background:T.surface, color:T.text, outline:"none", fontFamily:"inherit" };
+
+  return (
+    <div style={{ display:"flex", flexDirection:"column", height:"100%", overflow:"hidden" }}>
+
+      {/* Top bar */}
+      <div style={{ padding:"10px 20px", borderBottom:`1px solid ${T.border}`,
+        display:"flex", alignItems:"center", gap:10, flexShrink:0, flexWrap:"wrap" }}>
+        <Btn onClick={()=>{ onBack(); window.location.hash=""; }} variant="ghost" size="sm">← Results</Btn>
+
+        {/* Check selector */}
+        <select onChange={e=>{ const c=allChecks.find(c=>c.id===e.target.value||c.name===e.target.value); if(c) onSelectCheck(c); }}
+          value={check.id||check.name}
+          style={{...inp, maxWidth:220 }}>
+          {allChecks.map(c=>(
+            <option key={c.id||c.name} value={c.id||c.name}>
+              {c.passed?"✓":"✗"} {c.name}
+            </option>
+          ))}
+        </select>
+
+        <Badge label={check.passed?"Passed":"Failed"} color={check.passed?T.green:T.red}/>
+        <Badge label={check.severity||"high"} color={SEV_COLOR[check.severity]||T.muted}/>
+
+        <div style={{ marginLeft:"auto", display:"flex", gap:6, flexWrap:"wrap" }}>
+          {shareMsg && (
+            <span style={{ fontSize:11, padding:"4px 10px", borderRadius:6,
+              background:`${T.green}10`, color:T.green }}>
+              {shareMsg}
+            </span>
+          )}
+          <Btn size="sm" variant="ghost" onClick={()=>setShowStats(p=>!p)}>
+            📊 Stats
+          </Btn>
+          <Btn size="sm" variant="ghost" onClick={downloadCSV} disabled={!data?.rows?.length}>
+            ⬇ CSV
+          </Btn>
+          <Btn size="sm" variant="ghost" onClick={copyLink}>
+            🔗 Copy Link
+          </Btn>
+          <Btn size="sm" variant="ghost" onClick={shareSlack} disabled={sharing}>
+            {sharing?<Spinner size={10}/>:null} Slack
+          </Btn>
+          <Btn size="sm" variant="ghost" onClick={sendToTriage}
+            style={{ color:T.orange, borderColor:`${T.orange}30` }}>
+            → Triage
+          </Btn>
+        </div>
+      </div>
+
+      {/* Check info bar */}
+      <div style={{ padding:"8px 20px", borderBottom:`1px solid ${T.border}`,
+        background:`${check.passed?T.green:T.red}04`, flexShrink:0 }}>
+        <div style={{ display:"flex", gap:16, alignItems:"center", flexWrap:"wrap" }}>
+          <div style={{ fontSize:13, fontWeight:700, color:T.text }}>{check.name}</div>
+          {data?.total_rows !== undefined && (
+            <span style={{ fontSize:12, color:check.passed?T.green:T.red, fontWeight:700 }}>
+              {data.total_rows?.toLocaleString()} rows
+            </span>
+          )}
+          <span style={{ fontSize:11, color:T.muted }}>
+            Pass condition: <code style={{ fontFamily:"monospace", color:T.accent }}>{check.pass_condition}</code>
+          </span>
+          <span style={{ fontSize:11, color:T.muted }}>{run.workflow_name}</span>
+          <span style={{ fontSize:11, color:T.dim }}>{run.started_at?.slice(0,16)?.replace("T"," ")}</span>
+
+          {/* Source context */}
+          {data?.source_context && Object.entries(data.source_context).map(([tbl,ctx])=>(
+            <span key={tbl} style={{ fontSize:11, color:T.dim }}>
+              {tbl}: <strong>{ctx.total_rows?.toLocaleString()}</strong> total rows
+              {data.total_rows !== undefined && ctx.total_rows > 0 && (
+                <> · <span style={{ color:T.orange }}>
+                  {((data.total_rows/ctx.total_rows)*100).toFixed(1)}% affected
+                </span></>
+              )}
+            </span>
+          ))}
+        </div>
+
+        {/* SQL */}
+        <details style={{ marginTop:6 }}>
+          <summary style={{ fontSize:10, color:T.muted, cursor:"pointer" }}>Show SQL</summary>
+          <pre style={{ margin:"6px 0 0", padding:"8px 10px", background:T.surface,
+            borderRadius:6, fontSize:11, fontFamily:"monospace", color:T.text2,
+            whiteSpace:"pre-wrap", border:`1px solid ${T.border}` }}>
+            {data?.sql || check.sql || "—"}
+          </pre>
+        </details>
+      </div>
+
+      {/* Stats panel */}
+      {showStats && data?.stats && (
+        <div style={{ padding:"10px 20px", borderBottom:`1px solid ${T.border}`,
+          background:T.surface, flexShrink:0, overflowX:"auto" }}>
+          <div style={{ display:"flex", gap:12 }}>
+            {Object.entries(data.stats).slice(0,8).map(([col,s])=>(
+              <div key={col} style={{ padding:"8px 12px", borderRadius:8,
+                background:T.card, border:`1px solid ${T.border}`, minWidth:120, flexShrink:0 }}>
+                <div style={{ fontSize:10, fontWeight:700, color:T.accent, marginBottom:4,
+                  overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{col}</div>
+                <div style={{ fontSize:10, color:T.muted }}>Distinct: <strong style={{ color:T.text }}>{s.distinct}</strong></div>
+                {s.null_count > 0 && <div style={{ fontSize:10, color:T.red }}>Nulls: {s.null_count}</div>}
+                {s.min !== undefined && (
+                  <div style={{ fontSize:10, color:T.muted }}>
+                    {s.min} – {s.max}
+                    <br/><span style={{ color:T.text }}>avg {s.avg}</span>
+                  </div>
+                )}
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Note */}
+      <div style={{ padding:"8px 20px", borderBottom:`1px solid ${T.border}`,
+        flexShrink:0, background:T.surface }}>
+        {noteEdit ? (
+          <div style={{ display:"flex", gap:8, alignItems:"flex-start" }}>
+            <textarea value={note} onChange={e=>setNote(e.target.value)} rows={2}
+              placeholder="Add a note or annotation about this result…"
+              style={{...inp, flex:1, resize:"none", fontFamily:"inherit"}}/>
+            <Btn size="sm" onClick={saveNote} disabled={noteSaving}>
+              {noteSaving?<Spinner size={10}/>:<Check size={10}/>} Save
+            </Btn>
+            <Btn size="sm" variant="ghost" onClick={()=>{ setNoteEdit(false); setNote(data?.note||""); }}>
+              Cancel
+            </Btn>
+          </div>
+        ) : (
+          <div style={{ display:"flex", alignItems:"center", gap:10 }}>
+            {note
+              ? <span style={{ fontSize:11, color:T.text2, flex:1 }}>📝 {note}</span>
+              : <span style={{ fontSize:11, color:T.dim, flex:1 }}>No note — click to annotate</span>
+            }
+            <button onClick={()=>setNoteEdit(true)}
+              style={{ fontSize:10, color:T.accent, background:"none", border:"none",
+                cursor:"pointer", fontWeight:600 }}>
+              {note?"Edit":"+ Add note"}
+            </button>
+          </div>
+        )}
+      </div>
+
+      {/* Search + pagination bar */}
+      <div style={{ padding:"8px 20px", borderBottom:`1px solid ${T.border}`,
+        display:"flex", gap:10, alignItems:"center", flexShrink:0 }}>
+        <input value={search} onChange={e=>setSearch(e.target.value)}
+          placeholder="Search rows…"
+          style={{...inp, width:220}}/>
+        <span style={{ fontSize:11, color:T.muted, flex:1 }}>
+          {loading ? "Loading…"
+            : data ? `Showing ${displayRows.length} of ${data.total_rows?.toLocaleString()??'?'} rows (page ${page+1})`
+            : ""}
+        </span>
+        <div style={{ display:"flex", gap:6 }}>
+          <Btn size="sm" variant="ghost" disabled={page===0} onClick={()=>goPage(page-1)}>← Prev</Btn>
+          <Btn size="sm" variant="ghost"
+            disabled={!data || (page+1)*LIMIT >= (data.total_rows??0)}
+            onClick={()=>goPage(page+1)}>
+            Next →
+          </Btn>
+        </div>
+      </div>
+
+      {/* Data table */}
+      <div style={{ flex:1, overflow:"auto" }}>
+        {loading && (
+          <div style={{ display:"flex", justifyContent:"center", padding:"40px 0" }}>
+            <Spinner size={24}/>
+          </div>
+        )}
+        {error && (
+          <div style={{ padding:"20px", color:T.red, fontSize:12 }}>Error: {error}</div>
+        )}
+        {!loading && !error && data && (
+          <table style={{ borderCollapse:"collapse", fontSize:11, width:"100%",
+            fontFamily:"monospace" }}>
+            <thead style={{ position:"sticky", top:0, zIndex:1 }}>
+              <tr style={{ background:T.card, borderBottom:`2px solid ${T.border}` }}>
+                <th style={{ padding:"6px 12px", textAlign:"left", fontSize:9,
+                  fontWeight:700, color:T.muted, textTransform:"uppercase",
+                  letterSpacing:"0.05em", whiteSpace:"nowrap", width:40 }}>#</th>
+                {(data.columns||[]).map(col=>(
+                  <th key={col} onClick={()=>toggleSort(col)}
+                    style={{ padding:"6px 12px", textAlign:"left", fontSize:9,
+                      fontWeight:700, color:sortCol===col?T.accent:T.muted,
+                      textTransform:"uppercase", letterSpacing:"0.05em",
+                      whiteSpace:"nowrap", cursor:"pointer", userSelect:"none" }}>
+                    {col} {sortCol===col?(sortDir==="asc"?"↑":"↓"):""}
+                  </th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {displayRows.length===0 && (
+                <tr><td colSpan={(data.columns?.length||0)+1}
+                  style={{ padding:"30px", textAlign:"center", color:T.dim }}>
+                  No rows {search?"match your search":"returned"}
+                </td></tr>
+              )}
+              {displayRows.map((row,i)=>(
+                <tr key={i} style={{ borderBottom:`1px solid ${T.border}15`,
+                  background:i%2===0?"transparent":`${T.accent}02` }}
+                  onMouseEnter={e=>e.currentTarget.style.background=`${T.accent}06`}
+                  onMouseLeave={e=>e.currentTarget.style.background=i%2===0?"transparent":`${T.accent}02`}>
+                  <td style={{ padding:"4px 12px", color:T.dim, fontSize:10 }}>
+                    {page*LIMIT+i+1}
+                  </td>
+                  {(data.columns||[]).map(col=>{
+                    const v = row[col];
+                    return (
+                      <td key={col} style={{ padding:"4px 12px",
+                        color:v===null?T.red:T.text2,
+                        maxWidth:300, overflow:"hidden",
+                        textOverflow:"ellipsis", whiteSpace:"nowrap" }}
+                        title={v===null?"NULL":String(v)}>
+                        {v===null
+                          ? <span style={{ color:T.red, fontStyle:"italic" }}>NULL</span>
+                          : String(v).length > 80
+                            ? String(v).slice(0,80)+"…"
+                            : String(v)
+                        }
+                      </td>
+                    );
+                  })}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
+      </div>
+    </div>
+  );
+}
+
 export default function WiziAgentApp() {
   const [themeKey,  setThemeKey]  = useLocal("wz_theme", "light");
   const [activeTab, setActiveTab] = useLocal("wz_tab",   "brief");
@@ -8566,6 +9666,8 @@ export default function WiziAgentApp() {
   const [globalStatus, setGlobalStatus] = React.useState(null); // { type, message, runId }
   const [paletteOpen, setPaletteOpen]   = React.useState(false);
   const [tabHistory,  setTabHistory]    = React.useState([]); // last 5 tabs
+  const [postRunPanel, setPostRunPanel] = React.useState(null); // run to analyse
+  const [lastRun,      setLastRun]      = React.useState(null); // latest run across app
 
   // Track tab history for back navigation + URL hash sync
   const navigateTo = React.useCallback((tab) => {
@@ -8781,15 +9883,29 @@ export default function WiziAgentApp() {
             </div>
           )}
 
-          {activeTab==="brief"     && <MorningBriefTab onNavigate={navigateTo} onIssueFound={setIssues}/>}
+          {activeTab==="brief"     && <><AiBriefPanel/><MorningBriefTab onNavigate={navigateTo} onIssueFound={setIssues}/></>}
           {activeTab==="triage"    && <TriageTab initialIssues={issues}/>}
-          {activeTab==="workflows" && <WorkflowsTab/>}
+          {activeTab==="workflows" && <WorkflowsTab navigateTo={navigateTo}/>}
           {activeTab==="approvals" && <ApprovalsActivityTab onNavigate={navigateTo}/>}
           {activeTab==="config"    && <ConfigureTab/>}
           {activeTab==="query"     && <QueryTab/>}
+          {activeTab==="results"   && <ResultsTab onNavigate={navigateTo}/>}
         </main>
         </ThemeCtx.Provider>
       </div>
+
+      {/* Floating AI assistant — always visible */}
+      <FloatingAssistant currentRun={lastRun} currentTab={activeTab}/>
+
+      {/* Post-run AI panel — fires after failed runs */}
+      {postRunPanel && (
+        <PostRunPanel
+          run={postRunPanel}
+          onClose={()=>setPostRunPanel(null)}
+          onSendToTriage={(run)=>{ setPostRunPanel(null); navigateTo("triage"); }}
+          onNavigateResults={()=>{ setPostRunPanel(null); navigateTo("results"); }}
+        />
+      )}
     </ThemeCtx.Provider>
     </SchemaCtx.Provider>
   );

@@ -413,6 +413,37 @@ function CommandPalette({ onNavigate, onClose }) {
             ESC
           </kbd>
         </div>
+        {/* Anomaly flags — zero token, pure math */}
+        {anomalyFlags.length > 0 && (
+          <div style={{ margin:"8px 0 0", display:"flex", gap:6, flexWrap:"wrap" }}>
+            {anomalyFlags.map((f,i)=>(
+              <div key={i} style={{ padding:"4px 10px", borderRadius:6, fontSize:10,
+                background:`${T.orange}10`, border:`1px solid ${T.orange}25`,
+                color:T.orange, display:"flex", alignItems:"center", gap:5 }}>
+                <span>⚠</span>
+                {f.type==="nulls"
+                  ? <span><strong>{f.col}</strong>: {f.pct}% NULL values ({f.count} rows)</span>
+                  : <span><strong>{f.col}</strong>: {f.count} outlier{f.count>1?"s":""} (avg {f.avg}, σ {f.std})</span>
+                }
+              </div>
+            ))}
+          </div>
+        )}
+
+        {/* AI explanation */}
+        {aiExplain && (
+          <div style={{ margin:"8px 0 0", padding:"8px 12px", borderRadius:8,
+            background:`${T.accent}06`, border:`1px solid ${T.accent}20`,
+            fontSize:11, color:T.text2, lineHeight:1.5,
+            display:"flex", gap:8, alignItems:"flex-start" }}>
+            <span style={{ fontSize:13, flexShrink:0 }}>✨</span>
+            <span>{aiExplain}</span>
+            <button onClick={()=>setAiExplain(null)}
+              style={{ background:"none", border:"none", cursor:"pointer",
+                color:T.dim, fontSize:13, flexShrink:0, lineHeight:1 }}>×</button>
+          </div>
+        )}
+
         {/* Results */}
         <div style={{ maxHeight:360, overflowY:"auto" }}>
           {filtered.length === 0 && (
@@ -530,8 +561,11 @@ function Sidebar({ active, setActive, pendingCount, themeKey, setThemeKey }) {
           // Read anomaly + workflow issue counts from session for badge display
           const anomalyCount = (() => {
             try {
+              // proactive alerts count (set by root polling effect)
+              const p = Number(sessionStorage.getItem("wz_proactive_count") || "0");
+              // legacy anomaly count
               const a = JSON.parse(sessionStorage.getItem("wz_anomalies")||"null");
-              return a?.tables_with_anomalies || 0;
+              return p + (a?.tables_with_anomalies || 0);
             } catch { return 0; }
           })();
           const cwfIssueCount = (() => {
@@ -2454,8 +2488,47 @@ Rows affected: ${issue.count}
     i.fix_action==="recopy" || i.fix_action==="redrive_copy"
   ).length;
 
+  const [aiScores, setAiScores] = React.useState({}); // {issue_id: {priority, action}}
+
+  const scoreIssues = React.useCallback(async (issueList) => {
+    if (!issueList?.length) return;
+    // Only score up to 5 issues, batch into one call to save tokens
+    const top = issueList.slice(0,5);
+    try {
+      const res = await fetch(`${API}/api/ai/chat`, {
+        method:"POST", headers:{"Content-Type":"application/json"},
+        body:JSON.stringify({
+          system:"You are a data quality triage assistant. Given a list of data issues, return a JSON object mapping each issue id to {priority:1-5, action:'fix_now'|'monitor'|'investigate'|'ignore'}. Be concise, no explanation.",
+          messages:[{role:"user", content:JSON.stringify(top.map(i=>({id:i.id,title:i.title,severity:i.severity,fix_action:i.fix_action||null})))}],
+          max_tokens:150
+        })
+      });
+      const d = await res.json();
+      const text = d?.content?.[0]?.text||"{}";
+      const scores = JSON.parse(text.replace(/```json|```/g,"").trim());
+      setAiScores(scores);
+    } catch(e) {}
+  }, []);
+
+  // Auto-score when issues arrive
+  React.useEffect(()=>{ if(issues.length) scoreIssues(issues); }, [issues.length]);
+
   const SEV_ORDER = { critical:0, high:1, medium:2, low:3 };
-  const sortedIssues = [...issues].sort((a,b)=>(SEV_ORDER[a.severity]||9)-(SEV_ORDER[b.severity]||9));
+  // AI-reranked: if aiScores loaded, blend severity with AI priority score
+  const sortedIssues = React.useMemo(() => {
+    return [...issues].sort((a,b) => {
+      const aScore = aiScores[a.id];
+      const bScore = aiScores[b.id];
+      // If AI scored both, use AI priority (1=highest) blended with severity
+      if (aScore && bScore) {
+        const aBlend = (aScore.priority||3) + (SEV_ORDER[a.severity]||2)*0.5;
+        const bBlend = (bScore.priority||3) + (SEV_ORDER[b.severity]||2)*0.5;
+        return aBlend - bBlend;
+      }
+      // Fall back to severity sort
+      return (SEV_ORDER[a.severity]||9) - (SEV_ORDER[b.severity]||9);
+    });
+  }, [issues, aiScores]);
   const critCount    = issues.filter(i=>i.severity==="critical").length;
   const highCount    = issues.filter(i=>i.severity==="high").length;
   const fixableCount = issues.filter(i=>i.fix_action).length;
@@ -2755,6 +2828,16 @@ Rows affected: ${issue.count}
                           </span>
                           <Badge label={issue.severity} color={color}/>
                           {!issue.fix_action && <Badge label="info only" color={T.purple}/>}
+                          {aiScores[issue.id] && (() => {
+                            const s = aiScores[issue.id];
+                            const actionColor = s.action==="fix_now"?T.red:s.action==="investigate"?T.orange:s.action==="monitor"?"#F59E0B":T.muted;
+                            return (
+                              <span style={{ fontSize:9, padding:"1px 6px", borderRadius:4,
+                                background:`${actionColor}15`, color:actionColor, fontWeight:700 }}>
+                                ✨ {s.action?.replace("_"," ")} · P{s.priority}
+                              </span>
+                            );
+                          })()}
                           <span style={{ fontSize:10, color:T.dim, fontFamily:T.monoFont }}>{issue.id}</span>
                         </div>
                         <div style={{ fontSize:12, color:T.muted, lineHeight:1.5 }}>
@@ -2846,15 +2929,22 @@ Rows affected: ${issue.count}
                         </span>
                       </div>
                       {conf!==null && (
-                        <div style={{ marginLeft:"auto", display:"flex", alignItems:"center", gap:8 }}>
-                          <div style={{ width:60, height:5, borderRadius:99, background:T.border, overflow:"hidden" }}>
-                            <div style={{ height:"100%", borderRadius:99, width:`${conf}%`,
-                              background:conf>=90?T.green:conf>=75?T.yellow:T.orange }}/>
+                        <div style={{ marginLeft:"auto", display:"flex", flexDirection:"column", gap:4, alignItems:"flex-end" }}>
+                          <div style={{ display:"flex", alignItems:"center", gap:8 }}>
+                            <div style={{ width:60, height:5, borderRadius:99, background:T.border, overflow:"hidden" }}>
+                              <div style={{ height:"100%", borderRadius:99, width:`${conf}%`,
+                                background:conf>=90?T.green:conf>=75?T.yellow:T.orange }}/>
+                            </div>
+                            <span style={{ fontSize:12, fontWeight:600,
+                              color:conf>=90?T.green:conf>=75?T.yellow:T.orange }}>
+                              {conf}% safe to fix
+                            </span>
                           </div>
-                          <span style={{ fontSize:12, fontWeight:600,
-                            color:conf>=90?T.green:conf>=75?T.yellow:T.orange }}>
-                            {conf}% safe to fix
-                          </span>
+                          <div style={{ fontSize:10, color:T.muted, textAlign:"right" }}>
+                            {conf>=90?"✨ Low risk — safe to apply automatically"
+                              :conf>=75?"✨ Review recommended before applying"
+                              :"✨ High risk — manual review required"}
+                          </div>
                         </div>
                       )}
                     </div>
@@ -4746,6 +4836,23 @@ function ConfigureTab() {
     if (slackUrl) { try { const c=JSON.parse(localStorage.getItem("wz_onboarding")||"{}"); localStorage.setItem("wz_onboarding",JSON.stringify({...c,slack:true})); } catch {} }
   };
 
+  const [diagLoading, setDiagLoading] = React.useState(false);
+  const [diagResult,  setDiagResult]  = React.useState(null);
+
+  const runDiagnostics = async () => {
+    setDiagLoading(true); setDiagResult(null);
+    try {
+      // Test connection health
+      const [health, aiTest] = await Promise.all([
+        fetch(`${API}/health`).then(r=>r.json()).catch(()=>({status:"error"})),
+        fetch(`${API}/api/ai/test`).then(r=>r.json()).catch(()=>({status:"error"})),
+      ]);
+      setDiagResult({ db: health.status||"ok", ai: aiTest.status||"ok",
+                      db_detail: health.detail||"", ai_detail: aiTest.reason||"" });
+    } catch(e) { setDiagResult({ db:"error", ai:"error" }); }
+    setDiagLoading(false);
+  };
+
   return (
     <div className="fade-in" style={{ overflowY:"auto", padding:"28px 32px", maxWidth:680 }}>
       <div style={{ marginBottom:28 }}>
@@ -4765,13 +4872,96 @@ function ConfigureTab() {
         <div style={{ display:"flex", alignItems:"center", gap:10, marginBottom:12 }}>
           <Database size={15} color={T.cyan}/>
           <span style={{ fontSize:13, fontWeight:700, color:T.text }}>Redshift Staging</span>
-          <Badge label="connected" color={T.green}/>
+          {diagResult
+            ? <Badge label={diagResult.db==="ok"?"connected":"error"} color={diagResult.db==="ok"?T.green:T.red}/>
+            : <Badge label="connected" color={T.green}/>}
+          <Btn size="sm" variant="ghost" onClick={runDiagnostics} disabled={diagLoading}
+            style={{ marginLeft:"auto", fontSize:10 }}>
+            {diagLoading?<Spinner size={9}/>:"✨"} Run Diagnostics
+          </Btn>
         </div>
         <div style={{ fontSize:11, color:T.muted, fontFamily:T.monoFont }}>
           host: Railway env · schema: mws · ssl: required
         </div>
         <div style={{ fontSize:11, color:T.dim, marginTop:5 }}>
           Managed via Railway environment variables (REDSHIFT_HOST, REDSHIFT_USER, REDSHIFT_PASSWORD, etc.)
+        </div>
+        {diagResult && (
+          <div style={{ marginTop:10, padding:"10px 12px", borderRadius:8,
+            background:`${diagResult.db==="ok"&&diagResult.ai==="ok"?T.green:T.orange}08`,
+            border:`1px solid ${diagResult.db==="ok"&&diagResult.ai==="ok"?T.green:T.orange}25` }}>
+            <div style={{ fontSize:11, fontWeight:600, color:T.text, marginBottom:4 }}>
+              ✨ Diagnostics
+            </div>
+            <div style={{ display:"flex", gap:12, fontSize:10, color:T.muted }}>
+              <span>🗄 Redshift: <strong style={{color:diagResult.db==="ok"?T.green:T.red}}>{diagResult.db}</strong></span>
+              <span>🤖 AI (GPT-4o): <strong style={{color:diagResult.ai==="ok"?T.green:T.red}}>{diagResult.ai}</strong></span>
+            </div>
+            {(diagResult.db_detail||diagResult.ai_detail) && (
+              <div style={{ fontSize:10, color:T.red, marginTop:4 }}>
+                {diagResult.db_detail||diagResult.ai_detail}
+              </div>
+            )}
+          </div>
+        )}
+      </Card>
+
+      {/* SLA Suggestions Card */}
+      <Card style={{ padding:"20px 24px", marginBottom:14 }}>
+        <div style={{ display:"flex", alignItems:"center", gap:10, marginBottom:12 }}>
+          <Zap size={15} color={T.accent}/>
+          <span style={{ fontSize:13, fontWeight:700, color:T.text }}>SLA Thresholds</span>
+          {(() => {
+            const [slaData, setSlaData] = React.useState(null);
+            const [loading, setLoading] = React.useState(false);
+            const fetch_ = async () => {
+              setLoading(true);
+              try {
+                const r = await fetch(`${API}/api/sla/suggest`);
+                setSlaData(await r.json());
+              } catch(e) {}
+              setLoading(false);
+            };
+            return (
+              <>
+                <Btn size="sm" variant="ghost" onClick={fetch_} disabled={loading}
+                  style={{ marginLeft:"auto", fontSize:10 }}>
+                  {loading?<Spinner size={9}/>:"✨"} Suggest from history
+                </Btn>
+                {slaData && !slaData.error && (
+                  <div style={{ width:"100%", marginTop:10 }}>
+                    <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:10 }}>
+                      {[
+                        {label:"Data available by", key:"data_available_by"},
+                        {label:"Replicated by",      key:"replicated_by"},
+                      ].map(({label,key})=>(
+                        <div key={key} style={{ padding:"10px 12px", borderRadius:8,
+                          background:`${T.accent}06`, border:`1px solid ${T.accent}20` }}>
+                          <div style={{ fontSize:10, color:T.muted, marginBottom:4 }}>{label}</div>
+                          <div style={{ display:"flex", gap:8, alignItems:"center" }}>
+                            <span style={{ fontFamily:"monospace", fontSize:13, fontWeight:700, color:T.text }}>
+                              {slaData.current[key]}
+                            </span>
+                            <span style={{ fontSize:10, color:T.muted }}>→</span>
+                            <span style={{ fontFamily:"monospace", fontSize:13, fontWeight:700, color:T.accent }}>
+                              ✨ {slaData.suggested[key]}
+                            </span>
+                          </div>
+                          {slaData.stats?.data_arrival?.p95 && (
+                            <div style={{ fontSize:9, color:T.dim, marginTop:3 }}>
+                              p95: {key==="data_available_by"?slaData.stats.data_arrival.p95:slaData.stats.replication.p95}
+                              {" "}({key==="data_available_by"?slaData.stats.data_arrival.samples:slaData.stats.replication.samples} days)
+                            </div>
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                    <div style={{ fontSize:9, color:T.dim, marginTop:6 }}>{slaData.note}</div>
+                  </div>
+                )}
+              </>
+            );
+          })()}
         </div>
       </Card>
 
@@ -5248,6 +5438,59 @@ function QueryTab() {
   const [saveName,     setSaveName]     = React.useState("");
   const [aiLoading,    setAiLoading]    = React.useState(false);
   const [aiInput,      setAiInput]      = React.useState("");
+  const [aiExplain,    setAiExplain]    = React.useState(null);
+  const [aiExplaining, setAiExplaining] = React.useState(false);
+  const [anomalyFlags, setAnomalyFlags] = React.useState([]); // detected anomalies in results
+
+  // Zero-token anomaly detection — pure math on result rows
+  const detectAnomalies = React.useCallback((data) => {
+    if (!data?.rows?.length || !data?.columns?.length) return;
+    const flags = [];
+    const cols = data.columns;
+    const rows = data.rows;
+    cols.forEach(col => {
+      const nums = rows.map(r=>r[col]).filter(v=>v!==null&&v!==undefined&&!isNaN(Number(v))).map(Number);
+      if (nums.length < 3) return;
+      const avg = nums.reduce((s,v)=>s+v,0)/nums.length;
+      const std = Math.sqrt(nums.reduce((s,v)=>s+(v-avg)**2,0)/nums.length);
+      if (std === 0) return;
+      const outliers = rows.filter(r => {
+        const v = Number(r[col]);
+        return !isNaN(v) && Math.abs(v - avg) > 2.5 * std;
+      });
+      if (outliers.length > 0 && outliers.length < rows.length * 0.3) {
+        flags.push({ col, count:outliers.length, avg:avg.toFixed(2), std:std.toFixed(2) });
+      }
+    });
+    // Check for nulls
+    cols.forEach(col => {
+      const nullCount = rows.filter(r=>r[col]===null||r[col]===undefined).length;
+      if (nullCount > 0 && nullCount/rows.length > 0.1)
+        flags.push({ col, type:"nulls", count:nullCount, pct:Math.round(nullCount/rows.length*100) });
+    });
+    setAnomalyFlags(flags.slice(0,3));
+  }, []);
+
+  const explainResults = async () => {
+    if (!results?.rows?.length || aiExplaining) return;
+    setAiExplaining(true); setAiExplain(null);
+    const preview = (results.columns||[]).join(", ") + " | " +
+      results.rows.slice(0,3).map(r=>(results.columns||[]).map(c=>r[c]).join(", ")).join(" / ");
+    try {
+      const res = await fetch(`${API}/api/ai/chat`, {
+        method:"POST", headers:{"Content-Type":"application/json"},
+        body:JSON.stringify({
+          system:"You are a data analyst. Given a SQL query and its first few result rows, write 2-3 sentences explaining what the data shows in plain business English. Be specific about numbers and patterns.",
+          messages:[{role:"user", content:`SQL: ${sql.slice(0,300)}
+Results (${results.rows.length} rows): ${preview}`}],
+          max_tokens:120
+        })
+      });
+      const d = await res.json();
+      setAiExplain(d?.content?.[0]?.text?.trim() || "");
+    } catch(e) {}
+    setAiExplaining(false);
+  };
   const [aiValidating, setAiValidating] = React.useState(false);
   const [sqlGrounding, setSqlGrounding] = React.useState(null); // { valid, error, confidence, tables_referenced }
   const [runBlocked,   setRunBlocked]   = React.useState(false);
@@ -5332,6 +5575,8 @@ function QueryTab() {
       const data = await res.json();
       if (data.error) throw new Error(data.error);
       setResults(data);
+      setAnomalyFlags([]); setAiExplain(null);
+      detectAnomalies(data);
       // Add to history (dedupe)
       setHistory(p => {
         const filtered = p.filter(h => h.sql !== q);
@@ -5766,6 +6011,10 @@ Return ONLY valid Redshift SQL, no explanation, no markdown, no backticks.`,
                 </span>
                 <Btn onClick={exportCsv} size="sm" variant="muted">
                   ↓ CSV
+                </Btn>
+                <Btn onClick={explainResults} disabled={aiExplaining} size="sm" variant="ghost"
+                  style={{ color:T.accent, borderColor:`${T.accent}30` }}>
+                  {aiExplaining?<Spinner size={9}/>:"✨"} Explain
                 </Btn>
               </>
             )}
@@ -6673,10 +6922,27 @@ function DigestPanel() {
         </div>
       )}
 
-      <Btn onClick={sendNow} disabled={sending} size="sm">
-        {sending?<Spinner size={10} color="white"/>:null} Send Digest to Slack
-      </Btn>
-      <div style={{ fontSize:10, color:T.dim, marginTop:6 }}>
+      <div style={{ display:"flex", gap:8, alignItems:"center", marginBottom:8 }}>
+        {/* AI Narrative preview note */}
+      <div style={{ padding:"8px 12px", borderRadius:8, marginBottom:10,
+        background:`${T.accent}06`, border:`1px solid ${T.accent}20`,
+        fontSize:10, color:T.text2, lineHeight:1.5 }}>
+        <span style={{ fontWeight:700, color:T.accent }}>✨ AI narrative</span>
+        {" "}will be generated when you send — a 2-sentence plain-English summary
+        of the pipeline health is appended automatically to the Slack message.
+        Uses ~120 tokens.
+      </div>
+
+      <Btn onClick={sendNow} disabled={sending} size="sm"
+          style={{ background:`linear-gradient(135deg,${T.accent},${T.purple})`,
+            color:"white", border:"none" }}>
+          {sending?<Spinner size={10} color="white"/>:"📤"} Send Digest to Slack
+        </Btn>
+        <span style={{ fontSize:9, color:T.dim }}>
+          Includes AI-generated narrative summary
+        </span>
+      </div>
+      <div style={{ fontSize:10, color:T.dim }}>
         Auto-sends weekly if SLACK_WEBHOOK_URL is configured. Add <code style={{ fontFamily:"monospace" }}>0 9 * * 1</code> cron on Railway.
       </div>
     </div>
@@ -8847,15 +9113,40 @@ function WorkflowsTab({ navigateTo }) {
   const getAiSuggestions = async () => {
     setAiLoading(true);
     try {
-      const res  = await fetch(`${API}/api/ai/chat`, {
+      const res = await fetch(`${API}/api/ai/chat`, {
         method:"POST", headers:{"Content-Type":"application/json"},
         body:JSON.stringify({
-          system:`You are WiziAgent. Suggest 3 useful data quality workflows for an ecommerce analytics platform using Redshift.
-Tables available: mws.report, mws.orders, mws.inventory, mws.sales_and_traffic_by_date, public.tbl_amzn_campaign_report
-Respond ONLY with JSON array (no markdown):
-[{"name":"...","desc":"...","schedule":"every 30 min","checks":[{"name":"...","sql":"SELECT COUNT(*) FROM ...","pass_condition":"rows = 0","severity":"high"}]}]`,
-          messages:[{role:"user",content:"Suggest 3 data quality workflows"}],
-          max_tokens:600
+          system:`You are a senior data engineering lead at an ecommerce company. Suggest 5 creative, production-grade data quality workflows for a Redshift-based Amazon Seller analytics platform.
+
+SCHEMA (use ONLY these exact columns):
+${dbSchema || "mws.report(status,download_date,report_type,copy_status,tries,requested_date,account_id), mws.orders(amazon_order_id,asin,status,purchase_date,item_price,quantity,fulfillment_channel,account_id), mws.inventory(asin,available,reserved,inbound,snapshot_date,account_id), mws.sales_and_traffic_by_date(sale_date,ordered_revenue,ordered_units,sessions,page_views,account_id), mws.sales_and_traffic_by_asin(asin,sale_date,ordered_revenue,buy_box_prcntg,account_id), public.tbl_amzn_campaign_report(profile_id,report_date,impressions,clicks,spend,sales), public.tbl_amzn_keyword_report(profile_id,report_date,keyword_text,impressions,clicks,spend), public.tbl_amzn_product_ad_report(profile_id,report_date,asin,impressions,clicks,spend,sales)"}
+
+Each workflow must:
+- Solve a REAL ecommerce data problem (not generic "check for nulls")
+- Have 2-4 checks that return actual suspect rows (not just counts)
+- Use specific columns from the schema above — never invent columns
+- NEVER use bare SELECT COUNT(*) — return the actual rows with context columns
+- Cover diverse domains: pipeline health, business logic, ads performance, inventory, cross-table integrity
+
+Great check examples:
+- SELECT asin, purchase_date, item_price, quantity FROM mws.orders WHERE item_price < 0 AND status='Shipped'
+- SELECT o.asin, o.purchase_date FROM mws.orders o LEFT JOIN mws.inventory i ON o.asin=i.asin WHERE i.asin IS NULL AND o.purchase_date >= CURRENT_DATE-7
+- SELECT report_date, profile_id, spend, sales FROM public.tbl_amzn_campaign_report WHERE spend > 0 AND sales = 0 AND report_date >= CURRENT_DATE-3
+- SELECT sale_date, COUNT(DISTINCT account_id) as accounts FROM mws.sales_and_traffic_by_date WHERE sale_date = CURRENT_DATE-1 GROUP BY sale_date HAVING COUNT(DISTINCT account_id) < 2
+
+Return ONLY a JSON array (no markdown, no backticks):
+[{
+  "name": "Workflow Name",
+  "desc": "One sentence describing what business problem this catches",
+  "schedule": "every 1 hour",
+  "icon": "🔍",
+  "tags": ["pipeline","freshness"],
+  "checks": [
+    {"name":"Check name","sql":"SELECT ...","pass_condition":"rows = 0","severity":"critical","explanation":"Why this matters"}
+  ]
+}]`,
+          messages:[{role:"user", content:"Suggest 5 diverse, creative, production-grade data quality workflows"}],
+          max_tokens:2000
         })
       });
       const data = await res.json();
@@ -9115,20 +9406,106 @@ Respond ONLY with JSON array (no markdown):
 
         {/* AI suggestions */}
         {aiSuggestions.length > 0 && (
-          <div style={{ display:"flex", flexDirection:"column", gap:6, marginBottom:10 }}>
-            {aiSuggestions.map((s,i)=>(
-              <div key={i} style={{ display:"flex", alignItems:"center", gap:10,
-                padding:"10px 14px", borderRadius:8,
-                background:`${T.purple}05`, border:`1px solid ${T.purple}20` }}>
-                <Zap size={12} color={T.purple}/>
-                <div style={{ flex:1 }}>
-                  <div style={{ fontSize:12, fontWeight:600, color:T.text }}>{s.name}</div>
-                  <div style={{ fontSize:11, color:T.muted }}>{s.desc}</div>
+          <div style={{ marginBottom:16 }}>
+            <div style={{ display:"flex", alignItems:"center", gap:8, marginBottom:10 }}>
+              <div style={{ width:20, height:20, borderRadius:5,
+                background:`linear-gradient(135deg,${T.accent},${T.purple})`,
+                display:"flex", alignItems:"center", justifyContent:"center",
+                fontSize:11 }}>✨</div>
+              <span style={{ fontSize:11, fontWeight:700, color:T.text }}>
+                AI-Generated Suggestions
+              </span>
+              <span style={{ fontSize:10, color:T.muted }}>
+                — click any to load into the workflow builder
+              </span>
+              <button onClick={()=>setAiSuggestions([])}
+                style={{ marginLeft:"auto", background:"none", border:"none",
+                  cursor:"pointer", color:T.dim, fontSize:11 }}>✕ Clear</button>
+            </div>
+            <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:10 }}>
+              {aiSuggestions.map((s,i)=>(
+                <div key={i}
+                  style={{ padding:"14px 16px", borderRadius:10, cursor:"pointer",
+                    background:T.surface,
+                    border:`1px solid ${T.border}`,
+                    transition:"all 0.15s",
+                    position:"relative", overflow:"hidden" }}
+                  onMouseEnter={e=>{
+                    e.currentTarget.style.borderColor=T.accent;
+                    e.currentTarget.style.boxShadow=`0 4px 16px ${T.accent}18`;
+                  }}
+                  onMouseLeave={e=>{
+                    e.currentTarget.style.borderColor=T.border;
+                    e.currentTarget.style.boxShadow="none";
+                  }}
+                  onClick={()=>applyTemplate(s)}>
+                  {/* Accent bar */}
+                  <div style={{ position:"absolute", top:0, left:0, right:0, height:3,
+                    background:`linear-gradient(90deg,${T.accent},${T.purple})`,
+                    borderRadius:"10px 10px 0 0" }}/>
+
+                  {/* Header */}
+                  <div style={{ display:"flex", alignItems:"flex-start", gap:8, marginBottom:8 }}>
+                    <span style={{ fontSize:20, flexShrink:0 }}>{s.icon||"📋"}</span>
+                    <div style={{ flex:1, minWidth:0 }}>
+                      <div style={{ fontSize:12, fontWeight:700, color:T.text,
+                        marginBottom:2, lineHeight:1.3 }}>{s.name}</div>
+                      <div style={{ fontSize:10, color:T.muted, lineHeight:1.4 }}>{s.desc}</div>
+                    </div>
+                  </div>
+
+                  {/* Tags + schedule */}
+                  <div style={{ display:"flex", gap:4, flexWrap:"wrap", marginBottom:8 }}>
+                    {s.schedule && (
+                      <span style={{ fontSize:9, padding:"2px 7px", borderRadius:4,
+                        background:`${T.accent}10`, color:T.accent, fontWeight:600 }}>
+                        ⏱ {s.schedule}
+                      </span>
+                    )}
+                    {(s.tags||[]).map(tag=>(
+                      <span key={tag} style={{ fontSize:9, padding:"2px 7px", borderRadius:4,
+                        background:T.border, color:T.muted }}>
+                        {tag}
+                      </span>
+                    ))}
+                  </div>
+
+                  {/* Checks preview */}
+                  <div style={{ display:"flex", flexDirection:"column", gap:4, marginBottom:10 }}>
+                    {(s.checks||[]).map((c,j)=>(
+                      <div key={j} style={{ display:"flex", alignItems:"flex-start", gap:6 }}>
+                        <span style={{ fontSize:9, marginTop:1, flexShrink:0,
+                          color:{critical:T.red,high:T.orange,medium:"#F59E0B",low:T.cyan}[c.severity]||T.muted }}>
+                          {c.severity==="critical"?"🔴":c.severity==="high"?"🟠":c.severity==="medium"?"🟡":"🟢"}
+                        </span>
+                        <div style={{ flex:1, minWidth:0 }}>
+                          <div style={{ fontSize:10, fontWeight:600, color:T.text2 }}>{c.name}</div>
+                          {c.explanation && (
+                            <div style={{ fontSize:9, color:T.dim, marginTop:1 }}>{c.explanation}</div>
+                          )}
+                          <div style={{ fontSize:9, color:T.muted, fontFamily:"monospace",
+                            marginTop:2, whiteSpace:"nowrap", overflow:"hidden",
+                            textOverflow:"ellipsis", maxWidth:"100%" }}>
+                            {(c.sql||"").slice(0,60)}{c.sql?.length>60?"…":""}
+                          </div>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+
+                  {/* CTA */}
+                  <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between" }}>
+                    <span style={{ fontSize:9, color:T.dim }}>
+                      {(s.checks||[]).length} check{(s.checks||[]).length!==1?"s":""}
+                    </span>
+                    <span style={{ fontSize:10, fontWeight:700, color:T.accent,
+                      display:"flex", alignItems:"center", gap:4 }}>
+                      Use this <ArrowRight size={10}/>
+                    </span>
+                  </div>
                 </div>
-                <Btn size="sm" variant="ghost" onClick={()=>applyTemplate(s)}
-                  style={{ color:T.purple }}>Use this →</Btn>
-              </div>
-            ))}
+              ))}
+            </div>
           </div>
         )}
 
@@ -9183,6 +9560,24 @@ Respond ONLY with JSON array (no markdown):
               ? Math.round(wfRuns.slice(0,10).filter(r=>r.status==="clean").length/Math.min(wfRuns.length,10)*100)
               : null;
             const sparkData = wfRuns.slice(0,20).reverse();
+            // Failure pattern: detect day-of-week correlation (zero tokens)
+            const failurePattern = (() => {
+              if (wfRuns.length < 6) return null;
+              const dayFails = {};
+              wfRuns.slice(0,20).forEach(r => {
+                const day = new Date(r.started_at).toLocaleDateString("en",{weekday:"short"});
+                if (!dayFails[day]) dayFails[day] = {fail:0,total:0};
+                dayFails[day].total++;
+                if (r.status!=="clean") dayFails[day].fail++;
+              });
+              const worst = Object.entries(dayFails)
+                .filter(([,v])=>v.total>=2)
+                .map(([day,v])=>({day,rate:v.fail/v.total}))
+                .sort((a,b)=>b.rate-a.rate)[0];
+              if (worst && worst.rate >= 0.6)
+                return `⚠ Often fails on ${worst.day}s`;
+              return null;
+            })();
 
             return (
               <div key={wf.id} style={{ background:T.card,
@@ -9240,7 +9635,19 @@ Respond ONLY with JSON array (no markdown):
                           Pass rate: <span style={{ fontWeight:700, color:passRate>=80?T.green:passRate>=50?T.orange:T.red }}>{passRate}%</span>
                         </span>
                       )}
+                      {passRate !== null && (
+                        <span style={{ fontSize:9, padding:"1px 6px", borderRadius:4, fontWeight:700,
+                          background: passRate>=90?`${T.green}15`:passRate>=70?`#F59E0B18`:`${T.red}12`,
+                          color: passRate>=90?T.green:passRate>=70?"#F59E0B":T.red }}>
+                          {passRate>=90?"🟢 Healthy":passRate>=70?"🟡 Degrading":"🔴 Critical"}
+                        </span>
+                      )}
                       {wf.run_count > 0 && <span style={{ fontSize:10, color:T.dim }}>{wf.run_count} runs</span>}
+                      {failurePattern && (
+                        <span style={{ fontSize:9, color:"#F59E0B", fontWeight:600 }}>
+                          {failurePattern}
+                        </span>
+                      )}
                     </div>
 
                     {/* Mini sparkline of last 20 runs */}
@@ -10350,11 +10757,44 @@ No markdown, no backticks.`,
             <div>
               <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom:2 }}>
                 <label style={{ fontSize:10, fontWeight:600, color:T.text2 }}>SQL Query</label>
-                <button onClick={testSql} disabled={testing||!checkDraft.sql.trim()}
-                  style={{ fontSize:10, color:T.accent, background:"none", border:"none",
-                    cursor:"pointer", fontWeight:600 }}>
-                  {testing?<Spinner size={9}/>:null} ↻ Test SQL
-                </button>
+                <div style={{ display:"flex", gap:8 }}>
+                  {(() => {
+                    const [validating, setValidating] = React.useState(false);
+                    const [valResult,  setValResult]  = React.useState(null);
+                    const validate = async () => {
+                      if (!checkDraft.sql.trim()) return;
+                      setValidating(true); setValResult(null);
+                      try {
+                        const r = await fetch(`${API}/api/ai/validate-sql`, {
+                          method:"POST", headers:{"Content-Type":"application/json"},
+                          body:JSON.stringify({sql: checkDraft.sql})
+                        });
+                        setValResult(await r.json());
+                      } catch(e) {}
+                      setValidating(false);
+                    };
+                    return (
+                      <>
+                        {valResult && (
+                          <span style={{ fontSize:9, fontWeight:700,
+                            color:valResult.valid?T.green:T.red }}>
+                            {valResult.valid?"✓ Valid":"✗ Issues"}
+                          </span>
+                        )}
+                        <button onClick={validate} disabled={validating||!checkDraft.sql.trim()}
+                          style={{ fontSize:10, color:T.purple, background:"none", border:"none",
+                            cursor:"pointer", fontWeight:600 }}>
+                          {validating?<Spinner size={9}/>:"✓"} Validate
+                        </button>
+                      </>
+                    );
+                  })()}
+                  <button onClick={testSql} disabled={testing||!checkDraft.sql.trim()}
+                    style={{ fontSize:10, color:T.accent, background:"none", border:"none",
+                      cursor:"pointer", fontWeight:600 }}>
+                    {testing?<Spinner size={9}/>:null} ↻ Test SQL
+                  </button>
+                </div>
               </div>
               <textarea value={checkDraft.sql} rows={3}
                 onChange={e=>setDraft(p=>({...p,sql:e.target.value}))}
@@ -10362,6 +10802,29 @@ No markdown, no backticks.`,
                 style={{...inp, fontFamily:"monospace", fontSize:11, resize:"vertical"}}
                 onFocus={e=>e.target.style.borderColor=T.accent}
                 onBlur={e=>e.target.style.borderColor=T.border}/>
+              {/* Column hint chips — derived from dbSchema, zero tokens */}
+              {checkDraft.sql && (() => {
+                // Find which table is mentioned in the SQL and show its columns
+                const schemaLines = (dbSchema||"").split(";");
+                const mentioned = schemaLines.find(s => checkDraft.sql.toLowerCase().includes(s.split("(")[0].trim().toLowerCase()));
+                if (!mentioned) return null;
+                const cols = mentioned.match(/\(([^)]+)\)/)?.[1]?.split(",").map(c=>c.trim()) || [];
+                if (!cols.length) return null;
+                return (
+                  <div style={{ marginTop:4, display:"flex", flexWrap:"wrap", gap:4 }}>
+                    <span style={{ fontSize:9, color:T.dim, alignSelf:"center" }}>cols:</span>
+                    {cols.slice(0,12).map(col=>(
+                      <button key={col}
+                        onClick={()=>setDraft(p=>({...p,sql:p.sql+col}))}
+                        style={{ fontSize:9, padding:"1px 6px", borderRadius:4,
+                          border:`1px solid ${T.border}`, background:T.surface,
+                          color:T.muted, cursor:"pointer", fontFamily:"monospace" }}>
+                        {col}
+                      </button>
+                    ))}
+                  </div>
+                );
+              })()}
             </div>
 
             {/* Test result */}
@@ -10805,6 +11268,37 @@ function AiBriefPanel() {
                 ))
               )}
 
+              {/* Top 3 actions — derived from priority_items, zero extra tokens */}
+              {(brief.priority_items||[]).length > 0 && (() => {
+                const top3 = (brief.priority_items||[]).slice(0,3);
+                return (
+                  <div style={{ padding:"10px 14px", borderRadius:8,
+                    background:`linear-gradient(135deg,${T.accent}08,${T.purple}06)`,
+                    border:`1px solid ${T.accent}20`, marginTop:4 }}>
+                    <div style={{ fontSize:10, fontWeight:700, color:T.accent,
+                      textTransform:"uppercase", letterSpacing:"0.06em", marginBottom:6 }}>
+                      ✨ Top {top3.length} actions today
+                    </div>
+                    {top3.map((item,i)=>(
+                      <div key={i} style={{ display:"flex", alignItems:"center", gap:8,
+                        fontSize:11, color:T.text2, marginBottom:i<top3.length-1?4:0 }}>
+                        <span style={{ width:16, height:16, borderRadius:"50%", flexShrink:0,
+                          background:`${T.accent}20`, display:"flex", alignItems:"center",
+                          justifyContent:"center", fontSize:9, fontWeight:800, color:T.accent }}>
+                          {i+1}
+                        </span>
+                        <span style={{ flex:1 }}>{item.title}</span>
+                        <span style={{ fontSize:9, padding:"1px 6px", borderRadius:4,
+                          background:`${(URGENCY_COLOR[item.urgency]||T.muted)}15`,
+                          color:URGENCY_COLOR[item.urgency]||T.muted, fontWeight:600 }}>
+                          {item.urgency}
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                );
+              })()}
+
               {brief.recommendation && (
                 <div style={{ fontSize:11, color:T.accent, padding:"8px 14px",
                   borderRadius:8, background:`${T.accent}06`,
@@ -11074,6 +11568,29 @@ function FloatingAssistant({ currentRun, currentTab, onNavigate }) {
           history,
           schema_ctx: dbSchema,
           current_tab: currentTab,
+          session_ctx: (() => {
+            // Cross-tab memory: summarise what the user has done this session
+            const parts = [];
+            try {
+              const br = JSON.parse(sessionStorage.getItem("wz_brief")||"null");
+              if (br?.health_score !== undefined) parts.push(`Dashboard health: ${br.health_score}/100`);
+            } catch {}
+            try {
+              const issues = JSON.parse(sessionStorage.getItem("wz_pendingIssues")||"[]");
+              if (issues.length) parts.push(`${issues.length} open triage issues (${issues.filter(i=>i.severity==="critical").length} critical)`);
+            } catch {}
+            try {
+              const runs = JSON.parse(sessionStorage.getItem("wz_cwfHistory")||"[]");
+              const failed = runs.filter(r=>r.status!=="clean");
+              if (failed.length) parts.push(`${failed.length} workflow run(s) failed recently`);
+            } catch {}
+            try {
+              const pCount = Number(sessionStorage.getItem("wz_proactive_count")||"0");
+              if (pCount) parts.push(`${pCount} anomaly alert(s) detected today`);
+            } catch {}
+            if (currentTab) parts.push(`User is on the ${currentTab} tab`);
+            return parts.join(". ");
+          })(),
         })
       });
       const data = await res.json();
@@ -11700,6 +12217,25 @@ function DemoValidationTab() {
                         🕐 {row.days_since_max === 0 ? "Updated today" : `${row.days_since_max}d ago`}
                       </span>
                     )}
+                    {row.days_since_max > 3 && (() => {
+                      // Zero-token staleness explanation — rule-based
+                      const table = row.table || "";
+                      const day   = row.max_date ? new Date(row.max_date).toLocaleDateString("en",{weekday:"long"}) : "";
+                      const reason = table.includes("report")
+                        ? "report download job may have missed a run"
+                        : table.includes("inventory")
+                        ? "inventory snapshot pipeline may be delayed"
+                        : table.includes("sales")
+                        ? "sales & traffic sync may be behind schedule"
+                        : table.includes("campaign") || table.includes("ads")
+                        ? "ads API data delivery may be delayed"
+                        : "ingestion pipeline may need to be checked";
+                      return (
+                        <span style={{ fontSize:9, color:T.muted, fontStyle:"italic" }}>
+                          ✨ {reason}{day ? ` — last updated on a ${day}` : ""}
+                        </span>
+                      );
+                    })()}
                     {row.accounts_found?.length > 0 && (
                       <span>👤 Accounts: {row.accounts_found.join(", ")}</span>
                     )}
@@ -11797,6 +12333,28 @@ function ResultsTab({ onNavigate }) {
   const [selected,   setSelected]= React.useState(null);
   const [filter,     setFilter]  = React.useState("all");
   const [wfFilter,   setWfFilter]= React.useState("all");
+  const [aiInsights, setAiInsights] = React.useState({}); // {run_id: {loading, text}}
+
+  const getRunInsight = async (run) => {
+    if (run.status === "clean" || aiInsights[run.run_id]) return;
+    setAiInsights(p=>({...p,[run.run_id]:{loading:true}}));
+    const failed = (run.check_results||[]).filter(c=>!c.passed);
+    try {
+      const res = await fetch(`${API}/api/ai/chat`, {
+        method:"POST", headers:{"Content-Type":"application/json"},
+        body:JSON.stringify({
+          system:"You are a data quality analyst. Given a workflow run result, write ONE concise sentence (max 20 words) explaining the likely root cause and what to check. Be specific, not generic.",
+          messages:[{role:"user", content:`Workflow: ${run.workflow_name}. Failed checks: ${failed.map(c=>`${c.name} (${c.row_count} rows)`).join(", ")}.`}],
+          max_tokens:60
+        })
+      });
+      const d = await res.json();
+      const text = d?.content?.[0]?.text?.trim() || "";
+      setAiInsights(p=>({...p,[run.run_id]:{loading:false, text}}));
+    } catch(e) {
+      setAiInsights(p=>({...p,[run.run_id]:{loading:false, text:""}}));
+    }
+  };
 
   const load = async () => {
     setLoading(true);
@@ -12013,8 +12571,26 @@ function ResultsTab({ onNavigate }) {
             {trendData.length > 0 && (
               <div style={{ background:T.surface, borderRadius:12,
                 border:`1px solid ${T.border}`, padding:"18px 20px" }}>
-                <div style={{ fontSize:13, fontWeight:700, color:T.text, marginBottom:16 }}>
-                  Daily Run Results (last {trendData.length} days)
+                <div style={{ display:"flex", alignItems:"center", gap:10, marginBottom:16 }}>
+                  <div style={{ fontSize:13, fontWeight:700, color:T.text, flex:1 }}>
+                    Daily Run Results (last {trendData.length} days)
+                  </div>
+                  {(() => {
+                    // Zero-token trend insight — pure math
+                    if (trendData.length < 3) return null;
+                    const recent  = trendData.slice(-3);
+                    const earlier = trendData.slice(0,-3);
+                    const recentFailRate  = recent.reduce((s,d)=>s+d.failed,0)/Math.max(recent.reduce((s,d)=>s+d.total,0),1);
+                    const earlierFailRate = earlier.reduce((s,d)=>s+d.failed,0)/Math.max(earlier.reduce((s,d)=>s+d.total,0),1);
+                    const delta = recentFailRate - earlierFailRate;
+                    if (Math.abs(delta) < 0.05) return <span style={{ fontSize:10, color:T.green }}>✨ Stable</span>;
+                    return (
+                      <span style={{ fontSize:10, fontWeight:600,
+                        color: delta > 0 ? T.red : T.green }}>
+                        ✨ {delta > 0 ? `↑ ${Math.round(delta*100)}% more failures` : `↓ ${Math.round(Math.abs(delta)*100)}% fewer failures`} vs earlier
+                      </span>
+                    );
+                  })()}
                 </div>
                 <div style={{ display:"flex", gap:3, alignItems:"flex-end", height:100 }}>
                   {trendData.map((d,i) => {
@@ -12083,6 +12659,18 @@ function ResultsTab({ onNavigate }) {
                             <div style={{ overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>
                               {w.name}
                             </div>
+                            {(() => {
+                              // Detect degradation: last 3 runs worse than prior 7
+                              const wfRuns = runs.filter(r=>r.workflow_name===w.name);
+                              if (wfRuns.length < 4) return null;
+                              const recentFail  = wfRuns.slice(0,3).filter(r=>r.status!=="clean").length/3;
+                              const olderFail   = wfRuns.slice(3,10).filter(r=>r.status!=="clean").length/Math.max(wfRuns.slice(3,10).length,1);
+                              if (recentFail > olderFail + 0.2)
+                                return <span style={{ fontSize:8, color:T.red, fontWeight:700 }}>↑ degrading</span>;
+                              if (recentFail < olderFail - 0.2)
+                                return <span style={{ fontSize:8, color:T.green, fontWeight:700 }}>↓ improving</span>;
+                              return null;
+                            })()}
                           </td>
                           <td style={{ padding:"10px 10px", fontSize:12, color:T.muted }}>
                             {w.total}
@@ -12160,11 +12748,29 @@ function ResultsTab({ onNavigate }) {
                           {dur && ` · ${dur}`}
                           {` · ${run.total_checks||0} checks`}
                         </div>
+                        {/* AI insight — lazy loaded on hover */}
+                        {run.status!=="clean" && aiInsights[run.run_id]?.text && (
+                          <div style={{ fontSize:10, color:T.accent, marginTop:4,
+                            display:"flex", alignItems:"center", gap:4 }}>
+                            <span style={{ fontSize:9 }}>✨</span>
+                            {aiInsights[run.run_id].text}
+                          </div>
+                        )}
                       </div>
-                      <Btn size="sm" variant="ghost"
-                        onClick={()=>{ const chk0=(run.check_results||[])[0]; if(chk0){ setSelected({run,check:chk0}); setView("detail"); } }}>
-                        <Eye size={10}/> Detail
-                      </Btn>
+                      <div style={{ display:"flex", gap:5, alignItems:"center" }}>
+                        {run.status!=="clean" && !aiInsights[run.run_id] && (
+                          <Btn size="sm" variant="ghost"
+                            onClick={()=>getRunInsight(run)}
+                            style={{ fontSize:9, color:T.accent, padding:"3px 7px" }}>
+                            ✨ AI
+                          </Btn>
+                        )}
+                        {aiInsights[run.run_id]?.loading && <Spinner size={9}/>}
+                        <Btn size="sm" variant="ghost"
+                          onClick={()=>{ const chk0=(run.check_results||[])[0]; if(chk0){ setSelected({run,check:chk0}); setView("detail"); } }}>
+                          <Eye size={10}/> Detail
+                        </Btn>
+                      </div>
                     </div>
                   </div>
                   {(run.check_results||[]).length > 0 && (
@@ -12212,8 +12818,28 @@ function ResultDetail({ run, check, allChecks, onBack, onSelectCheck, onNavigate
   const [sortCol,   setSortCol]  = React.useState(null);
   const [sortDir,   setSortDir]  = React.useState("asc");
   const [search,    setSearch]   = React.useState("");
-  const [showStats, setShowStats]= React.useState(false);
+  const [showStats,     setShowStats]     = React.useState(false);
+  const [stakeholderMsg,setStakeholderMsg] = React.useState(null);
+  const [stakeholderLoading,setStakeholderLoading] = React.useState(false);
   const LIMIT = 100;
+
+  const explainToStakeholder = async () => {
+    if (stakeholderLoading) return;
+    setStakeholderLoading(true); setStakeholderMsg(null);
+    try {
+      const res = await fetch(`${API}/api/ai/chat`, {
+        method:"POST", headers:{"Content-Type":"application/json"},
+        body:JSON.stringify({
+          system:"You write brief, non-technical data issue explanations for business stakeholders. 2-3 sentences max. Avoid SQL jargon. Focus on business impact and whether action is needed.",
+          messages:[{role:"user", content:`Check "${check.name}" ${check.passed?"passed":"failed"} with ${data?.total_rows??0} rows affected. Workflow: ${run.workflow_name}. Severity: ${check.severity}. SQL checked: ${(data?.sql||check.sql||"").slice(0,120)}`}],
+          max_tokens:100
+        })
+      });
+      const d = await res.json();
+      setStakeholderMsg(d?.content?.[0]?.text?.trim()||"");
+    } catch(e) {}
+    setStakeholderLoading(false);
+  };
 
   const load = async (offset=0) => {
     setLoading(true); setError(null);
@@ -12386,6 +13012,11 @@ function ResultDetail({ run, check, allChecks, onBack, onSelectCheck, onNavigate
           <Btn size="sm" variant="ghost" onClick={shareSlack} disabled={sharing}>
             {sharing?<Spinner size={10}/>:null} Slack
           </Btn>
+          <Btn size="sm" variant="ghost" onClick={explainToStakeholder}
+            disabled={stakeholderLoading}
+            style={{ color:T.purple, borderColor:`${T.purple}30` }}>
+            {stakeholderLoading?<Spinner size={9}/>:"✨"} Stakeholder
+          </Btn>
           <Btn size="sm" variant="ghost" onClick={sendToTriage}
             style={{ color:T.orange, borderColor:`${T.orange}30` }}>
             → Triage
@@ -12403,6 +13034,23 @@ function ResultDetail({ run, check, allChecks, onBack, onSelectCheck, onNavigate
               padding:"2px 8px", borderRadius:4 }}>
               sample preview — re-run workflow for full data
             </span>
+          )}
+          {stakeholderMsg && (
+            <div style={{ width:"100%", marginTop:6, padding:"8px 12px", borderRadius:8,
+              background:`${T.purple}08`, border:`1px solid ${T.purple}20`,
+              fontSize:11, color:T.text2, lineHeight:1.5,
+              display:"flex", gap:8, alignItems:"flex-start" }}>
+              <span style={{ fontSize:13, flexShrink:0 }}>✨</span>
+              <span style={{ flex:1 }}>{stakeholderMsg}</span>
+              <button onClick={()=>{ navigator.clipboard.writeText(stakeholderMsg).catch(()=>{}); }}
+                style={{ fontSize:9, background:"none", border:`1px solid ${T.border}`,
+                  borderRadius:4, padding:"2px 6px", cursor:"pointer", color:T.muted, flexShrink:0 }}>
+                copy
+              </button>
+              <button onClick={()=>setStakeholderMsg(null)}
+                style={{ background:"none", border:"none", cursor:"pointer",
+                  color:T.dim, fontSize:14, lineHeight:1, flexShrink:0 }}>×</button>
+            </div>
           )}
           {data?.total_rows !== undefined && (
             <span style={{ fontSize:12, color:check.passed?T.green:T.red, fontWeight:700 }}>
@@ -13014,11 +13662,28 @@ function DataflowRow({ df, onStar, onOpen, onDelete, onDuplicate, onMove, folder
         </div>
       </td>
 
-      {/* Updated */}
-      <td style={{ padding:"10px 14px", width:130 }} onClick={() => onOpen(df,"view")}>
-        <div style={{ display:"flex", alignItems:"center", gap:5 }}>
-          <span style={{ fontSize:11, color:T.muted }}>{timeAgo(df.updated_at)}</span>
-        </div>
+      {/* Last run + AI status */}
+      <td style={{ padding:"10px 14px", width:150 }} onClick={() => onOpen(df,"view")}>
+        {df.last_run_at ? (
+          <div>
+            <div style={{ display:"flex", alignItems:"center", gap:5 }}>
+              <span style={{ width:6, height:6, borderRadius:"50%", flexShrink:0,
+                background: df.last_run_status==="pass"||df.last_run_status==="clean"?T.green:
+                            df.last_run_status?"#EF4444":T.border }}/>
+              <span style={{ fontSize:10, color:T.muted }}>{timeAgo(df.last_run_at)}</span>
+            </div>
+            {df.last_run_status && (
+              <div style={{ fontSize:9, marginTop:2, fontWeight:600,
+                color: df.last_run_status==="pass"||df.last_run_status==="clean"?T.green:"#EF4444" }}>
+                {df.last_run_status==="pass"||df.last_run_status==="clean"
+                  ? "✓ All checks passed"
+                  : `✗ ${df.last_run_status}`}
+              </div>
+            )}
+          </div>
+        ) : (
+          <span style={{ fontSize:10, color:T.dim }}>Not run yet</span>
+        )}
       </td>
     </tr>
   );
@@ -13034,6 +13699,36 @@ function DataflowDetailModal({ df: dfProp, onClose, onSave, onRun, T }) {
   const [editingCkId, setEditingCkId] = React.useState(null);
   const [saving, setSaving]   = React.useState(false);
   const [saveMsg, setSaveMsg] = React.useState("");
+  const [aiCheckInput, setAiCheckInput] = React.useState("");
+  const [aiCheckLoading, setAiCheckLoading] = React.useState(false);
+  const dbSchema = useSchema();
+
+  const aiAddChecks = async () => {
+    if (!aiCheckInput.trim()||aiCheckLoading) return;
+    setAiCheckLoading(true);
+    try {
+      const res = await fetch(`${API}/api/ai/chat`, {
+        method:"POST", headers:{"Content-Type":"application/json"},
+        body:JSON.stringify({
+          system:`Generate SQL data quality checks for the dataflow "${df.name}".
+Schema: ${dbSchema||"mws tables"}
+Return JSON array (no markdown): [{"name":"...","sql":"SELECT ...","pass_condition":"rows=0","severity":"high"}]
+Rules: use only real columns, return actual rows not just counts, max 3 checks.`,
+          messages:[{role:"user",content:aiCheckInput}],
+          max_tokens:400
+        })
+      });
+      const d = await res.json();
+      const arr = JSON.parse((d?.content?.[0]?.text||"[]").replace(/```json|```/g,"").trim());
+      if (Array.isArray(arr)&&arr.length) {
+        setDf(p=>({...p, checks:[...(p.checks||[]),
+          ...arr.map((c,i)=>({name:c.name,sql:c.sql,pass_condition:c.pass_condition||"rows = 0",
+            severity:c.severity||"high",id:`ai_${Date.now()}_${i}`}))]}));
+        setAiCheckInput("");
+      }
+    } catch(e) {}
+    setAiCheckLoading(false);
+  };
 
   const updateCheckField = (idx, key, val) => {
     setDf(p => ({ ...p, checks: p.checks.map((c,i) => i===idx ? {...c,[key]:val} : c) }));
@@ -13180,6 +13875,19 @@ function DataflowDetailModal({ df: dfProp, onClose, onSave, onRun, T }) {
                   borderRadius:99, padding:"1px 8px" }}>{dfChecks.length}</span>
                 <div style={{ marginLeft:"auto", display:"flex", gap:6, alignItems:"center" }}>
                   {saveMsg && <span style={{ fontSize:11, color:T.green, fontWeight:600 }}>{saveMsg}</span>}
+                  {/* AI check generator */}
+                  <div style={{ display:"flex", gap:6, flex:1, marginRight:8 }}>
+                    <input value={aiCheckInput} onChange={e=>setAiCheckInput(e.target.value)}
+                      onKeyDown={e=>e.key==="Enter"&&aiAddChecks()}
+                      placeholder="✨ Describe a check to add…"
+                      style={{ flex:1, padding:"5px 9px", borderRadius:6, fontSize:11,
+                        border:`1px solid ${T.accent}30`, background:`${T.accent}04`,
+                        color:T.text, outline:"none", fontFamily:"inherit" }}/>
+                    <Btn size="sm" onClick={aiAddChecks} disabled={aiCheckLoading||!aiCheckInput.trim()}
+                      style={{ color:T.accent, borderColor:`${T.accent}30`, flexShrink:0 }}>
+                      {aiCheckLoading?<Spinner size={9}/>:"✨"}
+                    </Btn>
+                  </div>
                   <Btn size="sm" variant="ghost" onClick={addNewCheck}>
                     <Plus size={10}/> Add Check
                   </Btn>
@@ -13782,6 +14490,220 @@ function MoveFolderModal({ df, folders, onMove, onClose, T }) {
 // ═══════════════════════════════════════════════════════════════════════════════
 // MAIN DataflowsTab COMPONENT
 // ═══════════════════════════════════════════════════════════════════════════════
+// ── AI Dataflow Assistant — build dataflows from plain text ──────────────────
+function AiDataflowAssistant({ dataflows, dbSchema, onSave, onClose, T }) {
+  const [messages, setMessages] = React.useState([{
+    role:"assistant",
+    text:"I can build, edit, or add checks to any dataflow from plain text.\n\nTry: \"Create a dataflow checking ads tables have yesterday\'s data\" or \"Add a null check on asin to the orders dataflow\" or \"Build 3 data quality checks for mws.inventory\".",
+    actions:[]
+  }]);
+  const [input,   setInput]   = React.useState("");
+  const [loading, setLoading] = React.useState(false);
+  const bottomRef = React.useRef(null);
+
+  React.useEffect(()=>{
+    if(bottomRef.current) bottomRef.current.scrollIntoView({behavior:"smooth"});
+  }, [messages]);
+
+  const send = async (textOverride) => {
+    const text = (textOverride||input).trim();
+    if (!text||loading) return;
+    setInput("");
+    setMessages(p=>[...p,{role:"user",text},{role:"thinking"}]);
+    setLoading(true);
+
+    const dfList = dataflows.slice(0,20).map(d=>
+      `id:${d.id} name:"${d.name}" checks:${(d.checks||[]).length} tags:${(d.tags||[]).join(",")}`
+    ).join("\n");
+
+    try {
+      const res = await fetch(`${API}/api/ai/chat`, {
+        method:"POST", headers:{"Content-Type":"application/json"},
+        body:JSON.stringify({
+          system:`You manage data quality dataflows for a Redshift ecommerce analytics platform.
+
+CURRENT DATAFLOWS:
+${dfList||"None yet"}
+
+SCHEMA (use ONLY these exact columns):
+${dbSchema||"mws.report(status,download_date,report_type,copy_status,account_id), mws.orders(amazon_order_id,asin,status,purchase_date,item_price,quantity,account_id), mws.inventory(asin,available,snapshot_date,account_id), mws.sales_and_traffic_by_date(sale_date,ordered_revenue,sessions,account_id), public.tbl_amzn_campaign_report(profile_id,report_date,impressions,clicks,spend,sales)"}
+
+Return JSON: {"reply":"what you did","actions":[...]}
+Actions:
+- create: {type:"create",name,desc,tags:[],checks:[{name,sql,pass_condition,severity}]}
+- add_checks: {type:"add_checks",dataflow_id,checks:[{name,sql,pass_condition,severity}]}
+- delete: {type:"delete",dataflow_id,dataflow_name}
+
+SQL rules: use only real columns, never COUNT(*) alone, return actual rows.
+pass_condition: "rows=0"|"rows>0"|"value>N". No markdown.`,
+          messages:[...messages.slice(-4).map(m=>({role:m.role==="user"?"user":"assistant",content:m.text||""})).filter(h=>h.content),
+            {role:"user",content:text}],
+          max_tokens:800
+        })
+      });
+      const d = await res.json();
+      const raw = d?.content?.[0]?.text||"{}";
+      let parsed;
+      try { parsed = JSON.parse(raw.replace(/```json|```/g,"").trim()); }
+      catch { parsed = {reply:raw,actions:[]}; }
+
+      const performed = [];
+      for (const action of (parsed.actions||[])) {
+        try {
+          if (action.type==="create") {
+            const df = {
+              id:`ai_df_${Date.now().toString(36)}`,
+              name:action.name, desc:action.desc||"",
+              folder_id:"f_root", tags:action.tags||[],
+              priority:"Medium", schedule:"manual", owner:"agent",
+              checks:(action.checks||[]).map((c,i)=>({...c,id:`c_${Date.now()}_${i}`})),
+              starred:false, created_at:new Date().toISOString(),
+              updated_at:new Date().toISOString(),
+            };
+            await onSave(df);
+            performed.push({type:"created",name:df.name});
+          } else if (action.type==="add_checks") {
+            const existing = dataflows.find(d=>d.id===action.dataflow_id||
+              d.name.toLowerCase()===String(action.dataflow_id||"").toLowerCase());
+            if (existing) {
+              const updated = {...existing, checks:[...(existing.checks||[]),
+                ...(action.checks||[]).map((c,i)=>({...c,id:`c_${Date.now()}_${i}`}))]};
+              await onSave(updated);
+              performed.push({type:"checks_added",name:existing.name,count:(action.checks||[]).length});
+            }
+          } else if (action.type==="delete") {
+            const existing = dataflows.find(d=>d.id===action.dataflow_id||
+              d.name.toLowerCase()===String(action.dataflow_name||"").toLowerCase());
+            if (existing && confirm(`Delete dataflow "${existing.name}"?`)) {
+              // handled by parent via save with deleted flag — just notify
+              performed.push({type:"delete_requested",name:existing.name});
+            }
+          }
+        } catch(e) { performed.push({type:"error",msg:e.message}); }
+      }
+
+      setMessages(p=>[...p.filter(m=>m.role!=="thinking"),
+        {role:"assistant",text:parsed.reply||"Done.",actions:performed}]);
+    } catch(e) {
+      setMessages(p=>[...p.filter(m=>m.role!=="thinking"),
+        {role:"assistant",text:`Error: ${e.message}`,actions:[]}]);
+    }
+    setLoading(false);
+  };
+
+  const SUGGESTIONS = [
+    "Create a dataflow checking ads tables have yesterday's data",
+    "Add null checks on mws.orders.asin and item_price",
+    "Build freshness checks for all mws tables",
+    "Create 3 checks for campaign spend vs sales correlation",
+    "Check inventory for negative available quantities",
+  ];
+
+  return (
+    <div style={{ display:"flex", flexDirection:"column", height:"100%",
+      background:T.surface, borderLeft:`1px solid ${T.border}` }}>
+      <div style={{ padding:"12px 16px", borderBottom:`1px solid ${T.border}`,
+        display:"flex", alignItems:"center", gap:8, flexShrink:0,
+        background:`linear-gradient(135deg,${T.accent}08,${T.purple}08)` }}>
+        <div style={{ width:28, height:28, borderRadius:7,
+          background:`linear-gradient(135deg,${T.accent},${T.purple})`,
+          display:"flex", alignItems:"center", justifyContent:"center", fontSize:14 }}>✨</div>
+        <div style={{ flex:1 }}>
+          <div style={{ fontSize:12, fontWeight:700, color:T.text }}>AI Dataflow Builder</div>
+          <div style={{ fontSize:9, color:T.muted }}>Build · Edit · Add checks in plain text</div>
+        </div>
+        <button onClick={onClose} style={{ background:"none", border:"none",
+          cursor:"pointer", color:T.muted, fontSize:18 }}>×</button>
+      </div>
+
+      <div style={{ flex:1, overflowY:"auto", padding:"12px 14px", display:"flex",
+        flexDirection:"column", gap:8 }}>
+        {messages.length===1 && (
+          <div style={{ marginBottom:4 }}>
+            <div style={{ fontSize:9, color:T.muted, fontWeight:700, textTransform:"uppercase",
+              letterSpacing:"0.06em", marginBottom:6 }}>Try asking…</div>
+            <div style={{ display:"flex", flexWrap:"wrap", gap:5 }}>
+              {SUGGESTIONS.map(s=>(
+                <button key={s} onClick={()=>send(s)}
+                  style={{ fontSize:10, padding:"4px 10px", borderRadius:99,
+                    border:`1px solid ${T.accent}30`, background:`${T.accent}06`,
+                    color:T.accent, cursor:"pointer", fontFamily:"inherit" }}>
+                  {s}
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
+        {messages.map((m,i)=>(
+          <div key={i}>
+            {m.role==="user" && (
+              <div style={{ display:"flex", justifyContent:"flex-end" }}>
+                <div style={{ maxWidth:"82%", padding:"8px 12px", borderRadius:10,
+                  borderBottomRightRadius:3, fontSize:12, lineHeight:1.5,
+                  background:`linear-gradient(135deg,${T.accent},${T.purple})`,
+                  color:"white", whiteSpace:"pre-wrap" }}>{m.text}</div>
+              </div>
+            )}
+            {m.role==="thinking" && (
+              <div style={{ display:"flex", gap:6, alignItems:"center",
+                color:T.muted, fontSize:11 }}>
+                <Spinner size={9}/><span style={{fontStyle:"italic"}}>Working…</span>
+              </div>
+            )}
+            {m.role==="assistant" && (
+              <div>
+                {(m.actions||[]).length > 0 && (
+                  <div style={{ display:"flex", flexWrap:"wrap", gap:4, marginBottom:5 }}>
+                    {m.actions.map((a,ai)=>{
+                      const c = a.type==="error"?T.red:T.green;
+                      const l = a.type==="created"?`✨ Created: ${a.name}`
+                        :a.type==="checks_added"?`+ ${a.count} check${a.count>1?"s":""} → ${a.name}`
+                        :a.type==="delete_requested"?`🗑 ${a.name}`
+                        :a.type==="error"?`✗ ${a.msg}`:a.type;
+                      return <span key={ai} style={{ fontSize:10, padding:"2px 8px",
+                        borderRadius:99, background:`${c}10`, border:`1px solid ${c}30`,
+                        color:c, fontWeight:600 }}>{l}</span>;
+                    })}
+                  </div>
+                )}
+                <div style={{ padding:"8px 12px", borderRadius:10, borderBottomLeftRadius:3,
+                  fontSize:12, lineHeight:1.5, color:T.text,
+                  background:T.card, border:`1px solid ${T.border}`,
+                  whiteSpace:"pre-wrap", maxWidth:"90%" }}>{m.text}</div>
+              </div>
+            )}
+          </div>
+        ))}
+        <div ref={bottomRef}/>
+      </div>
+
+      <div style={{ padding:"10px 12px", borderTop:`1px solid ${T.border}`, flexShrink:0 }}>
+        <div style={{ display:"flex", gap:7, alignItems:"flex-end" }}>
+          <textarea value={input} onChange={e=>setInput(e.target.value)}
+            onKeyDown={e=>{if(e.key==="Enter"&&!e.shiftKey){e.preventDefault();send();}}}
+            placeholder="Describe the dataflow or check you want…"
+            rows={1}
+            style={{ flex:1, padding:"7px 10px", borderRadius:8, fontSize:11,
+              border:`1px solid ${T.border}`, background:T.bg, color:T.text,
+              outline:"none", fontFamily:"inherit", resize:"none",
+              lineHeight:1.4, maxHeight:80, overflowY:"auto" }}
+            onInput={e=>{e.target.style.height="auto";e.target.style.height=Math.min(e.target.scrollHeight,80)+"px";}}
+            onFocus={e=>e.target.style.borderColor=T.accent}
+            onBlur={e=>e.target.style.borderColor=T.border}/>
+          <button onClick={()=>send()} disabled={!input.trim()||loading}
+            style={{ width:30, height:30, borderRadius:7, border:"none", flexShrink:0,
+              background:(!input.trim()||loading)?"#E8ECF0":`linear-gradient(135deg,${T.accent},${T.purple})`,
+              cursor:(!input.trim()||loading)?"not-allowed":"pointer",
+              display:"flex", alignItems:"center", justifyContent:"center", color:"white" }}>
+            {loading?<Spinner size={10} color="white"/>:<ArrowRight size={12}/>}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+
 function DataflowsTab({ onNavigate }) {
   const T = useT();
 
@@ -13798,7 +14720,8 @@ function DataflowsTab({ onNavigate }) {
   const [viewModal, setViewModal]   = React.useState(null); // df object
   const [formModal, setFormModal]   = React.useState(null); // null | df | {} for new
   const [moveModal, setMoveModal]   = React.useState(null); // df to move
-  const [selectedIds, setSelectedIds] = React.useState(new Set()); // bulk selection
+  const [selectedIds,    setSelectedIds]    = React.useState(new Set());
+  const [showAiDf,       setShowAiDf]       = React.useState(false); // bulk selection
   const [bulkRunning, setBulkRunning] = React.useState(false);
 
   const toggleSelect = (id) => setSelectedIds(p => {
@@ -14069,6 +14992,7 @@ function DataflowsTab({ onNavigate }) {
       </div>
 
       {/* Main content */}
+      <div style={{ flex:1, display:"flex", overflow:"hidden" }}>
       <div style={{ flex:1, display:"flex", flexDirection:"column", overflow:"hidden" }}>
 
         {/* Top bar */}
@@ -14123,6 +15047,10 @@ function DataflowsTab({ onNavigate }) {
           </button>
 
           {/* Create */}
+          <Btn onClick={()=>setShowAiDf(p=>!p)} variant="ghost"
+            style={{ border:`1px solid ${T.accent}30`, color:T.accent, flexShrink:0 }}>
+            ✨ AI Builder
+          </Btn>
           <Btn onClick={() => setFormModal({})}
             style={{ background:`linear-gradient(135deg,${T.accent},${T.purple})`,
               color:"white", border:"none", flexShrink:0 }}>
@@ -14306,6 +15234,7 @@ function DataflowsTab({ onNavigate }) {
           T={T}
         />
       )}
+    </div>
     </div>
   );
 }
@@ -14892,6 +15821,28 @@ function SchedulerTab({ onNavigate }) {
   const [sortBy,     setSortBy]     = React.useState("name");
   const [sortDir,    setSortDir]    = React.useState("asc");
 
+  // Zero-token conflict detection — find schedules that share workflows and overlap times
+  const conflicts = React.useMemo(() => {
+    const results = [];
+    const enabled = schedules.filter(s=>s.enabled!==false);
+    for (let i=0; i<enabled.length; i++) {
+      for (let j=i+1; j<enabled.length; j++) {
+        const a = enabled[i], b = enabled[j];
+        // Same time?
+        const sameTime = a.cron_expression===b.cron_expression ||
+          (a.run_time && a.run_time===b.run_time);
+        if (!sameTime) continue;
+        // Share any workflows?
+        const aWfs = new Set([...(a.workflow_ids||[]),...(a.dataflow_ids||[])]);
+        const bWfs = [...(b.workflow_ids||[]),...(b.dataflow_ids||[])];
+        const shared = bWfs.filter(id=>aWfs.has(id));
+        if (shared.length)
+          results.push({ a:a.name, b:b.name, time:a.run_time||a.cron_expression, shared:shared.length });
+      }
+    }
+    return results;
+  }, [schedules]);
+
   // ── Load all live data from backend on mount + provide refresh ────────────
   const loadAll = React.useCallback(async () => {
     // 1. Workflows — from backend (source of truth, includes newly created ones)
@@ -15202,6 +16153,24 @@ function SchedulerTab({ onNavigate }) {
                             {lastResult.passed?"✓ Last run passed":"✗ Last run failed"}
                           </div>
                         )}
+                        {/* AI-style recommendation: detect consistently failing schedules */}
+                        {(() => {
+                          const results = runResults[sch.id];
+                          if (!results?.results?.length) return null;
+                          const failCount = results.results.filter(r=>!r.passed).length;
+                          const totalCount = results.results.length;
+                          if (failCount === 0) return null;
+                          if (failCount === totalCount) return (
+                            <div style={{ fontSize:9, color:T.orange, marginTop:3, fontWeight:600 }}>
+                              ✨ All checks failed — consider adjusting run time
+                            </div>
+                          );
+                          return (
+                            <div style={{ fontSize:9, color:"#F59E0B", marginTop:3 }}>
+                              ✨ {failCount}/{totalCount} checks failed last run
+                            </div>
+                          );
+                        })()}
                       </td>
 
                       {/* Scheduled Task */}
@@ -15484,6 +16453,199 @@ function SchedulerCalendar({ schedules, T, onEdit }) {
   );
 }
 
+// ── AI Onboarding Wizard — first-time setup via conversation ─────────────────
+function OnboardingWizard({ onComplete, T }) {
+  const dbSchema = useSchema();
+  const [step,     setStep]     = React.useState(0); // 0=intro,1=q1,2=q2,3=q3,4=generating,5=done
+  const [answers,  setAnswers]  = React.useState({ focus:"", tables:"", schedule:"daily" });
+  const [aiResult, setAiResult] = React.useState(null);
+  const [loading,  setLoading]  = React.useState(false);
+
+  const QUESTIONS = [
+    {
+      key:"focus", label:"What do you mainly want to monitor?",
+      options:["Pipeline freshness & downloads","Order & revenue quality","Ads spend & campaign data","All of the above — everything"]
+    },
+    {
+      key:"tables", label:"Which tables matter most to you?",
+      options:["mws.report + mws.orders","mws.sales_and_traffic_by_date","Ads tables (campaign, keyword, product)","All mws + ads tables"]
+    },
+    {
+      key:"schedule", label:"How often should checks run?",
+      options:["Every hour","Every 4 hours","Daily","Manual only"]
+    },
+  ];
+
+  const generate = async () => {
+    setStep(4); setLoading(true);
+    try {
+      const res = await fetch(`${API}/api/ai/chat`, {
+        method:"POST", headers:{"Content-Type":"application/json"},
+        body:JSON.stringify({
+          system:`You are setting up a data quality dashboard for an ecommerce analytics team. Based on their answers, suggest a starter workflow configuration.
+
+Schema available: ${dbSchema||"mws.report, mws.orders, mws.inventory, mws.sales_and_traffic_by_date, public.tbl_amzn_campaign_report, public.tbl_amzn_keyword_report"}
+
+Return ONLY a JSON object (no markdown):
+{
+  "summary": "One sentence describing what we set up",
+  "workflows": [
+    {"name":"...", "desc":"...", "schedule":"...", "checks":[{"name":"...","sql":"SELECT ...","pass_condition":"rows = 0","severity":"high"}]}
+  ]
+}
+
+Rules: 2-3 workflows max, 2-3 checks each, use only real columns, never COUNT(*) alone.`,
+          messages:[{role:"user", content:`Focus: ${answers.focus}. Tables: ${answers.tables}. Schedule: ${answers.schedule}.`}],
+          max_tokens:900
+        })
+      });
+      const d  = await res.json();
+      const txt = (d?.content?.[0]?.text||"{}").replace(/```json|```/g,"").trim();
+      setAiResult(JSON.parse(txt));
+    } catch(e) {
+      setAiResult({ summary:"Setup ready — using default configuration.", workflows:[] });
+    }
+    setLoading(false);
+    setStep(5);
+  };
+
+  const applyAndFinish = async () => {
+    // Save workflows via the existing save endpoint
+    if (aiResult?.workflows?.length) {
+      for (const wf of aiResult.workflows) {
+        try {
+          await fetch(`${API}/api/custom-workflows/save/v2`, {
+            method:"POST", headers:{"Content-Type":"application/json"},
+            body:JSON.stringify({
+              ...wf, id:`wizard_${Date.now().toString(36)}_${Math.random().toString(36).slice(2,5)}`,
+              enabled:true, checks:(wf.checks||[]).map((c,i)=>({...c,id:`c_${i}`}))
+            })
+          });
+        } catch(e) {}
+      }
+    }
+    localStorage.setItem("wz_wizard_done","1");
+    onComplete();
+  };
+
+  if (step===0) return (
+    <div style={{ position:"fixed", inset:0, background:"rgba(0,0,0,0.6)", zIndex:9999,
+      display:"flex", alignItems:"center", justifyContent:"center" }}>
+      <div style={{ background:T.card, borderRadius:16, padding:"36px 40px", maxWidth:480, width:"90%",
+        boxShadow:"0 24px 80px rgba(0,0,0,0.3)", textAlign:"center" }}>
+        <div style={{ fontSize:40, marginBottom:12 }}>✨</div>
+        <div style={{ fontSize:20, fontWeight:800, color:T.text, marginBottom:8 }}>Welcome to WiziAgent</div>
+        <div style={{ fontSize:13, color:T.muted, marginBottom:24, lineHeight:1.6 }}>
+          Let me set up your data quality dashboard in 30 seconds.<br/>
+          I'll ask 3 quick questions and generate your first workflows automatically.
+        </div>
+        <div style={{ display:"flex", gap:10, justifyContent:"center" }}>
+          <button onClick={()=>setStep(1)}
+            style={{ padding:"10px 28px", borderRadius:99, fontSize:13, fontWeight:700,
+              background:`linear-gradient(135deg,${T.accent},${T.purple})`,
+              color:"white", border:"none", cursor:"pointer" }}>
+            Get Started →
+          </button>
+          <button onClick={()=>{ localStorage.setItem("wz_wizard_done","1"); onComplete(); }}
+            style={{ padding:"10px 20px", borderRadius:99, fontSize:13,
+              background:"none", border:`1px solid ${T.border}`,
+              color:T.muted, cursor:"pointer" }}>
+            Skip
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+
+  if (step>=1 && step<=3) {
+    const q = QUESTIONS[step-1];
+    return (
+      <div style={{ position:"fixed", inset:0, background:"rgba(0,0,0,0.6)", zIndex:9999,
+        display:"flex", alignItems:"center", justifyContent:"center" }}>
+        <div style={{ background:T.card, borderRadius:16, padding:"36px 40px", maxWidth:460, width:"90%",
+          boxShadow:"0 24px 80px rgba(0,0,0,0.3)" }}>
+          <div style={{ fontSize:10, color:T.muted, marginBottom:8, textTransform:"uppercase",
+            letterSpacing:"0.1em" }}>Step {step} of 3</div>
+          <div style={{ height:3, background:T.border, borderRadius:99, marginBottom:20 }}>
+            <div style={{ height:3, borderRadius:99, width:`${step/3*100}%`,
+              background:`linear-gradient(90deg,${T.accent},${T.purple})`, transition:"width 0.3s" }}/>
+          </div>
+          <div style={{ fontSize:16, fontWeight:700, color:T.text, marginBottom:20 }}>{q.label}</div>
+          <div style={{ display:"flex", flexDirection:"column", gap:8, marginBottom:24 }}>
+            {q.options.map(opt=>(
+              <button key={opt} onClick={()=>{
+                  setAnswers(p=>({...p,[q.key]:opt}));
+                  if (step<3) setStep(s=>s+1); else generate();
+                }}
+                style={{ padding:"12px 16px", borderRadius:10, textAlign:"left", fontSize:13,
+                  border:`2px solid ${answers[q.key]===opt?T.accent:T.border}`,
+                  background:answers[q.key]===opt?`${T.accent}08`:T.surface,
+                  color:T.text, cursor:"pointer", fontFamily:"inherit",
+                  fontWeight:answers[q.key]===opt?600:400, transition:"all 0.1s" }}>
+                {opt}
+              </button>
+            ))}
+          </div>
+          {step>1 && (
+            <button onClick={()=>setStep(s=>s-1)}
+              style={{ fontSize:11, color:T.muted, background:"none", border:"none",
+                cursor:"pointer" }}>← Back</button>
+          )}
+        </div>
+      </div>
+    );
+  }
+
+  if (step===4) return (
+    <div style={{ position:"fixed", inset:0, background:"rgba(0,0,0,0.6)", zIndex:9999,
+      display:"flex", alignItems:"center", justifyContent:"center" }}>
+      <div style={{ background:T.card, borderRadius:16, padding:"48px 40px", textAlign:"center",
+        maxWidth:380, width:"90%", boxShadow:"0 24px 80px rgba(0,0,0,0.3)" }}>
+        <Spinner size={32}/>
+        <div style={{ fontSize:14, color:T.muted, marginTop:16 }}>
+          ✨ Generating your custom workflows…
+        </div>
+      </div>
+    </div>
+  );
+
+  if (step===5 && aiResult) return (
+    <div style={{ position:"fixed", inset:0, background:"rgba(0,0,0,0.6)", zIndex:9999,
+      display:"flex", alignItems:"center", justifyContent:"center" }}>
+      <div style={{ background:T.card, borderRadius:16, padding:"32px 36px", maxWidth:520, width:"90%",
+        boxShadow:"0 24px 80px rgba(0,0,0,0.3)", maxHeight:"80vh", overflowY:"auto" }}>
+        <div style={{ fontSize:24, marginBottom:8 }}>🎉</div>
+        <div style={{ fontSize:16, fontWeight:800, color:T.text, marginBottom:4 }}>You're all set!</div>
+        <div style={{ fontSize:12, color:T.muted, marginBottom:20 }}>{aiResult.summary}</div>
+        <div style={{ display:"flex", flexDirection:"column", gap:10, marginBottom:24 }}>
+          {(aiResult.workflows||[]).map((wf,i)=>(
+            <div key={i} style={{ padding:"12px 16px", borderRadius:10,
+              background:`${T.accent}06`, border:`1px solid ${T.accent}20` }}>
+              <div style={{ fontSize:13, fontWeight:700, color:T.text }}>{wf.name}</div>
+              <div style={{ fontSize:11, color:T.muted, marginTop:2 }}>{wf.desc}</div>
+              <div style={{ display:"flex", gap:5, marginTop:6, flexWrap:"wrap" }}>
+                {(wf.checks||[]).map((c,j)=>(
+                  <span key={j} style={{ fontSize:9, padding:"2px 7px", borderRadius:4,
+                    background:`${T.border}`, color:T.muted }}>{c.name}</span>
+                ))}
+              </div>
+            </div>
+          ))}
+        </div>
+        <button onClick={applyAndFinish}
+          style={{ width:"100%", padding:"12px", borderRadius:10, fontSize:14, fontWeight:700,
+            background:`linear-gradient(135deg,${T.accent},${T.purple})`,
+            color:"white", border:"none", cursor:"pointer" }}>
+          Apply & Start Monitoring →
+        </button>
+      </div>
+    </div>
+  );
+
+  return null;
+}
+
+
 export default function WiziAgentApp() {
   const [themeKey,  setThemeKey]  = useLocal("wz_theme", "light");
   const [activeTab, setActiveTab] = useLocal("wz_tab",   "brief");
@@ -15514,6 +16676,9 @@ export default function WiziAgentApp() {
   const [schemaStr, setSchemaStr] = React.useState("");
   const [globalStatus, setGlobalStatus] = React.useState(null); // { type, message, runId }
   const [paletteOpen, setPaletteOpen]   = React.useState(false);
+  const [showWizard,  setShowWizard]    = React.useState(
+    !localStorage.getItem("wz_wizard_done")
+  );
   const [tabHistory,  setTabHistory]    = React.useState([]); // last 5 tabs
   const [postRunPanel, setPostRunPanel] = React.useState(null); // run to analyse
   const [lastRun,      setLastRun]      = React.useState(null); // latest run across app
@@ -15636,10 +16801,39 @@ export default function WiziAgentApp() {
     i.severity==="critical" || i.severity==="high"
   ).length;
 
+  // ── Proactive anomaly polling — every 30 min, fire toast on new alerts ────
+  const [proactiveAlerts, setProactiveAlerts] = React.useState([]);
+  const seenAlertsRef = React.useRef(new Set());
+  const { add: _addNotif } = React.useContext(NotifCtx);
+
+  React.useEffect(() => {
+    const poll = async () => {
+      try {
+        const r = await fetch(`${API}/api/anomaly/proactive`);
+        const d = await r.json();
+        const alerts = d.alerts || [];
+        setProactiveAlerts(alerts);
+        // Store count for sidebar badge via sessionStorage
+        sessionStorage.setItem("wz_proactive_count", String(alerts.length));
+        // Fire a toast for each new alert not yet seen
+        alerts.forEach(a => {
+          if (!seenAlertsRef.current.has(a.metric)) {
+            seenAlertsRef.current.add(a.metric);
+            _addNotif(`✨ Anomaly: ${a.msg}`, "error", { persistent: true });
+          }
+        });
+      } catch(e) {}
+    };
+    poll();
+    const iv = setInterval(poll, 30 * 60 * 1000); // every 30 min
+    return () => clearInterval(iv);
+  }, []);
+
   return (
     <NotifProvider>
     <SchemaCtx.Provider value={schemaStr}>
     <ThemeCtx.Provider value={T}>
+      {showWizard && <OnboardingWizard onComplete={()=>setShowWizard(false)} T={T}/>}
       {paletteOpen && (
         <CommandPalette
           onNavigate={setActiveTab}
@@ -15734,7 +16928,31 @@ export default function WiziAgentApp() {
             </div>
           )}
 
-          {activeTab==="brief"     && <><AiBriefPanel/><MorningBriefTab onNavigate={navigateTo} onIssueFound={setIssues}/></>}
+          {activeTab==="brief"     && <>
+            {proactiveAlerts.length > 0 && (
+              <div style={{ padding:"8px 20px", background:`${TC.red}08`,
+                borderBottom:`1px solid ${TC.red}20`,
+                display:"flex", gap:10, alignItems:"center", flexWrap:"wrap" }}>
+                <span style={{ fontSize:14 }}>🚨</span>
+                <span style={{ fontSize:11, fontWeight:700, color:TC.red }}>
+                  ✨ {proactiveAlerts.length} anomal{proactiveAlerts.length===1?"y":"ies"} detected today
+                </span>
+                <div style={{ display:"flex", gap:8, flex:1, flexWrap:"wrap" }}>
+                  {proactiveAlerts.map((a,i)=>(
+                    <span key={i} style={{ fontSize:10, padding:"2px 8px", borderRadius:4,
+                      background:`${TC.red}10`, color:TC.red, border:`1px solid ${TC.red}20` }}>
+                      {a.direction} {a.label}: {a.pct}% {a.direction==="↑"?"above":"below"} avg
+                    </span>
+                  ))}
+                </div>
+                <button onClick={()=>setProactiveAlerts([])}
+                  style={{ background:"none", border:"none", cursor:"pointer",
+                    color:TC.dim, fontSize:16 }}>×</button>
+              </div>
+            )}
+            <AiBriefPanel/>
+            <MorningBriefTab onNavigate={navigateTo} onIssueFound={setIssues}/>
+          </>}
           {activeTab==="triage"    && <TriageTab initialIssues={issues}/>}
           {activeTab==="workflows" && <WorkflowsTab navigateTo={navigateTo}/>}
           {activeTab==="dataflows" && <DataflowsTab onNavigate={navigateTo}/>}

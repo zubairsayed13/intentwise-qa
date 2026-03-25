@@ -9110,8 +9110,12 @@ function WorkflowsTab({ navigateTo }) {
     await runWf(wf);
   };
 
+  const [aiSuggestError, setAiSuggestError] = React.useState(null);
+
   const getAiSuggestions = async () => {
     setAiLoading(true);
+    setAiSuggestError(null);
+    setAiSuggestions([]);
     try {
       const res = await fetch(`${API}/api/ai/chat`, {
         method:"POST", headers:{"Content-Type":"application/json"},
@@ -9124,36 +9128,50 @@ ${dbSchema || "mws.report(status,download_date,report_type,copy_status,tries,req
 Each workflow must:
 - Solve a REAL ecommerce data problem (not generic "check for nulls")
 - Have 2-4 checks that return actual suspect rows (not just counts)
-- Use specific columns from the schema above — never invent columns
-- NEVER use bare SELECT COUNT(*) — return the actual rows with context columns
+- Use specific columns from the schema above
+- NEVER use bare SELECT COUNT(*) — return actual rows with context columns
 - Cover diverse domains: pipeline health, business logic, ads performance, inventory, cross-table integrity
 
-Great check examples:
-- SELECT asin, purchase_date, item_price, quantity FROM mws.orders WHERE item_price < 0 AND status='Shipped'
-- SELECT o.asin, o.purchase_date FROM mws.orders o LEFT JOIN mws.inventory i ON o.asin=i.asin WHERE i.asin IS NULL AND o.purchase_date >= CURRENT_DATE-7
-- SELECT report_date, profile_id, spend, sales FROM public.tbl_amzn_campaign_report WHERE spend > 0 AND sales = 0 AND report_date >= CURRENT_DATE-3
-- SELECT sale_date, COUNT(DISTINCT account_id) as accounts FROM mws.sales_and_traffic_by_date WHERE sale_date = CURRENT_DATE-1 GROUP BY sale_date HAVING COUNT(DISTINCT account_id) < 2
-
-Return ONLY a JSON array (no markdown, no backticks):
-[{
-  "name": "Workflow Name",
-  "desc": "One sentence describing what business problem this catches",
-  "schedule": "every 1 hour",
-  "icon": "🔍",
-  "tags": ["pipeline","freshness"],
-  "checks": [
-    {"name":"Check name","sql":"SELECT ...","pass_condition":"rows = 0","severity":"critical","explanation":"Why this matters"}
-  ]
-}]`,
-          messages:[{role:"user", content:"Suggest 5 diverse, creative, production-grade data quality workflows"}],
+Return ONLY a valid JSON array. No markdown, no backticks, no preamble.
+Format exactly:
+[{"name":"...","desc":"...","schedule":"every 1 hour","icon":"🔍","tags":["pipeline"],"checks":[{"name":"...","sql":"SELECT ...","pass_condition":"rows = 0","severity":"critical","explanation":"..."}]}]`,
+          messages:[{role:"user", content:"Suggest 5 diverse, creative, production-grade data quality workflows. Return only the JSON array, nothing else."}],
           max_tokens:2000
         })
       });
+      if (!res.ok) {
+        const err = await res.json().catch(()=>({}));
+        setAiSuggestError(err.error || `HTTP ${res.status}`);
+        setAiLoading(false); return;
+      }
       const data = await res.json();
-      const text = data?.content?.[0]?.text || "[]";
-      const arr  = JSON.parse(text.replace(/```json|```/g,"").trim());
-      if (Array.isArray(arr)) setAiSuggestions(arr);
-    } catch(e) {}
+      const text = (data?.content?.[0]?.text || "").trim();
+      if (!text) { setAiSuggestError("Empty response from AI"); setAiLoading(false); return; }
+
+      // Robust parse: find the JSON array even if wrapped in prose
+      let arr = null;
+      try {
+        const clean = text.replace(/```json|```/g,"").trim();
+        // Try direct parse
+        const parsed = JSON.parse(clean);
+        arr = Array.isArray(parsed) ? parsed : parsed.workflows || parsed.suggestions || null;
+      } catch(_) {
+        // Fallback: extract array between first [ and last ]
+        const start = text.indexOf("[");
+        const end   = text.lastIndexOf("]");
+        if (start !== -1 && end > start) {
+          try { arr = JSON.parse(text.slice(start, end+1)); } catch(_2) {}
+        }
+      }
+
+      if (Array.isArray(arr) && arr.length > 0) {
+        setAiSuggestions(arr);
+      } else {
+        setAiSuggestError("AI returned no suggestions — try again");
+      }
+    } catch(e) {
+      setAiSuggestError(e.message || "Network error");
+    }
     setAiLoading(false);
   };
 

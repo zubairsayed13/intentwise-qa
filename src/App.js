@@ -10043,36 +10043,64 @@ function WorkflowBuilder({ initial, dbSchema, onSave, onCancel }) {
       const res  = await fetch(`${API}/api/ai/chat`, {
         method:"POST", headers:{"Content-Type":"application/json"},
         body:JSON.stringify({
-          system:`You write Redshift SQL checks for a data quality workflow.
-FULL SCHEMA (use ONLY these exact table.column names — do not invent columns):
-${dbSchema || "mws.report, mws.orders, mws.inventory, mws.sales_and_traffic_by_date, public.tbl_amzn_campaign_report"}
+          system:`You are a senior data engineering lead at an ecommerce analytics company. You write creative, high-signal SQL data quality checks that go far beyond basic null checks and row counts.
+
+FULL DATABASE SCHEMA (use ONLY these exact columns — never invent):
+${dbSchema || "mws.report(status,download_date,report_type,copy_status,tries,requested_date), mws.orders(amazon_order_id,asin,status,purchase_date,item_price,quantity,fulfillment_channel), mws.inventory(asin,available,reserved,inbound,snapshot_date), mws.sales_and_traffic_by_date(sale_date,ordered_revenue,ordered_units,sessions,page_views), mws.sales_and_traffic_by_asin(asin,sale_date,ordered_revenue,buy_box_prcntg), public.tbl_amzn_campaign_report(profile_id,report_date,impressions,clicks,spend,sales), public.tbl_amzn_keyword_report(profile_id,report_date,keyword_text,impressions,clicks,spend), public.tbl_amzn_product_ad_report(profile_id,report_date,asin,impressions,clicks,spend,sales), public.tbl_amzn_targets_report(profile_id,report_date,impressions,clicks,spend)"}
+
+Think like a detective. Great checks catch things like:
+- Cross-table anomalies: orders with no matching inventory, campaigns with spend but no sales
+- Statistical outliers: revenue 3x higher or lower than 7-day average
+- Pipeline timing issues: data arriving later than expected, gaps in date sequences
+- Business logic violations: negative prices, impossible quantities, refund > original order
+- Data drift: sudden change in distribution of a categorical column
+- Completeness gaps: accounts/ASINs present yesterday but missing today
+- Referential integrity: foreign key mismatches between tables
+- Freshness windows: specific tables that must update within N hours of a trigger event
 
 Rules:
-- Use ONLY columns that exist in the schema above. Never guess or invent column names.
-- SQL must be SELECT only.
-- Do NOT default to COUNT(*). Write the most meaningful SQL for the check described.
-  Good examples: SELECT status, COUNT(*) FROM mws.report GROUP BY status
-                 SELECT download_date, MAX(report_type) FROM mws.report WHERE status='failed' GROUP BY download_date
-  Only use SELECT COUNT(*) with a WHERE clause when checking for absence of bad rows.
-- pass_condition options: "rows = 0" (no bad rows), "rows > 0" (data present), "value > N", "value = N"
+- Use ONLY columns from the schema above
+- SQL must be SELECT only
+- Avoid bare SELECT COUNT(*) — return the actual suspect rows or aggregated signal
+- pass_condition: "rows = 0" (no violations), "rows > 0" (data must exist), "value > N", "value = N"
 - severity: critical|high|medium|low
 
-Respond ONLY with a JSON object (no markdown):
-{"name":"Check name","sql":"SELECT ...","pass_condition":"rows = 0","severity":"high","explanation":"Why this check matters"}`,
-          messages:[{role:"user",content:aiDesc}],
-          max_tokens:400
+${aiDesc.toLowerCase().includes("suggest") || aiDesc.toLowerCase().includes("ideas") || aiDesc.toLowerCase().includes("multiple") || aiDesc.toLowerCase().includes("give me") ?
+`Return a JSON ARRAY of 3-5 diverse, creative checks:\n[{"name":"...","sql":"...","pass_condition":"...","severity":"...","explanation":"..."}]` :
+`Return a single JSON object:\n{"name":"...","sql":"...","pass_condition":"...","severity":"...","explanation":"..."}`}
+
+No markdown, no backticks.`,
+          messages:[{role:"user", content:aiDesc}],
+          max_tokens:1200
         })
       });
       const data = await res.json();
       const text = data?.content?.[0]?.text || "{}";
-      const obj  = JSON.parse(text.replace(/```json|```/g,"").trim());
-      if (obj.sql) {
-        setDraft({
-          name:  obj.name  || aiDesc.slice(0,40),
-          sql:   obj.sql,
-          pass_condition: obj.pass_condition || "rows = 0",
-          severity: obj.severity || "high",
-        });
+      const cleaned = text.replace(/```json|```/g,"").trim();
+      const parsed = JSON.parse(cleaned);
+      // Handle both single object and array of checks
+      const checks = Array.isArray(parsed) ? parsed : (parsed.sql ? [parsed] : []);
+      if (checks.length > 0) {
+        if (checks.length === 1) {
+          // Single check → load into draft editor
+          setDraft({
+            name: checks[0].name || aiDesc.slice(0,40),
+            sql:  checks[0].sql,
+            pass_condition: checks[0].pass_condition || "rows = 0",
+            severity: checks[0].severity || "high",
+          });
+        } else {
+          // Multiple checks → add all directly to the workflow
+          setWf(p=>({...p, checks:[...p.checks,
+            ...checks.map((c,i)=>({
+              id: `ai_${Date.now()}_${i}`,
+              name: c.name||`AI Check ${i+1}`,
+              sql: c.sql||"",
+              pass_condition: c.pass_condition||"rows = 0",
+              severity: c.severity||"high",
+            }))
+          ]}));
+        }
         setAiDesc("");
       }
     } catch(e) {}
@@ -10330,7 +10358,7 @@ Respond ONLY with a JSON object (no markdown):
               </div>
               <textarea value={checkDraft.sql} rows={3}
                 onChange={e=>setDraft(p=>({...p,sql:e.target.value}))}
-                placeholder={"SELECT COUNT(*) FROM mws.orders\nWHERE asin IS NULL\nAND download_date = (SELECT MAX(download_date) FROM mws.orders)"}
+                placeholder={"SELECT asin, status, purchase_date, item_price\nFROM mws.orders\nWHERE status = \'Shipped\' AND item_price <= 0\nORDER BY purchase_date DESC\nLIMIT 100"}
                 style={{...inp, fontFamily:"monospace", fontSize:11, resize:"vertical"}}
                 onFocus={e=>e.target.style.borderColor=T.accent}
                 onBlur={e=>e.target.style.borderColor=T.border}/>
@@ -11226,9 +11254,89 @@ function FloatingAssistant({ currentRun, currentTab, onNavigate }) {
 // ═══════════════════════════════════════════════════════════════════════════════
 function DemoValidationTab() {
   const T = useT();
-  const [result,  setResult]  = React.useState(null);
-  const [loading, setLoading] = React.useState(false);
-  const [expanded, setExpanded] = React.useState({});
+  const dbSchema = useSchema();
+  const [result,       setResult]      = React.useState(null);
+  const [loading,      setLoading]     = React.useState(false);
+  const [expanded,     setExpanded]    = React.useState({});
+  const [showConfig,   setShowConfig]  = React.useState(false);
+  const [tables,       setTables]      = React.useState([]);
+  const [accountIds,   setAccountIds]  = React.useState([46, 3038]);
+  const [mwsTables,    setMwsTables]   = React.useState([]); // all mws tables from schema
+  const [aiLoading,    setAiLoading]   = React.useState({}); // {tableIdx: bool}
+  const [configSaving, setConfigSaving]= React.useState(false);
+  const [addForm,      setAddForm]     = React.useState(null); // {table:"", date_col:"", label:"", max_age_days:7, enabled:true}
+
+  const loadConfig = React.useCallback(async () => {
+    try {
+      const r = await fetch(`${API}/api/demo/config`);
+      const d = await r.json();
+      if (d.tables) setTables(d.tables);
+      if (d.account_ids) setAccountIds(d.account_ids);
+    } catch(e) {}
+  }, []);
+
+  const loadMwsTables = React.useCallback(async () => {
+    try {
+      const r = await fetch(`${API}/api/demo/mws-tables`);
+      const d = await r.json();
+      if (d.tables) setMwsTables(d.tables);
+    } catch(e) {}
+  }, []);
+
+  React.useEffect(()=>{ loadConfig(); }, []);
+
+  const saveConfig = async () => {
+    setConfigSaving(true);
+    try {
+      await fetch(`${API}/api/demo/config`, {
+        method:"POST", headers:{"Content-Type":"application/json"},
+        body:JSON.stringify({ tables, account_ids:accountIds })
+      });
+    } catch(e) {}
+    setConfigSaving(false);
+  };
+
+  const aiSuggest = async (idx) => {
+    const tdef = tables[idx];
+    if (!tdef) return;
+    setAiLoading(p=>({...p,[idx]:true}));
+    try {
+      // Get columns for this table from mwsTables or schema
+      const found = mwsTables.find(t=>t.table===tdef.table);
+      const cols  = found?.columns ||
+        (dbSchema ? dbSchema.split(";").find(s=>s.includes(tdef.table))?.match(/\(([^)]+)\)/)?.[1]?.split(",").map(c=>c.trim()) : []) || [];
+      const r = await fetch(`${API}/api/demo/ai-suggest`, {
+        method:"POST", headers:{"Content-Type":"application/json"},
+        body:JSON.stringify({ table:tdef.table, columns:cols })
+      });
+      const d = await r.json();
+      if (d.date_col) {
+        setTables(p=>p.map((t,i)=>i===idx?{...t,
+          date_col: d.date_col,
+          max_age_days: d.max_age_days||t.max_age_days,
+          label: d.label||t.label
+        }:t));
+      }
+    } catch(e) {}
+    setAiLoading(p=>({...p,[idx]:false}));
+  };
+
+  const updateTable = (idx, field, val) =>
+    setTables(p=>p.map((t,i)=>i===idx?{...t,[field]:val}:t));
+  const removeTable = (idx) => setTables(p=>p.filter((_,i)=>i!==idx));
+  const toggleTable = (idx) => setTables(p=>p.map((t,i)=>i===idx?{...t,enabled:!t.enabled}:t));
+
+  const addTable = () => {
+    if (!addForm?.table) return;
+    setTables(p=>[...p, {
+      table: addForm.table,
+      date_col: addForm.date_col||"",
+      label: addForm.label || addForm.table.split(".").pop(),
+      max_age_days: Number(addForm.max_age_days)||7,
+      enabled: true,
+    }]);
+    setAddForm(null);
+  };
 
   const run = async () => {
     setLoading(true);
@@ -11258,7 +11366,7 @@ function DemoValidationTab() {
             Demo Data Validation
           </div>
           <div style={{ fontSize:11, color:T.muted, marginTop:2 }}>
-            Checks mws schema tables for demo accounts (46, 3038) — presence + freshness
+            Checks mws schema tables for demo accounts ({accountIds.join(", ")}) — presence + freshness
           </div>
         </div>
         <div style={{ display:"flex", gap:8, alignItems:"center" }}>
@@ -11269,6 +11377,9 @@ function DemoValidationTab() {
               {STATUS_ICON[overall]} {overall?.toUpperCase()}
             </div>
           )}
+          <Btn onClick={()=>{ setShowConfig(p=>!p); if(!showConfig) loadMwsTables(); }} size="sm" variant="ghost">
+            ⚙ Configure
+          </Btn>
           <Btn onClick={run} disabled={loading} size="sm"
             style={{ background:`linear-gradient(135deg,${T.accent},${T.purple})`, color:"white", border:"none" }}>
             {loading?<Spinner size={11} color="white"/>:<RefreshCw size={11}/>}
@@ -11276,6 +11387,237 @@ function DemoValidationTab() {
           </Btn>
         </div>
       </div>
+
+      {/* ── CONFIG PANEL ─────────────────────────────────────────────────── */}
+      {showConfig && (
+        <div style={{ background:T.surface, borderRadius:12, border:`1px solid ${T.border}`,
+          padding:"20px 24px", marginBottom:24 }}>
+
+          {/* Account IDs */}
+          <div style={{ marginBottom:18 }}>
+            <div style={{ fontSize:12, fontWeight:700, color:T.text, marginBottom:6 }}>
+              Demo Account IDs
+            </div>
+            <div style={{ display:"flex", alignItems:"center", gap:8, flexWrap:"wrap" }}>
+              {accountIds.map((id,i)=>(
+                <div key={i} style={{ display:"flex", alignItems:"center", gap:4 }}>
+                  <input type="number" value={id}
+                    onChange={e=>setAccountIds(p=>p.map((v,j)=>j===i?Number(e.target.value):v))}
+                    style={{ width:80, padding:"5px 8px", borderRadius:6, fontSize:12,
+                      border:`1px solid ${T.border}`, background:T.bg, color:T.text,
+                      fontFamily:"monospace", outline:"none" }}/>
+                  {accountIds.length > 1 && (
+                    <button onClick={()=>setAccountIds(p=>p.filter((_,j)=>j!==i))}
+                      style={{ background:"none", border:"none", cursor:"pointer", color:T.red, fontSize:14 }}>×</button>
+                  )}
+                </div>
+              ))}
+              <Btn size="sm" variant="ghost" onClick={()=>setAccountIds(p=>[...p, 0])}>
+                <Plus size={10}/> Add
+              </Btn>
+            </div>
+          </div>
+
+          {/* Tables list */}
+          <div style={{ fontSize:12, fontWeight:700, color:T.text, marginBottom:10 }}>
+            Tables to Check
+          </div>
+          <div style={{ display:"flex", flexDirection:"column", gap:8, marginBottom:12 }}>
+            {tables.map((tdef,i)=>(
+              <div key={i} style={{ padding:"12px 14px", borderRadius:8,
+                border:`1px solid ${tdef.enabled!==false?T.accent+"30":T.border}`,
+                background: tdef.enabled!==false?`${T.accent}04`:T.bg,
+                display:"flex", gap:10, alignItems:"flex-start", flexWrap:"wrap" }}>
+
+                {/* Enable toggle */}
+                <div onClick={()=>toggleTable(i)}
+                  style={{ width:32, height:18, borderRadius:99, cursor:"pointer", marginTop:2,
+                    background:tdef.enabled!==false?T.green:T.border, position:"relative",
+                    transition:"background 0.2s", flexShrink:0 }}>
+                  <div style={{ width:14, height:14, borderRadius:"50%", background:"white",
+                    position:"absolute", top:2, transition:"left 0.15s",
+                    left:tdef.enabled!==false?16:2, boxShadow:"0 1px 3px rgba(0,0,0,0.2)" }}/>
+                </div>
+
+                <div style={{ flex:1, minWidth:200 }}>
+                  <div style={{ display:"flex", gap:8, flexWrap:"wrap", marginBottom:6 }}>
+                    {/* Table name */}
+                    <div style={{ flex:1, minWidth:180 }}>
+                      <label style={{ fontSize:9, color:T.muted, display:"block", marginBottom:2,
+                        textTransform:"uppercase", letterSpacing:"0.05em" }}>Table</label>
+                      <select value={tdef.table}
+                        onChange={e=>updateTable(i,"table",e.target.value)}
+                        style={{ width:"100%", padding:"5px 8px", borderRadius:6, fontSize:11,
+                          border:`1px solid ${T.border}`, background:T.bg, color:T.text,
+                          fontFamily:"inherit", outline:"none" }}>
+                        <option value={tdef.table}>{tdef.table}</option>
+                        {mwsTables.filter(t=>t.table!==tdef.table).map(t=>(
+                          <option key={t.table} value={t.table}>{t.table}</option>
+                        ))}
+                      </select>
+                    </div>
+                    {/* Label */}
+                    <div style={{ width:130 }}>
+                      <label style={{ fontSize:9, color:T.muted, display:"block", marginBottom:2,
+                        textTransform:"uppercase", letterSpacing:"0.05em" }}>Label</label>
+                      <input value={tdef.label||""} onChange={e=>updateTable(i,"label",e.target.value)}
+                        placeholder="e.g. Orders"
+                        style={{ width:"100%", padding:"5px 8px", borderRadius:6, fontSize:11,
+                          border:`1px solid ${T.border}`, background:T.bg, color:T.text,
+                          fontFamily:"inherit", outline:"none", boxSizing:"border-box" }}/>
+                    </div>
+                    {/* Date column */}
+                    <div style={{ width:150 }}>
+                      <label style={{ fontSize:9, color:T.muted, display:"block", marginBottom:2,
+                        textTransform:"uppercase", letterSpacing:"0.05em" }}>Date Column</label>
+                      <div style={{ display:"flex", gap:4 }}>
+                        {(() => {
+                          const found = mwsTables.find(t=>t.table===tdef.table);
+                          const cols  = found?.columns || [];
+                          return cols.length > 0 ? (
+                            <select value={tdef.date_col||""}
+                              onChange={e=>updateTable(i,"date_col",e.target.value)}
+                              style={{ flex:1, padding:"5px 8px", borderRadius:6, fontSize:11,
+                                border:`1px solid ${T.border}`, background:T.bg, color:T.text,
+                                fontFamily:"inherit", outline:"none" }}>
+                              <option value="">— none —</option>
+                              {cols.filter(c=>c.includes("date")||c.includes("time")||c.includes("at")).map(c=>(
+                                <option key={c} value={c}>{c}</option>
+                              ))}
+                              {cols.filter(c=>!c.includes("date")&&!c.includes("time")&&!c.includes("at")).map(c=>(
+                                <option key={c} value={c}>{c}</option>
+                              ))}
+                            </select>
+                          ) : (
+                            <input value={tdef.date_col||""} onChange={e=>updateTable(i,"date_col",e.target.value)}
+                              placeholder="date column"
+                              style={{ flex:1, padding:"5px 8px", borderRadius:6, fontSize:11,
+                                border:`1px solid ${T.border}`, background:T.bg, color:T.text,
+                                fontFamily:"inherit", outline:"none" }}/>
+                          );
+                        })()}
+                        <button onClick={()=>aiSuggest(i)} disabled={!!aiLoading[i]}
+                          title="AI auto-detect"
+                          style={{ padding:"5px 8px", borderRadius:6, fontSize:10, cursor:"pointer",
+                            border:`1px solid ${T.accent}30`, background:`${T.accent}08`,
+                            color:T.accent, flexShrink:0 }}>
+                          {aiLoading[i]?<Spinner size={9}/>:"✨"}
+                        </button>
+                      </div>
+                    </div>
+                    {/* Max age */}
+                    <div style={{ width:90 }}>
+                      <label style={{ fontSize:9, color:T.muted, display:"block", marginBottom:2,
+                        textTransform:"uppercase", letterSpacing:"0.05em" }}>Max Age (days)</label>
+                      <input type="number" min={1} max={365} value={tdef.max_age_days||7}
+                        onChange={e=>updateTable(i,"max_age_days",Number(e.target.value))}
+                        style={{ width:"100%", padding:"5px 8px", borderRadius:6, fontSize:11,
+                          border:`1px solid ${T.border}`, background:T.bg, color:T.text,
+                          fontFamily:"monospace", outline:"none", boxSizing:"border-box" }}/>
+                    </div>
+                  </div>
+                </div>
+
+                <button onClick={()=>removeTable(i)}
+                  style={{ background:"none", border:"none", cursor:"pointer",
+                    color:T.red, fontSize:16, paddingTop:2, flexShrink:0 }}>×</button>
+              </div>
+            ))}
+          </div>
+
+          {/* Add table form */}
+          {addForm ? (
+            <div style={{ padding:"12px 14px", borderRadius:8, border:`1px dashed ${T.accent}40`,
+              background:`${T.accent}04`, marginBottom:10 }}>
+              <div style={{ display:"flex", gap:8, flexWrap:"wrap", marginBottom:8 }}>
+                <div style={{ flex:1, minWidth:180 }}>
+                  <label style={{ fontSize:9, color:T.muted, display:"block", marginBottom:2,
+                    textTransform:"uppercase" }}>Table</label>
+                  <select value={addForm.table}
+                    onChange={e=>{ const t=mwsTables.find(x=>x.table===e.target.value);
+                      setAddForm(p=>({...p,table:e.target.value,label:t?.name||"",date_col:""})); }}
+                    style={{ width:"100%", padding:"5px 8px", borderRadius:6, fontSize:11,
+                      border:`1px solid ${T.border}`, background:T.bg, color:T.text,
+                      fontFamily:"inherit", outline:"none" }}>
+                    <option value="">— pick a table —</option>
+                    {mwsTables.filter(t=>!tables.find(x=>x.table===t.table)).map(t=>(
+                      <option key={t.table} value={t.table}>{t.table}</option>
+                    ))}
+                  </select>
+                </div>
+                <div style={{ width:120 }}>
+                  <label style={{ fontSize:9, color:T.muted, display:"block", marginBottom:2,
+                    textTransform:"uppercase" }}>Label</label>
+                  <input value={addForm.label||""} onChange={e=>setAddForm(p=>({...p,label:e.target.value}))}
+                    placeholder="Label"
+                    style={{ width:"100%", padding:"5px 8px", borderRadius:6, fontSize:11,
+                      border:`1px solid ${T.border}`, background:T.bg, color:T.text,
+                      outline:"none", boxSizing:"border-box" }}/>
+                </div>
+                <div style={{ width:150 }}>
+                  <label style={{ fontSize:9, color:T.muted, display:"block", marginBottom:2,
+                    textTransform:"uppercase" }}>Date Column</label>
+                  <div style={{ display:"flex", gap:4 }}>
+                    {(() => {
+                      const found = mwsTables.find(t=>t.table===addForm.table);
+                      const cols  = found?.columns || [];
+                      return cols.length > 0 ? (
+                        <select value={addForm.date_col||""}
+                          onChange={e=>setAddForm(p=>({...p,date_col:e.target.value}))}
+                          style={{ flex:1, padding:"5px 8px", borderRadius:6, fontSize:11,
+                            border:`1px solid ${T.border}`, background:T.bg, color:T.text,
+                            fontFamily:"inherit", outline:"none" }}>
+                          <option value="">— none —</option>
+                          {cols.map(c=><option key={c} value={c}>{c}</option>)}
+                        </select>
+                      ) : (
+                        <input value={addForm.date_col||""} onChange={e=>setAddForm(p=>({...p,date_col:e.target.value}))}
+                          placeholder="date column"
+                          style={{ flex:1, padding:"5px 8px", borderRadius:6, fontSize:11,
+                            border:`1px solid ${T.border}`, background:T.bg, color:T.text,
+                            outline:"none" }}/>
+                      );
+                    })()}
+                  </div>
+                </div>
+                <div style={{ width:80 }}>
+                  <label style={{ fontSize:9, color:T.muted, display:"block", marginBottom:2,
+                    textTransform:"uppercase" }}>Max Age</label>
+                  <input type="number" min={1} value={addForm.max_age_days||7}
+                    onChange={e=>setAddForm(p=>({...p,max_age_days:Number(e.target.value)}))}
+                    style={{ width:"100%", padding:"5px 8px", borderRadius:6, fontSize:11,
+                      border:`1px solid ${T.border}`, background:T.bg, color:T.text,
+                      outline:"none", boxSizing:"border-box" }}/>
+                </div>
+              </div>
+              <div style={{ display:"flex", gap:6 }}>
+                <Btn size="sm" onClick={addTable} disabled={!addForm.table}
+                  style={{ background:`linear-gradient(135deg,${T.accent},${T.purple})`, color:"white", border:"none" }}>
+                  <Check size={10}/> Add Table
+                </Btn>
+                <Btn size="sm" variant="ghost" onClick={()=>setAddForm(null)}>Cancel</Btn>
+              </div>
+            </div>
+          ) : (
+            <Btn size="sm" variant="ghost"
+              onClick={()=>{ loadMwsTables(); setAddForm({table:"",date_col:"",label:"",max_age_days:7}); }}
+              style={{ marginBottom:12 }}>
+              <Plus size={10}/> Add Table
+            </Btn>
+          )}
+
+          {/* Save */}
+          <div style={{ display:"flex", gap:8, justifyContent:"flex-end", marginTop:4 }}>
+            <Btn size="sm" variant="ghost" onClick={()=>setShowConfig(false)}>Close</Btn>
+            <Btn size="sm" onClick={async()=>{ await saveConfig(); setShowConfig(false); run(); }}
+              disabled={configSaving}
+              style={{ background:`linear-gradient(135deg,${T.accent},${T.purple})`, color:"white", border:"none" }}>
+              {configSaving?<Spinner size={10} color="white"/>:<Check size={10}/>}
+              Save & Run Check
+            </Btn>
+          </div>
+        </div>
+      )}
 
       {/* Last checked */}
       {result?.checked_at && (
@@ -12186,8 +12528,28 @@ function ResultDetail({ run, check, allChecks, onBack, onSelectCheck, onNavigate
           <div style={{ display:"flex", flexDirection:"column", alignItems:"center",
             justifyContent:"center", height:"100%", gap:12, color:"#9CA3AF" }}>
             <div style={{ fontSize:32 }}>📭</div>
-            <div style={{ fontSize:13, fontWeight:600, color:"#374151" }}>No row data available</div>
-            <div style={{ fontSize:11 }}>This check may not have returned row-level results, or the data has expired.</div>
+            <div style={{ fontSize:13, fontWeight:600, color:"#374151" }}>No row data loaded</div>
+            <div style={{ fontSize:11, textAlign:"center", maxWidth:320 }}>
+              The check SQL may have returned 0 rows (a pass), the run data may have expired,
+              or there was a connection issue.
+            </div>
+            <button onClick={()=>load(0)}
+              style={{ marginTop:4, padding:"7px 16px", borderRadius:8, fontSize:12,
+                border:`1px solid ${T.accent}`, background:`${T.accent}10`,
+                color:T.accent, cursor:"pointer", fontWeight:600 }}>
+              ↺ Retry
+            </button>
+            {check.sql && (
+              <details style={{ marginTop:4, maxWidth:400 }}>
+                <summary style={{ fontSize:10, color:T.dim, cursor:"pointer" }}>Show SQL</summary>
+                <pre style={{ fontSize:10, color:T.text2, background:T.surface,
+                  padding:"8px 12px", borderRadius:6, marginTop:6,
+                  border:`1px solid ${T.border}`, whiteSpace:"pre-wrap",
+                  wordBreak:"break-all", fontFamily:"monospace" }}>
+                  {check.sql}
+                </pre>
+              </details>
+            )}
           </div>
         )}
         {!loading && !error && data && (
@@ -12198,7 +12560,9 @@ function ResultDetail({ run, check, allChecks, onBack, onSelectCheck, onNavigate
                 <th style={{ padding:"6px 12px", textAlign:"left", fontSize:9,
                   fontWeight:700, color:T.muted, textTransform:"uppercase",
                   letterSpacing:"0.05em", whiteSpace:"nowrap", width:40 }}>#</th>
-                {(data.columns||[]).map(col=>(
+                {((data.columns?.length > 0 ? data.columns
+                    : displayRows.length > 0 ? Object.keys(displayRows[0]) : []
+                  )).map(col=>(
                   <th key={col} onClick={()=>toggleSort(col)}
                     style={{ padding:"6px 12px", textAlign:"left", fontSize:9,
                       fontWeight:700, color:sortCol===col?T.accent:T.muted,
@@ -12212,8 +12576,20 @@ function ResultDetail({ run, check, allChecks, onBack, onSelectCheck, onNavigate
             <tbody>
               {displayRows.length===0 && (
                 <tr><td colSpan={(data.columns?.length||0)+1}
-                  style={{ padding:"30px", textAlign:"center", color:T.dim }}>
-                  No rows {search?"match your search":"returned"}
+                  style={{ padding:"40px 30px", textAlign:"center" }}>
+                  {search ? (
+                    <span style={{ color:T.dim, fontSize:12 }}>No rows match your search</span>
+                  ) : check.passed ? (
+                    <div>
+                      <div style={{ fontSize:28, marginBottom:8 }}>✅</div>
+                      <div style={{ fontSize:13, fontWeight:600, color:T.green }}>Check passed — 0 violating rows</div>
+                      <div style={{ fontSize:11, color:T.muted, marginTop:4 }}>
+                        This check returned no rows, which means the pass condition was met.
+                      </div>
+                    </div>
+                  ) : (
+                    <span style={{ color:T.dim, fontSize:12 }}>No rows returned</span>
+                  )}
                 </td></tr>
               )}
               {displayRows.map((row,i)=>(
@@ -12224,7 +12600,9 @@ function ResultDetail({ run, check, allChecks, onBack, onSelectCheck, onNavigate
                   <td style={{ padding:"4px 12px", color:T.dim, fontSize:10 }}>
                     {page*LIMIT+i+1}
                   </td>
-                  {(data.columns||[]).map(col=>{
+                  {(data.columns?.length > 0 ? data.columns
+                      : displayRows.length > 0 ? Object.keys(displayRows[0]) : []
+                    ).map(col=>{
                     const v = row[col];
                     return (
                       <td key={col} style={{ padding:"4px 12px",

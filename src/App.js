@@ -308,6 +308,7 @@ const NAV = [
   { id:"query",     label:"Data Explorer",     icon:Database,      shortcut:"8" },
   { id:"results",   label:"Results",           icon:BarChart2,     shortcut:"9" },
   { id:"scheduler", label:"Scheduler",         icon:Clock,         shortcut:"S" },
+  { id:"demo",      label:"Demo Validation",   icon:Shield,        shortcut:"D" },
 ];
 
 // ─── Sidebar ──────────────────────────────────────────────────────────────────
@@ -2984,7 +2985,7 @@ Rows affected: ${issue.count}
                 Error: {preview.error}
               </div>
             )}
-            {!previewLoading && preview?.rows?.length > 0 && (
+            {!previewLoading && !preview?.error && (preview?.rows||[]).length > 0 && (
               <div style={{ overflowX:"auto", overflowY:"auto",
                 maxHeight:"calc(100vh - 280px)", borderRadius:8,
                 border:`1px solid ${T.border}` }}>
@@ -2992,15 +2993,27 @@ Rows affected: ${issue.count}
                   fontFamily:T.monoFont, width:"100%", minWidth:600 }}>
                   <thead>
                     <tr style={{ background:`${T.accent}08` }}>
-                      {(preview.columns||Object.keys(preview.rows[0])).map(col=>(
-                        <th key={col} style={{ padding:"8px 14px", textAlign:"left",
-                          fontWeight:700, fontSize:10, color:T.muted,
-                          borderBottom:`1px solid ${T.border}`, whiteSpace:"nowrap",
-                          textTransform:"uppercase", letterSpacing:"0.04em",
-                          position:"sticky", top:0, background:"#FAFBFF" }}>
-                          {col}
-                        </th>
-                      ))}
+                      {(() => {
+                        // Normalize: handle both flat strings and legacy {column_name} objects
+                        const cols = (preview.columns||[]).length > 0
+                          ? preview.columns.map(c => typeof c === "string" ? c : c.column_name)
+                          : Object.keys(preview.rows[0]||{});
+                        return cols.map(col=>(
+                          <th key={col} style={{ padding:"8px 14px", textAlign:"left",
+                            fontWeight:700, fontSize:10, color:T.muted,
+                            borderBottom:`1px solid ${T.border}`, whiteSpace:"nowrap",
+                            textTransform:"uppercase", letterSpacing:"0.04em",
+                            position:"sticky", top:0, background:"#FAFBFF" }}>
+                            {col}
+                            {preview.column_types?.[col] && (
+                              <div style={{ fontSize:8, color:T.dim, fontWeight:400,
+                                textTransform:"none", marginTop:1 }}>
+                                {preview.column_types[col].replace("character varying","varchar").replace("timestamp without time zone","timestamp")}
+                              </div>
+                            )}
+                          </th>
+                        ));
+                      })()}
                     </tr>
                   </thead>
                   <tbody>
@@ -3008,7 +3021,10 @@ Rows affected: ${issue.count}
                       <tr key={i}
                         onMouseEnter={e=>e.currentTarget.style.background=`${T.accent}06`}
                         onMouseLeave={e=>e.currentTarget.style.background=i%2===0?"transparent":"#FAFBFF"}>
-                        {(preview.columns||Object.keys(row)).map((col,j)=>{
+                        {((preview.columns||[]).length > 0
+                          ? preview.columns.map(c=>typeof c==="string"?c:c.column_name)
+                          : Object.keys(row)
+                        ).map((col,j)=>{
                           const v = row[col];
                           const isNull = v===null||v===undefined;
                           const isBad  = !isNull && (
@@ -3034,9 +3050,9 @@ Rows affected: ${issue.count}
                 </table>
               </div>
             )}
-            {!previewLoading && preview?.rows?.length === 0 && (
+            {!previewLoading && preview && !preview.error && (preview.rows||[]).length === 0 && (
               <div style={{ textAlign:"center", padding:"48px 0", color:T.muted, fontSize:13 }}>
-                Query returned 0 rows
+                No rows returned for <code style={{fontFamily:"monospace"}}>{selectedTable}</code>
               </div>
             )}
             {!previewLoading && !preview && (
@@ -8753,6 +8769,7 @@ function WorkflowsTab({ navigateTo }) {
   const [selectedWfIds, setSelectedWfIds] = React.useState(new Set());
   const toggleWfSelect = (id) => setSelectedWfIds(p => { const n=new Set(p); n.has(id)?n.delete(id):n.add(id); return n; });
   const clearWfSelect = () => setSelectedWfIds(new Set());
+  const [showAiAssistant, setShowAiAssistant] = React.useState(false);
 
   // Seed built-in workflows into backend on first load if they don't exist yet
   const BUILTIN_SEEDS = [
@@ -8952,7 +8969,9 @@ Respond ONLY with JSON array (no markdown):
   const recentRuns = runHistory.slice(0,20);
 
   return (
-    <div style={{ overflowY:"auto", padding:"24px 28px", maxWidth:1100 }}>
+    <div style={{ display:"flex", height:"100%", overflow:"hidden" }}>
+    {/* Main content */}
+    <div style={{ flex:1, overflowY:"auto", padding:"24px 28px", maxWidth: showAiAssistant ? 700 : 1100 }}>
 
       {/* Header */}
       <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom:20 }}>
@@ -8973,6 +8992,10 @@ Respond ONLY with JSON array (no markdown):
           </Btn>
           <Btn onClick={()=>setShowTemplates(p=>!p)} variant="ghost" size="sm">
             📋 Templates
+          </Btn>
+          <Btn onClick={()=>setShowAiAssistant(p=>!p)} variant="ghost" size="sm"
+            style={{ border:`1px solid ${T.accent}30`, color:T.accent }}>
+            🤖 AI Assistant
           </Btn>
           <Btn onClick={()=>{ setEditing(null); setView("builder"); }}
             style={{ background:`linear-gradient(135deg,${T.accent},${T.purple})`, color:"white", border:"none" }}>
@@ -9257,7 +9280,23 @@ Respond ONLY with JSON array (no markdown):
           })}
         </div>
       )}
-      </div>{/* end custom workflows */}
+      </div>
+    </div>
+
+    {/* AI Assistant panel */}
+    {showAiAssistant && (
+      <div style={{ width:400, flexShrink:0, height:"100%", display:"flex", flexDirection:"column" }}>
+        <AiWorkflowAssistant
+          workflows={workflows}
+          dbSchema={dbSchema}
+          onSave={saveWf}
+          onDelete={deleteWf}
+          onRun={runWf}
+          onClose={()=>setShowAiAssistant(false)}
+          T={T}
+        />
+      </div>
+    )}
     </div>
   );
 }
@@ -9655,6 +9694,314 @@ function AllRunsView({ history, workflows, onBack, onOpenWf }) {
   );
 }
 
+// ═══════════════════════════════════════════════════════════════════════════════
+// AI WORKFLOW ASSISTANT — conversational workflow builder
+// ═══════════════════════════════════════════════════════════════════════════════
+function AiWorkflowAssistant({ workflows, dbSchema, onSave, onDelete, onRun, onClose, T }) {
+  const [messages, setMessages] = React.useState([{
+    role:"assistant",
+    text:"I can build, edit, delete, run, or configure any workflow from plain text.\n\nTry: \"Create a workflow that checks for failed downloads in mws.report daily\" or \"Edit the daily brief to add a null check on orders\" or \"Run all workflows\" or \"Delete the X workflow\".",
+    actions:[]
+  }]);
+  const [input,   setInput]   = React.useState("");
+  const [loading, setLoading] = React.useState(false);
+  const bottomRef = React.useRef(null);
+
+  React.useEffect(()=>{
+    if (bottomRef.current) bottomRef.current.scrollIntoView({behavior:"smooth"});
+  }, [messages]);
+
+  const send = async (textOverride) => {
+    const text = (textOverride || input).trim();
+    if (!text || loading) return;
+    setInput("");
+    setMessages(p=>[...p, {role:"user", text}, {role:"thinking"}]);
+    setLoading(true);
+
+    const history = messages.slice(-6).map(m=>({
+      role: m.role==="user"?"user":"assistant",
+      content: m.text||""
+    })).filter(h=>h.content);
+
+    const wfList = workflows.map(w=>
+      `id:${w.id} name:"${w.name}" schedule:${w.schedule||"manual"} checks:${(w.checks||[]).length} enabled:${w.enabled!==false}`
+    ).join("\n");
+
+    const system = `You are WiziAgent, an AI that manages data quality workflows for a Redshift-based ecommerce analytics platform.
+
+CURRENT WORKFLOWS:
+${wfList || "None yet"}
+
+FULL DATABASE SCHEMA (use ONLY these exact columns — never invent):
+${dbSchema || "mws.report(status,download_date,report_type,copy_status), mws.orders(amazon_order_id,asin,status,purchase_date), mws.inventory(asin,available,snapshot_date), mws.sales_and_traffic_by_date(sale_date,ordered_revenue,sessions)"}
+
+CAPABILITIES:
+You can take these actions by returning structured JSON. Always return a JSON object with:
+- "reply": your conversational response explaining what you did
+- "actions": array of action objects
+
+ACTION TYPES:
+1. create_workflow: { type:"create_workflow", workflow:{ name, desc, schedule, checks:[{name,sql,pass_condition,severity}] } }
+2. update_workflow: { type:"update_workflow", workflow_id:"id", changes:{ name?, desc?, schedule?, checks?, enabled? } }
+3. delete_workflow: { type:"delete_workflow", workflow_id:"id", workflow_name:"name" }
+4. run_workflow: { type:"run_workflow", workflow_id:"id", workflow_name:"name" }
+5. add_check: { type:"add_check", workflow_id:"id", check:{ name, sql, pass_condition, severity } }
+6. remove_check: { type:"remove_check", workflow_id:"id", check_name:"name" }
+7. enable_workflow: { type:"enable_workflow", workflow_id:"id", enabled:true/false }
+
+RULES FOR SQL:
+- Use ONLY columns from the schema above. Never invent column names.
+- Do NOT write SELECT COUNT(*) without a WHERE clause. Write meaningful checks.
+- pass_condition: "rows = 0" (no bad rows), "rows > 0" (data present), "value > N"
+- severity: critical|high|medium|low
+- schedule options: "every 15 min", "every 30 min", "every 1 hour", "daily", "weekly", "manual"
+
+Respond ONLY with a JSON object. No markdown, no backticks.
+Example: {"reply":"Created a workflow with 2 checks for mws.report","actions":[{"type":"create_workflow","workflow":{...}}]}`;
+
+    try {
+      const res = await fetch(`${API}/api/ai/chat`, {
+        method:"POST", headers:{"Content-Type":"application/json"},
+        body:JSON.stringify({
+          system,
+          messages:[...history, {role:"user", content:text}],
+          max_tokens:1200
+        })
+      });
+      const data = await res.json();
+      const raw  = data?.content?.[0]?.text || "{}";
+      let parsed;
+      try { parsed = JSON.parse(raw.replace(/```json|```/g,"").trim()); }
+      catch(e) { parsed = { reply: raw, actions:[] }; }
+
+      const reply   = parsed.reply   || "Done.";
+      const actions = parsed.actions || [];
+      const performed = [];
+
+      for (const action of actions) {
+        try {
+          if (action.type === "create_workflow") {
+            const wf = {
+              ...action.workflow,
+              id: `ai_wf_${Date.now().toString(36)}`,
+              checks: (action.workflow.checks||[]).map((c,i)=>({...c, id:`c_${Date.now()}_${i}`})),
+              created_at: new Date().toISOString(),
+              enabled: true,
+            };
+            await onSave(wf);
+            performed.push({ type:"created", name:wf.name, id:wf.id });
+          }
+          else if (action.type === "update_workflow") {
+            const existing = workflows.find(w=>w.id===action.workflow_id
+              || w.name.toLowerCase()===String(action.workflow_id||"").toLowerCase());
+            if (existing) {
+              const updated = { ...existing, ...action.changes,
+                checks: action.changes.checks
+                  ? action.changes.checks.map((c,i)=>({...c, id:c.id||`c_${Date.now()}_${i}`}))
+                  : existing.checks
+              };
+              await onSave(updated);
+              performed.push({ type:"updated", name:updated.name });
+            }
+          }
+          else if (action.type === "delete_workflow") {
+            const existing = workflows.find(w=>w.id===action.workflow_id
+              || w.name.toLowerCase()===String(action.workflow_name||"").toLowerCase());
+            if (existing) { await onDelete(existing.id); performed.push({ type:"deleted", name:existing.name }); }
+          }
+          else if (action.type === "run_workflow") {
+            const existing = workflows.find(w=>w.id===action.workflow_id
+              || w.name.toLowerCase()===String(action.workflow_name||"").toLowerCase());
+            if (existing) { await onRun(existing); performed.push({ type:"ran", name:existing.name }); }
+          }
+          else if (action.type === "add_check") {
+            const existing = workflows.find(w=>w.id===action.workflow_id);
+            if (existing) {
+              const updated = { ...existing, checks:[...existing.checks,
+                {...action.check, id:`c_${Date.now()}`}] };
+              await onSave(updated);
+              performed.push({ type:"check_added", name:action.check.name, wf:existing.name });
+            }
+          }
+          else if (action.type === "remove_check") {
+            const existing = workflows.find(w=>w.id===action.workflow_id);
+            if (existing) {
+              const updated = { ...existing, checks:existing.checks.filter(
+                c=>c.name.toLowerCase()!==String(action.check_name||"").toLowerCase()) };
+              await onSave(updated);
+              performed.push({ type:"check_removed", name:action.check_name, wf:existing.name });
+            }
+          }
+          else if (action.type === "enable_workflow") {
+            const existing = workflows.find(w=>w.id===action.workflow_id);
+            if (existing) {
+              const updated = { ...existing, enabled: action.enabled };
+              await onSave(updated);
+              performed.push({ type:action.enabled?"enabled":"disabled", name:existing.name });
+            }
+          }
+        } catch(e) { performed.push({ type:"error", msg:e.message }); }
+      }
+
+      setMessages(p=>[
+        ...p.filter(m=>m.role!=="thinking"),
+        { role:"assistant", text:reply, actions:performed }
+      ]);
+    } catch(e) {
+      setMessages(p=>[...p.filter(m=>m.role!=="thinking"),
+        { role:"assistant", text:`Error: ${e.message}`, actions:[] }]);
+    }
+    setLoading(false);
+  };
+
+  const SUGGESTIONS = [
+    "Create a workflow checking for failed downloads today",
+    "Add a null check on mws.orders.asin to Daily Brief",
+    "Schedule the daily brief to run every hour",
+    "Show me all my workflows",
+    "Delete the test workflow",
+    "Run all enabled workflows",
+    "Create 3 data quality checks for mws.inventory",
+  ];
+
+  return (
+    <div style={{ display:"flex", flexDirection:"column", height:"100%",
+      background:T.surface, borderLeft:`1px solid ${T.border}` }}>
+
+      {/* Header */}
+      <div style={{ padding:"14px 18px", borderBottom:`1px solid ${T.border}`,
+        display:"flex", alignItems:"center", gap:10, flexShrink:0,
+        background:`linear-gradient(135deg,${T.accent}08,${T.purple}08)` }}>
+        <div style={{ width:32, height:32, borderRadius:9,
+          background:`linear-gradient(135deg,${T.accent},${T.purple})`,
+          display:"flex", alignItems:"center", justifyContent:"center",
+          fontSize:16, flexShrink:0 }}>🤖</div>
+        <div style={{ flex:1 }}>
+          <div style={{ fontSize:13, fontWeight:700, color:T.text }}>AI Workflow Assistant</div>
+          <div style={{ fontSize:9, color:T.muted }}>Build · Edit · Delete · Run · Configure</div>
+        </div>
+        <button onClick={onClose}
+          style={{ background:"none", border:"none", cursor:"pointer",
+            color:T.muted, fontSize:18, lineHeight:1 }}>×</button>
+      </div>
+
+      {/* Messages */}
+      <div style={{ flex:1, overflowY:"auto", padding:"14px 16px",
+        display:"flex", flexDirection:"column", gap:10 }}>
+
+        {/* Suggestions on empty */}
+        {messages.length === 1 && (
+          <div style={{ marginBottom:4 }}>
+            <div style={{ fontSize:10, color:T.muted, fontWeight:600,
+              textTransform:"uppercase", letterSpacing:"0.06em", marginBottom:8 }}>
+              Try asking…
+            </div>
+            <div style={{ display:"flex", flexWrap:"wrap", gap:5 }}>
+              {SUGGESTIONS.map(s=>(
+                <button key={s} onClick={()=>send(s)}
+                  style={{ fontSize:10, padding:"4px 10px", borderRadius:99,
+                    border:`1px solid ${T.accent}30`, background:`${T.accent}06`,
+                    color:T.accent, cursor:"pointer", fontFamily:"inherit" }}>
+                  {s}
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {messages.map((m,i)=>(
+          <div key={i}>
+            {m.role==="user" && (
+              <div style={{ display:"flex", justifyContent:"flex-end" }}>
+                <div style={{ maxWidth:"82%", padding:"9px 13px", borderRadius:12,
+                  borderBottomRightRadius:3, fontSize:12, lineHeight:1.5,
+                  background:`linear-gradient(135deg,${T.accent},${T.purple})`,
+                  color:"white", whiteSpace:"pre-wrap" }}>
+                  {m.text}
+                </div>
+              </div>
+            )}
+            {m.role==="thinking" && (
+              <div style={{ display:"flex", alignItems:"center", gap:6,
+                color:T.muted, fontSize:11 }}>
+                <Spinner size={10}/> <span style={{fontStyle:"italic"}}>Working on it…</span>
+              </div>
+            )}
+            {m.role==="assistant" && (
+              <div>
+                {/* Action chips */}
+                {(m.actions||[]).length > 0 && (
+                  <div style={{ display:"flex", flexWrap:"wrap", gap:5, marginBottom:6 }}>
+                    {m.actions.map((a,ai)=>{
+                      const chipColor = a.type==="error"?T.red:a.type==="deleted"?T.orange:T.green;
+                      const chipLabel = a.type==="created"?`✨ Created: ${a.name}`
+                        :a.type==="updated"?`✏ Updated: ${a.name}`
+                        :a.type==="deleted"?`🗑 Deleted: ${a.name}`
+                        :a.type==="ran"?`▶ Running: ${a.name}`
+                        :a.type==="enabled"?`✓ Enabled: ${a.name}`
+                        :a.type==="disabled"?`⏸ Paused: ${a.name}`
+                        :a.type==="check_added"?`+ Check added to ${a.wf}`
+                        :a.type==="check_removed"?`- Check removed from ${a.wf}`
+                        :a.type==="error"?`✗ ${a.msg}`:a.type;
+                      return (
+                        <span key={ai} style={{ fontSize:10, padding:"3px 10px",
+                          borderRadius:99, background:`${chipColor}10`,
+                          border:`1px solid ${chipColor}30`, color:chipColor, fontWeight:600 }}>
+                          {chipLabel}
+                        </span>
+                      );
+                    })}
+                  </div>
+                )}
+                {/* Reply text */}
+                <div style={{ padding:"9px 12px", borderRadius:10, borderBottomLeftRadius:3,
+                  fontSize:12, lineHeight:1.6, color:T.text,
+                  background:T.card, border:`1px solid ${T.border}`,
+                  whiteSpace:"pre-wrap", maxWidth:"90%" }}>
+                  {m.text}
+                </div>
+              </div>
+            )}
+          </div>
+        ))}
+        <div ref={bottomRef}/>
+      </div>
+
+      {/* Input */}
+      <div style={{ padding:"10px 14px", borderTop:`1px solid ${T.border}`,
+        flexShrink:0, background:T.surface }}>
+        <div style={{ display:"flex", gap:8, alignItems:"flex-end" }}>
+          <textarea
+            value={input}
+            onChange={e=>setInput(e.target.value)}
+            onKeyDown={e=>{ if(e.key==="Enter"&&!e.shiftKey){e.preventDefault();send();} }}
+            placeholder="Describe what you want to build, change, or do…"
+            rows={1}
+            style={{ flex:1, padding:"8px 11px", borderRadius:9, fontSize:12,
+              border:`1px solid ${T.border}`, background:T.bg, color:T.text,
+              outline:"none", fontFamily:"inherit", resize:"none",
+              lineHeight:1.4, maxHeight:100, overflowY:"auto" }}
+            onInput={e=>{ e.target.style.height="auto"; e.target.style.height=Math.min(e.target.scrollHeight,100)+"px"; }}
+            onFocus={e=>e.target.style.borderColor=T.accent}
+            onBlur={e=>e.target.style.borderColor=T.border}
+          />
+          <button onClick={()=>send()} disabled={!input.trim()||loading}
+            style={{ width:34, height:34, borderRadius:8, flexShrink:0, border:"none",
+              background:(!input.trim()||loading)?"#E8ECF0":`linear-gradient(135deg,${T.accent},${T.purple})`,
+              cursor:(!input.trim()||loading)?"not-allowed":"pointer",
+              display:"flex", alignItems:"center", justifyContent:"center", color:"white" }}>
+            {loading?<Spinner size={12} color="white"/>:<ArrowRight size={14}/>}
+          </button>
+        </div>
+        <div style={{ fontSize:9, color:T.dim, marginTop:4, textAlign:"center" }}>
+          Enter to send · Shift+Enter for newline
+        </div>
+      </div>
+    </div>
+  );
+}
+
+
 // ── WorkflowBuilder — create / edit workflow with SQL checks ─────────────────
 function WorkflowBuilder({ initial, dbSchema, onSave, onCancel }) {
   const T = useT();
@@ -9693,7 +10040,6 @@ function WorkflowBuilder({ initial, dbSchema, onSave, onCancel }) {
     if (!aiDesc.trim()) return;
     setAiLoad(true);
     try {
-      const tables = dbSchema ? dbSchema.split(";").map(t=>t.split("(")[0].trim()).filter(Boolean).slice(0,20).join(", ") : "mws.report, mws.orders";
       const res  = await fetch(`${API}/api/ai/chat`, {
         method:"POST", headers:{"Content-Type":"application/json"},
         body:JSON.stringify({
@@ -10875,6 +11221,232 @@ function FloatingAssistant({ currentRun, currentTab, onNavigate }) {
   );
 }
 
+// ═══════════════════════════════════════════════════════════════════════════════
+// DEMO DATA VALIDATION TAB
+// ═══════════════════════════════════════════════════════════════════════════════
+function DemoValidationTab() {
+  const T = useT();
+  const [result,  setResult]  = React.useState(null);
+  const [loading, setLoading] = React.useState(false);
+  const [expanded, setExpanded] = React.useState({});
+
+  const run = async () => {
+    setLoading(true);
+    try {
+      const r = await fetch(`${API}/api/demo/check`);
+      const d = await r.json();
+      setResult(d);
+    } catch(e) {}
+    setLoading(false);
+  };
+
+  React.useEffect(()=>{ run(); }, []);
+
+  const STATUS_COLOR = { pass:T.green, warn:T.yellow||"#F59E0B", fail:T.red, error:T.red };
+  const STATUS_ICON  = { pass:"✓", warn:"⚠", fail:"✗", error:"✗" };
+
+  const overall = result?.status;
+  const overallColor = STATUS_COLOR[overall] || T.muted;
+
+  return (
+    <div style={{ overflowY:"auto", padding:"24px 28px", maxWidth:960 }}>
+
+      {/* Header */}
+      <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom:20 }}>
+        <div>
+          <div style={{ fontSize:20, fontWeight:800, color:T.text, letterSpacing:"-0.02em" }}>
+            Demo Data Validation
+          </div>
+          <div style={{ fontSize:11, color:T.muted, marginTop:2 }}>
+            Checks mws schema tables for demo accounts (46, 3038) — presence + freshness
+          </div>
+        </div>
+        <div style={{ display:"flex", gap:8, alignItems:"center" }}>
+          {result && (
+            <div style={{ padding:"6px 14px", borderRadius:99,
+              background:`${overallColor}12`, border:`1px solid ${overallColor}30`,
+              fontSize:12, fontWeight:700, color:overallColor }}>
+              {STATUS_ICON[overall]} {overall?.toUpperCase()}
+            </div>
+          )}
+          <Btn onClick={run} disabled={loading} size="sm"
+            style={{ background:`linear-gradient(135deg,${T.accent},${T.purple})`, color:"white", border:"none" }}>
+            {loading?<Spinner size={11} color="white"/>:<RefreshCw size={11}/>}
+            {loading?"Checking…":"Run Check"}
+          </Btn>
+        </div>
+      </div>
+
+      {/* Last checked */}
+      {result?.checked_at && (
+        <div style={{ fontSize:10, color:T.dim, marginBottom:16 }}>
+          Last checked: {new Date(result.checked_at).toLocaleString()}
+        </div>
+      )}
+
+      {/* Summary KPI strip */}
+      {result?.results && (() => {
+        const pass = result.results.filter(r=>r.status==="pass").length;
+        const warn = result.results.filter(r=>r.status==="warn").length;
+        const fail = result.results.filter(r=>r.status==="fail"||r.status==="error").length;
+        return (
+          <div style={{ display:"flex", gap:10, marginBottom:20 }}>
+            {[
+              { label:"Tables OK",      value:pass, color:T.green  },
+              { label:"Warnings",       value:warn, color:"#F59E0B" },
+              { label:"Failing",        value:fail, color:T.red    },
+              { label:"Demo Accounts",  value:result.demo_accounts?.join(", "), color:T.accent },
+            ].map(k=>(
+              <div key={k.label} style={{ padding:"10px 16px", borderRadius:10,
+                border:`1px solid ${k.color}25`, background:`${k.color}08`, flex:1 }}>
+                <div style={{ fontSize:18, fontWeight:800, color:k.color }}>{k.value}</div>
+                <div style={{ fontSize:10, color:T.muted, textTransform:"uppercase",
+                  letterSpacing:"0.05em", marginTop:2 }}>{k.label}</div>
+              </div>
+            ))}
+          </div>
+        );
+      })()}
+
+      {/* Table cards */}
+      {loading && !result && (
+        <div style={{ textAlign:"center", padding:"60px 0" }}><Spinner size={28}/></div>
+      )}
+
+      <div style={{ display:"flex", flexDirection:"column", gap:12 }}>
+        {(result?.results||[]).map(row => {
+          const sc = STATUS_COLOR[row.status] || T.muted;
+          const si = STATUS_ICON[row.status]  || "?";
+          const isExp = expanded[row.table];
+          return (
+            <div key={row.table} style={{ background:T.surface, borderRadius:12,
+              border:`1px solid ${sc}30`,
+              borderLeft:`4px solid ${sc}`,
+              boxShadow:"0 1px 4px rgba(0,0,0,0.05)" }}>
+
+              {/* Row header */}
+              <div style={{ padding:"14px 18px", display:"flex", alignItems:"center",
+                gap:12, cursor:"pointer" }}
+                onClick={()=>setExpanded(p=>({...p,[row.table]:!p[row.table]}))}>
+
+                <div style={{ width:28, height:28, borderRadius:7, flexShrink:0,
+                  background:`${sc}15`, display:"flex", alignItems:"center",
+                  justifyContent:"center", fontSize:14, fontWeight:800, color:sc }}>
+                  {si}
+                </div>
+
+                <div style={{ flex:1 }}>
+                  <div style={{ display:"flex", alignItems:"center", gap:8, flexWrap:"wrap" }}>
+                    <span style={{ fontSize:13, fontWeight:700, color:T.text }}>{row.label}</span>
+                    <span style={{ fontSize:10, color:T.muted, fontFamily:"monospace" }}>{row.table}</span>
+                    {row.issues.map((issue,i)=>(
+                      <span key={i} style={{ fontSize:10, padding:"1px 8px", borderRadius:4,
+                        background:`${sc}12`, color:sc, fontWeight:600 }}>
+                        {issue}
+                      </span>
+                    ))}
+                  </div>
+                  <div style={{ fontSize:10, color:T.muted, marginTop:3, display:"flex", gap:14 }}>
+                    {row.demo_rows > 0 && (
+                      <span>📦 {row.demo_rows.toLocaleString()} demo rows</span>
+                    )}
+                    {row.min_date && (
+                      <span>📅 {row.min_date} → {row.max_date}</span>
+                    )}
+                    {row.days_since_max != null && (
+                      <span style={{ color: row.days_since_max > 7 ? T.red : row.days_since_max > 3 ? "#F59E0B" : T.green }}>
+                        🕐 {row.days_since_max === 0 ? "Updated today" : `${row.days_since_max}d ago`}
+                      </span>
+                    )}
+                    {row.accounts_found?.length > 0 && (
+                      <span>👤 Accounts: {row.accounts_found.join(", ")}</span>
+                    )}
+                  </div>
+                </div>
+
+                <span style={{ fontSize:10, color:T.dim }}>{isExp?"▲":"▼"}</span>
+              </div>
+
+              {/* Expanded detail */}
+              {isExp && (
+                <div style={{ borderTop:`1px solid ${T.border}`, padding:"12px 18px" }}>
+
+                  {/* Per-account breakdown table */}
+                  {(row.account_detail||[]).length > 0 ? (
+                    <div>
+                      <div style={{ fontSize:10, fontWeight:700, color:T.muted,
+                        textTransform:"uppercase", letterSpacing:"0.06em", marginBottom:8 }}>
+                        Per-Account Breakdown
+                      </div>
+                      <table style={{ borderCollapse:"collapse", width:"100%", fontSize:11 }}>
+                        <thead>
+                          <tr style={{ borderBottom:`1px solid ${T.border}` }}>
+                            {["Account ID","Rows","Min Date","Max Date","Freshness"].map(h=>(
+                              <th key={h} style={{ padding:"5px 10px", textAlign:"left",
+                                fontSize:9, fontWeight:700, color:T.muted,
+                                textTransform:"uppercase", letterSpacing:"0.05em" }}>{h}</th>
+                            ))}
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {row.account_detail.map(acct => {
+                            let freshDays = null;
+                            try {
+                              freshDays = Math.floor((Date.now() - new Date(acct.max_date).getTime()) / 86400000);
+                            } catch(e){}
+                            const freshColor = freshDays == null ? T.muted : freshDays > 7 ? T.red : freshDays > 3 ? "#F59E0B" : T.green;
+                            return (
+                              <tr key={acct.account_id} style={{ borderBottom:`1px solid ${T.border}20` }}>
+                                <td style={{ padding:"6px 10px", fontWeight:700, color:T.accent,
+                                  fontFamily:"monospace" }}>{acct.account_id}</td>
+                                <td style={{ padding:"6px 10px", color:T.text }}>
+                                  {acct.rows.toLocaleString()}
+                                </td>
+                                <td style={{ padding:"6px 10px", color:T.muted, fontFamily:"monospace" }}>
+                                  {acct.min_date||"—"}
+                                </td>
+                                <td style={{ padding:"6px 10px", color:T.muted, fontFamily:"monospace" }}>
+                                  {acct.max_date||"—"}
+                                </td>
+                                <td style={{ padding:"6px 10px" }}>
+                                  {freshDays != null ? (
+                                    <span style={{ color:freshColor, fontWeight:600, fontSize:11 }}>
+                                      {freshDays === 0 ? "Today" : `${freshDays}d ago`}
+                                    </span>
+                                  ) : "—"}
+                                </td>
+                              </tr>
+                            );
+                          })}
+                        </tbody>
+                      </table>
+
+                      {/* Missing accounts */}
+                      {[46, 3038].filter(a => !(row.accounts_found||[]).includes(a)).length > 0 && (
+                        <div style={{ marginTop:10, padding:"8px 12px", borderRadius:6,
+                          background:`${T.red}08`, border:`1px solid ${T.red}20`,
+                          fontSize:11, color:T.red }}>
+                          ✗ Missing demo accounts:{" "}
+                          {[46, 3038].filter(a=>!(row.accounts_found||[]).includes(a)).join(", ")}
+                        </div>
+                      )}
+                    </div>
+                  ) : (
+                    <div style={{ fontSize:11, color:T.muted }}>
+                      No demo account data found in this table.
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+
 function ResultsTab({ onNavigate }) {
   const T = useT();
   const [view,       setView]    = React.useState("list"); // list | detail | trends
@@ -10909,14 +11481,16 @@ function ResultsTab({ onNavigate }) {
   }, [runs]);
 
   if (view==="detail" && selected && selected.check) return (
-    <ResultDetail
-      run={selected.run}
-      check={selected.check}
-      allChecks={selected.run.check_results||[]}
-      onBack={()=>{ setView("list"); setSelected(null); window.location.hash=""; }}
-      onSelectCheck={(chk)=>setSelected(p=>({...p, check:chk}))}
-      onNavigate={onNavigate}
-    />
+    <div style={{ height:"calc(100vh - 2px)", display:"flex", flexDirection:"column", overflow:"hidden" }}>
+      <ResultDetail
+        run={selected.run}
+        check={selected.check}
+        allChecks={selected.run.check_results||[]}
+        onBack={()=>{ setView("list"); setSelected(null); window.location.hash=""; }}
+        onSelectCheck={(chk)=>setSelected(p=>({...p, check:chk}))}
+        onNavigate={onNavigate}
+      />
+    </div>
   );
 
   // ── Derived data ───────────────────────────────────────────────────────────
@@ -11429,7 +12003,8 @@ function ResultDetail({ run, check, allChecks, onBack, onSelectCheck, onNavigate
     background:T.surface, color:T.text, outline:"none", fontFamily:"inherit" };
 
   return (
-    <div style={{ display:"flex", flexDirection:"column", height:"100%", overflow:"hidden" }}>
+    <div style={{ display:"flex", flexDirection:"column",
+      height:"100%", minHeight:"calc(100vh - 60px)", overflow:"hidden" }}>
 
       {/* Top bar */}
       <div style={{ padding:"10px 20px", borderBottom:`1px solid ${T.border}`,
@@ -11598,7 +12173,7 @@ function ResultDetail({ run, check, allChecks, onBack, onSelectCheck, onNavigate
       </div>
 
       {/* Data table */}
-      <div style={{ flex:1, overflow:"auto" }}>
+      <div style={{ flex:1, overflow:"auto", minHeight:0 }}>
         {loading && (
           <div style={{ display:"flex", justifyContent:"center", padding:"40px 0" }}>
             <Spinner size={24}/>
@@ -14695,9 +15270,10 @@ export default function WiziAgentApp() {
       )}
       <style>{GLOBAL_CSS}</style>
       <div style={{
-        display:"flex", minHeight:"100vh",
+        display:"flex", height:"100vh",
         background:T.bg, color:T.text,
         fontFamily:T.font,
+        overflow:"hidden",
       }}>
         <Sidebar
           active={activeTab}
@@ -14788,6 +15364,7 @@ export default function WiziAgentApp() {
           {activeTab==="query"     && <QueryTab/>}
           {activeTab==="results"   && <ResultsTab onNavigate={navigateTo}/>}
           {activeTab==="scheduler" && <SchedulerTab onNavigate={navigateTo}/>}
+          {activeTab==="demo"      && <DemoValidationTab/>}
         </main>
         </ThemeCtx.Provider>
       </div>

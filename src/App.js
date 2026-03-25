@@ -304,7 +304,6 @@ const NAV = [
   { id:"triage",    label:"Triage & Monitor",  icon:AlertTriangle, shortcut:"3" },
   { id:"workflows", label:"Workflows",         icon:GitBranch,     shortcut:"4" },
   { id:"dataflows", label:"Dataflows",         icon:Layers,        shortcut:"5" },
-  { id:"approvals", label:"Approvals",            icon:Lock,       shortcut:"A" },
   { id:"config",    label:"Configure",         icon:Settings,      shortcut:"7" },
   { id:"query",     label:"Data Explorer",     icon:Database,      shortcut:"8" },
   { id:"results",   label:"Results",           icon:BarChart2,     shortcut:"9" },
@@ -364,7 +363,6 @@ function CommandPalette({ onNavigate, onClose }) {
     { label:"Daily Brief",          tab:"brief",     icon:"⚡", desc:"View daily pipeline health" },
     { label:"Triage",               tab:"triage",    icon:"🔍", desc:"Scan and fix issues" },
     { label:"Workflows",            tab:"workflows", icon:"🔀", desc:"Run and manage workflows" },
-    { label:"Approvals & Activity", tab:"approvals", icon:"🔒", desc:"Pending fix approvals" },
     { label:"Configure",            tab:"config",    icon:"⚙️", desc:"Slack, thresholds, sources" },
     { label:"Data Explorer", tab:"query",     icon:"🖥", desc:"SQL editor with AI generation" },
   ];
@@ -1412,7 +1410,7 @@ function DashboardTab({ onNavigate }) {
 
     // Line (builtin health history)
     if (w.type==="line" && w.health_chart) {
-      if (healthHist.length < 2) return <div style={{color:T.dim,fontSize:12,paddingTop:20,textAlign:"center"}}>Run Morning Brief to build health history</div>;
+      if (healthHist.length < 2) return <div style={{color:T.dim,fontSize:12,paddingTop:20,textAlign:"center"}}>Run Daily Brief to build health history</div>;
       return (
         <ResponsiveContainer width="100%" height="100%">
           <LineChart data={healthHist} margin={{top:5,right:10,bottom:0,left:0}}>
@@ -1786,7 +1784,7 @@ function MorningBriefTab({ onNavigate, onIssueFound }) {
       <div style={{ display:"flex", alignItems:"flex-start", justifyContent:"space-between", marginBottom:28 }}>
         <div>
           <div style={{ fontSize:22, fontWeight:700, color:T.text, letterSpacing:"-0.02em" }}>
-            Morning Brief
+            Daily Brief
           </div>
           <div style={{ fontSize:13, color:T.muted, marginTop:4, display:"flex", alignItems:"center", gap:10 }}>
             {loading ? "Scanning mws.report…" : scannedAt
@@ -3663,6 +3661,8 @@ function CheckSetBuilder({ table, initial, onSave, onCancel }) {
         method:"POST", headers:{"Content-Type":"application/json"},
         body: JSON.stringify({
           system: `You are WiziAgent helping a data engineer write SQL checks for Redshift.
+IMPORTANT: Use ONLY columns that exist in the schema provided. Never invent column names.
+Do not default to SELECT COUNT(*) — write meaningful checks that return relevant rows or values.
 Table: ${table}
 ${dbSchema ? "Schema context: " + dbSchema.split(";").find(s=>s.includes(table)) || "" : ""}
 User describes a check they want. Return ONLY JSON array (no markdown):
@@ -7297,9 +7297,52 @@ function AdsSopTab() {
   const [runId,      setRunId]      = React.useState(null);
   const [gateTimeout,setGateTimeout]= useLocal("wz_sop_gate_timeout", 30);
   const pollRef   = React.useRef(null);
-  const [showHistory, setShowHistory] = React.useState(false);
-  const [history,     setHistory]     = React.useState([]);
-  const [histLoading, setHistLoading] = React.useState(false);
+  const [showHistory,   setShowHistory]   = React.useState(false);
+  const [history,       setHistory]       = React.useState([]);
+  const [histLoading,   setHistLoading]   = React.useState(false);
+  const [showSchedules, setShowSchedules] = React.useState(false);
+  const [schedules,     setSchedules]     = React.useState([]);
+  const [schedFormOpen, setSchedFormOpen] = React.useState(false);
+  const [schedForm,     setSchedForm]     = React.useState({
+    name:"Daily Check", enabled:true, frequency:"daily",
+    run_time:"16:00", run_date:"", run_day:"monday", gate_timeout_min:30
+  });
+  const [schedEditing,  setSchedEditing]  = React.useState(null); // id being edited
+
+  const loadSchedules = React.useCallback(async () => {
+    try {
+      const r = await fetch(`${API}/api/workflow/ads-sop/schedules`);
+      const d = await r.json();
+      if (d.schedules) setSchedules(d.schedules);
+    } catch(e) {}
+  }, []);
+
+  React.useEffect(()=>{ loadSchedules(); }, []);
+
+  const saveSchedule = async () => {
+    const payload = schedEditing ? {...schedForm, id:schedEditing} : schedForm;
+    try {
+      await fetch(`${API}/api/workflow/ads-sop/schedules`, {
+        method:"POST", headers:{"Content-Type":"application/json"},
+        body:JSON.stringify(payload)
+      });
+      await loadSchedules();
+      setSchedFormOpen(false);
+      setSchedEditing(null);
+      setSchedForm({name:"Daily Check",enabled:true,frequency:"daily",run_time:"16:00",run_date:"",run_day:"monday",gate_timeout_min:30});
+    } catch(e){}
+  };
+
+  const deleteSchedule = async (sid) => {
+    if (!confirm("Delete this schedule?")) return;
+    await fetch(`${API}/api/workflow/ads-sop/schedules/${sid}`, {method:"DELETE"});
+    setSchedules(p=>p.filter(s=>s.id!==sid));
+  };
+
+  const toggleSchedule = async (sid) => {
+    await fetch(`${API}/api/workflow/ads-sop/schedules/${sid}/toggle`, {method:"POST"});
+    setSchedules(p=>p.map(s=>s.id===sid?{...s,enabled:!s.enabled}:s));
+  };
 
   const loadHistory = async () => {
     setHistLoading(true);
@@ -7694,6 +7737,9 @@ function AdsSopTab() {
               ⚡ Force All Gates
             </Btn>
           )}
+          <Btn onClick={()=>{ setShowSchedules(p=>!p); }} size="sm" variant="ghost">
+            📅 Schedules {schedules.length>0 && `(${schedules.length})`}
+          </Btn>
           <Btn onClick={()=>{ setShowHistory(p=>!p); if(!showHistory) loadHistory(); }} size="sm" variant="ghost">
             📋 History
           </Btn>
@@ -7756,6 +7802,142 @@ function AdsSopTab() {
           <span>5:00 PM</span><span>5:30 PM</span><span>6:30 PM</span><span>~7:00 PM</span>
         </div>
       </Card>
+
+      {/* ── SCHEDULES PANEL ─────────────────────────────────────────────── */}
+      {showSchedules && (
+        <Card style={{ padding:"16px 20px", marginBottom:14 }}>
+          <div style={{ display:"flex", alignItems:"center", gap:8, marginBottom:14 }}>
+            <span style={{ fontSize:13, fontWeight:700, color:T.text }}>📅 Check Schedules</span>
+            <span style={{ fontSize:10, color:T.muted }}>
+              Runs automatically when the server is online
+            </span>
+            <Btn size="sm" onClick={()=>{ setSchedEditing(null); setSchedForm({name:"Daily Check",enabled:true,frequency:"daily",run_time:"16:00",run_date:"",run_day:"monday",gate_timeout_min:30}); setSchedFormOpen(true); }}
+              style={{ marginLeft:"auto", background:`linear-gradient(135deg,${T.accent},${T.purple})`, color:"white", border:"none" }}>
+              <Plus size={10}/> Add Schedule
+            </Btn>
+          </div>
+
+          {/* Schedule form */}
+          {schedFormOpen && (
+            <div style={{ padding:"14px 16px", borderRadius:8, border:`1px solid ${T.accent}30`,
+              background:`${T.accent}04`, marginBottom:14 }}>
+              <div style={{ fontSize:11, fontWeight:700, color:T.text, marginBottom:12 }}>
+                {schedEditing ? "Edit Schedule" : "New Schedule"}
+              </div>
+              <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:10, marginBottom:10 }}>
+                <div>
+                  <label style={{ fontSize:10, color:T.muted, display:"block", marginBottom:3 }}>Name</label>
+                  <input value={schedForm.name} onChange={e=>setSchedForm(p=>({...p,name:e.target.value}))}
+                    style={{ width:"100%", padding:"6px 8px", borderRadius:6, border:`1px solid ${T.border}`,
+                      background:T.surface, color:T.text, fontSize:11, fontFamily:"inherit", outline:"none", boxSizing:"border-box" }}/>
+                </div>
+                <div>
+                  <label style={{ fontSize:10, color:T.muted, display:"block", marginBottom:3 }}>Frequency</label>
+                  <select value={schedForm.frequency} onChange={e=>setSchedForm(p=>({...p,frequency:e.target.value}))}
+                    style={{ width:"100%", padding:"6px 8px", borderRadius:6, border:`1px solid ${T.border}`,
+                      background:T.surface, color:T.text, fontSize:11, fontFamily:"inherit" }}>
+                    <option value="once">Run once on date</option>
+                    <option value="daily">Every day</option>
+                    <option value="weekdays">Weekdays only</option>
+                    <option value="weekly">Weekly</option>
+                  </select>
+                </div>
+                <div>
+                  <label style={{ fontSize:10, color:T.muted, display:"block", marginBottom:3 }}>
+                    {schedForm.frequency==="once" ? "Run Date" : "Run Time (IST)"}
+                  </label>
+                  {schedForm.frequency==="once"
+                    ? <input type="date" value={schedForm.run_date}
+                        onChange={e=>setSchedForm(p=>({...p,run_date:e.target.value}))}
+                        style={{ width:"100%", padding:"6px 8px", borderRadius:6, border:`1px solid ${T.border}`,
+                          background:T.surface, color:T.text, fontSize:11, fontFamily:"inherit" }}/>
+                    : <input type="time" value={schedForm.run_time}
+                        onChange={e=>setSchedForm(p=>({...p,run_time:e.target.value}))}
+                        style={{ width:"100%", padding:"6px 8px", borderRadius:6, border:`1px solid ${T.border}`,
+                          background:T.surface, color:T.text, fontSize:11, fontFamily:"inherit" }}/>
+                  }
+                </div>
+                {schedForm.frequency==="weekly" && (
+                  <div>
+                    <label style={{ fontSize:10, color:T.muted, display:"block", marginBottom:3 }}>Day of week</label>
+                    <select value={schedForm.run_day} onChange={e=>setSchedForm(p=>({...p,run_day:e.target.value}))}
+                      style={{ width:"100%", padding:"6px 8px", borderRadius:6, border:`1px solid ${T.border}`,
+                        background:T.surface, color:T.text, fontSize:11, fontFamily:"inherit" }}>
+                      {["monday","tuesday","wednesday","thursday","friday","saturday","sunday"].map(d=>(
+                        <option key={d} value={d}>{d.charAt(0).toUpperCase()+d.slice(1)}</option>
+                      ))}
+                    </select>
+                  </div>
+                )}
+                <div>
+                  <label style={{ fontSize:10, color:T.muted, display:"block", marginBottom:3 }}>Gate timeout (min)</label>
+                  <input type="number" min={1} max={240} value={schedForm.gate_timeout_min}
+                    onChange={e=>setSchedForm(p=>({...p,gate_timeout_min:Number(e.target.value)}))}
+                    style={{ width:"100%", padding:"6px 8px", borderRadius:6, border:`1px solid ${T.border}`,
+                      background:T.surface, color:T.text, fontSize:11, fontFamily:"inherit" }}/>
+                </div>
+              </div>
+              <div style={{ display:"flex", gap:8 }}>
+                <Btn size="sm" onClick={saveSchedule}
+                  style={{ background:`linear-gradient(135deg,${T.accent},${T.purple})`, color:"white", border:"none" }}>
+                  <Check size={10}/> Save
+                </Btn>
+                <Btn size="sm" variant="ghost" onClick={()=>{ setSchedFormOpen(false); setSchedEditing(null); }}>
+                  Cancel
+                </Btn>
+              </div>
+            </div>
+          )}
+
+          {/* Schedules list */}
+          {schedules.length === 0 && !schedFormOpen && (
+            <div style={{ textAlign:"center", padding:"20px", color:T.muted, fontSize:12 }}>
+              No schedules yet. Add one to run the check automatically.
+            </div>
+          )}
+          <div style={{ display:"flex", flexDirection:"column", gap:8 }}>
+            {schedules.map(sch => {
+              const freqLabel = {once:"Once",daily:"Daily",weekdays:"Weekdays",weekly:"Weekly"}[sch.frequency]||sch.frequency;
+              const timeLabel = sch.frequency==="once" ? sch.run_date : `${sch.run_time} IST`;
+              const dayLabel  = sch.frequency==="weekly" ? ` · ${sch.run_day}` : "";
+              return (
+                <div key={sch.id} style={{ padding:"10px 14px", borderRadius:8,
+                  border:`1px solid ${sch.enabled?T.accent+"30":T.border}`,
+                  background: sch.enabled?`${T.accent}04`:T.surface,
+                  display:"flex", alignItems:"center", gap:10 }}>
+                  {/* Enable toggle */}
+                  <div onClick={()=>toggleSchedule(sch.id)}
+                    style={{ width:32, height:18, borderRadius:99, cursor:"pointer",
+                      background:sch.enabled?T.green:T.border,
+                      position:"relative", transition:"background 0.2s", flexShrink:0 }}>
+                    <div style={{ width:14, height:14, borderRadius:"50%", background:"white",
+                      position:"absolute", top:2, transition:"left 0.15s",
+                      left:sch.enabled?16:2, boxShadow:"0 1px 3px rgba(0,0,0,0.2)" }}/>
+                  </div>
+                  <div style={{ flex:1 }}>
+                    <div style={{ fontSize:12, fontWeight:600, color:T.text }}>{sch.name}</div>
+                    <div style={{ fontSize:10, color:T.muted, marginTop:1 }}>
+                      {freqLabel} · {timeLabel}{dayLabel} · Gate timeout: {sch.gate_timeout_min}m
+                      {sch.last_run_date && ` · Last ran: ${sch.last_run_date}`}
+                    </div>
+                  </div>
+                  <Btn size="sm" variant="ghost" onClick={()=>{
+                    setSchedEditing(sch.id);
+                    setSchedForm({name:sch.name,enabled:sch.enabled,frequency:sch.frequency,
+                      run_time:sch.run_time,run_date:sch.run_date,run_day:sch.run_day||"monday",
+                      gate_timeout_min:sch.gate_timeout_min});
+                    setSchedFormOpen(true);
+                  }}>✏</Btn>
+                  <Btn size="sm" variant="ghost" onClick={()=>deleteSchedule(sch.id)}
+                    style={{ color:T.red }}>
+                    <Trash2 size={10}/>
+                  </Btn>
+                </div>
+              );
+            })}
+          </div>
+        </Card>
+      )}
 
       {/* ── HISTORY PANEL ────────────────────────────────────────────────── */}
       {showHistory && (
@@ -7860,12 +8042,13 @@ function AdsSopTab() {
         <Card style={{ padding:"20px 24px", textAlign:"center" }}>
           <Spinner size={28} style={{ margin:"0 auto 10px" }}/>
           <div style={{ fontSize:13, fontWeight:700, color:T.text }}>Starting Check…</div>
+          <div style={{ fontSize:11, color:T.muted, marginTop:4 }}>Connecting to data pipeline</div>
         </Card>
       )}
 
-      {/* Result */}
-      {result && !running && (
-        <div style={{ display:"grid", gridTemplateColumns:"1fr 300px", gap:16 }}>
+      {/* Result — shown during AND after running */}
+      {result && (
+        <div style={{ display:"grid", gridTemplateColumns:"1fr 320px", gap:16 }}>
           {/* Main flow */}
           <div>
             {/* Error */}
@@ -7922,7 +8105,15 @@ function AdsSopTab() {
               </Card>
             )}
 
-            {/* Gates and checklists in order */}
+            {/* Gates and checklists — shown in real time */}
+            {running && (
+              <div style={{ padding:"8px 14px", borderRadius:8, marginBottom:8,
+                background:`${T.accent}06`, border:`1px dashed ${T.accent}30`,
+                fontSize:11, color:T.accent, display:"flex", alignItems:"center", gap:7 }}>
+                <Spinner size={10}/>
+                Check is running — gates will appear as each step completes. Approve or reject inline below.
+              </div>
+            )}
             <GatePanel gateNum={1} token={result.gate1_token}
               decision={result.gate1_decision} label="Pause Mage Jobs"/>
 
@@ -8050,46 +8241,68 @@ function AdsSopTab() {
             })()}
           </div>
 
-          {/* Trace panel — live scrolling */}
+          {/* Trace panel — live scrolling, always visible */}
           <Card style={{ padding:"14px 16px", alignSelf:"start",
             position:"sticky", top:20 }}>
             <div style={{ display:"flex", alignItems:"center", marginBottom:10 }}>
-              <span style={{ fontSize:11, fontWeight:700, color:T.muted,
-                textTransform:"uppercase", letterSpacing:"0.06em", flex:1 }}>
-                Execution Trace
+              <span style={{ fontSize:11, fontWeight:700, color:T.text,
+                letterSpacing:"-0.01em", flex:1 }}>
+                Live Execution Log
               </span>
-              {running && <span style={{ display:"flex", alignItems:"center", gap:4,
-                fontSize:9, color:T.accent }}>
-                <span style={{ width:6, height:6, borderRadius:"50%",
-                  background:T.accent, animation:"pulse 1.2s infinite", display:"inline-block" }}/>
-                Live
-              </span>}
-              <span style={{ fontSize:9, color:T.dim, marginLeft:8 }}>
-                {(result.trace||[]).length} steps
-              </span>
+              {running && (
+                <span style={{ display:"flex", alignItems:"center", gap:5,
+                  fontSize:9, fontWeight:700, color:T.green,
+                  background:`${T.green}12`, padding:"2px 8px", borderRadius:99 }}>
+                  <span style={{ width:5, height:5, borderRadius:"50%",
+                    background:T.green, display:"inline-block",
+                    animation:"pulse 1s infinite" }}/>
+                  LIVE
+                </span>
+              )}
             </div>
+            {/* Current step indicator */}
+            {running && result.trace?.length > 0 && (() => {
+              const last = result.trace[result.trace.length - 1];
+              return (
+                <div style={{ marginBottom:10, padding:"8px 10px", borderRadius:7,
+                  background:`${T.accent}08`, border:`1px solid ${T.accent}20` }}>
+                  <div style={{ fontSize:10, color:T.muted, marginBottom:2 }}>Currently running</div>
+                  <div style={{ fontSize:11, fontWeight:600, color:T.text }}>{last.msg}</div>
+                </div>
+              );
+            })()}
             <div style={{ display:"flex", flexDirection:"column", gap:3,
-              maxHeight:480, overflowY:"auto" }} ref={el=>{
+              maxHeight:520, overflowY:"auto" }} ref={el=>{
                 if(el && running) el.scrollTop = el.scrollHeight;
               }}>
               {(result.trace||[]).length === 0
                 ? <div style={{ fontSize:11, color:T.dim }}>No trace yet</div>
                 : (result.trace||[]).map((t,i) => (
                   <div key={i} style={{ fontSize:10, lineHeight:1.5,
-                    padding:"3px 6px", borderRadius:5,
-                    background: t.level==="error"?`${T.red}08`:t.level==="warning"?`${T.yellow}06`:t.level==="success"?`${T.green}06`:"transparent",
+                    padding:"4px 7px", borderRadius:5, marginBottom:1,
+                    background: t.level==="error"?`${T.red}08`:t.level==="warning"?`${T.yellow}06`:t.level==="success"?`${T.green}06`:t.node==="check"?`${T.accent}04`:"transparent",
                     borderLeft: `2px solid ${t.level==="error"?T.red:t.level==="warning"?T.yellow:t.level==="success"?T.green:T.border}` }}>
-                    <div style={{ display:"flex", gap:6, alignItems:"baseline" }}>
-                      <span style={{ color:T.dim, fontFamily:T.monoFont,
-                        fontSize:9, flexShrink:0 }}>{t.ts}</span>
+                    <div style={{ display:"flex", gap:6, alignItems:"center" }}>
+                      <span style={{ color:T.dim, fontFamily:"monospace",
+                        fontSize:9, flexShrink:0 }}>{(t.ts||"").slice(11,19)}</span>
                       <span style={{ padding:"0 5px", borderRadius:3, fontSize:9,
-                        fontWeight:700, background:`${T.accent}12`,
-                        color:T.accentL, flexShrink:0 }}>{t.node}</span>
+                        fontWeight:700, background:t.node==="check"?`${T.purple}15`:`${T.accent}12`,
+                        color:t.node==="check"?T.purple:T.accent, flexShrink:0 }}>
+                        {t.node==="check"?"sql":t.node}
+                      </span>
+                      <span style={{ flex:1, color:t.level==="success"?T.green:t.level==="error"?T.red:
+                            t.level==="warning"?T.orange:T.text2, fontSize:10, fontWeight:t.node==="check"?500:400 }}>
+                        {t.msg}
+                      </span>
                     </div>
-                    <div style={{ paddingLeft:4, marginTop:1,
-                      color:t.level==="success"?T.green:t.level==="error"?T.red:
-                            t.level==="warning"?T.yellow:T.muted,
-                      fontSize:10 }}>{t.msg}</div>
+                    {t.sql && (
+                      <div style={{ marginTop:3, marginLeft:8, padding:"3px 8px",
+                        background:"#1C1917", borderRadius:4, fontFamily:"monospace",
+                        fontSize:9, color:"#A3E635", whiteSpace:"pre-wrap",
+                        wordBreak:"break-all", lineHeight:1.4 }}>
+                        {t.sql}
+                      </div>
+                    )}
                   </div>
                 ))
               }
@@ -9485,10 +9698,21 @@ function WorkflowBuilder({ initial, dbSchema, onSave, onCancel }) {
         method:"POST", headers:{"Content-Type":"application/json"},
         body:JSON.stringify({
           system:`You write Redshift SQL checks for a data quality workflow.
-Available tables: ${tables}
-Given a description, respond ONLY with a JSON object (no markdown):
-{"name":"Check name","sql":"SELECT COUNT(*) FROM schema.table WHERE condition","pass_condition":"rows = 0","severity":"high","explanation":"Why this check matters"}
-Rules: sql must be SELECT only. pass_condition options: "rows = 0", "rows > 0", "value = 0", "value > N". severity: critical|high|medium|low`,
+FULL SCHEMA (use ONLY these exact table.column names — do not invent columns):
+${dbSchema || "mws.report, mws.orders, mws.inventory, mws.sales_and_traffic_by_date, public.tbl_amzn_campaign_report"}
+
+Rules:
+- Use ONLY columns that exist in the schema above. Never guess or invent column names.
+- SQL must be SELECT only.
+- Do NOT default to COUNT(*). Write the most meaningful SQL for the check described.
+  Good examples: SELECT status, COUNT(*) FROM mws.report GROUP BY status
+                 SELECT download_date, MAX(report_type) FROM mws.report WHERE status='failed' GROUP BY download_date
+  Only use SELECT COUNT(*) with a WHERE clause when checking for absence of bad rows.
+- pass_condition options: "rows = 0" (no bad rows), "rows > 0" (data present), "value > N", "value = N"
+- severity: critical|high|medium|low
+
+Respond ONLY with a JSON object (no markdown):
+{"name":"Check name","sql":"SELECT ...","pass_condition":"rows = 0","severity":"high","explanation":"Why this check matters"}`,
           messages:[{role:"user",content:aiDesc}],
           max_tokens:400
         })
@@ -11077,17 +11301,36 @@ function ResultDetail({ run, check, allChecks, onBack, onSelectCheck, onNavigate
 
   const load = async (offset=0) => {
     setLoading(true); setError(null);
+    const checkKey = check.id || check.name || "";
+    if (!checkKey) { setError("Check has no ID or name"); setLoading(false); return; }
     try {
       const res = await fetch(
-        `${API}/api/workflow-results/full?run_id=${run.run_id}&check_id=${encodeURIComponent(check.id||check.name)}&limit=${LIMIT}&offset=${offset}`
+        `${API}/api/workflow-results/full?run_id=${encodeURIComponent(run.run_id)}&check_id=${encodeURIComponent(checkKey)}&limit=${LIMIT}&offset=${offset}`
       );
       const d = await res.json();
-      if (d.error) { setError(d.error); }
-      else {
+      if (d.error) {
+        // Fallback: show sample rows stored on the check object itself
+        if ((check.sample_rows||[]).length > 0) {
+          setData({
+            run_id: run.run_id, check_id: checkKey,
+            check_name: check.name, sql: check.sql||"",
+            pass_condition: check.pass_condition||"",
+            passed: check.passed, severity: check.severity||"high",
+            columns: check.columns || Object.keys(check.sample_rows[0]||{}),
+            rows: check.sample_rows,
+            total_rows: check.row_count,
+            fetched: check.sample_rows.length,
+            offset: 0, limit: LIMIT, stats: {}, source_context: {}, note: "",
+            _fallback: true,
+          });
+          setNote("");
+        } else {
+          setError(d.error);
+        }
+      } else {
         setData(d);
         setNote(d.note || "");
-        // Set deep-link hash
-        window.location.hash = `results/${run.run_id}/${check.id||check.name}`;
+        window.location.hash = `results/${run.run_id}/${checkKey}`;
       }
     } catch(e) { setError(e.message); }
     setLoading(false);
@@ -11238,6 +11481,12 @@ function ResultDetail({ run, check, allChecks, onBack, onSelectCheck, onNavigate
         background:`${check.passed?T.green:T.red}04`, flexShrink:0 }}>
         <div style={{ display:"flex", gap:16, alignItems:"center", flexWrap:"wrap" }}>
           <div style={{ fontSize:13, fontWeight:700, color:T.text }}>{check.name}</div>
+          {data?._fallback && (
+            <span style={{ fontSize:10, color:T.orange, background:`${T.orange}12`,
+              padding:"2px 8px", borderRadius:4 }}>
+              sample preview — re-run workflow for full data
+            </span>
+          )}
           {data?.total_rows !== undefined && (
             <span style={{ fontSize:12, color:check.passed?T.green:T.red, fontWeight:700 }}>
               {data.total_rows?.toLocaleString()} rows
@@ -12197,14 +12446,69 @@ function DataflowFormModal({ initial, folders, onSave, onClose, T }) {
     id:"", name:"", desc:"", folder_id:"f_root",
     tags:[], priority:"None", schedule:"manual",
     owner:"admin", db_key:"default",
-    checks:[{ name:"", sql:"", pass_condition:"rows = 0", severity:"high" }],
+    checks:[{ name:"", sql:"", pass_condition:"rows = 0", severity:"high" }],  // sql intentionally blank
   };
   const [form, setForm]   = React.useState(initial ? { ...blank, ...initial,
     tags: Array.isArray(initial.tags) ? initial.tags : [] } : blank);
   const [tagInput, setTagInput] = React.useState((initial?.tags||[]).join(", "));
-  const [saving, setSaving] = React.useState(false);
+  const [saving, setSaving]       = React.useState(false);
+  const [aiInput, setAiInput]     = React.useState("");
+  const [aiLoading, setAiLoading] = React.useState(false);
+  const [testResults, setTestResults] = React.useState({}); // {checkIdx: {loading,rows,cols,error}}
+  const dbSchema = useSchema();
 
   const field = (k, v) => setForm(p => ({ ...p, [k]:v }));
+
+  const aiGenerateChecks = async () => {
+    if (!aiInput.trim() || aiLoading) return;
+    setAiLoading(true);
+    try {
+      const res = await fetch(`${API}/api/ai/chat`, {
+        method:"POST", headers:{"Content-Type":"application/json"},
+        body:JSON.stringify({
+          system:`You write Redshift SQL data quality checks for a dataflow.
+FULL SCHEMA (use ONLY these exact table.column names — never invent columns):
+${dbSchema || "mws.report, mws.orders, mws.inventory, public.tbl_amzn_campaign_report"}
+
+Rules:
+- Use ONLY columns from the schema above. Never guess column names.
+- Do NOT default to SELECT COUNT(*). Write the most informative SQL for the check described.
+  Good: SELECT status, COUNT(*) FROM mws.report GROUP BY status
+  Good: SELECT report_type, MAX(download_date) FROM mws.report WHERE status='failed' GROUP BY report_type
+  Only use SELECT COUNT(*) with a meaningful WHERE clause when checking for bad rows.
+- SQL must be SELECT only.
+- pass_condition: "rows = 0" (no bad rows), "rows > 0" (data present), "value > N", "value = N"
+- severity: critical|high|medium|low
+
+Respond ONLY with a JSON array (no markdown):
+[{"name":"Check name","sql":"SELECT ...","pass_condition":"rows = 0","severity":"high"}]`,
+          messages:[{role:"user", content:aiInput}], max_tokens:600
+        })
+      });
+      const data = await res.json();
+      const text = data.content?.[0]?.text || "[]";
+      const arr = JSON.parse(text.replace(/\`\`\`json|\`\`\`/g,"").trim());
+      if (Array.isArray(arr) && arr.length > 0) {
+        setForm(p=>({...p, checks:[
+          ...p.checks.filter(c=>c.name.trim()||c.sql.trim()),
+          ...arr.map(c=>({name:c.name||"",sql:c.sql||"",pass_condition:c.pass_condition||"rows = 0",severity:c.severity||"high"}))
+        ]}));
+        setAiInput("");
+      }
+    } catch(e) {}
+    setAiLoading(false);
+  };
+
+  const testCheck = async (i, sql) => {
+    if (!sql.trim()) return;
+    setTestResults(p=>({...p,[i]:{loading:true}}));
+    try {
+      const res = await fetch(`${API}/api/query?sql=${encodeURIComponent(sql + " LIMIT 10")}`);
+      const d   = await res.json();
+      if (d.error) setTestResults(p=>({...p,[i]:{error:d.error}}));
+      else setTestResults(p=>({...p,[i]:{rows:d.rows||[],cols:d.columns||[]}}));
+    } catch(e) { setTestResults(p=>({...p,[i]:{error:e.message}})); }
+  };
 
   const addCheck = () => setForm(p => ({
     ...p, checks:[...p.checks, { name:"", sql:"", pass_condition:"rows = 0", severity:"high" }]
@@ -12391,13 +12695,79 @@ function DataflowFormModal({ initial, folders, onSave, onClose, T }) {
                     style={{...inp, fontFamily:"monospace", resize:"vertical", marginBottom:6}}
                     onFocus={e=>e.target.style.borderColor=T.accent}
                     onBlur={e=>e.target.style.borderColor=T.border}/>
-                  <div>
-                    <label style={{ fontSize:10, fontWeight:600, color:T.muted, display:"block", marginBottom:2 }}>Pass when</label>
-                    <PassConditionPicker
-                      value={chk.pass_condition || "rows = 0"}
-                      onChange={v => updateCheck(i, "pass_condition", v)}
-                    />
+                  <div style={{ display:"flex", alignItems:"flex-end", gap:8 }}>
+                    <div style={{ flex:1 }}>
+                      <label style={{ fontSize:10, fontWeight:600, color:T.muted, display:"block", marginBottom:2 }}>Pass when</label>
+                      <PassConditionPicker
+                        value={chk.pass_condition || "rows = 0"}
+                        onChange={v => updateCheck(i, "pass_condition", v)}
+                      />
+                    </div>
+                    <Btn size="sm" variant="ghost" disabled={!chk.sql.trim()}
+                      onClick={()=>testCheck(i, chk.sql)}
+                      style={{ flexShrink:0, marginBottom:0 }}>
+                      {testResults[i]?.loading ? <Spinner size={9}/> : "▶ Test"}
+                    </Btn>
                   </div>
+
+                  {/* Test result preview */}
+                  {testResults[i] && !testResults[i].loading && (
+                    <div style={{ marginTop:4, borderRadius:6, overflow:"hidden",
+                      border:`1px solid ${testResults[i].error?T.red:T.border}` }}>
+                      {testResults[i].error ? (
+                        <div style={{ padding:"6px 10px", fontSize:10, color:T.red,
+                          background:`${T.red}08` }}>
+                          ✗ {testResults[i].error}
+                        </div>
+                      ) : (
+                        <>
+                          <div style={{ padding:"4px 10px", fontSize:9, color:T.muted,
+                            background:T.surface, borderBottom:`1px solid ${T.border}`,
+                            display:"flex", justifyContent:"space-between" }}>
+                            <span>{testResults[i].rows.length} rows returned (preview)</span>
+                            <button onClick={()=>setTestResults(p=>({...p,[i]:undefined}))}
+                              style={{ background:"none", border:"none", cursor:"pointer",
+                                color:T.muted, fontSize:11 }}>×</button>
+                          </div>
+                          {testResults[i].rows.length === 0 ? (
+                            <div style={{ padding:"8px 10px", fontSize:10, color:T.muted }}>
+                              No rows returned
+                            </div>
+                          ) : (
+                            <div style={{ overflowX:"auto", maxHeight:140 }}>
+                              <table style={{ borderCollapse:"collapse", fontSize:10,
+                                fontFamily:"monospace", width:"100%" }}>
+                                <thead>
+                                  <tr style={{ background:`${T.accent}08` }}>
+                                    {testResults[i].cols.map(c=>(
+                                      <th key={c} style={{ padding:"3px 8px", textAlign:"left",
+                                        fontSize:9, color:T.muted, whiteSpace:"nowrap",
+                                        borderBottom:`1px solid ${T.border}` }}>{c}</th>
+                                    ))}
+                                  </tr>
+                                </thead>
+                                <tbody>
+                                  {testResults[i].rows.slice(0,8).map((row,ri)=>(
+                                    <tr key={ri}>
+                                      {testResults[i].cols.map(c=>(
+                                        <td key={c} style={{ padding:"3px 8px",
+                                          color:row[c]===null?T.red:T.text2,
+                                          borderBottom:`1px solid ${T.border}20`,
+                                          whiteSpace:"nowrap", maxWidth:180,
+                                          overflow:"hidden", textOverflow:"ellipsis" }}>
+                                          {row[c]===null?"NULL":String(row[c]).slice(0,60)}
+                                        </td>
+                                      ))}
+                                    </tr>
+                                  ))}
+                                </tbody>
+                              </table>
+                            </div>
+                          )}
+                        </>
+                      )}
+                    </div>
+                  )}
                 </div>
               ))}
             </div>
@@ -14414,7 +14784,6 @@ export default function WiziAgentApp() {
           {activeTab==="triage"    && <TriageTab initialIssues={issues}/>}
           {activeTab==="workflows" && <WorkflowsTab navigateTo={navigateTo}/>}
           {activeTab==="dataflows" && <DataflowsTab onNavigate={navigateTo}/>}
-          {activeTab==="approvals" && <ApprovalsActivityTab onNavigate={navigateTo}/>}
           {activeTab==="config"    && <ConfigureTab/>}
           {activeTab==="query"     && <QueryTab/>}
           {activeTab==="results"   && <ResultsTab onNavigate={navigateTo}/>}

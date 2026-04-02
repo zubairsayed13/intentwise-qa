@@ -295,27 +295,32 @@ function Card({ children, style, onClick, hoverable }) {
 
 function Btn({ children, onClick, variant="primary", size="md", disabled, style }) {
   const T = useT();
-  const [hov, setHov] = React.useState(false);
   const base = {
     display:"inline-flex", alignItems:"center", gap:6,
     border:"none", borderRadius:7, fontWeight:600,
     cursor: disabled ? "not-allowed" : "pointer",
     opacity: disabled ? 0.5 : 1,
-    transition:"all 0.15s",
+    transition:"background 0.12s, opacity 0.12s",
     fontSize: size==="sm" ? 11 : size==="lg" ? 14 : 12,
     padding: size==="sm" ? "4px 10px" : size==="lg" ? "10px 22px" : "6px 14px",
   };
-  const variants = {
-    primary: { background: hov&&!disabled ? T.accentL : T.accent, color:"white" },
-    ghost:   { background: hov&&!disabled ? `${T.accent}12` : "transparent", color:T.accent, border:`1px solid ${T.accent}30` },
-    danger:  { background: hov&&!disabled ? "#EF4444" : "#DC2626", color:"white" },
-    success: { background: hov&&!disabled ? T.greenL : T.green, color:"white" },
-    muted:   { background: hov&&!disabled ? T.border2 : T.border, color:T.muted },
-  };
+  const variantStyle = {
+    primary: { background:T.accent, color:"white",
+      "--btn-hov": T.accentL },
+    ghost:   { background:"transparent", color:T.accent, border:`1px solid ${T.accent}30`,
+      "--btn-hov": `${T.accent}18` },
+    danger:  { background:"#DC2626", color:"white",
+      "--btn-hov": "#EF4444" },
+    success: { background:T.green, color:"white",
+      "--btn-hov": T.greenL||T.green },
+    muted:   { background:T.border, color:T.muted,
+      "--btn-hov": T.border2||T.border },
+  }[variant] || {};
   return (
-    <button onClick={!disabled?onClick:undefined}
-      onMouseEnter={()=>setHov(true)} onMouseLeave={()=>setHov(false)}
-      style={{...base,...variants[variant],...style}}>
+    <button
+      className={`wizi-btn wizi-btn-${variant}`}
+      onClick={!disabled?onClick:undefined}
+      style={{...base,...variantStyle,...style}}>
       {children}
     </button>
   );
@@ -389,6 +394,30 @@ const GLOBAL_CSS = `
   .wz-scroll { overflow-y: auto; -webkit-overflow-scrolling: touch; }
   /* Contain layout/paint for tab panels */
   .wz-tab-panel { contain: layout style; }
+
+  /* Btn CSS-only hover — no useState re-renders */
+  .wizi-btn { -webkit-font-smoothing: antialiased; }
+  .wizi-btn:not(:disabled):hover { filter: brightness(1.08); }
+  .wizi-btn-ghost:not(:disabled):hover { background: var(--btn-hov) !important; }
+  .wizi-btn-primary:not(:disabled):hover { background: var(--btn-hov) !important; }
+  .wizi-btn-muted:not(:disabled):hover { background: var(--btn-hov) !important; }
+  .wizi-btn:active:not(:disabled) { transform: scale(0.97); }
+  /* Smooth scrolling globally */
+  * { scroll-behavior: smooth; }
+  /* Scroll performance */
+  [style*="overflow-y: auto"], [style*="overflowY"] {
+    -webkit-overflow-scrolling: touch;
+    overscroll-behavior: contain;
+  }
+  /* Prevent layout thrash on frequently-updated elements */
+  .wizi-run-row { contain: layout style; }
+  /* Smooth tab transitions */
+  main > * { animation: wizi-fadein 0.15s ease; }
+  @keyframes wizi-fadein { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: none; } }
+  /* GPU-accelerate scroll containers */
+  [data-scroll] { will-change: transform; transform: translateZ(0); }
+  /* Remove tap highlight on mobile */
+  button, [role="button"] { -webkit-tap-highlight-color: transparent; touch-action: manipulation; }
 `;
 
 
@@ -1742,7 +1771,7 @@ function DashboardTab({ onNavigate }) {
             </thead>
             <tbody>
               {data.rows?.map((row,i)=>(
-                <tr key={i} style={{ background:i%2===1?"#FAFBFF":"transparent" }}>
+                <tr key={i} style={{ background:"transparent" }}>
                   {data.columns?.map(c=>(
                     <td key={c} style={{ padding:"4px 10px", borderBottom:`1px solid ${T.border}20`,
                       whiteSpace:"nowrap", color:row[c]===null?T.red:T.text2 }}>
@@ -3366,7 +3395,7 @@ Rows affected: ${issue.count}
                             fontWeight:700, fontSize:10, color:T.muted,
                             borderBottom:`1px solid ${T.border}`, whiteSpace:"nowrap",
                             textTransform:"uppercase", letterSpacing:"0.04em",
-                            position:"sticky", top:0, background:"#FAFBFF" }}>
+                            position:"sticky", top:0, background:T.surface }}>
                             {col}
                             {preview.column_types?.[col] && (
                               <div style={{ fontSize:8, color:T.dim, fontWeight:400,
@@ -3383,7 +3412,7 @@ Rows affected: ${issue.count}
                     {preview.rows.map((row,i)=>(
                       <tr key={i}
                         onMouseEnter={e=>e.currentTarget.style.background=`${T.accent}06`}
-                        onMouseLeave={e=>e.currentTarget.style.background=i%2===0?"transparent":"#FAFBFF"}>
+                        onMouseLeave={e=>e.currentTarget.style.background="transparent"}>
                         {((preview.columns||[]).length > 0
                           ? preview.columns.map(c=>typeof c==="string"?c:c.column_name)
                           : Object.keys(row)
@@ -3400,7 +3429,7 @@ Rows affected: ${issue.count}
                             <td key={j} style={{ padding:"6px 14px", whiteSpace:"nowrap",
                               borderBottom:`1px solid ${T.border}20`,
                               color:isNull?T.red:isBad?T.orange:T.text2,
-                              background:i%2===1?"#FAFBFF":"transparent" }}>
+                              background:"transparent" }}>
                               {isNull
                                 ? <span style={{ fontWeight:700, color:T.red, fontSize:10 }}>NULL</span>
                                 : String(v)}
@@ -4720,7 +4749,7 @@ function MonitorTab() {
                                       {r.rows.map((row,rowI)=>(
                                         <tr key={rowI}
                                           onMouseEnter={e=>e.currentTarget.style.background=`${T.accent}08`}
-                                          onMouseLeave={e=>e.currentTarget.style.background=rowI%2===0?"transparent":"#FAFBFF"}
+                                          onMouseLeave={e=>e.currentTarget.style.background="transparent"}
                                           style={{ background:rowI%2===1?"#FAFBFF":"transparent" }}>
                                           {r.columns.map((col,ci)=>{
                                             const v = row[col];
@@ -5212,6 +5241,217 @@ function EvalsTab() {
   );
 }
 
+// ─── DataSourcesCard — multi-source connection manager ────────────────────────
+function DataSourcesCard() {
+  const T = useT();
+  const [sources,    setSources]   = React.useState([]);
+  const [loading,    setLoading]   = React.useState(false);
+  const [testing,    setTesting]   = React.useState({});
+  const [testResult, setTestResult]= React.useState({});
+  const [showForm,   setShowForm]  = React.useState(false);
+  const [editSource, setEditSource]= React.useState(null);
+  const [form, setForm] = React.useState({ name:"", type:"postgres", host:"", port:"", dbname:"", user:"", password:"", sslmode:"require", project_id:"", service_account:"", warehouse:"" });
+  const SOURCE_TYPES = ["redshift","postgres","bigquery","snowflake","mysql"];
+  const TYPE_ICONS   = { redshift:"🔴", postgres:"🐘", bigquery:"🔵", snowflake:"❄️", mysql:"🐬" };
+
+  const load = async () => {
+    setLoading(true);
+    try {
+      const r = await fetch(`${API}/api/datasources`);
+      const d = await r.json();
+      if (d.sources) setSources(d.sources);
+    } catch(e) {}
+    setLoading(false);
+  };
+
+  React.useEffect(()=>{ load(); }, []);
+
+  const testConn = async (id) => {
+    setTesting(p=>({...p,[id]:true})); setTestResult(p=>({...p,[id]:null}));
+    try {
+      const r = await fetch(`${API}/api/datasources/${id}/test`, {method:"POST"});
+      const d = await r.json();
+      setTestResult(p=>({...p,[id]:d}));
+    } catch(e) { setTestResult(p=>({...p,[id]:{ok:false,error:e.message}})); }
+    setTesting(p=>({...p,[id]:false}));
+  };
+
+  const deleteSource = async (id) => {
+    if (id==="default") return;
+    await fetch(`${API}/api/datasources/${id}`, {method:"DELETE"}).catch(()=>{});
+    setSources(p=>p.filter(s=>s.id!==id));
+  };
+
+  const openAdd = () => {
+    setEditSource(null);
+    setForm({ name:"", type:"postgres", host:"", port:"", dbname:"", user:"", password:"", sslmode:"require", project_id:"", service_account:"", warehouse:"" });
+    setShowForm(true);
+  };
+
+  const openEdit = (src) => {
+    setEditSource(src.id);
+    setForm({ name:src.name, type:src.type, ...src.config, password:"", service_account:"" });
+    setShowForm(true);
+  };
+
+  const saveForm = async () => {
+    const url    = editSource ? `${API}/api/datasources/${editSource}` : `${API}/api/datasources`;
+    const method = editSource ? "PUT" : "POST";
+    try {
+      const r = await fetch(url, { method, headers:{"Content-Type":"application/json"}, body:JSON.stringify(form) });
+      const d = await r.json();
+      if (d.saved) { setShowForm(false); load(); }
+    } catch(e) {}
+  };
+
+  const inp = { width:"100%", padding:"7px 10px", borderRadius:6, fontSize:11,
+    border:`1px solid ${T.border}`, background:T.surface, color:T.text,
+    fontFamily:"inherit", outline:"none", boxSizing:"border-box" };
+
+  return (
+    <Card style={{ padding:"20px 24px", marginBottom:14 }}>
+      <div style={{ display:"flex", alignItems:"center", gap:10, marginBottom:14 }}>
+        <Database size={15} color={T.accent}/>
+        <span style={{ fontSize:13, fontWeight:700, color:T.text }}>Data Sources</span>
+        <Badge label={`${sources.length} configured`} color={T.accent}/>
+        <Btn size="sm" variant="primary" onClick={openAdd} style={{ marginLeft:"auto" }}>
+          + Add Source
+        </Btn>
+      </div>
+
+      {loading && <div style={{ color:T.muted, fontSize:12 }}><Spinner size={10}/> Loading…</div>}
+
+      {/* Source list */}
+      <div style={{ display:"flex", flexDirection:"column", gap:8 }}>
+        {sources.map(src=>{
+          const tr = testResult[src.id];
+          return (
+            <div key={src.id} style={{ padding:"12px 14px", borderRadius:8,
+              border:`1px solid ${T.border}`, background:T.surface,
+              display:"flex", alignItems:"center", gap:10 }}>
+              <span style={{ fontSize:16 }}>{TYPE_ICONS[src.type]||"🔌"}</span>
+              <div style={{ flex:1, minWidth:0 }}>
+                <div style={{ fontSize:12, fontWeight:700, color:T.text }}>{src.name}</div>
+                <div style={{ fontSize:10, color:T.muted }}>
+                  {src.type} {src.config?.host ? `· ${src.config.host}` : ""}
+                  {src.config?.dbname ? `/${src.config.dbname}` : ""}
+                  {src.config?.project_id ? `· ${src.config.project_id}` : ""}
+                </div>
+                {tr && (
+                  <div style={{ fontSize:10, marginTop:3,
+                    color: tr.ok ? T.green : T.red }}>
+                    {tr.ok ? `✓ Connected · ${tr.latency_ms}ms${tr.version?` · ${tr.version.slice(0,40)}`:""}` : `✗ ${tr.error?.slice(0,80)}`}
+                  </div>
+                )}
+              </div>
+              <div style={{ display:"flex", gap:6, flexShrink:0 }}>
+                <Btn size="sm" variant="ghost" onClick={()=>testConn(src.id)} disabled={!!testing[src.id]}>
+                  {testing[src.id]?<Spinner size={9}/>:"⚡"} Test
+                </Btn>
+                {!src.is_default && (
+                  <>
+                    <Btn size="sm" variant="ghost" onClick={()=>openEdit(src)}>✏ Edit</Btn>
+                    <Btn size="sm" variant="muted" onClick={()=>deleteSource(src.id)}>
+                      <Trash2 size={10}/>
+                    </Btn>
+                  </>
+                )}
+              </div>
+            </div>
+          );
+        })}
+      </div>
+
+      {/* Add/Edit form */}
+      {showForm && (
+        <div style={{ marginTop:14, padding:"16px", borderRadius:8,
+          border:`1px solid ${T.accent}30`, background:`${T.accent}04` }}>
+          <div style={{ fontSize:12, fontWeight:700, color:T.accent, marginBottom:12 }}>
+            {editSource ? "Edit Source" : "Add Data Source"}
+          </div>
+          <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:8, marginBottom:8 }}>
+            <div>
+              <label style={{ fontSize:10, fontWeight:600, color:T.muted, display:"block", marginBottom:3 }}>Name</label>
+              <input value={form.name} onChange={e=>setForm(p=>({...p,name:e.target.value}))}
+                placeholder="e.g. Production Postgres" style={inp}/>
+            </div>
+            <div>
+              <label style={{ fontSize:10, fontWeight:600, color:T.muted, display:"block", marginBottom:3 }}>Type</label>
+              <select value={form.type} onChange={e=>setForm(p=>({...p,type:e.target.value}))} style={inp}>
+                {SOURCE_TYPES.map(t=><option key={t} value={t}>{TYPE_ICONS[t]} {t}</option>)}
+              </select>
+            </div>
+          </div>
+
+          {form.type !== "bigquery" && (
+            <div style={{ display:"grid", gridTemplateColumns:"2fr 1fr", gap:8, marginBottom:8 }}>
+              <div>
+                <label style={{ fontSize:10, fontWeight:600, color:T.muted, display:"block", marginBottom:3 }}>Host</label>
+                <input value={form.host||""} onChange={e=>setForm(p=>({...p,host:e.target.value}))}
+                  placeholder={form.type==="snowflake"?"account.region.snowflakecomputing.com":"db.host.com"} style={inp}/>
+              </div>
+              <div>
+                <label style={{ fontSize:10, fontWeight:600, color:T.muted, display:"block", marginBottom:3 }}>Port</label>
+                <input value={form.port||""} onChange={e=>setForm(p=>({...p,port:e.target.value}))}
+                  placeholder={form.type==="redshift"?"5439":form.type==="mysql"?"3306":"5432"} style={inp}/>
+              </div>
+            </div>
+          )}
+
+          {form.type !== "bigquery" && (
+            <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr 1fr", gap:8, marginBottom:8 }}>
+              <div>
+                <label style={{ fontSize:10, fontWeight:600, color:T.muted, display:"block", marginBottom:3 }}>Database</label>
+                <input value={form.dbname||""} onChange={e=>setForm(p=>({...p,dbname:e.target.value}))}
+                  placeholder="my_database" style={inp}/>
+              </div>
+              <div>
+                <label style={{ fontSize:10, fontWeight:600, color:T.muted, display:"block", marginBottom:3 }}>User</label>
+                <input value={form.user||""} onChange={e=>setForm(p=>({...p,user:e.target.value}))}
+                  placeholder="db_user" style={inp}/>
+              </div>
+              <div>
+                <label style={{ fontSize:10, fontWeight:600, color:T.muted, display:"block", marginBottom:3 }}>Password</label>
+                <input type="password" value={form.password||""} onChange={e=>setForm(p=>({...p,password:e.target.value}))}
+                  placeholder={editSource?"(unchanged)":"password"} style={inp}/>
+              </div>
+            </div>
+          )}
+
+          {form.type==="snowflake" && (
+            <div style={{ marginBottom:8 }}>
+              <label style={{ fontSize:10, fontWeight:600, color:T.muted, display:"block", marginBottom:3 }}>Warehouse</label>
+              <input value={form.warehouse||""} onChange={e=>setForm(p=>({...p,warehouse:e.target.value}))}
+                placeholder="COMPUTE_WH" style={inp}/>
+            </div>
+          )}
+
+          {form.type==="bigquery" && (
+            <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:8, marginBottom:8 }}>
+              <div>
+                <label style={{ fontSize:10, fontWeight:600, color:T.muted, display:"block", marginBottom:3 }}>GCP Project ID</label>
+                <input value={form.project_id||""} onChange={e=>setForm(p=>({...p,project_id:e.target.value}))}
+                  placeholder="my-gcp-project" style={inp}/>
+              </div>
+              <div>
+                <label style={{ fontSize:10, fontWeight:600, color:T.muted, display:"block", marginBottom:3 }}>Service Account JSON</label>
+                <textarea value={form.service_account||""} onChange={e=>setForm(p=>({...p,service_account:e.target.value}))}
+                  placeholder={editSource?"(unchanged — paste new JSON to rotate)":"{\"type\":\"service_account\",...}"}
+                  rows={2} style={{...inp, fontFamily:"monospace", resize:"vertical"}}/>
+              </div>
+            </div>
+          )}
+
+          <div style={{ display:"flex", gap:8, marginTop:4 }}>
+            <Btn size="sm" variant="primary" onClick={saveForm}>Save Source</Btn>
+            <Btn size="sm" variant="ghost" onClick={()=>setShowForm(false)}>Cancel</Btn>
+          </div>
+        </div>
+      )}
+    </Card>
+  );
+}
+
 // ─── SlaThresholdsCard — extracted to fix hooks-in-IIFE violation ─────────────
 function SlaThresholdsCard() {
   const T = useT();
@@ -5501,6 +5741,7 @@ function ConfigureTab() {
         <EvalsInline/>
       </Card>
       <DigestPanel/>
+      <DataSourcesCard/>
     </div>
   );
 }
@@ -5903,9 +6144,9 @@ function UploadPanel({ onAddToMonitor, onQueryTable }) {
                             <tbody>
                               {preview.rows.map((row,i)=>(
                                 <tr key={i}
-                                  style={{ background:i%2===1?"#FAFBFF":"transparent" }}
+                                  style={{ background:"transparent" }}
                                   onMouseEnter={e=>e.currentTarget.style.background=`${T.accent}08`}
-                                  onMouseLeave={e=>e.currentTarget.style.background=i%2===1?"#FAFBFF":"transparent"}>
+                                  onMouseLeave={e=>e.currentTarget.style.background="transparent"}>
                                   {preview.columns.map(c=>{
                                     const v = row[c];
                                     return (
@@ -9593,16 +9834,20 @@ function WorkflowsTab({ navigateTo }) {
 
   const { add: addNotif } = useNotif();
   const runWf = async (wf) => {
+    // Navigate to detail immediately — show loading state there
+    setDetail(wf);
+    setLiveRun(null);
+    setView("detail");
     setRunning(p=>({...p,[wf.id]:true}));
     addNotif(`Running: ${wf.name}…`, "run");
     try {
       const res  = await fetch(`${API}/api/custom-workflows/${wf.id}/run/v2`, {method:"POST"});
       const data = await res.json();
-      if (!data.error) {
+      if (data.error) {
+        addNotif(`${wf.name}: ${data.error}`, "error", {persistent:true});
+      } else {
         setHistory(p=>[data,...p]);
         setLiveRun(data);
-        setDetail(wf);
-        setView("detail");
         const failed = data.failed || 0;
         if (failed > 0) {
           addNotif(`${wf.name}: ${failed} check${failed!==1?"s":""} failed`, "error", {
@@ -9832,7 +10077,7 @@ Respond with ONLY this JSON (no other text):
     <div style={{ display:"flex", flexDirection:"column", height:"100%", overflow:"hidden" }}>
       <WorkflowDetail
         wf={detailWf}
-        history={runHistory.filter(r=>r.workflow_id===detailWf.id).slice(0,10)}
+        history={React.useMemo(()=>runHistory.filter(r=>r.workflow_id===detailWf.id).slice(0,10),[runHistory,detailWf?.id])}
         liveRun={liveRun}
         onBack={()=>{ setView("list"); setLiveRun(null); }}
         onEdit={()=>{ setEditing(detailWf); setView("builder"); }}
@@ -9956,7 +10201,7 @@ Respond with ONLY this JSON (no other text):
               {builtins.map(wf=>{
                 const accentColor = wf.id==="ads-sop" ? T.orange : T.accent;
                 const isRunning   = !!running[wf.id] || (wf.id==="ads-sop"&&sopRunning);
-                const wfRuns      = runHistory.filter(r=>r.workflow_id===wf.id);
+                const wfRuns      = React.useMemo(()=>runHistory.filter(r=>r.workflow_id===wf.id),[runHistory,wf.id]);
                 const lastRun     = wfRuns[0];
                 return (
                   <div key={wf.id} style={{ background:T.card, border:`1px solid ${T.border}`,
@@ -10392,7 +10637,9 @@ function WorkflowDetail({ wf, history, liveRun, onBack, onEdit, onRun, running }
         <div style={{ flex:1, overflowY:"auto" }}>
           {history.length===0 ? (
             <div style={{ padding:"20px 16px", fontSize:11, color:T.dim, textAlign:"center" }}>
-              No runs yet — click Run now
+              {running
+                ? <><Spinner size={12}/><span style={{marginLeft:6}}>Running checks…</span></>
+                : "No runs yet — click Run now"}
             </div>
           ) : (
             history.map(run=>(
@@ -10429,8 +10676,10 @@ function WorkflowDetail({ wf, history, liveRun, onBack, onEdit, onRun, running }
       <div style={{ flex:1, display:"flex", flexDirection:"column", overflow:"hidden", minWidth:0 }}>
         {!selectedRun ? (
           <div style={{ display:"flex", alignItems:"center", justifyContent:"center",
-            flex:1, color:T.dim, fontSize:13 }}>
-            Select a run to see results
+            flex:1, color:T.dim, fontSize:13, flexDirection:"column", gap:10 }}>
+            {running
+              ? <><Spinner size={20}/><span style={{fontSize:12}}>Running checks…</span></>
+              : "Select a run to see results"}
           </div>
         ) : (
           <>
@@ -11053,19 +11302,27 @@ function WorkflowBuilder({ initial, dbSchema, onSave, onCancel }) {
     checks:[], tables:[], db_key:"default", slack_channel:"", schema_group:""
   };
   const [wf,        setWf]        = React.useState(initial ? {...blank,...initial, checks:[...(initial.checks||[])]} : blank);
-  const [checkDraft,setDraft]     = React.useState({ name:"", sql:"", pass_condition:"rows = 0", severity:"high" });
+  const [checkDraft,setDraft]     = React.useState({ name:"", sql:"", pass_condition:"rows = 0", severity:"high", source_id:"default" });
   const [editing,   setEditingCk] = React.useState(null); // check id being edited
   const [aiLoading, setAiLoad]    = React.useState(false);
   const [aiDesc,    setAiDesc]    = React.useState("");
   const [testResult,setTestResult]= React.useState(null);
   const [testing,   setTesting]   = React.useState(false);
+  const [sources,   setSources]   = React.useState([{id:"default",name:"Default (Redshift)",type:"redshift"}]);
+
+  // Load configured data sources
+  React.useEffect(()=>{
+    fetch(`${API}/api/datasources`).then(r=>r.json()).then(d=>{
+      if (d.sources) setSources(d.sources);
+    }).catch(()=>{});
+  }, []);
 
   const field   = (k,v) => setWf(p=>({...p,[k]:v}));
   const addCheck = () => {
     if (!checkDraft.name.trim() || !checkDraft.sql.trim()) return;
     const newChk = {...checkDraft, id:Date.now().toString(36)};
     setWf(p=>({...p, checks:[...p.checks, newChk]}));
-    setDraft({ name:"", sql:"", pass_condition:"rows = 0", severity:"high" });
+    setDraft({ name:"", sql:"", pass_condition:"rows = 0", severity:"high", source_id:"default" });
     setTestResult(null);
   };
   const removeCheck = (id) => setWf(p=>({...p, checks:p.checks.filter(c=>c.id!==id)}));
@@ -11259,6 +11516,12 @@ No markdown, no backticks.`,
                           <div style={{ fontSize:10, color:T.dim, marginTop:1 }}>
                             Pass when: <code style={{ fontFamily:"monospace", color:T.accent }}>{chk.pass_condition}</code>
                             {" · "}<Badge label={chk.severity} color={SEV_COLOR[chk.severity]||T.muted}/>
+                            {chk.source_id && chk.source_id !== "default" && (
+                              <span style={{ marginLeft:5, fontSize:9, padding:"1px 6px", borderRadius:4,
+                                background:`${T.purple}15`, color:T.purple, fontWeight:600 }}>
+                                🔗 {(sources.find(s=>s.id===chk.source_id)||{}).name || chk.source_id}
+                              </span>
+                            )}
                           </div>
                         </div>
                         <div style={{ display:"flex", gap:4, flexShrink:0 }}>
@@ -11322,6 +11585,17 @@ No markdown, no backticks.`,
                             value={chk.pass_condition || "rows = 0"}
                             onChange={v => updateField("pass_condition", v)}
                           />
+                        </div>
+                        <div>
+                          <label style={{ fontSize:10, fontWeight:600, color:T.muted, display:"block", marginBottom:2 }}>Data Source</label>
+                          <select value={chk.source_id || "default"} onChange={e=>updateField("source_id",e.target.value)}
+                            style={{ width:"100%", padding:"6px 10px", borderRadius:6, fontSize:11,
+                              border:`1px solid ${T.border}`, background:T.surface, color:T.text,
+                              fontFamily:"inherit", outline:"none" }}>
+                            {sources.map(s=>(
+                              <option key={s.id} value={s.id}>{s.name} ({s.type})</option>
+                            ))}
+                          </select>
                         </div>
                         <div style={{ display:"flex", gap:6 }}>
                           <Btn size="sm" onClick={()=>setEditingCk(null)}
@@ -11388,6 +11662,17 @@ No markdown, no backticks.`,
                     {["critical","high","medium","low"].map(s=><option key={s} value={s}>{s}</option>)}
                   </select>
                 </div>
+              <div>
+                <label style={{ fontSize:10, fontWeight:600, color:T.text2, display:"block", marginBottom:2 }}>Data Source</label>
+                <select value={checkDraft.source_id || "default"}
+                  onChange={e=>setDraft(p=>({...p,source_id:e.target.value}))} style={inp}>
+                  {sources.map(s=>(
+                    <option key={s.id} value={s.id}>
+                      {s.name} ({s.type})
+                    </option>
+                  ))}
+                </select>
+              </div>
               </div>
             </div>
             <div>

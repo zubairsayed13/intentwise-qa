@@ -5212,6 +5212,64 @@ function EvalsTab() {
   );
 }
 
+// ─── SlaThresholdsCard — extracted to fix hooks-in-IIFE violation ─────────────
+function SlaThresholdsCard() {
+  const T = useT();
+  const [slaData, setSlaData] = React.useState(null);
+  const [loading, setLoading] = React.useState(false);
+  const fetch_ = async () => {
+    setLoading(true);
+    try {
+      const r = await fetch(`${API}/api/sla/suggest`);
+      setSlaData(await r.json());
+    } catch(e) {}
+    setLoading(false);
+  };
+  return (
+    <Card style={{ padding:"20px 24px", marginBottom:14 }}>
+      <div style={{ display:"flex", alignItems:"center", gap:10, marginBottom:12 }}>
+        <Zap size={15} color={T.accent}/>
+        <span style={{ fontSize:13, fontWeight:700, color:T.text }}>SLA Thresholds</span>
+        <Btn size="sm" variant="ghost" onClick={fetch_} disabled={loading}
+          style={{ marginLeft:"auto", fontSize:10 }}>
+          {loading?<Spinner size={9}/>:"✨"} Suggest from history
+        </Btn>
+      </div>
+      {slaData && !slaData.error && (
+        <div style={{ marginTop:4 }}>
+          <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:10 }}>
+            {[
+              {label:"Data available by", key:"data_available_by"},
+              {label:"Replicated by",      key:"replicated_by"},
+            ].map(({label,key})=>(
+              <div key={key} style={{ padding:"10px 12px", borderRadius:8,
+                background:`${T.accent}06`, border:`1px solid ${T.accent}20` }}>
+                <div style={{ fontSize:10, color:T.muted, marginBottom:4 }}>{label}</div>
+                <div style={{ display:"flex", gap:8, alignItems:"center" }}>
+                  <span style={{ fontFamily:"monospace", fontSize:13, fontWeight:700, color:T.text }}>
+                    {slaData.current[key]}
+                  </span>
+                  <span style={{ fontSize:10, color:T.muted }}>→</span>
+                  <span style={{ fontFamily:"monospace", fontSize:13, fontWeight:700, color:T.accent }}>
+                    ✨ {slaData.suggested[key]}
+                  </span>
+                </div>
+                {slaData.stats?.data_arrival?.p95 && (
+                  <div style={{ fontSize:9, color:T.dim, marginTop:3 }}>
+                    p95: {key==="data_available_by"?slaData.stats.data_arrival.p95:slaData.stats.replication.p95}
+                    {" "}({key==="data_available_by"?slaData.stats.data_arrival.samples:slaData.stats.replication.samples} days)
+                  </div>
+                )}
+              </div>
+            ))}
+          </div>
+          <div style={{ fontSize:9, color:T.dim, marginTop:6 }}>{slaData.note}</div>
+        </div>
+      )}
+    </Card>
+  );
+}
+
 // ─── Configure Tab ────────────────────────────────────────────────────────────
 function ConfigureTab() {
   const T = useT();
@@ -5364,63 +5422,7 @@ function ConfigureTab() {
       </Card>
 
       {/* SLA Suggestions Card */}
-      <Card style={{ padding:"20px 24px", marginBottom:14 }}>
-        <div style={{ display:"flex", alignItems:"center", gap:10, marginBottom:12 }}>
-          <Zap size={15} color={T.accent}/>
-          <span style={{ fontSize:13, fontWeight:700, color:T.text }}>SLA Thresholds</span>
-          {(() => {
-            const [slaData, setSlaData] = React.useState(null);
-            const [loading, setLoading] = React.useState(false);
-            const fetch_ = async () => {
-              setLoading(true);
-              try {
-                const r = await fetch(`${API}/api/sla/suggest`);
-                setSlaData(await r.json());
-              } catch(e) {}
-              setLoading(false);
-            };
-            return (
-              <>
-                <Btn size="sm" variant="ghost" onClick={fetch_} disabled={loading}
-                  style={{ marginLeft:"auto", fontSize:10 }}>
-                  {loading?<Spinner size={9}/>:"✨"} Suggest from history
-                </Btn>
-                {slaData && !slaData.error && (
-                  <div style={{ width:"100%", marginTop:10 }}>
-                    <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:10 }}>
-                      {[
-                        {label:"Data available by", key:"data_available_by"},
-                        {label:"Replicated by",      key:"replicated_by"},
-                      ].map(({label,key})=>(
-                        <div key={key} style={{ padding:"10px 12px", borderRadius:8,
-                          background:`${T.accent}06`, border:`1px solid ${T.accent}20` }}>
-                          <div style={{ fontSize:10, color:T.muted, marginBottom:4 }}>{label}</div>
-                          <div style={{ display:"flex", gap:8, alignItems:"center" }}>
-                            <span style={{ fontFamily:"monospace", fontSize:13, fontWeight:700, color:T.text }}>
-                              {slaData.current[key]}
-                            </span>
-                            <span style={{ fontSize:10, color:T.muted }}>→</span>
-                            <span style={{ fontFamily:"monospace", fontSize:13, fontWeight:700, color:T.accent }}>
-                              ✨ {slaData.suggested[key]}
-                            </span>
-                          </div>
-                          {slaData.stats?.data_arrival?.p95 && (
-                            <div style={{ fontSize:9, color:T.dim, marginTop:3 }}>
-                              p95: {key==="data_available_by"?slaData.stats.data_arrival.p95:slaData.stats.replication.p95}
-                              {" "}({key==="data_available_by"?slaData.stats.data_arrival.samples:slaData.stats.replication.samples} days)
-                            </div>
-                          )}
-                        </div>
-                      ))}
-                    </div>
-                    <div style={{ fontSize:9, color:T.dim, marginTop:6 }}>{slaData.note}</div>
-                  </div>
-                )}
-              </>
-            );
-          })()}
-        </div>
-      </Card>
+      <SlaThresholdsCard/>
 
       <Card style={{ padding:"20px 24px", marginBottom:14 }}>
         <div style={{ display:"flex", alignItems:"center", gap:10, marginBottom:12 }}>
@@ -9991,14 +9993,12 @@ Respond with ONLY this JSON (no other text):
                           Open Check
                         </Btn>
                       )}
-                      {wf.id !== "ads-sop" && (
-                        <Btn onClick={()=>{
-                            const backendWf = workflows.find(w=>w.id===wf.id);
-                            setEditing(backendWf ? {...wf,...backendWf} : wf);
-                            setView("builder");
-                          }}
-                          size="sm" variant="ghost">✏ Edit</Btn>
-                      )}
+                      <Btn onClick={()=>{
+                          const backendWf = workflows.find(w=>w.id===wf.id);
+                          setEditing(backendWf ? {...wf,...backendWf} : wf);
+                          setView("builder");
+                        }}
+                        size="sm" variant="ghost">✏ Edit</Btn>
                       <Btn onClick={()=>{ setDetail(wf); setLiveRun(null); setView("detail"); }}
                         size="sm" variant="ghost"><Eye size={10}/> History</Btn>
                     </div>
@@ -13571,6 +13571,9 @@ function ResultDetail({ run, check, allChecks, onBack, onSelectCheck, onNavigate
   const [showStats,     setShowStats]     = React.useState(false);
   const [stakeholderMsg,setStakeholderMsg] = React.useState(null);
   const [stakeholderLoading,setStakeholderLoading] = React.useState(false);
+  const [runbookSteps,  setRunbookSteps]  = React.useState(null);
+  const [runbookLoading,setRunbookLoading]= React.useState(false);
+  const [showRunbook,   setShowRunbook]   = React.useState(false);
   const LIMIT = 100;
 
   const explainToStakeholder = async () => {
@@ -13717,6 +13720,26 @@ function ResultDetail({ run, check, allChecks, onBack, onSelectCheck, onNavigate
     onNavigate("triage");
   };
 
+  const fetchRunbook = async () => {
+    if (runbookLoading) return;
+    setRunbookLoading(true); setShowRunbook(true);
+    try {
+      const res = await fetch(`${API}/api/runbook/suggest`, {
+        method:"POST", headers:{"Content-Type":"application/json"},
+        body: JSON.stringify({
+          failed_checks: check.passed ? [] : [check.name],
+          workflow_name: run.workflow_name,
+          check_sql: data?.sql || check.sql || ""
+        })
+      });
+      const d = await res.json();
+      setRunbookSteps(d.steps || "No runbook available for this check.");
+    } catch(e) {
+      setRunbookSteps("Could not load runbook. Check your connection and try again.");
+    }
+    setRunbookLoading(false);
+  };
+
   const inp = { padding:"6px 10px", borderRadius:6, fontSize:11, border:`1px solid ${T.border}`,
     background:T.surface, color:T.text, outline:"none", fontFamily:"inherit" };
 
@@ -13753,6 +13776,13 @@ function ResultDetail({ run, check, allChecks, onBack, onSelectCheck, onNavigate
           <Btn size="sm" variant="ghost" onClick={()=>setShowStats(p=>!p)}>
             📊 Stats
           </Btn>
+          {!check.passed && (
+            <Btn size="sm" variant="ghost" onClick={fetchRunbook}
+              disabled={runbookLoading}
+              style={{ color:T.orange, borderColor:`${T.orange}30` }}>
+              {runbookLoading?<Spinner size={9}/>:"📋"} Runbook
+            </Btn>
+          )}
           <Btn size="sm" variant="ghost" onClick={downloadCSV} disabled={!data?.rows?.length}>
             ⬇ CSV
           </Btn>
@@ -13836,6 +13866,28 @@ function ResultDetail({ run, check, allChecks, onBack, onSelectCheck, onNavigate
           </pre>
         </details>
       </div>
+
+      {/* Runbook panel */}
+      {showRunbook && (
+        <div style={{ padding:"14px 20px", borderBottom:`1px solid ${T.border}`,
+          background:`${T.orange}06`, flexShrink:0 }}>
+          <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom:10 }}>
+            <span style={{ fontSize:12, fontWeight:700, color:T.orange }}>📋 Runbook — Remediation Steps</span>
+            <button onClick={()=>setShowRunbook(false)}
+              style={{ background:"none", border:"none", cursor:"pointer", color:T.muted, fontSize:16 }}>×</button>
+          </div>
+          {runbookLoading ? (
+            <div style={{ display:"flex", alignItems:"center", gap:8, color:T.muted, fontSize:12 }}>
+              <Spinner size={12}/> Retrieving relevant runbook steps…
+            </div>
+          ) : (
+            <div style={{ fontSize:12, color:T.text, lineHeight:1.7, whiteSpace:"pre-wrap",
+              maxHeight:220, overflowY:"auto", fontFamily:T.monoFont }}>
+              {runbookSteps}
+            </div>
+          )}
+        </div>
+      )}
 
       {/* Stats panel */}
       {showStats && data?.stats && (
@@ -17594,8 +17646,8 @@ export default function WiziAgentApp() {
   }, []);
 
   const T = THEMES[themeKey] || THEMES.light;
-  // Content area always bright white for readability — only left nav is themed
-  const TC = {
+  // Dark/midnight themes use T directly; light themes keep bright white content area
+  const TC = T.isDark ? T : {
     ...T,
     bg:      "#F8FAFC",
     surface: "#FFFFFF",
@@ -17675,7 +17727,7 @@ export default function WiziAgentApp() {
         <ThemeCtx.Provider value={TC}>
         <main style={{
           flex:1, overflow:"hidden", minWidth:0, position:"relative",
-          background:"#F8FAFC",
+          background:TC.bg,
           contain:"layout style",
           backgroundImage: T.wallpaper ? `url("data:image/svg+xml;base64,${T.wallpaper}")` : "none",
           backgroundRepeat: "no-repeat",

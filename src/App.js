@@ -397,11 +397,10 @@ const GLOBAL_CSS = `
 
   /* Btn CSS-only hover — no useState re-renders */
   .wizi-btn { -webkit-font-smoothing: antialiased; }
-  .wizi-btn:not(:disabled):hover { filter: brightness(1.08); }
-  .wizi-btn-ghost:not(:disabled):hover { background: var(--btn-hov) !important; }
-  .wizi-btn-primary:not(:disabled):hover { background: var(--btn-hov) !important; }
-  .wizi-btn-muted:not(:disabled):hover { background: var(--btn-hov) !important; }
-  .wizi-btn:active:not(:disabled) { transform: scale(0.97); }
+  .wizi-btn:not([disabled]):hover { opacity: 0.85; }
+  .wizi-btn-ghost:not([disabled]):hover { background: var(--btn-hov) !important; opacity: 1; }
+  .wizi-btn-muted:not([disabled]):hover { background: var(--btn-hov) !important; opacity: 1; }
+  .wizi-btn:active:not([disabled]) { transform: scale(0.97); }
   /* Smooth scrolling globally */
   * { scroll-behavior: smooth; }
   /* Scroll performance */
@@ -5707,26 +5706,7 @@ function ConfigureTab() {
         </div>
       </Card>
 
-      <Card style={{ padding:"20px 24px" }}>
-        <div style={{ fontSize:13, fontWeight:700, color:T.text, marginBottom:12 }}>
-          Additional Data Sources
-        </div>
-        <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:8 }}>
-          {[
-            { label:"Excel / CSV Upload",  icon:"📊" },
-            { label:"Google Sheets",       icon:"📋" },
-            { label:"BigQuery",            icon:"🔵" },
-            { label:"Snowflake",           icon:"❄️"  },
-          ].map(s => (
-            <div key={s.label} style={{ padding:"10px 12px", borderRadius:8,
-              border:`1px dashed ${T.border}`, display:"flex", alignItems:"center", gap:8 }}>
-              <span style={{ fontSize:16 }}>{s.icon}</span>
-              <span style={{ fontSize:11, fontWeight:600, color:T.text2, flex:1 }}>{s.label}</span>
-              <Badge label="soon" color={T.muted}/>
-            </div>
-          ))}
-        </div>
-      </Card>
+
 
       {/* ── Evals ──────────────────────────────────────────────────────── */}
       <Card style={{ padding:"20px 24px" }}>
@@ -9875,7 +9855,7 @@ function WorkflowsTab({ navigateTo }) {
   // ── Built-in workflows ──────────────────────────────────────────────────────
   const [sopRunning,     setSopRunning]     = React.useState(false);
   const [sopResult,      setSopResult]      = useSession("wz_sopResult", null);
-  const [aiSuggestions,  setAiSuggestions]  = useSession("wz_wfSuggestions", []);
+  const [aiSuggestions,  setAiSuggestions]  = React.useState([]);
   const [aiLoading,      setAiLoading]      = React.useState(false);
   const [showTemplates,  setShowTemplates]  = React.useState(false);
   const [selectedWfIds, setSelectedWfIds] = React.useState(new Set());
@@ -9967,22 +9947,46 @@ function WorkflowsTab({ navigateTo }) {
         ? dbSchema.split(";").slice(0,8).join(";")
         : "mws.report(status,download_date,report_type,copy_status,account_id), mws.orders(amazon_order_id,asin,status,purchase_date,item_price,quantity,account_id), mws.inventory(asin,available,snapshot_date,account_id), mws.sales_and_traffic_by_date(sale_date,ordered_revenue,sessions,account_id), public.tbl_amzn_campaign_report(profile_id,report_date,impressions,clicks,spend,sales)";
 
+      // Variety seeds — rotate through focus areas so each click gives different suggestions
+      const FOCUS_AREAS = [
+        "advertising performance anomalies and spend efficiency",
+        "inventory health, stockouts and overstock detection",
+        "order pipeline integrity and fulfillment issues",
+        "data freshness and pipeline timing violations",
+        "revenue trends, BSR correlation and sales velocity",
+        "cross-table referential integrity and orphaned records",
+        "campaign ROI, ACOS drift and keyword performance",
+        "replication lag, copy job failures and GDS sync issues",
+        "buy box percentage drops and competitor pricing signals",
+        "seasonal pattern deviations and anomaly detection",
+      ];
+      const existingNames = workflows.map(w=>w.name).join(", ") || "none";
+      const focusArea = FOCUS_AREAS[Math.floor(Math.random() * FOCUS_AREAS.length)];
+      const seed = Math.random().toString(36).slice(2,6); // random 4-char seed for variety
+
       const res = await fetch(`${API}/api/ai/chat`, {
         method:"POST", headers:{"Content-Type":"application/json"},
         body:JSON.stringify({
-          system:`You are a data engineering lead. Generate exactly 3 data quality workflows for an Amazon Seller Redshift platform.
+          system:`You are a senior data engineering lead specialising in Amazon Seller analytics on Redshift.
+Generate exactly 3 UNIQUE data quality workflow suggestions. Focus area this time: ${focusArea}.
 
 Schema: ${schema}
 
+IMPORTANT — do NOT suggest workflows similar to these already existing ones: ${existingNames}
+Be creative and specific. Each suggestion must be meaningfully different from the others.
+Seed: ${seed}
+
 Rules:
-- Each workflow: 2 checks max
-- Checks must SELECT actual rows (not just COUNT), use real columns only
+- Each workflow: 2-3 checks
+- SQL must SELECT actual suspect rows (not bare COUNT(*)), use only real schema columns
+- Vary schedules: mix of hourly, daily, weekly
 - No markdown, no explanation text outside JSON
 
-Respond with ONLY this JSON (no other text):
-[{"name":"string","desc":"string","schedule":"daily","icon":"🔍","tags":["string"],"checks":[{"name":"string","sql":"string","pass_condition":"rows = 0","severity":"high","explanation":"string"}]}]`,
-          messages:[{role:"user",content:"Generate 3 workflow suggestions as JSON array only."}],
-          max_tokens:1400
+Respond with ONLY this JSON array (no other text, no backticks):
+[{"name":"string","desc":"string","schedule":"daily","icon":"emoji","tags":["string"],"checks":[{"name":"string","sql":"string","pass_condition":"rows = 0","severity":"critical|high|medium|low","explanation":"string"}]}]`,
+          messages:[{role:"user",content:`Generate 3 fresh workflow suggestions focused on ${focusArea}. JSON array only.`}],
+          max_tokens:1400,
+          temperature:0.9
         })
       });
 
@@ -10077,7 +10081,7 @@ Respond with ONLY this JSON (no other text):
     <div style={{ display:"flex", flexDirection:"column", height:"100%", overflow:"hidden" }}>
       <WorkflowDetail
         wf={detailWf}
-        history={React.useMemo(()=>runHistory.filter(r=>r.workflow_id===detailWf.id).slice(0,10),[runHistory,detailWf?.id])}
+        history={runHistory.filter(r=>r.workflow_id===detailWf.id).slice(0,10)}
         liveRun={liveRun}
         onBack={()=>{ setView("list"); setLiveRun(null); }}
         onEdit={()=>{ setEditing(detailWf); setView("builder"); }}
@@ -10201,7 +10205,7 @@ Respond with ONLY this JSON (no other text):
               {builtins.map(wf=>{
                 const accentColor = wf.id==="ads-sop" ? T.orange : T.accent;
                 const isRunning   = !!running[wf.id] || (wf.id==="ads-sop"&&sopRunning);
-                const wfRuns      = React.useMemo(()=>runHistory.filter(r=>r.workflow_id===wf.id),[runHistory,wf.id]);
+                const wfRuns      = runHistory.filter(r=>r.workflow_id===wf.id);
                 const lastRun     = wfRuns[0];
                 return (
                   <div key={wf.id} style={{ background:T.card, border:`1px solid ${T.border}`,

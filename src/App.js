@@ -5,7 +5,7 @@ import {
   RefreshCw, Terminal, Plus, Trash2, Play, Eye, Filter,
   TrendingUp, TrendingDown, Minus, Zap, Shield, Activity,
   BarChart2, FileText, GitBranch, Lock, ChevronDown, X,
-  ArrowRight, Check, Loader, Hash, Table, Columns, Upload, Layers
+  ArrowRight, Check, Loader, Hash, Table, Columns, Upload, Layers, Bot, Cpu, Brain
 } from 'lucide-react';
 
 // ─── Constants ────────────────────────────────────────────────────────────────
@@ -478,6 +478,7 @@ const NAV = [
   { id:"results",   label:"Results",           icon:BarChart2,     shortcut:"9" },
   { id:"scheduler", label:"Scheduler",         icon:Clock,         shortcut:"S" },
   { id:"demo",      label:"Demo Validation",   icon:Shield,        shortcut:"D" },
+  { id:"autopilot", label:"Auto-Pilot",         icon:Bot,           shortcut:"A" },
 ];
 
 // ─── Sidebar ──────────────────────────────────────────────────────────────────
@@ -8361,9 +8362,309 @@ function SopConfigPanel({ config, setConfig, onSave, saving, msg, onClose, T }) 
 }
 
 
+// ─── AdsSopTab sub-components ───────────────────────────────────────────────
+function SopGatePanel({ gateNum, token, decision, label, checks, gateTimeout, submitGate, submitting, running, T }) {
+  // All hooks must be at top — before any early returns
+  const [elapsed,     setElapsed]     = React.useState(0);
+  const [aiAdvice,    setAiAdvice]    = React.useState(null);
+  const [aiAdviceLoad,setAiAdviceLoad]= React.useState(false);
+
+  if (decision === "skipped") return null;
+  const isPending  = decision === "pending";
+  const isApproved = decision === "approved";
+  const isRejected = decision === "rejected";
+  const isTimeout  = decision === "timeout";
+  const busy = submitting[token];
+  // Show upcoming gate (no token yet, no decision)
+  if (!token && !isPending && !isApproved && !isRejected && !isTimeout) {
+    return (
+      <Card style={{ padding:"12px 18px", marginBottom:10,
+        borderColor:`${T.border}`, background:T.surface, opacity:0.6 }}>
+        <div style={{ display:"flex", alignItems:"center", gap:12 }}>
+          <div style={{ width:32, height:32, borderRadius:8, flexShrink:0,
+            background:T.border, display:"flex", alignItems:"center",
+            justifyContent:"center", fontSize:14, fontWeight:800, color:T.dim }}>
+            {gateNum}
+          </div>
+          <div style={{ fontSize:12, color:T.muted }}>
+            🔒 Gate {gateNum}: {label} <span style={{fontSize:10}}>— not yet reached</span>
+          </div>
+        </div>
+      </Card>
+    );
+  }
+
+  React.useEffect(() => {
+    if (!isPending) return;
+    const id = setInterval(()=>setElapsed(p=>p+1), 60000);
+    return ()=>clearInterval(id);
+  }, [isPending]);
+
+  // Auto-fetch AI advice when gate becomes pending
+  React.useEffect(() => {
+    if (!isPending || aiAdvice) return;
+    const timer = setTimeout(async () => {
+      setAiAdviceLoad(true);
+      try {
+        const res = await fetch(`${API}/api/ai/chat`, {
+          method:"POST", headers:{"Content-Type":"application/json"},
+          body:JSON.stringify({
+            system:"You are a data pipeline operations assistant. Given a gate status, give a ONE sentence recommendation: safe to approve, needs investigation, or reject. Be direct and specific.",
+            messages:[{role:"user", content:`Gate ${gateNum} "${label}" is awaiting approval. Checks: ${JSON.stringify((checks||[]).map(c=>({name:c.name,passed:c.passed,rows:c.row_count})))}. Time elapsed: ${elapsed} min.`}],
+            max_tokens:60
+          })
+        });
+        const d = await res.json();
+        setAiAdvice(d?.content?.[0]?.text?.trim() || null);
+      } catch(e) {}
+      setAiAdviceLoad(false);
+    }, 2000);
+    return () => clearTimeout(timer);
+  }, [isPending]);
+
+  const pct = Math.min((elapsed / Number(gateTimeout)) * 100, 100);
+  const remaining = Math.max(Number(gateTimeout) - elapsed, 0);
+
+  return (
+    <Card style={{ padding:"14px 18px", marginBottom:10,
+      borderColor: isPending?`${T.yellow}50`:isApproved?`${T.green}40`:isTimeout?`${T.orange}40`:`${T.red}40`,
+      background:  isPending?`${T.yellow}06`:isApproved?`${T.green}06`:isTimeout?`${T.orange}06`:`${T.red}06` }}>
+      <div style={{ display:"flex", alignItems:"center", gap:12 }}>
+        <div style={{ width:32, height:32, borderRadius:8, flexShrink:0,
+          background: isPending?`${T.yellow}15`:isApproved?`${T.green}15`:isTimeout?`${T.orange}15`:`${T.red}15`,
+          display:"flex", alignItems:"center", justifyContent:"center",
+          fontSize:14, fontWeight:800,
+          color: isPending?T.yellow:isApproved?T.green:isTimeout?T.orange:T.red }}>
+          {isPending?<Spinner size={14}/>:gateNum}
+        </div>
+        <div style={{ flex:1 }}>
+          <div style={{ fontSize:12, fontWeight:700,
+            color: isPending?T.yellow:isApproved?T.green:isTimeout?T.orange:T.red }}>
+            🔒 Gate {gateNum}: {label}
+            {isApproved&&" ✓"}{isRejected&&" — stopped"}{isTimeout&&" — timed out, force-proceeded"}
+          </div>
+          {isPending && (
+            <>
+              <div style={{ fontSize:10, color:T.muted, marginTop:2 }}>
+                Waiting for approval · {remaining}m remaining
+              </div>
+              {aiAdviceLoad && (
+                <div style={{ fontSize:9, color:T.accent, marginTop:4, display:"flex", gap:4 }}>
+                  <Spinner size={8}/> AI analysing gate…
+                </div>
+              )}
+              {aiAdvice && !aiAdviceLoad && (
+                <div style={{ fontSize:10, color:T.accent, marginTop:5,
+                  padding:"5px 9px", borderRadius:6,
+                  background:`${T.accent}08`, border:`1px solid ${T.accent}20`,
+                  display:"flex", gap:5, alignItems:"flex-start" }}>
+                  <span style={{ flexShrink:0 }}>✨</span>
+                  <span style={{ lineHeight:1.4 }}>{aiAdvice}</span>
+                </div>
+              )}
+              <div style={{ height:3, background:T.border, borderRadius:99, marginTop:5 }}>
+                <div style={{ height:"100%", borderRadius:99, width:`${pct}%`,
+                  background:pct>80?T.orange:T.yellow, transition:"width 0.5s" }}/>
+              </div>
+            </>
+          )}
+          {!isPending && (
+            <div style={{ fontSize:10, color:T.muted, marginTop:2, fontFamily:"monospace" }}>
+              token: {token}
+            </div>
+          )}
+        </div>
+        {isPending && (
+          <div style={{ display:"flex", flexDirection:"column", gap:5, flexShrink:0, maxWidth:180 }}>
+            <div style={{ fontSize:9, color:T.muted, textAlign:"right", marginBottom:2 }}>
+              Approving: <strong style={{color:T.text}}>{label}</strong>
+            </div>
+            <div style={{ display:"flex", gap:5 }}>
+              <Btn onClick={()=>submitGate(token,"approve")} variant="success" size="sm" disabled={busy}>
+                {busy?<Spinner size={10} color="white"/>:<Check size={10}/>} Approve
+              </Btn>
+              <Btn onClick={()=>submitGate(token,"reject")} variant="danger" size="sm" disabled={busy}>
+                <X size={10}/> Reject
+              </Btn>
+            </div>
+            <Btn onClick={()=>submitGate(token,"force")} variant="ghost" size="sm"
+              style={{ fontSize:10, color:T.orange, borderColor:`${T.orange}30` }}>
+              ⚡ Force Proceed
+            </Btn>
+          </div>
+        )}
+        {isApproved && <Badge label="approved" color={T.green}/>}
+        {isRejected && <Badge label="rejected" color={T.red}/>}
+        {isTimeout && (
+          <div style={{ display:"flex", alignItems:"center", gap:6 }}>
+            <Badge label="timed out" color={T.orange}/>
+            <Btn size="sm" variant="ghost"
+              style={{ fontSize:10, color:T.orange, borderColor:`${T.orange}30` }}
+              onClick={async ()=>{
+                try {
+                  await fetch(`${API}/api/workflow/sop-gate/extend`,{
+                    method:"POST", headers:{"Content-Type":"application/json"},
+                    body:JSON.stringify({token, extend_minutes:30})
+                  });
+                  setResult(p=>p?{...p,[`gate${gateNum}_decision`]:"pending"}:p);
+                } catch(e){}
+              }}>
+              +30m Extend
+            </Btn>
+          </div>
+        )}
+      </div>
+    </Card>
+  );
+}
+
+function SopChecklist({ title, items, icon, type, T }) {
+  const [checked, setChecked] = React.useState({});
+  if (!items?.length) return null;
+  // Auto-check items that were triggered by the backend
+  const autoChecked = items.filter(i=>i.paused||i.triggered).length;
+  const manualDone  = Object.values(checked).filter(Boolean).length;
+  const done        = Math.max(autoChecked, manualDone);
+
+  return (
+    <Card style={{ padding:"14px 18px", marginBottom:10 }}>
+      <div style={{ display:"flex", alignItems:"center", gap:8, marginBottom:10 }}>
+        <span style={{ fontSize:16 }}>{icon}</span>
+        <span style={{ fontSize:12, fontWeight:700, color:T.text }}>{title}</span>
+        {autoChecked > 0 && (
+          <Badge label="auto-triggered (dummy)" color={T.purple}/>
+        )}
+        <span style={{ fontSize:11, color:T.muted, marginLeft:"auto" }}>
+          {done}/{items.length} done
+        </span>
+      </div>
+      <div style={{ display:"flex", flexDirection:"column", gap:5 }}>
+        {items.map((item, i) => {
+          const isAutoTriggered = item.paused || item.triggered;
+          const isDone = isAutoTriggered || checked[i];
+          return (
+            <div key={i} onClick={()=>!isAutoTriggered&&setChecked(p=>({...p,[i]:!p[i]}))}
+              style={{ display:"flex", alignItems:"flex-start", gap:10,
+                cursor:isAutoTriggered?"default":"pointer",
+                padding:"8px 10px", borderRadius:6, transition:"background 0.1s",
+                background:isDone?`${T.green}08`:"transparent" }}
+              onMouseEnter={e=>{ if(!isAutoTriggered) e.currentTarget.style.background=isDone?`${T.green}10`:`${T.accent}06`; }}
+              onMouseLeave={e=>e.currentTarget.style.background=isDone?`${T.green}08`:"transparent"}>
+              <div style={{ width:16, height:16, borderRadius:4, flexShrink:0, marginTop:1,
+                border:`1.5px solid ${isDone?T.green:T.border2}`,
+                background:isDone?T.green:"transparent",
+                display:"flex", alignItems:"center", justifyContent:"center",
+                transition:"all 0.15s" }}>
+                {isDone && <Check size={10} color="white" strokeWidth={3}/>}
+              </div>
+              <div style={{ flex:1 }}>
+                <div style={{ display:"flex", alignItems:"center", gap:8 }}>
+                  <span style={{ fontSize:12, color:isDone?T.muted:T.text,
+                    textDecoration:isDone?"line-through":"none" }}>
+                    {item.name}
+                  </span>
+                  {item.org && <Badge label={item.org} color={item.org==="Bluewheel"?T.cyan:T.purple}/>}
+
+                </div>
+                <div style={{ fontSize:10, color:T.dim, marginTop:2, display:"flex", gap:12, flexWrap:"wrap" }}>
+                  {item.expected    && <span>Expected: {item.expected}</span>}
+                  {item.pause_by    && <span style={{color:T.orange}}>Pause by: {item.pause_by}</span>}
+                  {item.type        && <span>Type: {item.type}</span>}
+                  {item.region      && <span>Region: {item.region}</span>}
+                  {item.destination && <span>→ {item.destination}</span>}
+                  {item.paused_at   && <span style={{color:T.green}}>Paused at: {item.paused_at}</span>}
+                  {item.triggered_at&& <span style={{color:T.green}}>Triggered at: {item.triggered_at}</span>}
+                  {item.note        && <span style={{color:T.dim,fontStyle:"italic"}}>{item.note}</span>}
+                </div>
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    </Card>
+  );
+}
+
+function SopValidationTable({ results, T }) {
+  if (!results?.length) return null;
+  const allPass = results.every(r=>r.status==="PASS");
+  return (
+    <Card style={{ padding:"14px 18px", marginBottom:10,
+      borderColor:allPass?`${T.green}30`:`${T.orange}40`,
+      background:allPass?`${T.green}04`:`${T.orange}04` }}>
+      <div style={{ display:"flex", alignItems:"center", gap:8, marginBottom:10 }}>
+        <span style={{ fontSize:14 }}>🔬</span>
+        <span style={{ fontSize:12, fontWeight:700, color:T.text }}>Validation Results</span>
+        <Badge label={allPass?"ALL PASS":"ISSUES"} color={allPass?T.green:T.orange}/>
+      </div>
+      <table style={{ width:"100%", borderCollapse:"collapse", fontSize:11 }}>
+        <thead>
+          <tr style={{ borderBottom:`1px solid ${T.border}` }}>
+            {["Table","Status","Accounts (n-1)","5-day Baseline","Coverage %","Error"].map(h=>(
+              <th key={h} style={{ padding:"4px 10px", textAlign:"left",
+                fontSize:9, fontWeight:700, color:T.muted,
+                textTransform:"uppercase", letterSpacing:"0.05em" }}>{h}</th>
+            ))}
+          </tr>
+        </thead>
+        <tbody>
+          {results.map((r,i)=>(
+            <tr key={i} style={{ borderBottom:`1px solid ${T.border}30` }}>
+              <td style={{ padding:"6px 10px", fontFamily:"monospace",
+                fontSize:10, color:T.text2 }}>{r.short || r.name?.split("tbl_amzn_")[1]?.replace("_report","") || r.name}</td>
+              <td style={{ padding:"6px 10px" }}>
+                <Badge label={r.status}
+                  color={r.status==="PASS"?T.green:r.status==="FAIL"?T.red:T.yellow}/>
+              </td>
+              <td style={{ padding:"6px 10px", fontFamily:"monospace",
+                fontWeight:700, color:r.today_count>0?T.green:T.red }}>
+                {r.today_count ?? "—"}
+              </td>
+              <td style={{ padding:"6px 10px", fontFamily:"monospace", color:T.muted }}>
+                {r.baseline_avg ?? "—"}
+              </td>
+              <td style={{ padding:"6px 10px", fontFamily:"monospace",
+                color:r.coverage_pct>=80?T.green:r.coverage_pct>0?T.orange:T.red }}>
+                {r.coverage_pct!=null ? `${r.coverage_pct}%` : "—"}
+              </td>
+              <td style={{ padding:"6px 10px", fontSize:9, color:T.red }}>
+                {r.error||""}
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </Card>
+  );
+}
+
 function AdsSopTab() {
   const T = useT();
+  const [confirmNode, confirm] = useConfirm();
+  const { add: addNotif } = useNotif();
   const [running,    setRunning]   = React.useState(false);
+  const runStartRef = React.useRef(null); // track run start time for adaptive polling
+  const [elapsedMin, setElapsedMin] = React.useState(0);
+
+  // Adaptive poll interval: 8s for first 5min, 20s up to 20min, 45s after
+  const getAdaptiveInterval = () => {
+    if (!runStartRef.current) return 8000;
+    const elapsed = (Date.now() - runStartRef.current) / 1000;
+    if (elapsed < 300)  return 8000;   // < 5 min
+    if (elapsed < 1200) return 20000;  // < 20 min
+    return 45000;                       // > 20 min
+  };
+
+  const startAdaptivePoll = (rid) => {
+    if (pollRef.current) { clearTimeout(pollRef.current); clearInterval(pollRef.current); pollRef.current = null; }
+    const tick = () => {
+      pollState(rid);
+      // Reschedule with updated interval
+      if (pollRef.current) clearInterval(pollRef.current);
+      pollRef.current = setTimeout(tick, getAdaptiveInterval());
+    };
+    pollRef.current = setTimeout(tick, getAdaptiveInterval());
+  };
   const [result,     setResult]    = useSession("wz_sopResult", null);
   const [gateInputs, setGateInputs]= React.useState({});  // token → decision in flight
   const [submitting, setSubmitting]= React.useState({});
@@ -8429,6 +8730,7 @@ function AdsSopTab() {
   const [showHistory,   setShowHistory]   = React.useState(false);
   const [history,       setHistory]       = React.useState([]);
   const [histLoading,   setHistLoading]   = React.useState(false);
+  const [histFilter,    setHistFilter]    = React.useState("all"); // all|complete|stopped|error
   const [showSchedules, setShowSchedules] = React.useState(false);
   const [schedules,     setSchedules]     = React.useState([]);
   const [schedFormOpen, setSchedFormOpen] = React.useState(false);
@@ -8438,7 +8740,24 @@ function AdsSopTab() {
   });
   const [schedEditing,  setSchedEditing]  = React.useState(null); // id being edited
 
-  const loadSchedules = React.useCallback(async () => {
+  // Elapsed timer — ticks every minute while running
+  React.useEffect(() => {
+    if (!running) return;
+    const id = setInterval(() => {
+      if (runStartRef.current)
+        setElapsedMin(Math.floor((Date.now() - runStartRef.current) / 60000));
+    }, 60000);
+    return () => clearInterval(id);
+  }, [running]);
+
+  // Average duration from history (for ETA)
+  const avgDurationMin = React.useMemo(() => {
+    const completed = history.filter(r => r.duration_min > 0);
+    if (!completed.length) return 45; // default estimate
+    return Math.round(completed.reduce((s,r) => s + r.duration_min, 0) / completed.length);
+  }, [history]);
+
+    const loadSchedules = React.useCallback(async () => {
     try {
       const r = await fetch(`${API}/api/workflow/ads-sop/schedules`);
       const d = await r.json();
@@ -8463,7 +8782,8 @@ function AdsSopTab() {
   };
 
   const deleteSchedule = async (sid) => {
-    if (!confirm("Delete this schedule?")) return;
+    const ok = await confirm("Delete Schedule", "Are you sure you want to delete this schedule?", "Delete");
+    if (!ok) return;
     await fetch(`${API}/api/workflow/ads-sop/schedules/${sid}`, {method:"DELETE"}).catch(()=>{});
     setSchedules(p=>p.filter(s=>s.id!==sid));
   };
@@ -8506,7 +8826,7 @@ function AdsSopTab() {
       const terminal = ["complete","stopped","error","complete_no_issues","finalizing"];
       if (terminal.includes(data.status)) {
         setRunning(false);
-        if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null; }
+        if (pollRef.current) { clearTimeout(pollRef.current); clearInterval(pollRef.current); pollRef.current = null; }
       }
     } catch(e) {}
   }, []);
@@ -8522,7 +8842,7 @@ function AdsSopTab() {
           const terminal = ["complete","stopped","error","complete_no_issues"];
           if (!terminal.includes(data.run.status)) {
             setRunning(true);
-            pollRef.current = setInterval(()=>pollState(data.run.run_id), 8000);
+            runStartRef.current = runStartRef.current || Date.now(); startAdaptivePoll(data.run.run_id);
           }
         }
       }).catch(()=>{});
@@ -8532,7 +8852,9 @@ function AdsSopTab() {
   // ── Run SOP ────────────────────────────────────────────────────────────────
   const runSop = async () => {
     setRunning(true); setResult(null); setRunId(null);
-    if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null; }
+    runStartRef.current = Date.now();
+    setElapsedMin(0);
+    if (pollRef.current) { clearTimeout(pollRef.current); clearInterval(pollRef.current); pollRef.current = null; }
     try {
       const res  = await fetch(`${API}/api/workflow/ads-sop`, {
         method:"POST", headers:{"Content-Type":"application/json"},
@@ -8542,7 +8864,7 @@ function AdsSopTab() {
       if (data.error) throw new Error(data.error);
       setRunId(data.run_id);
       // Start polling
-      pollRef.current = setInterval(()=>pollState(data.run_id), 8000);
+      runStartRef.current = Date.now(); startAdaptivePoll(data.run_id);
     } catch(e) {
       setResult({ error:e.message, status:"error", trace:[{node:"sop",ts:"",msg:e.message,level:"error"}] });
       setRunning(false);
@@ -8551,7 +8873,8 @@ function AdsSopTab() {
 
   const forceAllGates = async () => {
     if (!runId) return;
-    if (!confirm("Force all pending gates? This will auto-approve every remaining gate and proceed to completion without manual review.")) return;
+    const ok = await confirm("Force All Gates", "Auto-approve every remaining gate and proceed to completion without manual review?", "Force All");
+    if (!ok) return;
     await fetch(`${API}/api/workflow/sop-gate-force`, {
       method:"POST", headers:{"Content-Type":"application/json"},
       body:JSON.stringify({ run_id: runId })
@@ -8563,7 +8886,7 @@ function AdsSopTab() {
     if (!token) return;
     setSubmitting(p => ({...p,[token]:true}));
     // Pause polling to prevent overwriting the optimistic update
-    if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null; }
+    if (pollRef.current) { clearTimeout(pollRef.current); clearInterval(pollRef.current); pollRef.current = null; }
     try {
       const res  = await fetch(`${API}/api/workflow/sop-gate`, {
         method:"POST", headers:{"Content-Type":"application/json"},
@@ -8589,290 +8912,28 @@ function AdsSopTab() {
       // Resume polling after 4s (enough time for backend to process)
       setTimeout(() => {
         if (runId) {
-          pollRef.current = setInterval(()=>pollState(runId), 8000);
+          startAdaptivePoll(runId);
         }
       }, 4000);
-    } catch(e) { alert(`Gate submit failed: ${e.message}`); }
+      // Post threaded Slack update on gate decision
+      try {
+        const slackUrl = localStorage.getItem("wz_slack") || "";
+        if (slackUrl && decision === "approve") {
+          fetch(slackUrl, {
+            method:"POST", headers:{"Content-Type":"application/json"},
+            body: JSON.stringify({
+              text: `✅ Gate ${token?.split("_")[1] || "?"} approved — Daily Ads Check progressing`
+            })
+          }).catch(()=>{});
+        }
+      } catch(e) {}
+    } catch(e) { addNotif?.(`Gate submit failed: ${e.message}`, "error"); }
     setSubmitting(p => ({...p,[token]:false}));
   };
 
   // ── Render helpers ─────────────────────────────────────────────────────────
-  const GatePanel = ({ gateNum, token, decision, label }) => {
-    if (decision === "skipped") return null;
-    const isPending  = decision === "pending";
-    const isApproved = decision === "approved";
-    const isRejected = decision === "rejected";
-    const isTimeout  = decision === "timeout";
-    const busy = submitting[token];
-    // Show upcoming gate (no token yet, no decision)
-    if (!token && !isPending && !isApproved && !isRejected && !isTimeout) {
-      return (
-        <Card style={{ padding:"12px 18px", marginBottom:10,
-          borderColor:`${T.border}`, background:T.surface, opacity:0.6 }}>
-          <div style={{ display:"flex", alignItems:"center", gap:12 }}>
-            <div style={{ width:32, height:32, borderRadius:8, flexShrink:0,
-              background:T.border, display:"flex", alignItems:"center",
-              justifyContent:"center", fontSize:14, fontWeight:800, color:T.dim }}>
-              {gateNum}
-            </div>
-            <div style={{ fontSize:12, color:T.muted }}>
-              🔒 Gate {gateNum}: {label} <span style={{fontSize:10}}>— not yet reached</span>
-            </div>
-          </div>
-        </Card>
-      );
-    }
 
-    // Countdown timer for pending gates
-    const [elapsed,     setElapsed]     = React.useState(0);
-    const [aiAdvice,    setAiAdvice]    = React.useState(null);
-    const [aiAdviceLoad,setAiAdviceLoad]= React.useState(false);
 
-    React.useEffect(() => {
-      if (!isPending) return;
-      const id = setInterval(()=>setElapsed(p=>p+1), 60000);
-      return ()=>clearInterval(id);
-    }, [isPending]);
-
-    // Auto-fetch AI advice when gate becomes pending
-    React.useEffect(() => {
-      if (!isPending || aiAdvice) return;
-      const timer = setTimeout(async () => {
-        setAiAdviceLoad(true);
-        try {
-          const res = await fetch(`${API}/api/ai/chat`, {
-            method:"POST", headers:{"Content-Type":"application/json"},
-            body:JSON.stringify({
-              system:"You are a data pipeline operations assistant. Given a gate status, give a ONE sentence recommendation: safe to approve, needs investigation, or reject. Be direct and specific.",
-              messages:[{role:"user", content:`Gate ${gateNum} "${label}" is awaiting approval. Checks: ${JSON.stringify((checks||[]).map(c=>({name:c.name,passed:c.passed,rows:c.row_count})))}. Time elapsed: ${elapsed} min.`}],
-              max_tokens:60
-            })
-          });
-          const d = await res.json();
-          setAiAdvice(d?.content?.[0]?.text?.trim() || null);
-        } catch(e) {}
-        setAiAdviceLoad(false);
-      }, 2000);
-      return () => clearTimeout(timer);
-    }, [isPending]);
-
-    const pct = Math.min((elapsed / Number(gateTimeout)) * 100, 100);
-    const remaining = Math.max(Number(gateTimeout) - elapsed, 0);
-
-    return (
-      <Card style={{ padding:"14px 18px", marginBottom:10,
-        borderColor: isPending?`${T.yellow}50`:isApproved?`${T.green}40`:isTimeout?`${T.orange}40`:`${T.red}40`,
-        background:  isPending?`${T.yellow}06`:isApproved?`${T.green}06`:isTimeout?`${T.orange}06`:`${T.red}06` }}>
-        <div style={{ display:"flex", alignItems:"center", gap:12 }}>
-          <div style={{ width:32, height:32, borderRadius:8, flexShrink:0,
-            background: isPending?`${T.yellow}15`:isApproved?`${T.green}15`:isTimeout?`${T.orange}15`:`${T.red}15`,
-            display:"flex", alignItems:"center", justifyContent:"center",
-            fontSize:14, fontWeight:800,
-            color: isPending?T.yellow:isApproved?T.green:isTimeout?T.orange:T.red }}>
-            {isPending?<Spinner size={14}/>:gateNum}
-          </div>
-          <div style={{ flex:1 }}>
-            <div style={{ fontSize:12, fontWeight:700,
-              color: isPending?T.yellow:isApproved?T.green:isTimeout?T.orange:T.red }}>
-              🔒 Gate {gateNum}: {label}
-              {isApproved&&" ✓"}{isRejected&&" — stopped"}{isTimeout&&" — timed out, force-proceeded"}
-            </div>
-            {isPending && (
-              <>
-                <div style={{ fontSize:10, color:T.muted, marginTop:2 }}>
-                  Waiting for approval · {remaining}m remaining
-                </div>
-                {aiAdviceLoad && (
-                  <div style={{ fontSize:9, color:T.accent, marginTop:4, display:"flex", gap:4 }}>
-                    <Spinner size={8}/> AI analysing gate…
-                  </div>
-                )}
-                {aiAdvice && !aiAdviceLoad && (
-                  <div style={{ fontSize:10, color:T.accent, marginTop:5,
-                    padding:"5px 9px", borderRadius:6,
-                    background:`${T.accent}08`, border:`1px solid ${T.accent}20`,
-                    display:"flex", gap:5, alignItems:"flex-start" }}>
-                    <span style={{ flexShrink:0 }}>✨</span>
-                    <span style={{ lineHeight:1.4 }}>{aiAdvice}</span>
-                  </div>
-                )}
-                <div style={{ height:3, background:T.border, borderRadius:99, marginTop:5 }}>
-                  <div style={{ height:"100%", borderRadius:99, width:`${pct}%`,
-                    background:pct>80?T.orange:T.yellow, transition:"width 0.5s" }}/>
-                </div>
-              </>
-            )}
-            {!isPending && (
-              <div style={{ fontSize:10, color:T.muted, marginTop:2, fontFamily:"monospace" }}>
-                token: {token}
-              </div>
-            )}
-          </div>
-          {isPending && (
-            <div style={{ display:"flex", flexDirection:"column", gap:5, flexShrink:0, maxWidth:180 }}>
-              <div style={{ fontSize:9, color:T.muted, textAlign:"right", marginBottom:2 }}>
-                Approving: <strong style={{color:T.text}}>{label}</strong>
-              </div>
-              <div style={{ display:"flex", gap:5 }}>
-                <Btn onClick={()=>submitGate(token,"approve")} variant="success" size="sm" disabled={busy}>
-                  {busy?<Spinner size={10} color="white"/>:<Check size={10}/>} Approve
-                </Btn>
-                <Btn onClick={()=>submitGate(token,"reject")} variant="danger" size="sm" disabled={busy}>
-                  <X size={10}/> Reject
-                </Btn>
-              </div>
-              <Btn onClick={()=>submitGate(token,"force")} variant="ghost" size="sm"
-                style={{ fontSize:10, color:T.orange, borderColor:`${T.orange}30` }}>
-                ⚡ Force Proceed
-              </Btn>
-            </div>
-          )}
-          {isApproved && <Badge label="approved" color={T.green}/>}
-          {isRejected && <Badge label="rejected" color={T.red}/>}
-          {isTimeout && (
-            <div style={{ display:"flex", alignItems:"center", gap:6 }}>
-              <Badge label="timed out" color={T.orange}/>
-              <Btn size="sm" variant="ghost"
-                style={{ fontSize:10, color:T.orange, borderColor:`${T.orange}30` }}
-                onClick={async ()=>{
-                  try {
-                    await fetch(`${API}/api/workflow/sop-gate/extend`,{
-                      method:"POST", headers:{"Content-Type":"application/json"},
-                      body:JSON.stringify({token, extend_minutes:30})
-                    });
-                    setResult(p=>p?{...p,[`gate${gateNum}_decision`]:"pending"}:p);
-                  } catch(e){}
-                }}>
-                +30m Extend
-              </Btn>
-            </div>
-          )}
-        </div>
-      </Card>
-    );
-  };
-
-  const Checklist = ({ title, items, icon, type }) => {
-    const [checked, setChecked] = React.useState({});
-    if (!items?.length) return null;
-    // Auto-check items that were triggered by the backend
-    const autoChecked = items.filter(i=>i.paused||i.triggered).length;
-    const manualDone  = Object.values(checked).filter(Boolean).length;
-    const done        = Math.max(autoChecked, manualDone);
-
-    return (
-      <Card style={{ padding:"14px 18px", marginBottom:10 }}>
-        <div style={{ display:"flex", alignItems:"center", gap:8, marginBottom:10 }}>
-          <span style={{ fontSize:16 }}>{icon}</span>
-          <span style={{ fontSize:12, fontWeight:700, color:T.text }}>{title}</span>
-          {autoChecked > 0 && (
-            <Badge label="auto-triggered (dummy)" color={T.purple}/>
-          )}
-          <span style={{ fontSize:11, color:T.muted, marginLeft:"auto" }}>
-            {done}/{items.length} done
-          </span>
-        </div>
-        <div style={{ display:"flex", flexDirection:"column", gap:5 }}>
-          {items.map((item, i) => {
-            const isAutoTriggered = item.paused || item.triggered;
-            const isDone = isAutoTriggered || checked[i];
-            return (
-              <div key={i} onClick={()=>!isAutoTriggered&&setChecked(p=>({...p,[i]:!p[i]}))}
-                style={{ display:"flex", alignItems:"flex-start", gap:10,
-                  cursor:isAutoTriggered?"default":"pointer",
-                  padding:"8px 10px", borderRadius:6, transition:"background 0.1s",
-                  background:isDone?`${T.green}08`:"transparent" }}
-                onMouseEnter={e=>{ if(!isAutoTriggered) e.currentTarget.style.background=isDone?`${T.green}10`:`${T.accent}06`; }}
-                onMouseLeave={e=>e.currentTarget.style.background=isDone?`${T.green}08`:"transparent"}>
-                <div style={{ width:16, height:16, borderRadius:4, flexShrink:0, marginTop:1,
-                  border:`1.5px solid ${isDone?T.green:T.border2}`,
-                  background:isDone?T.green:"transparent",
-                  display:"flex", alignItems:"center", justifyContent:"center",
-                  transition:"all 0.15s" }}>
-                  {isDone && <Check size={10} color="white" strokeWidth={3}/>}
-                </div>
-                <div style={{ flex:1 }}>
-                  <div style={{ display:"flex", alignItems:"center", gap:8 }}>
-                    <span style={{ fontSize:12, color:isDone?T.muted:T.text,
-                      textDecoration:isDone?"line-through":"none" }}>
-                      {item.name}
-                    </span>
-                    {item.org && <Badge label={item.org} color={item.org==="Bluewheel"?T.cyan:T.purple}/>}
-                    {isAutoTriggered && item.dummy && (
-                      <span style={{ fontSize:9, color:T.orange }}>(dummy API)</span>
-                    )}
-                  </div>
-                  <div style={{ fontSize:10, color:T.dim, marginTop:2, display:"flex", gap:12, flexWrap:"wrap" }}>
-                    {item.expected    && <span>Expected: {item.expected}</span>}
-                    {item.pause_by    && <span style={{color:T.orange}}>Pause by: {item.pause_by}</span>}
-                    {item.type        && <span>Type: {item.type}</span>}
-                    {item.region      && <span>Region: {item.region}</span>}
-                    {item.destination && <span>→ {item.destination}</span>}
-                    {item.paused_at   && <span style={{color:T.green}}>Paused at: {item.paused_at}</span>}
-                    {item.triggered_at&& <span style={{color:T.green}}>Triggered at: {item.triggered_at}</span>}
-                    {item.note        && <span style={{color:T.dim,fontStyle:"italic"}}>{item.note}</span>}
-                  </div>
-                </div>
-              </div>
-            );
-          })}
-        </div>
-      </Card>
-    );
-  };
-
-  const ValidationTable = ({ results }) => {
-    if (!results?.length) return null;
-    const allPass = results.every(r=>r.status==="PASS");
-    return (
-      <Card style={{ padding:"14px 18px", marginBottom:10,
-        borderColor:allPass?`${T.green}30`:`${T.orange}40`,
-        background:allPass?`${T.green}04`:`${T.orange}04` }}>
-        <div style={{ display:"flex", alignItems:"center", gap:8, marginBottom:10 }}>
-          <span style={{ fontSize:14 }}>🔬</span>
-          <span style={{ fontSize:12, fontWeight:700, color:T.text }}>Validation Results</span>
-          <Badge label={allPass?"ALL PASS":"ISSUES"} color={allPass?T.green:T.orange}/>
-        </div>
-        <table style={{ width:"100%", borderCollapse:"collapse", fontSize:11 }}>
-          <thead>
-            <tr style={{ borderBottom:`1px solid ${T.border}` }}>
-              {["Table","Status","Accounts (n-1)","5-day Baseline","Coverage %","Error"].map(h=>(
-                <th key={h} style={{ padding:"4px 10px", textAlign:"left",
-                  fontSize:9, fontWeight:700, color:T.muted,
-                  textTransform:"uppercase", letterSpacing:"0.05em" }}>{h}</th>
-              ))}
-            </tr>
-          </thead>
-          <tbody>
-            {results.map((r,i)=>(
-              <tr key={i} style={{ borderBottom:`1px solid ${T.border}30` }}>
-                <td style={{ padding:"6px 10px", fontFamily:"monospace",
-                  fontSize:10, color:T.text2 }}>{r.short || r.name?.split("tbl_amzn_")[1]?.replace("_report","") || r.name}</td>
-                <td style={{ padding:"6px 10px" }}>
-                  <Badge label={r.status}
-                    color={r.status==="PASS"?T.green:r.status==="FAIL"?T.red:T.yellow}/>
-                </td>
-                <td style={{ padding:"6px 10px", fontFamily:"monospace",
-                  fontWeight:700, color:r.today_count>0?T.green:T.red }}>
-                  {r.today_count ?? "—"}
-                </td>
-                <td style={{ padding:"6px 10px", fontFamily:"monospace", color:T.muted }}>
-                  {r.baseline_avg ?? "—"}
-                </td>
-                <td style={{ padding:"6px 10px", fontFamily:"monospace",
-                  color:r.coverage_pct>=80?T.green:r.coverage_pct>0?T.orange:T.red }}>
-                  {r.coverage_pct!=null ? `${r.coverage_pct}%` : "—"}
-                </td>
-                <td style={{ padding:"6px 10px", fontSize:9, color:T.red }}>
-                  {r.error||""}
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </Card>
-    );
-  };
 
   return (
     <div className="fade-in" style={{ overflowY:"auto", padding:"28px 32px", maxWidth:1100 }}>
@@ -8963,12 +9024,7 @@ function AdsSopTab() {
             );
           })}
         </div>
-        {/* Time labels */}
-        <div style={{ display:"flex", justifyContent:"space-between", marginTop:6,
-          fontSize:9, color:T.dim }}>
-          <span>3:30 PM</span><span>4:20 PM</span><span>4:30 PM</span>
-          <span>5:00 PM</span><span>5:30 PM</span><span>6:30 PM</span><span>~7:00 PM</span>
-        </div>
+
       </Card>
 
       {/* ── SCHEDULES PANEL ─────────────────────────────────────────────── */}
@@ -9110,11 +9166,21 @@ function AdsSopTab() {
       {/* ── HISTORY PANEL ────────────────────────────────────────────────── */}
       {showHistory && (
         <Card style={{ padding:"16px 20px", marginBottom:14 }}>
-          <div style={{ display:"flex", alignItems:"center", gap:8, marginBottom:12 }}>
+          <div style={{ display:"flex", alignItems:"center", gap:8, marginBottom:12, flexWrap:"wrap" }}>
             <span style={{ fontSize:13, fontWeight:700, color:T.text }}>📋 Run History</span>
             <span style={{ fontSize:10, color:T.muted }}>({history.length} runs)</span>
-            <Btn size="sm" variant="ghost" onClick={loadHistory} disabled={histLoading}
-              style={{ marginLeft:"auto" }}>
+            <div style={{ display:"flex", gap:4, marginLeft:"auto" }}>
+              {["all","complete","stopped","error"].map(f=>(
+                <button key={f} onClick={()=>setHistFilter(f)}
+                  style={{ padding:"3px 8px", borderRadius:99, fontSize:10, cursor:"pointer",
+                    border:`1px solid ${histFilter===f?T.accent:T.border}`,
+                    background:histFilter===f?`${T.accent}10`:"transparent",
+                    color:histFilter===f?T.accent:T.muted }}>
+                  {f}
+                </button>
+              ))}
+            </div>
+            <Btn size="sm" variant="ghost" onClick={loadHistory} disabled={histLoading}>
               {histLoading?<Spinner size={10}/>:<RefreshCw size={10}/>}
             </Btn>
           </div>
@@ -9125,7 +9191,10 @@ function AdsSopTab() {
           )}
           {histLoading && <div style={{ textAlign:"center", padding:"12px 0" }}><Spinner size={16}/></div>}
           <div style={{ display:"flex", flexDirection:"column", gap:6, maxHeight:340, overflowY:"auto" }}>
-            {history.map((run,i) => {
+            {history
+              .filter(run => histFilter==="all" || run.status===histFilter ||
+                (histFilter==="complete" && run.status==="complete_no_issues"))
+              .map((run,i) => {
               const statusColor = run.status==="complete"?T.green:run.status==="complete_no_issues"?T.cyan:run.status==="stopped"?T.orange:run.status==="error"?T.red:T.muted;
               const statusLabel = run.status==="complete"?"✓ Complete":run.status==="complete_no_issues"?"✓ No issues":run.status==="stopped"?"⛔ Stopped":run.status==="error"?"✗ Error":run.status?.replace(/_/g," ");
               return (
@@ -9188,24 +9257,48 @@ function AdsSopTab() {
       )}
 
       {/* Running state banner */}
-      {running && result && (
-        <Card style={{ padding:"12px 18px", marginBottom:14,
-          borderColor:`${T.accent}40`, background:`${T.accent}06` }}>
-          <div style={{ display:"flex", alignItems:"center", gap:10 }}>
-            <Spinner size={14} color={T.accent}/>
-            <div>
-              <span style={{ fontSize:13, fontWeight:700, color:T.accent }}>
-                Check Running — {result.status?.replace(/_/g," ").replace("awaiting","⏳ awaiting")}
-              </span>
-              {runId && (
-                <span style={{ fontSize:10, color:T.muted, fontFamily:"monospace", marginLeft:8 }}>
-                  {runId}
+      {running && result && (() => {
+        const PHASE_ORDER = ["detection","pause","confirm","validation","refresh","resume_copy","finalize"];
+        const phaseIdx = PHASE_ORDER.indexOf(currentPhase);
+        const phasePct = phaseIdx >= 0 ? Math.round(((phaseIdx) / (PHASE_ORDER.length - 1)) * 100) : 0;
+        const PHASE_LABELS = {
+          detection:"🔍 Detecting issues", pause:"⏸ Pausing Mage jobs",
+          confirm:"✅ Awaiting Gate 2", validation:"🔬 Validating tables",
+          refresh:"🔄 Triggering refreshes", resume_copy:"▶ Resuming & copying",
+          finalize:"🎉 Finalising"
+        };
+        return (
+          <Card style={{ padding:"12px 18px", marginBottom:14,
+            borderColor:`${T.accent}40`, background:`${T.accent}06` }}>
+            <div style={{ display:"flex", alignItems:"center", gap:10, marginBottom:8 }}>
+              <Spinner size={14} color={T.accent}/>
+              <div style={{ flex:1 }}>
+                <span style={{ fontSize:13, fontWeight:700, color:T.accent }}>
+                  {PHASE_LABELS[currentPhase] || result.status?.replace(/_/g," ")}
                 </span>
+                {runId && (
+                  <span style={{ fontSize:10, color:T.muted, fontFamily:"monospace", marginLeft:8 }}>
+                    {runId}
+                  </span>
+                )}
+              </div>
+              <span style={{ fontSize:12, fontWeight:700, color:T.accent }}>{phasePct}%</span>
+            </div>
+            <div style={{ height:4, background:T.border, borderRadius:99 }}>
+              <div style={{ height:"100%", borderRadius:99, width:`${phasePct}%`,
+                background:`linear-gradient(90deg,${T.accent},${T.purple})`,
+                transition:"width 0.6s ease" }}/>
+            </div>
+            <div style={{ display:"flex", justifyContent:"space-between", marginTop:5,
+              fontSize:9, color:T.muted }}>
+              <span>Elapsed: {elapsedMin}m</span>
+              {avgDurationMin > 0 && elapsedMin < avgDurationMin && (
+                <span>~{Math.max(avgDurationMin - elapsedMin, 1)}m remaining (avg {avgDurationMin}m)</span>
               )}
             </div>
-          </div>
-        </Card>
-      )}
+          </Card>
+        );
+      })()}
       {running && !result && (
         <Card style={{ padding:"20px 24px", textAlign:"center" }}>
           <Spinner size={28} style={{ margin:"0 auto 10px" }}/>
@@ -9252,7 +9345,7 @@ function AdsSopTab() {
                             body:JSON.stringify({gate_timeout_min:Number(gateTimeout), force_full:true})
                           });
                           const data = await res.json();
-                          if (!data.error){ setRunId(data.run_id); pollRef.current=setInterval(()=>pollState(data.run_id),8000); }
+                          if (!data.error){ setRunId(data.run_id); runStartRef.current=Date.now(); startAdaptivePoll(data.run_id); }
                         } catch(e){ setRunning(false); }
                       }}
                       style={{ marginLeft:"auto", fontSize:10, color:T.accent }}>
@@ -9282,36 +9375,41 @@ function AdsSopTab() {
                 Check is running — gates will appear as each step completes. Approve or reject inline below.
               </div>
             )}
-            <GatePanel gateNum={1} token={result.gate1_token}
+            <SopGatePanel gateNum={1} token={result.gate1_token}
               decision={result.gate1_decision} label="Pause Mage Jobs"
-              checks={result.gate1_checks||[]}/>
+              checks={result.gate1_checks||[]} gateTimeout={gateTimeout}
+              submitGate={submitGate} submitting={submitting} running={running} T={T}/>
 
-            <Checklist title="Pause Mage Packages — Manual Action Required"
-              icon="⏸" items={result.mage_checklist}/>
+            <SopChecklist title="Pause Mage Packages — Manual Action Required"
+              icon="⏸" items={result.mage_checklist} T={T}/>
 
-            <GatePanel gateNum={2} token={result.gate2_token}
+            <SopGatePanel gateNum={2} token={result.gate2_token}
               decision={result.gate2_decision} label="Data Available"
-              checks={result.gate2_checks||[]}/>
+              checks={result.gate2_checks||[]} gateTimeout={gateTimeout}
+              submitGate={submitGate} submitting={submitting} running={running} T={T}/>
 
-            <ValidationTable results={result.validation_results}/>
+            <SopValidationTable results={result.validation_results} T={T}/>
 
-            <GatePanel gateNum={3} token={result.gate3_token}
+            <SopGatePanel gateNum={3} token={result.gate3_token}
               decision={result.gate3_decision} label="Proceed with Refreshes"
-              checks={result.gate3_checks||[]}/>
+              checks={result.gate3_checks||[]} gateTimeout={gateTimeout}
+              submitGate={submitGate} submitting={submitting} running={running} T={T}/>
 
-            <Checklist title="Trigger Refreshes — Manual Action Required"
-              icon="🔄" items={result.refresh_checklist}/>
+            <SopChecklist title="Trigger Refreshes — Manual Action Required"
+              icon="🔄" items={result.refresh_checklist} T={T}/>
 
-            <GatePanel gateNum={4} token={result.gate4_token}
+            <SopGatePanel gateNum={4} token={result.gate4_token}
               decision={result.gate4_decision} label="Run Product Summary"
-              checks={result.gate4_checks||[]}/>
+              checks={result.gate4_checks||[]} gateTimeout={gateTimeout}
+              submitGate={submitGate} submitting={submitting} running={running} T={T}/>
 
-            <Checklist title="Resume Mage & GDS BigQuery Copies"
-              icon="▶" items={result.copy_checklist}/>
+            <SopChecklist title="Resume Mage & GDS BigQuery Copies"
+              icon="▶" items={result.copy_checklist} T={T}/>
 
-            <GatePanel gateNum={5} token={result.gate5_token}
+            <SopGatePanel gateNum={5} token={result.gate5_token}
               decision={result.gate5_decision} label="Resume Mage & GDS Copies"
-              checks={result.gate5_checks||[]}/>
+              checks={result.gate5_checks||[]} gateTimeout={gateTimeout}
+              submitGate={submitGate} submitting={submitting} running={running} T={T}/>
 
             {/* Resume from gate — shown when run is stopped/errored */}
             {(result.status==="stopped"||result.status==="error") && (() => {
@@ -9332,7 +9430,24 @@ function AdsSopTab() {
                         Picks up from Gate {firstPending} — preserves earlier detection &amp; validation results
                       </div>
                     </div>
-                    <div style={{ display:"flex", gap:6 }}>
+                    <div style={{ display:"flex", gap:6, flexWrap:"wrap" }}>
+                      <Btn size="sm"
+                        style={{ background:`linear-gradient(135deg,${T.accent},${T.purple})`, color:"white", border:"none", fontSize:10 }}
+                        onClick={async ()=>{
+                          setRunning(true); setResult(null); setRunId(null);
+                          if(pollRef.current){clearTimeout(pollRef.current);clearInterval(pollRef.current);pollRef.current=null;}
+                          try {
+                            const res = await fetch(`${API}/api/workflow/ads-sop/resume`,{
+                              method:"POST", headers:{"Content-Type":"application/json"},
+                              body:JSON.stringify({from_run_id:result.run_id,from_gate:firstPending,gate_timeout_min:Number(gateTimeout)})
+                            });
+                            const d = await res.json();
+                            if(!d.error){ setRunId(d.run_id); runStartRef.current=Date.now(); startAdaptivePoll(d.run_id); }
+                          } catch(e){ setRunning(false); }
+                        }}>
+                        ▶ Resume from G{firstPending}
+                      </Btn>
+                      <span style={{ fontSize:9, color:T.dim, alignSelf:"center" }}>or pick gate:</span>
                       {[1,2,3,4,5].map(n=>(
                         <Btn key={n} size="sm" variant="ghost"
                           style={{ color:T.orange, borderColor:`${T.orange}30`, fontSize:10 }}
@@ -9349,10 +9464,10 @@ function AdsSopTab() {
                                 })
                               });
                               const d = await res.json();
-                              if(!d.error){ setRunId(d.run_id); pollRef.current=setInterval(()=>pollState(d.run_id),8000); }
+                              if(!d.error){ setRunId(d.run_id); runStartRef.current=Date.now(); startAdaptivePoll(d.run_id); }
                             } catch(e){ setRunning(false); }
                           }}>
-                          G{n}
+                          G{n}: {["Pause Mage","Data Available","Refreshes","Product Summary","GDS Copies"][n-1]}
                         </Btn>
                       ))}
                     </div>
@@ -9483,6 +9598,7 @@ function AdsSopTab() {
           </Card>
         </div>
       )}
+      {confirmNode}
     </div>
   );
 }
@@ -9497,15 +9613,6 @@ function AdsSopTab() {
 // ── Shared schedule options ───────────────────────────────────────────────────
 const BUILTIN_WFS = [
   {
-    id:"daily-brief", builtin:true,
-    name:"Daily Data Brief",
-    desc:"3 sub-agents scan mws.report (downloads, freshness, integrity), Pipeline Analyst correlates root cause via GPT-4o. All issues flagged — nothing auto-fixes.",
-    schedule:"4:30 PM IST", trigger:"scheduled",
-    agents:["Download Monitor","Freshness Agent","Integrity Agent","Pipeline Analyst (LLM)"],
-    tables:["mws.report"], endpoint:"/api/workflow/daily-run",
-    color:"#6366f1", checks:[],
-  },
-  {
     id:"ads-sop", builtin:true,
     name:"Daily Ads Data Availability Check",
     desc:"6 agents · 5 approval gates · Full data availability check from detection through validation, refresh, and GDS copy jobs.",
@@ -9513,6 +9620,61 @@ const BUILTIN_WFS = [
     agents:["Detection","Pause Mage","Validation","Refresh","Resume & Copy","Finalize"],
     tables:["mws.report","public.tbl_amzn_*"], endpoint:"/api/workflow/ads-sop",
     color:"#f97316", checks:[],
+  },
+];
+
+// ── Built-in Workflow Template Library ────────────────────────────────────────
+const BUILTIN_TEMPLATES = [
+  {
+    id:"tpl-orders-inventory",
+    name:"Orders & Inventory Health",
+    icon:"📦",
+    color:"#10B981",
+    desc:"Multi-gate runbook for order pipeline integrity, inventory anomalies, and fulfillment failures. Approval gates before any remediation.",
+    tags:["orders","inventory","fulfillment"],
+    phases:["Detection","Triage","Inventory Check","Order Validation","Resolution","Notify"],
+    gates:["Confirm Issues","Proceed with Fixes","Mark Resolved"],
+    detection_checks:[
+      {name:"Null ASINs in Orders", sql:"SELECT order_id, purchase_date FROM mws.orders WHERE asin IS NULL AND purchase_date >= CURRENT_DATE - 1", pass_condition:"rows = 0", severity:"high"},
+      {name:"Negative Inventory", sql:"SELECT asin, available FROM mws.inventory WHERE available < 0 AND snapshot_date = (SELECT MAX(snapshot_date) FROM mws.inventory)", pass_condition:"rows = 0", severity:"critical"},
+      {name:"Zero-Revenue Shipped Orders", sql:"SELECT amazon_order_id FROM mws.orders WHERE item_price <= 0 AND status = 'Shipped' AND purchase_date >= CURRENT_DATE - 1", pass_condition:"rows = 0", severity:"high"},
+      {name:"Orders Data Freshness", sql:"SELECT COUNT(*) FROM mws.orders WHERE purchase_date = CURRENT_DATE", pass_condition:"rows > 0", severity:"critical"},
+      {name:"Fulfillment Lag", sql:"SELECT COUNT(*) FROM mws.orders WHERE status = 'Pending' AND purchase_date < CURRENT_DATE - 2", pass_condition:"rows = 0", severity:"medium"},
+    ],
+  },
+  {
+    id:"tpl-ads-spend",
+    name:"Advertising Spend Anomalies",
+    icon:"📣",
+    color:"#8B5CF6",
+    desc:"Detects ACOS drift, zero-impression campaigns, spend without conversions, and keyword performance drops. Gates before pausing spend.",
+    tags:["advertising","spend","acos","keywords"],
+    phases:["Detection","Spend Analysis","Campaign Review","Keyword Check","Gate Review","Alert"],
+    gates:["Confirm Anomalies","Approve Pause Actions","Final Review"],
+    detection_checks:[
+      {name:"Zero Impressions Campaigns", sql:"SELECT profile_id, report_date, SUM(spend) as spend FROM public.tbl_amzn_campaign_report WHERE impressions = 0 AND spend > 0 AND report_date = CURRENT_DATE - 1 GROUP BY 1,2", pass_condition:"rows = 0", severity:"high"},
+      {name:"ACOS > 100%", sql:"SELECT profile_id, SUM(spend) as spend, SUM(sales) as sales FROM public.tbl_amzn_campaign_report WHERE report_date = CURRENT_DATE - 1 GROUP BY 1 HAVING SUM(sales) > 0 AND SUM(spend)/SUM(sales) > 1", pass_condition:"rows = 0", severity:"high"},
+      {name:"Spend Without Sales", sql:"SELECT profile_id, SUM(spend) as total_spend FROM public.tbl_amzn_campaign_report WHERE sales = 0 AND spend > 50 AND report_date = CURRENT_DATE - 1 GROUP BY 1", pass_condition:"rows = 0", severity:"medium"},
+      {name:"Missing Yesterday Ad Data", sql:"SELECT COUNT(*) FROM public.tbl_amzn_campaign_report WHERE report_date = CURRENT_DATE - 1", pass_condition:"rows > 0", severity:"critical"},
+      {name:"Keyword Spend Spike", sql:"SELECT keyword_text, SUM(spend) FROM public.tbl_amzn_keyword_report WHERE report_date = CURRENT_DATE - 1 GROUP BY 1 HAVING SUM(spend) > 500", pass_condition:"rows = 0", severity:"medium"},
+    ],
+  },
+  {
+    id:"tpl-replication",
+    name:"Data Replication & Freshness",
+    icon:"🔄",
+    color:"#06B6D4",
+    desc:"Monitors copy job lag, replication delays, stale tables, and GDS sync failures. Automated retrigger for low-risk stuck copies.",
+    tags:["replication","freshness","gds","pipeline"],
+    phases:["Freshness Scan","Replication Check","GDS Sync","Stale Detection","Auto-Retrigger","Verify"],
+    gates:["Confirm Stale Tables","Approve Retrigger","Verify Resolution"],
+    detection_checks:[
+      {name:"Stuck Copies (>2h)", sql:"SELECT report_type, copy_status, DATEDIFF('minute', updated_at, GETDATE()) as stuck_min FROM mws.report WHERE copy_status NOT IN ('REPLICATED','NOT_STARTED') AND download_date >= CURRENT_DATE - 1 AND DATEDIFF('minute', updated_at, GETDATE()) > 120", pass_condition:"rows = 0", severity:"high"},
+      {name:"Not Replicated Today", sql:"SELECT COUNT(*) FROM mws.report WHERE status = 'processed' AND copy_status != 'REPLICATED' AND download_date = CURRENT_DATE", pass_condition:"rows = 0", severity:"high"},
+      {name:"Stale Report Types", sql:"SELECT report_type, MAX(download_date) as last_seen FROM mws.report GROUP BY 1 HAVING MAX(download_date) < CURRENT_DATE - 2", pass_condition:"rows = 0", severity:"medium"},
+      {name:"Failed Downloads Today", sql:"SELECT report_type, error_message, COUNT(*) FROM mws.report WHERE status = 'failed' AND download_date = CURRENT_DATE GROUP BY 1,2", pass_condition:"rows = 0", severity:"critical"},
+      {name:"Pipeline Gap (Missing Day)", sql:"SELECT generate_series::date as missing_day FROM generate_series(CURRENT_DATE-7, CURRENT_DATE-1, '1 day') WHERE generate_series::date NOT IN (SELECT DISTINCT download_date FROM mws.report)", pass_condition:"rows = 0", severity:"high"},
+    ],
   },
 ];
 
@@ -9535,6 +9697,7 @@ const NotifCtx = React.createContext({ add:()=>{}, items:[] });
 const useNotif = () => React.useContext(NotifCtx);
 
 function NotifProvider({ children }) {
+  const T = useT();
   const [items, setItems] = React.useState([]);
   const [drawer, setDrawer] = React.useState(false);
 
@@ -9957,21 +10120,11 @@ function WorkflowsTab({ navigateTo }) {
   const toggleWfSelect = (id) => setSelectedWfIds(p => { const n=new Set(p); n.has(id)?n.delete(id):n.add(id); return n; });
   const clearWfSelect = () => setSelectedWfIds(new Set());
   const [showAiAssistant, setShowAiAssistant] = React.useState(false);
+  const [showTemplateLib, setShowTemplateLib] = React.useState(false);
+  const [activatingTpl,   setActivatingTpl]   = React.useState(null);
 
   // Seed built-in workflows into backend on first load if they don't exist yet
   const BUILTIN_SEEDS = [
-    {
-      id:"daily-brief", builtin_type:"system", enabled:true,
-      name:"Daily Data Brief",
-      desc:"Sub-agents scan mws.report for downloads, freshness, and integrity. Pipeline Analyst correlates root cause via AI.",
-      schedule:"16:30 IST",
-      checks:[
-        {name:"Failed Downloads Today", sql:"SELECT COUNT(*) FROM mws.report WHERE status='failed' AND download_date=CURRENT_DATE", pass_condition:"rows = 0", severity:"critical"},
-        {name:"Pending Downloads", sql:"SELECT COUNT(*) FROM mws.report WHERE status='pending' AND download_date=CURRENT_DATE", pass_condition:"rows = 0", severity:"high"},
-        {name:"Data Freshness", sql:"SELECT COUNT(*) FROM mws.report WHERE download_date=CURRENT_DATE", pass_condition:"rows > 0", severity:"critical"},
-      ],
-      tables:["mws.report"], agents:[], db_key:"default",
-    },
     {
       id:"ads-sop", builtin_type:"system", enabled:true,
       name:"Daily Ads Data Availability Check",
@@ -10007,25 +10160,6 @@ function WorkflowsTab({ navigateTo }) {
         setSopResult(data);
       } catch(e) {}
       setSopRunning(false);
-      return;
-    }
-    if (wf.id === "daily-brief") {
-      // Use dedicated daily-run endpoint
-      setRunning(p=>({...p,"daily-brief":true}));
-      try {
-        const res  = await fetch(`${API}/api/workflow/daily-run`, {
-          method:"POST", headers:{"Content-Type":"application/json"}, body:"{}"
-        });
-        const data = await res.json();
-        if (!data.error) {
-          setHistory(p=>[data,...p]);
-          setLiveRun(data);
-          setDetail(BUILTIN_WFS.find(b=>b.id==="daily-brief"));
-          setView("detail");
-          onRunComplete?.(data);
-        }
-      } catch(e) {}
-      setRunning(p=>({...p,"daily-brief":false}));
       return;
     }
     await runWf(wf);
@@ -10288,14 +10422,91 @@ Respond with ONLY this JSON array (no other text, no backticks):
         </div>
       )}
 
-      {/* ── BUILT-IN WORKFLOWS — rendered from real backend data ───────────── */}
+      {/* ── BUILT-IN WORKFLOWS + TEMPLATE LIBRARY ─────────────────────────── */}
       {(() => {
         const builtins = BUILTIN_WFS;
-        if (!builtins.length) return null;
         return (
           <div style={{ marginBottom:20 }}>
-            <div style={{ fontSize:11, fontWeight:700, color:T.muted, textTransform:"uppercase",
-              letterSpacing:"0.06em", marginBottom:10 }}>Built-in Workflows</div>
+            <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom:10 }}>
+              <div style={{ fontSize:11, fontWeight:700, color:T.muted, textTransform:"uppercase",
+                letterSpacing:"0.06em" }}>Built-in Workflows</div>
+              <Btn size="sm" variant="ghost" onClick={()=>setShowTemplateLib(p=>!p)}
+                style={{ fontSize:10, color:T.purple, borderColor:`${T.purple}30` }}>
+                {showTemplateLib?"Hide":"＋ Add from Library"}
+              </Btn>
+            </div>
+
+            {/* Template Library panel */}
+            {showTemplateLib && (
+              <div style={{ marginBottom:14, padding:"16px 18px", borderRadius:10,
+                border:`1px solid ${T.purple}30`, background:`${T.purple}04` }}>
+                <div style={{ fontSize:12, fontWeight:700, color:T.purple, marginBottom:12 }}>
+                  📚 Built-in Workflow Templates
+                </div>
+                <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr 1fr", gap:10 }}>
+                  {BUILTIN_TEMPLATES.map(tpl=>{
+                    const isActive = workflows.some(w=>w.id===tpl.id) ||
+                                     builtins.some(b=>b.id===tpl.id);
+                    const isActivating = activatingTpl===tpl.id;
+                    return (
+                      <div key={tpl.id} style={{ padding:"14px 16px", borderRadius:9,
+                        border:`1px solid ${isActive?tpl.color+"40":T.border}`,
+                        background:isActive?`${tpl.color}06`:T.card }}>
+                        <div style={{ fontSize:20, marginBottom:6 }}>{tpl.icon}</div>
+                        <div style={{ fontSize:12, fontWeight:700, color:T.text, marginBottom:4 }}>
+                          {tpl.name}
+                        </div>
+                        <div style={{ fontSize:10, color:T.muted, lineHeight:1.5, marginBottom:8 }}>
+                          {tpl.desc}
+                        </div>
+                        <div style={{ display:"flex", gap:4, flexWrap:"wrap", marginBottom:10 }}>
+                          {tpl.tags.map(tag=>(
+                            <span key={tag} style={{ fontSize:9, padding:"2px 7px", borderRadius:99,
+                              background:`${tpl.color}12`, color:tpl.color, fontWeight:600 }}>
+                              {tag}
+                            </span>
+                          ))}
+                        </div>
+                        <div style={{ fontSize:9, color:T.dim, marginBottom:10 }}>
+                          {tpl.phases.length} phases · {tpl.gates.length} approval gates · {tpl.detection_checks.length} checks
+                        </div>
+                        {isActive
+                          ? <Badge label="Active" color={tpl.color}/>
+                          : <Btn size="sm" onClick={async()=>{
+                              setActivatingTpl(tpl.id);
+                              // Create workflow from template
+                              const wf = {
+                                id: tpl.id,
+                                name: tpl.name,
+                                desc: tpl.desc,
+                                schedule: "daily",
+                                enabled: true,
+                                checks: tpl.detection_checks.map((c,i)=>({...c, id:`${tpl.id}_c${i}`})),
+                                tables: [], db_key:"default", slack_channel:"",
+                                builtin_type:"template", template_id:tpl.id,
+                                color: tpl.color,
+                              };
+                              await fetch(`${API}/api/custom-workflows/save/v2`,{
+                                method:"POST", headers:{"Content-Type":"application/json"},
+                                body:JSON.stringify(wf)
+                              }).catch(()=>{});
+                              setWfs(p=>[...p.filter(w=>w.id!==tpl.id), wf]);
+                              setActivatingTpl(null);
+                              setShowTemplateLib(false);
+                            }}
+                            disabled={isActivating}
+                            style={{ background:tpl.color, color:"white", border:"none", fontSize:10 }}>
+                            {isActivating?<Spinner size={9} color="white"/>:null}
+                            {isActivating?"Adding…":"＋ Add Workflow"}
+                          </Btn>
+                        }
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
+
             <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:10 }}>
               {builtins.map(wf=>{
                 const accentColor = wf.id==="ads-sop" ? T.orange : T.accent;
@@ -18013,6 +18224,481 @@ Rules: 2-3 workflows max, 2-3 checks each, use only real columns, never COUNT(*)
 }
 
 
+
+// ─── AutoPilotTab — multi-agent autonomous pipeline monitor ─────────────────
+
+const DEFAULT_AGENTS = [
+  {id:"detection",name:"Detection Agent",icon:"🔍",color:"#6366f1",enabled:true,
+   description:"Runs SQL checks to detect data quality issues and anomalies",
+   system_prompt:"You are a data detection agent. Analyse SQL check results and identify genuine data quality issues. Be specific about what failed and why. Max 2 sentences.",
+   checks:[
+    {id:"c1",name:"Stuck copy jobs",sql:"SELECT COUNT(*) FROM mws.report WHERE copy_status IN ('IN_PROGRESS','TIMEOUT') AND updated_at < GETDATE() - INTERVAL '45 minutes'",pass_condition:"rows = 0",severity:"high"},
+    {id:"c2",name:"Failed downloads (retryable)",sql:"SELECT COUNT(*) FROM mws.report WHERE status = 'failed' AND tries < 3 AND download_date >= CURRENT_DATE - 2",pass_condition:"rows = 0",severity:"high"},
+    {id:"c3",name:"Not replicated today",sql:"SELECT COUNT(*) FROM mws.report WHERE status = 'processed' AND copy_status != 'REPLICATED' AND download_date = CURRENT_DATE",pass_condition:"rows = 0",severity:"critical"},
+    {id:"c4",name:"Missing ad data yesterday",sql:"SELECT COUNT(*) FROM public.tbl_amzn_campaign_report WHERE report_date = CURRENT_DATE - 1",pass_condition:"rows > 0",severity:"critical"},
+   ]},
+  {id:"diagnosis",name:"Diagnosis Agent",icon:"🧠",color:"#8B5CF6",enabled:true,
+   description:"Uses AI to reason about root cause using memory of past incidents",
+   system_prompt:"You are a data engineering diagnosis agent. Given a failed check and similar past incidents from memory, identify the most likely root cause. Reference past incidents if relevant. Max 3 sentences.",
+   checks:[]},
+  {id:"remediation",name:"Remediation Agent",icon:"🔧",color:"#F97316",enabled:true,
+   description:"Applies pre-approved safe fixes. Never modifies data without a matching safe action.",
+   system_prompt:"You are a remediation agent. Given a diagnosis, select the most appropriate safe action from the approved list. Explain your confidence level. Max 2 sentences.",
+   checks:[]},
+  {id:"verification",name:"Verification Agent",icon:"✅",color:"#10B981",enabled:true,
+   description:"Re-runs failed checks after remediation and updates memory with outcome.",
+   system_prompt:"You are a verification agent. After a fix has been applied, confirm whether the issue was resolved. Report clearly: resolved, partial, or unresolved. Max 2 sentences.",
+   checks:[]},
+];
+
+const DEFAULT_SAFE_ACTIONS = [
+  {id:"a1",name:"Reset stuck copy jobs",enabled:true,confidence:95,
+   check_sql:"SELECT COUNT(*) FROM mws.report WHERE copy_status IN ('IN_PROGRESS','TIMEOUT') AND updated_at < GETDATE() - INTERVAL '45 minutes'",
+   fix_sql:"UPDATE mws.report SET copy_status = 'PENDING', updated_at = GETDATE() WHERE copy_status IN ('IN_PROGRESS','TIMEOUT') AND updated_at < GETDATE() - INTERVAL '45 minutes'",
+   description:"Resets copy jobs stuck > 45 min back to PENDING"},
+  {id:"a2",name:"Retrigger failed downloads",enabled:true,confidence:90,
+   check_sql:"SELECT COUNT(*) FROM mws.report WHERE status = 'failed' AND tries < 3 AND download_date >= CURRENT_DATE - 2",
+   fix_sql:"UPDATE mws.report SET status = 'pending', updated_at = GETDATE() WHERE status = 'failed' AND tries < 3 AND download_date >= CURRENT_DATE - 2",
+   description:"Retriggers downloads that failed but haven't exceeded retry limit"},
+];
+
+const AP_MEMORY_KEY = "wz_agent_memory";
+const AP_MAX_MEM = 50;
+function apLoadMem() { try{return JSON.parse(localStorage.getItem(AP_MEMORY_KEY)||"[]");}catch(e){return[];} }
+function apSaveMem(m) { try{localStorage.setItem(AP_MEMORY_KEY,JSON.stringify(m.slice(0,AP_MAX_MEM)));}catch(e){} }
+
+function AutoPilotTab({ onNavigate }) {
+  const T = useT();
+  const { add: addNotif } = useNotif();
+
+  const [agents,      setAgents]      = useLocal("wz_ap_agents",   DEFAULT_AGENTS);
+  const [safeActions, setSafeActions] = useLocal("wz_ap_actions",  DEFAULT_SAFE_ACTIONS);
+  const [enabled,     setEnabled]     = useLocal("wz_autopilot",   false);
+  const [intervalMin, setIntervalMin] = useLocal("wz_ap_interval", 30);
+  const [confThresh,  setConfThresh]  = useLocal("wz_ap_confidence",85);
+  const [slackAlerts, setSlackAlerts] = useLocal("wz_ap_slack",    true);
+
+  const [running,    setRunning]   = React.useState(false);
+  const [runLog,     setRunLog]    = React.useState([]);
+  const [memory,     setMemory]    = React.useState(apLoadMem);
+  const [activeView, setView]      = React.useState("dashboard");
+  const [editAgent,  setEditAgent] = React.useState(null);
+  const [editAction, setEditAction]= React.useState(null);
+  const [lastRun,    setLastRun]   = React.useState(null);
+  const [stats,      setStats]     = React.useState({total:0,fixed:0,detected:0,failures:0});
+  const intervalRef = React.useRef(null);
+
+  const addLog = (agent, msg, type="info") =>
+    setRunLog(p=>[{ts:new Date().toISOString().slice(11,19),agent,msg,type},...p].slice(0,200));
+
+  const aiCall = async (agentId, userMsg, maxTokens=120) => {
+    const ag = agents.find(a=>a.id===agentId);
+    if (!ag?.enabled) return null;
+    try {
+      const r = await fetch(`${API}/api/ai/chat`,{method:"POST",headers:{"Content-Type":"application/json"},
+        body:JSON.stringify({system:ag.system_prompt,messages:[{role:"user",content:userMsg}],max_tokens:maxTokens,temperature:0.3})});
+      const d = await r.json();
+      return d?.content?.[0]?.text?.trim()||null;
+    } catch(e){return null;}
+  };
+
+  const runScan = React.useCallback(async () => {
+    if (running) return;
+    setRunning(true); setRunLog([]);
+    addLog("orchestrator","🚀 Starting autonomous scan…","info");
+    const mem=[...apLoadMem()];
+    let detected=0,fixed=0,failures=0;
+
+    // Agent 1: Detection
+    addLog("detection","Running SQL checks…","info");
+    const issues=[];
+    const detAgent = agents.find(a=>a.id==="detection");
+    if (detAgent?.enabled) {
+      for (const chk of detAgent.checks) {
+        if (!chk.sql) continue;
+        try {
+          const r=await fetch(`${API}/api/query?sql=${encodeURIComponent(chk.sql)}`);
+          const d=await r.json();
+          const val=parseInt(Object.values(d.rows?.[0]||{})[0]||"0");
+          const [metric,op,thresh]=(chk.pass_condition||"rows = 0").split(" ");
+          const failed=!eval(`${val} ${op} ${thresh}`);
+          if(failed){issues.push({...chk,actual_rows:val});addLog("detection",`⚠ FAILED: ${chk.name} (${val} rows)`,"warn");detected++;}
+          else addLog("detection",`✓ ${chk.name}`,"success");
+        } catch(e){addLog("detection",`✗ ${chk.name}: ${e.message}`,"error");}
+      }
+    }
+    try {
+      const r=await fetch(`${API}/api/anomaly/proactive`);
+      const d=await r.json();
+      (d.alerts||[]).forEach(a=>{addLog("detection",`🚨 Anomaly: ${a.label} ${a.direction}${a.pct}%`,"warn");detected++;});
+    } catch(e){}
+
+    // Agent 2: Diagnosis
+    const diagnosed=[];
+    const diagAgent=agents.find(a=>a.id==="diagnosis");
+    for (const issue of issues) {
+      const similar=mem.filter(m=>m.check_id===issue.id).slice(0,3);
+      const memCtx=similar.length>0
+        ?`Past: ${similar.map(m=>`[${m.ts?.slice(0,10)}] ${m.diagnosis}→${m.fix_applied||"none"}→${m.resolved?"ok":"fail"}`).join(". ")}`
+        :"No past incidents.";
+      const diagnosis=diagAgent?.enabled
+        ?await aiCall("diagnosis",`Check "${issue.name}" failed with ${issue.actual_rows} rows. SQL: ${issue.sql.slice(0,120)}. ${memCtx}`)
+        :"Diagnosis agent disabled";
+      diagnosed.push({...issue,diagnosis:diagnosis||"Unknown root cause"});
+      if(diagnosis) addLog("diagnosis",`💡 ${issue.name}: ${diagnosis.slice(0,80)}`,"info");
+    }
+
+    // Agent 3: Remediation
+    const remAgent=agents.find(a=>a.id==="remediation");
+    const fixResults=[];
+    if (remAgent?.enabled) {
+      for (const issue of diagnosed) {
+        const action=safeActions.find(a=>a.enabled&&a.confidence>=confThresh&&
+          (a.check_sql?.toLowerCase().includes((issue.sql?.split("FROM")[1]?.split("WHERE")[0]||"").trim().toLowerCase())||
+           a.name.toLowerCase().split(" ").some(w=>issue.name.toLowerCase().includes(w))));
+        if (action) {
+          try {
+            const r=await fetch(`${API}/api/query?sql=${encodeURIComponent(action.fix_sql)}`);
+            const d=await r.json();
+            if(!d.error){
+              addLog("remediation",`✅ Fixed: ${action.name} (${action.confidence}%)`,"success");
+              fixResults.push({issue,action,success:true}); fixed++;
+              if(slackAlerts){const su=localStorage.getItem("wz_slack")||"";if(su)fetch(su,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({text:`🤖 Auto-Pilot fixed: *${action.name}*`})}).catch(()=>{});}
+            }
+          } catch(e){addLog("remediation",`✗ Fix failed: ${action.name}`,"error");failures++;}
+        } else {
+          addLog("remediation",`⏭ No safe action for: ${issue.name}`,"warn");
+          fixResults.push({issue,action:null,success:false});
+        }
+      }
+    }
+
+    // Agent 4: Verification + memory
+    const verAgent=agents.find(a=>a.id==="verification");
+    for (const fix of fixResults.filter(f=>f.success)) {
+      await new Promise(r=>setTimeout(r,800));
+      try {
+        const r=await fetch(`${API}/api/query?sql=${encodeURIComponent(fix.issue.sql)}`);
+        const d=await r.json();
+        const val=parseInt(Object.values(d.rows?.[0]||{})[0]||"0");
+        const [metric,op,thresh]=(fix.issue.pass_condition||"rows = 0").split(" ");
+        const resolved=eval(`${val} ${op} ${thresh}`);
+        addLog("verification",resolved?`✓ Resolved: ${fix.issue.name}`:`⚠ Still failing: ${fix.issue.name}`,resolved?"success":"warn");
+        const verif=verAgent?.enabled?await aiCall("verification",`Fix "${fix.action?.name}" applied. Re-check "${fix.issue.name}" now shows ${val} rows. Pass: ${fix.issue.pass_condition}. Resolved?`):null;
+        mem.unshift({ts:new Date().toISOString(),check_id:fix.issue.id,check_name:fix.issue.name,diagnosis:fix.issue.diagnosis,fix_applied:fix.action?.name||null,resolved,verification:verif,rows_before:fix.issue.actual_rows,rows_after:val});
+      } catch(e){}
+    }
+    diagnosed.filter(i=>!fixResults.find(f=>f.issue.id===i.id&&f.success)).forEach(issue=>
+      mem.unshift({ts:new Date().toISOString(),check_id:issue.id,check_name:issue.name,diagnosis:issue.diagnosis,fix_applied:null,resolved:false,rows_before:issue.actual_rows}));
+
+    apSaveMem(mem); setMemory(mem);
+    setLastRun(new Date().toISOString());
+    setStats(p=>({total:p.total+1,fixed:p.fixed+fixed,detected:p.detected+detected,failures:p.failures+failures}));
+    addLog("orchestrator",`✅ Scan complete — ${detected} detected, ${fixed} fixed`,"success");
+    addNotif(`🤖 Auto-Pilot: ${detected} issue(s), ${fixed} fixed`,detected>0?"warn":"info");
+
+    if(detected>0){
+      try{const r=await fetch(`${API}/api/custom-workflows/history/v2?limit=20`);const runs=await r.json();
+        if(Array.isArray(runs)){const byWf={};runs.forEach(run=>{if(!byWf[run.workflow_id])byWf[run.workflow_id]=[];byWf[run.workflow_id].push(run);});
+          for(const[wfId,wfRuns]of Object.entries(byWf)){if(wfRuns.slice(0,2).every(r=>r.status!=="clean")){addLog("orchestrator",`🔁 Re-running: ${wfRuns[0]?.workflow_name}`,"info");fetch(`${API}/api/custom-workflows/${wfId}/run/v2`,{method:"POST"}).catch(()=>{});}}}}catch(e){}
+    }
+    setRunning(false);
+  }, [running,agents,safeActions,confThresh,slackAlerts]);
+
+  React.useEffect(()=>{
+    if(!enabled){if(intervalRef.current)clearInterval(intervalRef.current);return;}
+    runScan();
+    intervalRef.current=setInterval(runScan,intervalMin*60*1000);
+    return()=>clearInterval(intervalRef.current);
+  },[enabled,intervalMin]);
+
+  const inp={width:"100%",padding:"7px 10px",borderRadius:6,fontSize:11,border:`1px solid ${T.border}`,background:T.surface,color:T.text,fontFamily:"inherit",outline:"none",boxSizing:"border-box"};
+  const TYPE_COLOR={info:T.muted,warn:T.orange,error:T.red,success:T.green};
+  const VIEWS=[{id:"dashboard",label:"Dashboard",icon:"🏠"},{id:"agents",label:"Sub-Agents",icon:"🤖"},{id:"actions",label:"Safe Actions",icon:"⚡"},{id:"memory",label:"Memory",icon:"🧠"},{id:"settings",label:"Settings",icon:"⚙"}];
+
+  return (
+    <div style={{padding:"28px 32px",maxWidth:1100}}>
+      {/* Header */}
+      <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:24}}>
+        <div>
+          <div style={{fontSize:24,fontWeight:800,color:T.text,letterSpacing:"-0.03em",display:"flex",alignItems:"center",gap:10}}>
+            <Bot size={28} color={T.accent}/>
+            Auto-Pilot
+            <div style={{width:10,height:10,borderRadius:"50%",background:enabled?(running?"#FCD34D":"#34D399"):"#9CA3AF",animation:running?"pulse 1s infinite":"none"}}/>
+          </div>
+          <div style={{fontSize:13,color:T.muted,marginTop:3}}>Multi-agent autonomous monitor · {agents.filter(a=>a.enabled).length} agents active</div>
+        </div>
+        <div style={{display:"flex",gap:10,alignItems:"center"}}>
+          {lastRun&&<span style={{fontSize:10,color:T.dim}}>Last: {new Date(lastRun).toLocaleTimeString()}</span>}
+          <Btn onClick={runScan} disabled={running} variant="ghost" size="sm">
+            {running?<Spinner size={10}/>:<RefreshCw size={10}/>} Scan Now
+          </Btn>
+          <div onClick={()=>setEnabled(p=>!p)}
+            style={{width:44,height:24,borderRadius:99,cursor:"pointer",background:enabled?T.green:T.border,position:"relative",transition:"background 0.2s"}}>
+            <div style={{width:18,height:18,borderRadius:"50%",background:"white",position:"absolute",top:3,left:enabled?23:3,transition:"left 0.15s",boxShadow:"0 1px 3px rgba(0,0,0,0.2)"}}/>
+          </div>
+          <span style={{fontSize:12,fontWeight:700,color:enabled?T.green:T.muted}}>{enabled?"ON":"OFF"}</span>
+        </div>
+      </div>
+
+      {/* Sub-tabs */}
+      <div style={{display:"flex",gap:2,marginBottom:20,background:T.surface,padding:4,borderRadius:10,border:`1px solid ${T.border}`,width:"fit-content"}}>
+        {VIEWS.map(v=>(
+          <button key={v.id} onClick={()=>setView(v.id)}
+            style={{padding:"5px 14px",borderRadius:8,fontSize:11,cursor:"pointer",border:"none",fontWeight:activeView===v.id?700:400,
+              background:activeView===v.id?T.card:"transparent",color:activeView===v.id?T.accent:T.muted,
+              boxShadow:activeView===v.id?"0 1px 3px rgba(0,0,0,0.08)":"none",transition:"all 0.12s"}}>
+            {v.icon} {v.label}
+          </button>
+        ))}
+      </div>
+
+      {/* DASHBOARD */}
+      {activeView==="dashboard"&&(
+        <div>
+          <div style={{display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:12,marginBottom:20}}>
+            {[{label:"Total Scans",value:stats.total,color:T.accent,icon:"🔄"},{label:"Issues Found",value:stats.detected,color:T.orange,icon:"⚠"},{label:"Auto-Fixed",value:stats.fixed,color:T.green,icon:"✅"},{label:"Failed Fixes",value:stats.failures,color:T.red,icon:"✗"}].map(k=>(
+              <div key={k.label} style={{padding:"16px 18px",borderRadius:10,background:T.card,border:`1px solid ${T.border}`}}>
+                <div style={{fontSize:20,marginBottom:6}}>{k.icon}</div>
+                <div style={{fontSize:24,fontWeight:800,color:k.color}}>{k.value}</div>
+                <div style={{fontSize:11,color:T.muted}}>{k.label}</div>
+              </div>
+            ))}
+          </div>
+          <div style={{display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:10,marginBottom:20}}>
+            {agents.map(ag=>(
+              <div key={ag.id} style={{padding:"12px 14px",borderRadius:9,border:`1px solid ${ag.enabled?ag.color+"40":T.border}`,background:ag.enabled?`${ag.color}06`:T.surface}}>
+                <div style={{fontSize:18,marginBottom:4}}>{ag.icon}</div>
+                <div style={{fontSize:11,fontWeight:700,color:T.text}}>{ag.name}</div>
+                <div style={{fontSize:10,color:T.muted,marginTop:2,lineHeight:1.4}}>{ag.description.slice(0,60)}…</div>
+                <div style={{marginTop:8}}><Badge label={ag.enabled?"active":"disabled"} color={ag.enabled?ag.color:T.muted}/></div>
+              </div>
+            ))}
+          </div>
+          <div style={{background:T.card,border:`1px solid ${T.border}`,borderRadius:10,padding:"14px 16px"}}>
+            <div style={{fontSize:12,fontWeight:700,color:T.text,marginBottom:10,display:"flex",alignItems:"center",gap:8}}>
+              <Terminal size={13} color={T.accent}/>
+              Live Log
+              {running&&<Badge label="RUNNING" color={T.green} pulse/>}
+            </div>
+            {runLog.length===0
+              ?<div style={{fontSize:11,color:T.dim,textAlign:"center",padding:"20px 0"}}>{enabled?"Waiting for next scan…":"Enable Auto-Pilot to start"}</div>
+              :<div style={{maxHeight:280,overflowY:"auto",display:"flex",flexDirection:"column",gap:2}}>
+                {runLog.map((entry,i)=>(
+                  <div key={i} style={{fontSize:10,display:"flex",gap:8,padding:"3px 0",borderBottom:`1px solid ${T.border}10`}}>
+                    <span style={{color:T.dim,fontFamily:"monospace",flexShrink:0}}>{entry.ts}</span>
+                    <span style={{padding:"0 6px",borderRadius:3,fontSize:9,fontWeight:700,flexShrink:0,
+                      background:`${agents.find(a=>a.id===entry.agent)?.color||T.accent}15`,
+                      color:agents.find(a=>a.id===entry.agent)?.color||T.accent}}>{entry.agent}</span>
+                    <span style={{color:TYPE_COLOR[entry.type]||T.text,flex:1}}>{entry.msg}</span>
+                  </div>
+                ))}
+              </div>
+            }
+          </div>
+        </div>
+      )}
+
+      {/* SUB-AGENTS */}
+      {activeView==="agents"&&(
+        <div style={{display:"flex",flexDirection:"column",gap:14}}>
+          {agents.map(ag=>(
+            <div key={ag.id} style={{background:T.card,borderRadius:12,border:`1px solid ${ag.enabled?ag.color+"40":T.border}`,overflow:"hidden"}}>
+              <div style={{padding:"14px 18px",display:"flex",alignItems:"center",gap:12}}>
+                <span style={{fontSize:22}}>{ag.icon}</span>
+                <div style={{flex:1}}>
+                  <div style={{fontSize:13,fontWeight:700,color:T.text}}>{ag.name}</div>
+                  <div style={{fontSize:11,color:T.muted}}>{ag.description}</div>
+                </div>
+                <div style={{display:"flex",gap:8,alignItems:"center"}}>
+                  <Btn size="sm" variant="ghost" onClick={()=>setEditAgent(editAgent===ag.id?null:ag.id)}>✏ Edit</Btn>
+                  <div onClick={()=>setAgents(p=>p.map(a=>a.id===ag.id?{...a,enabled:!a.enabled}:a))}
+                    style={{width:36,height:20,borderRadius:99,cursor:"pointer",background:ag.enabled?ag.color:T.border,position:"relative",transition:"background 0.2s"}}>
+                    <div style={{width:14,height:14,borderRadius:"50%",background:"white",position:"absolute",top:3,left:ag.enabled?19:3,transition:"left 0.15s"}}/>
+                  </div>
+                </div>
+              </div>
+              {editAgent===ag.id&&(
+                <div style={{padding:"0 18px 18px",borderTop:`1px solid ${T.border}`}}>
+                  <div style={{paddingTop:14,display:"flex",flexDirection:"column",gap:10}}>
+                    <div>
+                      <label style={{fontSize:10,fontWeight:600,color:T.muted,display:"block",marginBottom:4}}>System Prompt</label>
+                      <textarea value={ag.system_prompt} rows={3}
+                        onChange={e=>setAgents(p=>p.map(a=>a.id===ag.id?{...a,system_prompt:e.target.value}:a))}
+                        style={{...inp,fontFamily:"monospace",resize:"vertical"}}/>
+                    </div>
+                    {ag.checks?.length>0&&(
+                      <div>
+                        <div style={{fontSize:11,fontWeight:700,color:T.text,marginBottom:8}}>SQL Checks</div>
+                        {ag.checks.map((chk,ci)=>(
+                          <div key={chk.id} style={{padding:"10px 12px",borderRadius:8,border:`1px solid ${T.border}`,marginBottom:8,background:T.surface}}>
+                            <div style={{display:"flex",gap:8,marginBottom:6}}>
+                              <input value={chk.name} placeholder="Check name"
+                                onChange={e=>setAgents(p=>p.map(a=>a.id===ag.id?{...a,checks:a.checks.map((c,i)=>i===ci?{...c,name:e.target.value}:c)}:a))}
+                                style={{...inp,flex:2}}/>
+                              <select value={chk.severity}
+                                onChange={e=>setAgents(p=>p.map(a=>a.id===ag.id?{...a,checks:a.checks.map((c,i)=>i===ci?{...c,severity:e.target.value}:c)}:a))}
+                                style={{...inp,flex:1}}>
+                                {["critical","high","medium","low"].map(s=><option key={s} value={s}>{s}</option>)}
+                              </select>
+                              <button onClick={()=>setAgents(p=>p.map(a=>a.id===ag.id?{...a,checks:a.checks.filter((_,i)=>i!==ci)}:a))}
+                                style={{background:"none",border:"none",cursor:"pointer",color:T.red}}><Trash2 size={13}/></button>
+                            </div>
+                            <textarea value={chk.sql} rows={2} placeholder="SELECT SQL..."
+                              onChange={e=>setAgents(p=>p.map(a=>a.id===ag.id?{...a,checks:a.checks.map((c,i)=>i===ci?{...c,sql:e.target.value}:c)}:a))}
+                              style={{...inp,fontFamily:"monospace",resize:"vertical",marginBottom:4}}/>
+                            <input value={chk.pass_condition} placeholder="rows = 0"
+                              onChange={e=>setAgents(p=>p.map(a=>a.id===ag.id?{...a,checks:a.checks.map((c,i)=>i===ci?{...c,pass_condition:e.target.value}:c)}:a))}
+                              style={{...inp,fontFamily:"monospace"}}/>
+                          </div>
+                        ))}
+                        <Btn size="sm" variant="ghost" onClick={()=>setAgents(p=>p.map(a=>a.id===ag.id?{...a,checks:[...a.checks,{id:`c${Date.now()}`,name:"",sql:"",pass_condition:"rows = 0",severity:"high"}]}:a))}>
+                          <Plus size={10}/> Add Check
+                        </Btn>
+                      </div>
+                    )}
+                    {ag.id==="detection"&&ag.checks?.length===0&&(
+                      <Btn size="sm" variant="ghost" onClick={()=>setAgents(p=>p.map(a=>a.id==="detection"?{...a,checks:[{id:`c${Date.now()}`,name:"",sql:"",pass_condition:"rows = 0",severity:"high"}]}:a))}>
+                        <Plus size={10}/> Add First Check
+                      </Btn>
+                    )}
+                  </div>
+                </div>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* SAFE ACTIONS */}
+      {activeView==="actions"&&(
+        <div>
+          <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:14}}>
+            <div>
+              <div style={{fontSize:13,fontWeight:700,color:T.text}}>Pre-approved Safe Actions</div>
+              <div style={{fontSize:11,color:T.muted,marginTop:2}}>Only these fixes can be applied automatically. Minimum confidence: {confThresh}%</div>
+            </div>
+            <Btn size="sm" variant="primary" onClick={()=>setSafeActions(p=>[...p,{id:`a${Date.now()}`,name:"New Action",enabled:false,confidence:80,check_sql:"",fix_sql:"",description:""}])}>
+              <Plus size={10}/> Add Action
+            </Btn>
+          </div>
+          <div style={{display:"flex",flexDirection:"column",gap:10}}>
+            {safeActions.map((action,ai)=>(
+              <div key={action.id} style={{background:T.card,borderRadius:10,border:`1px solid ${action.enabled?T.accent+"40":T.border}`}}>
+                <div style={{padding:"12px 16px",display:"flex",alignItems:"center",gap:10}}>
+                  <div style={{flex:1}}>
+                    <div style={{fontSize:12,fontWeight:700,color:T.text}}>{action.name}</div>
+                    <div style={{fontSize:10,color:T.muted}}>{action.description}</div>
+                  </div>
+                  <span style={{fontSize:11,fontWeight:700,color:action.confidence>=90?T.green:action.confidence>=70?T.orange:T.red}}>{action.confidence}%</span>
+                  <Btn size="sm" variant="ghost" onClick={()=>setEditAction(editAction===action.id?null:action.id)}>✏ Edit</Btn>
+                  <div onClick={()=>setSafeActions(p=>p.map((a,i)=>i===ai?{...a,enabled:!a.enabled}:a))}
+                    style={{width:36,height:20,borderRadius:99,cursor:"pointer",background:action.enabled?T.green:T.border,position:"relative",transition:"background 0.2s"}}>
+                    <div style={{width:14,height:14,borderRadius:"50%",background:"white",position:"absolute",top:3,left:action.enabled?19:3,transition:"left 0.15s"}}/>
+                  </div>
+                  <button onClick={()=>setSafeActions(p=>p.filter((_,i)=>i!==ai))}
+                    style={{background:"none",border:"none",cursor:"pointer",color:T.red}}><Trash2 size={13}/></button>
+                </div>
+                {editAction===action.id&&(
+                  <div style={{padding:"0 16px 16px",borderTop:`1px solid ${T.border}`}}>
+                    <div style={{paddingTop:12,display:"grid",gridTemplateColumns:"1fr 1fr",gap:10}}>
+                      <div><label style={{fontSize:10,fontWeight:600,color:T.muted,display:"block",marginBottom:3}}>Name</label>
+                        <input value={action.name} onChange={e=>setSafeActions(p=>p.map((a,i)=>i===ai?{...a,name:e.target.value}:a))} style={inp}/></div>
+                      <div><label style={{fontSize:10,fontWeight:600,color:T.muted,display:"block",marginBottom:3}}>Confidence %</label>
+                        <input type="number" min={50} max={100} value={action.confidence}
+                          onChange={e=>setSafeActions(p=>p.map((a,i)=>i===ai?{...a,confidence:Number(e.target.value)}:a))} style={inp}/></div>
+                      <div style={{gridColumn:"1/-1"}}><label style={{fontSize:10,fontWeight:600,color:T.muted,display:"block",marginBottom:3}}>Description</label>
+                        <input value={action.description} onChange={e=>setSafeActions(p=>p.map((a,i)=>i===ai?{...a,description:e.target.value}:a))} style={inp}/></div>
+                      <div style={{gridColumn:"1/-1"}}><label style={{fontSize:10,fontWeight:600,color:T.muted,display:"block",marginBottom:3}}>Detection SQL</label>
+                        <textarea value={action.check_sql} rows={2}
+                          onChange={e=>setSafeActions(p=>p.map((a,i)=>i===ai?{...a,check_sql:e.target.value}:a))}
+                          style={{...inp,fontFamily:"monospace",resize:"vertical"}}/></div>
+                      <div style={{gridColumn:"1/-1"}}><label style={{fontSize:10,fontWeight:600,color:T.muted,display:"block",marginBottom:3}}>Fix SQL (auto-applied)</label>
+                        <textarea value={action.fix_sql} rows={2}
+                          onChange={e=>setSafeActions(p=>p.map((a,i)=>i===ai?{...a,fix_sql:e.target.value}:a))}
+                          style={{...inp,fontFamily:"monospace",resize:"vertical"}}/></div>
+                    </div>
+                  </div>
+                )}
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* MEMORY */}
+      {activeView==="memory"&&(
+        <div>
+          <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:14}}>
+            <div>
+              <div style={{fontSize:13,fontWeight:700,color:T.text}}>Incident Memory</div>
+              <div style={{fontSize:11,color:T.muted,marginTop:2}}>{memory.length} incidents · Powers Diagnosis Agent accuracy</div>
+            </div>
+            <Btn size="sm" variant="muted" onClick={()=>{apSaveMem([]);setMemory([]);}}>
+              <Trash2 size={10}/> Clear
+            </Btn>
+          </div>
+          {memory.length===0
+            ?<EmptyState icon={Brain} title="No incidents yet" desc="Memory builds as the agent runs scans. Each incident improves future diagnosis accuracy."/>
+            :<div style={{display:"flex",flexDirection:"column",gap:8}}>
+              {memory.map((m,i)=>(
+                <div key={i} style={{padding:"12px 16px",borderRadius:9,
+                  border:`1px solid ${m.resolved?T.green+"30":T.orange+"30"}`,
+                  background:m.resolved?`${T.green}04`:`${T.orange}04`}}>
+                  <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:6}}>
+                    <Badge label={m.resolved?"resolved":"unresolved"} color={m.resolved?T.green:T.orange}/>
+                    <span style={{fontSize:12,fontWeight:600,color:T.text}}>{m.check_name}</span>
+                    <span style={{fontSize:10,color:T.dim,marginLeft:"auto",fontFamily:"monospace"}}>{m.ts?.slice(0,16).replace("T"," ")}</span>
+                  </div>
+                  <div style={{fontSize:11,color:T.text2,marginBottom:4}}>💡 <strong>Diagnosis:</strong> {m.diagnosis}</div>
+                  {m.fix_applied&&<div style={{fontSize:11,color:T.text2,marginBottom:4}}>🔧 <strong>Fix:</strong> {m.fix_applied}{m.rows_before!=null&&<span style={{color:T.muted}}> · {m.rows_before}→{m.rows_after??0} rows</span>}</div>}
+                  {m.verification&&<div style={{fontSize:10,color:T.muted,fontStyle:"italic"}}>✅ {m.verification}</div>}
+                </div>
+              ))}
+            </div>
+          }
+        </div>
+      )}
+
+      {/* SETTINGS */}
+      {activeView==="settings"&&(
+        <div style={{maxWidth:500,display:"flex",flexDirection:"column",gap:14}}>
+          <div style={{background:T.card,borderRadius:10,border:`1px solid ${T.border}`,padding:"18px 20px"}}>
+            <div style={{fontSize:12,fontWeight:700,color:T.text,marginBottom:14}}>Scan Settings</div>
+            <div style={{display:"flex",flexDirection:"column",gap:12}}>
+              <div><label style={{fontSize:11,color:T.muted,display:"block",marginBottom:4}}>Scan interval</label>
+                <select value={intervalMin} onChange={e=>setIntervalMin(Number(e.target.value))} style={inp}>
+                  {[5,10,15,30,60,120].map(m=><option key={m} value={m}>{m} minutes</option>)}
+                </select></div>
+              <div><label style={{fontSize:11,color:T.muted,display:"block",marginBottom:4}}>Min confidence to auto-fix ({confThresh}%)</label>
+                <input type="range" min={50} max={100} step={5} value={confThresh}
+                  onChange={e=>setConfThresh(Number(e.target.value))}
+                  style={{width:"100%",accentColor:T.accent}}/>
+                <div style={{display:"flex",justifyContent:"space-between",fontSize:9,color:T.dim,marginTop:2}}><span>50% aggressive</span><span>100% certain only</span></div>
+              </div>
+              <div style={{display:"flex",alignItems:"center",justifyContent:"space-between"}}>
+                <div><div style={{fontSize:11,color:T.text}}>Slack alerts</div><div style={{fontSize:10,color:T.muted}}>Posts to configured webhook on auto-fix</div></div>
+                <div onClick={()=>setSlackAlerts(p=>!p)}
+                  style={{width:36,height:20,borderRadius:99,cursor:"pointer",background:slackAlerts?T.green:T.border,position:"relative",transition:"background 0.2s"}}>
+                  <div style={{width:14,height:14,borderRadius:"50%",background:"white",position:"absolute",top:3,left:slackAlerts?19:3,transition:"left 0.15s"}}/>
+                </div>
+              </div>
+            </div>
+          </div>
+          <div style={{background:T.card,borderRadius:10,border:`1px solid ${T.border}`,padding:"18px 20px"}}>
+            <div style={{fontSize:12,fontWeight:700,color:T.text,marginBottom:8}}>Reset Defaults</div>
+            <div style={{display:"flex",gap:8}}>
+              <Btn size="sm" variant="muted" onClick={()=>setAgents(DEFAULT_AGENTS)}>Reset Agents</Btn>
+              <Btn size="sm" variant="muted" onClick={()=>setSafeActions(DEFAULT_SAFE_ACTIONS)}>Reset Actions</Btn>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+
 export default function WiziAgentApp() {
   const [themeKey,  setThemeKey]  = useLocal("wz_theme", "light");
   const [activeTab, setActiveTab] = useLocal("wz_tab",   "brief");
@@ -18033,7 +18719,7 @@ export default function WiziAgentApp() {
     const SHORTCUT_MAP = {
       "1":"brief", "2":"triage", "3":"workflows", "4":"dataflows",
       "5":"config", "6":"query", "7":"results", "8":"scheduler",
-      "9":"demo",
+      "9":"demo", "a":"autopilot",
     };
     const handler = (e) => {
       // Skip if user is typing in an input/textarea
@@ -18353,12 +19039,15 @@ export default function WiziAgentApp() {
           {activeTab==="results"   && <ErrorBoundary key="results"><ResultsTab onNavigate={navigateTo}/></ErrorBoundary>}
           {activeTab==="scheduler" && <ErrorBoundary key="scheduler"><SchedulerTab onNavigate={navigateTo}/></ErrorBoundary>}
           {activeTab==="demo"      && <ErrorBoundary key="demo"><DemoValidationTab/></ErrorBoundary>}
+          {activeTab==="autopilot" && <ErrorBoundary key="autopilot"><AutoPilotTab onNavigate={navigateTo}/></ErrorBoundary>}
         </main>
         </ThemeCtx.Provider>
       </div>
 
       {/* Floating AI assistant — always visible */}
       <FloatingAssistant currentRun={lastRun} currentTab={activeTab} onNavigate={navigateTo}/>
+
+
 
       {/* Post-run AI panel — fires after failed runs */}
       {postRunPanel && (

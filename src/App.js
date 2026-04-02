@@ -9,6 +9,51 @@ import {
 } from 'lucide-react';
 
 // ─── Constants ────────────────────────────────────────────────────────────────
+// ─── ErrorBoundary — catches render crashes per tab ──────────────────────────
+class ErrorBoundary extends React.Component {
+  constructor(props) {
+    super(props);
+    this.state = { error: null };
+  }
+  static getDerivedStateFromError(error) {
+    return { error };
+  }
+  componentDidCatch(error, info) {
+    console.error("[WiziAgent] Tab render error:", error, info);
+  }
+  render() {
+    if (this.state.error) {
+      const T = this.props.theme || { accent:"#6366f1", text:"#0D1117", surface:"#FFFFFF",
+        border:"#E8ECF0", muted:"#6B7280", red:"#EF4444", card:"#FFFFFF" };
+      return (
+        <div style={{ padding:"40px 32px", display:"flex", flexDirection:"column",
+          alignItems:"center", justifyContent:"center", minHeight:300,
+          gap:12, textAlign:"center" }}>
+          <div style={{ fontSize:28 }}>⚠️</div>
+          <div style={{ fontSize:15, fontWeight:700, color:T.text }}>
+            Something went wrong in this tab
+          </div>
+          <div style={{ fontSize:12, color:T.muted, maxWidth:420, lineHeight:1.6 }}>
+            {this.state.error?.message || "An unexpected error occurred."}
+          </div>
+          <button
+            onClick={() => this.setState({ error: null })}
+            style={{ marginTop:8, padding:"7px 18px", borderRadius:7, border:"none",
+              background:T.accent, color:"white", fontSize:12,
+              fontWeight:600, cursor:"pointer" }}>
+            Try again
+          </button>
+          <div style={{ fontSize:10, color:T.muted, marginTop:4 }}>
+            This error has been logged to the console.
+          </div>
+        </div>
+      );
+    }
+    return this.props.children;
+  }
+}
+
+
 const API = "https://intentwise-backend-production.up.railway.app";
 
 // ─── Theme definitions ───────────────────────────────────────────────────────
@@ -404,10 +449,12 @@ const GLOBAL_CSS = `
   /* Smooth scrolling globally */
   * { scroll-behavior: smooth; }
   /* Scroll performance */
+  main { scroll-behavior: smooth; }
   [style*="overflow-y: auto"], [style*="overflowY"] {
     -webkit-overflow-scrolling: touch;
-    overscroll-behavior: contain;
   }
+  /* Tab content — ensure padding at bottom so last card isn't clipped */
+  main > .fade-in > div:last-child { padding-bottom: 24px; }
   /* Prevent layout thrash on frequently-updated elements */
   .wizi-run-row { contain: layout style; }
   /* Smooth tab transitions */
@@ -2077,7 +2124,7 @@ function MorningBriefTab({ onNavigate, onIssueFound }) {
   const otherTables = monTables.filter(t => !t.primary);
 
   return (
-    <div className="fade-in" style={{ display:"flex", flexDirection:"column", height:"100%", overflow:"hidden" }}>
+    <div className="fade-in" style={{ display:"flex", flexDirection:"column", minHeight:"100%" }}>
       {/* Sub-view bar */}
       <div style={{ display:"flex", gap:0, borderBottom:`1px solid ${T.border}`, flexShrink:0, paddingLeft:28 }}>
         {[{id:"brief",label:"Daily Brief"},{id:"sla",label:"SLA Tracker"}].map(tab=>(
@@ -2422,7 +2469,7 @@ function MorningBriefTab({ onNavigate, onIssueFound }) {
                         </div>
                       )}
                       {anomalies.anomalies?.map((ta, i) => (
-                        <div key={i} style={{ marginBottom:8 }}>
+                        <div key={ta.table||i} style={{ marginBottom:8 }}>
                           <div style={{ fontSize:11, fontWeight:600, color:T.text,
                             fontFamily:"monospace", marginBottom:4 }}>{ta.table}</div>
                           {ta.anomalies?.map((a, j) => (
@@ -2487,6 +2534,7 @@ function MorningBriefTab({ onNavigate, onIssueFound }) {
 function TriageTab({ initialIssues }) {
   const T = useT();
   const dbSchema = useSchema();
+  const [confirmNode, confirm] = useConfirm();
   const [selectedTable, setSelectedTable] = React.useState("mws.report");
   const [tableList,     setTableList]     = React.useState([]);
   const [triageResult, setTriageResult] = useSession("wz_triage", null);
@@ -2545,7 +2593,7 @@ function TriageTab({ initialIssues }) {
     const res = await fetch(`${API}/api/wizi-agent/run-table`, {
       method:"POST", headers:{"Content-Type":"application/json"},
       body:JSON.stringify({ schema, table:tbl, dry_run:true })
-    });
+    }).catch(()=>{});
     const data = await res.json();
     if (data.error) throw new Error(data.error);
     // Normalise run-table response → triage shape
@@ -2612,9 +2660,12 @@ function TriageTab({ initialIssues }) {
   const fix = async (issue) => {
     const dr = dryRuns[issue.id];
     const conf = confidence(issue, dr);
-    if (!window.confirm(
-      `Fix mws.report — ${issue.fix_action}\nRows affected: ${dr?.rows_affected}\nConfidence: ${conf}%\n\nProceed?`
-    )) return;
+    const ok = await confirm(
+      "Confirm Fix",
+      `Fix mws.report — ${issue.fix_action}\nRows affected: ${dr?.rows_affected ?? "?"} · Confidence: ${conf}%`,
+      "Apply Fix"
+    );
+    if (!ok) return;
     setFixing(p => ({...p,[issue.id]:true}));
     const fixStart = Date.now();
     addLog(`Executing fix: ${issue.fix_action}…`);
@@ -2647,7 +2698,12 @@ function TriageTab({ initialIssues }) {
       i.fix_action === "recopy" || i.fix_action === "redrive_copy"
     );
     if (!lowRisk.length) return;
-    if (!window.confirm(`Batch fix ${lowRisk.length} low-risk issue(s)?\n${lowRisk.map(i=>i.fix_action).join(", ")}`)) return;
+    const ok = await confirm(
+      "Batch Fix",
+      `Apply ${lowRisk.length} low-risk fix(es)? Actions: ${lowRisk.map(i=>i.fix_action).join(", ")}`,
+      "Apply All"
+    );
+    if (!ok) return;
     for (const issue of lowRisk) {
       await fix(issue);
     }
@@ -2677,7 +2733,7 @@ function TriageTab({ initialIssues }) {
     await fetch(`${API}/api/wizi-agent/approve`, {
       method:"POST", headers:{"Content-Type":"application/json"},
       body:JSON.stringify({ token, decision })
-    });
+    }).catch(()=>{});
     addLog(`Approval ${decision}ed`, decision==="approve"?"success":"warning");
     setAgentResult(p => ({...p, approval_status:decision==="approve"?"approved":"rejected"}));
   };
@@ -2757,6 +2813,14 @@ Rows affected: ${issue.count}
       setPreviewLoading(false);
     }
   };
+  // Auto-reload preview when switching to data tab or changing table while on data tab
+  React.useEffect(() => {
+    if (activeView === "data") {
+      setPreview(null);
+      loadPreview(previewLimit, selectedTable);
+    }
+  }, [selectedTable, activeView]);
+
 
   const [activeView, setActiveView] = React.useState("issues"); // issues | data | log
 
@@ -2812,8 +2876,7 @@ Rows affected: ${issue.count}
   const fixableCount = issues.filter(i=>i.fix_action).length;
 
   return (
-    <div className="fade-in" style={{ display:"flex", flexDirection:"column",
-      height:"calc(100vh - 2px)", overflow:"hidden", contain:"layout style" }}>
+    <div className="fade-in" style={{ display:"flex", flexDirection:"column" }}>
 
       {/* ── Top bar ────────────────────────────────────────────────────────── */}
       <div style={{ padding:"20px 28px 0", flexShrink:0 }}>
@@ -2834,9 +2897,17 @@ Rows affected: ${issue.count}
 
           {/* Table selector */}
           <select value={selectedTable} onChange={e => {
-              setSelectedTable(e.target.value);
+              const newTable = e.target.value;
+              setSelectedTable(newTable);
               setTriageResult(null); setFixResults({}); setDryRuns({});
-              setPreview(null); setActiveView("issues");
+              setPreview(null);
+              // If already on data preview, reload for new table immediately
+              if (activeView === "data") {
+                setActiveView("data");
+                setTimeout(() => loadPreview(previewLimit, newTable), 50);
+              } else {
+                setActiveView("issues");
+              }
             }}
             style={{ fontSize:12, padding:"6px 12px", borderRadius:7,
               border:`1px solid ${T.border}`, background:T.surface, color:T.text,
@@ -3652,6 +3723,7 @@ function ActivityTab({ onNavigate }) {
   const [history,      setHistory]      = useLocal("wz_history", []);
   const [filter,       setFilter]       = React.useState("all");
   const [search,       setSearch]       = React.useState("");
+  const debouncedSearch = useDebounce(search, 150);
   const [insight,      setInsight]      = React.useState(null);
   const [insightLoading, setInsightLoading] = React.useState(false);
   const [insightError,   setInsightError]   = React.useState(null);
@@ -3755,7 +3827,7 @@ function ActivityTab({ onNavigate }) {
   const ACTION_TYPES = [...new Set(history.map(h=>h.action).filter(Boolean))];
   const filteredHistory = history.filter(h => {
     if (filter!=="all" && h.action!==filter) return false;
-    if (search && !`${h.action} ${h.table}`.toLowerCase().includes(search.toLowerCase())) return false;
+    if (search && !`${h.action} ${h.table}`.toLowerCase().includes(debouncedSearch.toLowerCase())) return false;
     return true;
   });
 
@@ -4020,7 +4092,7 @@ function ActivityTab({ onNavigate }) {
           ) : (
             <div style={{ display:"flex", flexDirection:"column", gap:6 }}>
               {[...filteredHistory].reverse().map((h,i)=>(
-                <Card key={i} style={{ padding:"12px 18px",
+                <Card key={h.run_id||i} style={{ padding:"12px 18px",
                   borderLeft:`3px solid ${h.success?T.green:T.red}` }}>
                   <div style={{ display:"flex", alignItems:"center", gap:12 }}>
                     <div style={{ width:32, height:32, borderRadius:7, flexShrink:0,
@@ -4211,7 +4283,7 @@ Rules: only SELECT queries, use exact table name, pass_condition is one of: "row
                         cursor:"pointer", color:T.muted, fontSize:13 }}>×</button>
                   </div>
                   <div style={{ fontSize:10, color:T.dim, fontFamily:"monospace",
-                    background:"#F8FAFC", padding:"6px 10px", borderRadius:5,
+                    background:T.surface, padding:"6px 10px", borderRadius:5,
                     border:`1px solid ${T.border}`, lineHeight:1.5 }}>
                     {c.sql}
                   </div>
@@ -6288,8 +6360,8 @@ Results (${results.rows.length} rows): ${preview}`}],
     const result = {};
     for (const t of richSchema) {
       const key = `${t.table_schema}.${t.table_name}`;
-      if (search && !key.toLowerCase().includes(search) &&
-          !t.columns?.some(c=>c.column_name.toLowerCase().includes(search))) continue;
+      if (search && !key.toLowerCase().includes(debouncedSearch) &&
+          !t.columns?.some(c=>c.column_name.toLowerCase().includes(debouncedSearch))) continue;
       if (!result[t.table_schema]) result[t.table_schema] = [];
       result[t.table_schema].push(t);
     }
@@ -6415,7 +6487,7 @@ Return ONLY valid Redshift SQL, no explanation, no markdown, no backticks.`,
   }, {}), [schema]);
 
   return (
-    <div className="fade-in" style={{ display:"flex", height:"calc(100vh - 1px)", overflow:"hidden" }}>
+    <div className="fade-in" style={{ display:"flex", flexDirection:"column", minHeight:"100%" }}>
       {/* Left panel: Schema Explorer + Queries */}
       <div style={{ width:260, flexShrink:0, borderRight:`1px solid ${T.border}`,
         display:"flex", flexDirection:"column", overflow:"hidden" }}>
@@ -6527,7 +6599,7 @@ Return ONLY valid Redshift SQL, no explanation, no markdown, no backticks.`,
                             ))}
                             {stats?.sample?.length > 0 && (
                               <div style={{ margin:"4px 10px 4px 28px", padding:"5px 7px",
-                                background:"#F8FAFC", borderRadius:5,
+                                background:T.surface, borderRadius:5,
                                 border:`1px solid ${T.border}`, overflowX:"auto" }}>
                                 <div style={{ fontSize:8, color:T.dim, marginBottom:2,
                                   textTransform:"uppercase", letterSpacing:"0.06em" }}>Sample</div>
@@ -6610,7 +6682,7 @@ Return ONLY valid Redshift SQL, no explanation, no markdown, no backticks.`,
               <div style={{ fontSize:9, fontWeight:700, color:T.dim, marginBottom:6,
                 paddingLeft:8, textTransform:"uppercase", letterSpacing:"0.08em" }}>History</div>
               {history.slice(0,10).map((h,i)=>(
-                <button key={i} onClick={()=>setSql(h.sql)}
+                <button key={h.sql?.slice(0,20)||i} onClick={()=>setSql(h.sql)}
                   style={{ width:"100%", padding:"3px 8px 3px 12px", background:"none",
                     border:"none", cursor:"pointer", textAlign:"left", borderRadius:4,
                     transition:"background 0.1s" }}
@@ -7241,7 +7313,7 @@ function SlaTracker() {
           <div style={{ display:"flex", gap:3, marginBottom:14, alignItems:"flex-end",
             flexWrap:"wrap" }}>
             {[...history].reverse().map((r,i)=>(
-              <div key={i} title={`${r.date} · ${r.hit_sla?"✓ SLA met":"✗ SLA missed"}${r.arrived_ist?` · arrived ${r.arrived_ist} IST`:""}`}
+              <div key={r.date||i} title={`${r.date} · ${r.hit_sla?"✓ SLA met":"✗ SLA missed"}${r.arrived_ist?` · arrived ${r.arrived_ist} IST`:""}`}
                 style={{ width:14, height: r.hit_sla?28:r.data_on_time===false?40:34,
                   borderRadius:3, background:barColor(r), flexShrink:0,
                   cursor:"default", opacity:0.8 }}/>
@@ -7263,7 +7335,7 @@ function SlaTracker() {
               </thead>
               <tbody>
                 {history.map((r,i)=>(
-                  <tr key={i} style={{ borderBottom:`1px solid ${T.border}20` }}>
+                  <tr key={r.date||i} style={{ borderBottom:`1px solid ${T.border}20` }}>
                     <td style={{ padding:"6px 12px", fontFamily:"monospace", color:T.text2 }}>{r.date}</td>
                     <td style={{ padding:"6px 12px", color:T.text }}>{r.total}</td>
                     <td style={{ padding:"6px 12px", color:T.green }}>{r.processed}</td>
@@ -7305,6 +7377,7 @@ function CheckLibrary({ onUse, standalone }) {
   const T = useT();
   const [checks,   setChecks]   = React.useState([]);
   const [loading,  setLoading]  = React.useState(false);
+  const debouncedSearch = useDebounce(search, 150);
   const [search,   setSearch]   = React.useState("");
   const [tagFilter,setTagFilter]= React.useState("all");
   const [saving,   setSaving]   = React.useState(false);
@@ -7326,7 +7399,7 @@ function CheckLibrary({ onUse, standalone }) {
   const allTags = [...new Set(checks.flatMap(c=>c.tags||[]))];
   const filtered = checks.filter(c=>{
     if (tagFilter!=="all" && !(c.tags||[]).includes(tagFilter)) return false;
-    if (search && !`${c.name} ${c.desc} ${c.table_hint}`.toLowerCase().includes(search.toLowerCase())) return false;
+    if (search && !`${c.name} ${c.desc} ${c.table_hint}`.toLowerCase().includes(debouncedSearch.toLowerCase())) return false;
     return true;
   });
 
@@ -7597,7 +7670,7 @@ function RunDiff({ runA, runB, onClose }) {
                 {diff.diffs.map((d,i)=>{
                   const { icon, color, label } = kindIcon(d);
                   return (
-                    <div key={i} style={{ display:"flex", alignItems:"center", gap:10,
+                    <div key={d.check_name||i} style={{ display:"flex", alignItems:"center", gap:10,
                       padding:"8px 12px", borderRadius:8,
                       background:T.surface, border:`1px solid ${T.border}` }}>
                       <div style={{ width:24, height:24, borderRadius:6, flexShrink:0,
@@ -8392,12 +8465,12 @@ function AdsSopTab() {
 
   const deleteSchedule = async (sid) => {
     if (!confirm("Delete this schedule?")) return;
-    await fetch(`${API}/api/workflow/ads-sop/schedules/${sid}`, {method:"DELETE"});
+    await fetch(`${API}/api/workflow/ads-sop/schedules/${sid}`, {method:"DELETE"}).catch(()=>{});
     setSchedules(p=>p.filter(s=>s.id!==sid));
   };
 
   const toggleSchedule = async (sid) => {
-    await fetch(`${API}/api/workflow/ads-sop/schedules/${sid}/toggle`, {method:"POST"});
+    await fetch(`${API}/api/workflow/ads-sop/schedules/${sid}/toggle`, {method:"POST"}).catch(()=>{});
     setSchedules(p=>p.map(s=>s.id===sid?{...s,enabled:!s.enabled}:s));
   };
 
@@ -8483,7 +8556,7 @@ function AdsSopTab() {
     await fetch(`${API}/api/workflow/sop-gate-force`, {
       method:"POST", headers:{"Content-Type":"application/json"},
       body:JSON.stringify({ run_id: runId })
-    });
+    }).catch(()=>{});
   };
 
   // ── Submit gate decision ───────────────────────────────────────────────────
@@ -9571,7 +9644,7 @@ function NotifProvider({ children }) {
               )}
               <button onClick={()=>setDrawer(false)}
                 style={{ background:"none", border:"none", cursor:"pointer",
-                  color:"#9CA3AF", fontSize:18, lineHeight:1 }}>×</button>
+                  color:T.muted, fontSize:18, lineHeight:1 }}>×</button>
             </div>
 
             {/* Items */}
@@ -9615,7 +9688,7 @@ function NotifProvider({ children }) {
                     )}
                     <button onClick={(e)=>{e.stopPropagation();dismiss(item.id);}}
                       style={{ background:"none", border:"none", cursor:"pointer",
-                        color:"#D1D5DB", fontSize:14, lineHeight:1, flexShrink:0 }}>×</button>
+                        color:T.muted, fontSize:14, lineHeight:1, flexShrink:0 }}>×</button>
                   </div>
                 );
               })}
@@ -9806,10 +9879,33 @@ function WorkflowsTab({ navigateTo }) {
     }
   };
 
+  const [undoQueue, setUndoQueue] = React.useState([]); // [{wf, timer}]
+
+  // Clear pending undo timers on unmount to prevent setState on unmounted component
+  React.useEffect(() => {
+    return () => undoQueue.forEach(u => clearTimeout(u.timer));
+  }, [undoQueue]);
+
   const deleteWf = async (id) => {
-    if (!confirm("Delete this workflow?")) return;
-    await fetch(`${API}/api/custom-workflows/${id}`, {method:"DELETE"}).catch(()=>{});
+    const wf = workflows.find(w=>w.id===id) || wfs.find(w=>w.id===id);
+    if (!wf) return;
+    // Optimistically remove from UI
     setWfs(p=>p.filter(w=>w.id!==id));
+    // Show undo toast
+    const undoTimer = setTimeout(async () => {
+      // Commit delete after 6s
+      await fetch(`${API}/api/custom-workflows/${id}`, {method:"DELETE"}).catch(()=>{});
+      setUndoQueue(q=>q.filter(u=>u.id!==id));
+    }, 6000);
+    setUndoQueue(q=>[...q, {id, wf, timer:undoTimer}]);
+  };
+
+  const undoDelete = (id) => {
+    const entry = undoQueue.find(u=>u.id===id);
+    if (!entry) return;
+    clearTimeout(entry.timer);
+    setUndoQueue(q=>q.filter(u=>u.id!==id));
+    setWfs(p=>[entry.wf, ...p]);
   };
 
   const { add: addNotif } = useNotif();
@@ -10062,7 +10158,7 @@ Respond with ONLY this JSON array (no other text, no backticks):
   if (view==="builder") return (
     <div style={{ display:"flex", flexDirection:"column", height:"100%", overflow:"hidden" }}>
       {saveError && (
-        <div style={{ padding:"10px 20px", background:"#fef2f2", borderBottom:"1px solid #fca5a5",
+        <div style={{ padding:"10px 20px", background:`${T.red}08`, borderBottom:"1px solid #fca5a5",
           fontSize:12, color:"#ef4444", flexShrink:0 }}>
           ✗ Save failed: {saveError} —{" "}
           <button onClick={()=>setSaveError(null)} style={{background:"none",border:"none",cursor:"pointer",color:"#ef4444",textDecoration:"underline"}}>dismiss</button>
@@ -10133,9 +10229,9 @@ Respond with ONLY this JSON array (no other text, no backticks):
   const recentRuns = runHistory.slice(0,20);
 
   return (
-    <div style={{ display:"flex", height:"100%", overflow:"hidden" }}>
+    <div style={{ display:"flex", minHeight:"100%" }}>
     {/* Main content */}
-    <div style={{ flex:1, overflowY:"auto", padding:"24px 28px", maxWidth: showAiAssistant ? 700 : 1100, WebkitOverflowScrolling:"touch" }}>
+    <div style={{ flex:1, padding:"24px 28px", maxWidth: showAiAssistant ? 700 : 1100 }}>
 
       {/* Header */}
       <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom:20 }}>
@@ -10309,7 +10405,7 @@ Respond with ONLY this JSON array (no other text, no backticks):
             </div>
             <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:10 }}>
               {aiSuggestions.map((s,i)=>(
-                <div key={i}
+                <div key={s.name||i}
                   style={{ padding:"14px 16px", borderRadius:10, cursor:"pointer",
                     background:T.surface,
                     border:`1px solid ${T.border}`,
@@ -10398,7 +10494,7 @@ Respond with ONLY this JSON array (no other text, no backticks):
         {showTemplates && (
           <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:8 }}>
             {TEMPLATES.map((t,i)=>(
-              <div key={i} style={{ padding:"12px 14px", borderRadius:8,
+              <div key={t.name||i} style={{ padding:"12px 14px", borderRadius:8,
                 background:T.surface, border:`1px solid ${T.border}` }}>
                 <div style={{ fontSize:12, fontWeight:700, color:T.text, marginBottom:2 }}>{t.name}</div>
                 <div style={{ fontSize:11, color:T.muted, marginBottom:8 }}>{t.desc}</div>
@@ -10539,7 +10635,7 @@ Respond with ONLY this JSON array (no other text, no backticks):
                     {sparkData.length > 1 && (
                       <div style={{ display:"flex", gap:2, marginTop:8, alignItems:"flex-end" }}>
                         {sparkData.map((r,i)=>(
-                          <div key={i} title={`${r.started_at?.slice(0,16)} — ${r.status}`}
+                          <div key={r.run_id||i} title={`${r.started_at?.slice(0,16)} — ${r.status}`}
                             style={{ width:8, height:r.status==="clean"?12:20, borderRadius:2,
                               background:r.status==="clean"?T.green:T.red, opacity:0.7,
                               flexShrink:0 }}/>
@@ -10574,6 +10670,27 @@ Respond with ONLY this JSON array (no other text, no backticks):
       )}
       </div>
     </div>
+
+    {/* Undo delete toasts */}
+    {undoQueue.length > 0 && (
+      <div style={{ position:"fixed", bottom:80, left:"50%", transform:"translateX(-50%)",
+        zIndex:9999, display:"flex", flexDirection:"column", gap:8 }}>
+        {undoQueue.map(u=>(
+          <div key={u.id} style={{ display:"flex", alignItems:"center", gap:12,
+            padding:"10px 16px", borderRadius:10, background:T.card,
+            border:`1px solid ${T.border}`, boxShadow:"0 4px 20px rgba(0,0,0,0.15)",
+            fontSize:12 }}>
+            <span style={{ color:T.text }}>"{u.wf.name}" deleted</span>
+            <button onClick={()=>undoDelete(u.id)}
+              style={{ background:"none", border:`1px solid ${T.accent}`,
+                borderRadius:6, padding:"3px 10px", cursor:"pointer",
+                color:T.accent, fontWeight:700, fontSize:11 }}>
+              Undo
+            </button>
+          </div>
+        ))}
+      </div>
+    )}
 
     {/* AI Assistant panel */}
     {showAiAssistant && (
@@ -10874,6 +10991,7 @@ function RunDetail({ run, T, dur, fmt }) {
 // ── AllRunsView — cross-workflow run history ───────────────────────────────────
 function AllRunsView({ history, workflows, onBack, onOpenWf }) {
   const T = useT();
+  const debouncedSearch = useDebounce(search, 150);
   const [filter, setFilter] = React.useState("all"); // all | failed | clean
   const [search, setSearch] = React.useState("");
 
@@ -10881,7 +10999,7 @@ function AllRunsView({ history, workflows, onBack, onOpenWf }) {
   const filtered = history.filter(r=>{
     if (filter==="failed" && r.status!=="issues_found") return false;
     if (filter==="clean"  && r.status!=="clean")        return false;
-    if (search && !r.workflow_name?.toLowerCase().includes(search.toLowerCase())) return false;
+    if (search && !r.workflow_name?.toLowerCase().includes(debouncedSearch.toLowerCase())) return false;
     return true;
   });
 
@@ -10967,7 +11085,7 @@ function AllRunsView({ history, workflows, onBack, onOpenWf }) {
               {/* Check result pills */}
               <div style={{ display:"flex", gap:4, flexWrap:"wrap", maxWidth:240 }}>
                 {(run.check_results||[]).slice(0,8).map((chk,i)=>(
-                  <div key={i} title={chk.name}
+                  <div key={chk.id||chk.name||i} title={chk.name}
                     style={{ width:10, height:10, borderRadius:2,
                       background:chk.passed?T.green:T.red, flexShrink:0 }}/>
                 ))}
@@ -11206,7 +11324,7 @@ Example: {"reply":"Created a workflow with 2 checks for mws.report","actions":[{
         )}
 
         {messages.map((m,i)=>(
-          <div key={i}>
+          <div key={m.ts||m.text?.slice(0,20)||i}>
             {m.role==="user" && (
               <div style={{ display:"flex", justifyContent:"flex-end" }}>
                 <div style={{ maxWidth:"82%", padding:"9px 13px", borderRadius:12,
@@ -11283,7 +11401,7 @@ Example: {"reply":"Created a workflow with 2 checks for mws.report","actions":[{
           />
           <button onClick={()=>send()} disabled={!input.trim()||loading}
             style={{ width:34, height:34, borderRadius:8, flexShrink:0, border:"none",
-              background:(!input.trim()||loading)?"#E8ECF0":`linear-gradient(135deg,${T.accent},${T.purple})`,
+              background:(!input.trim()||loading)?T.border:`linear-gradient(135deg,${T.accent},${T.purple})`,
               cursor:(!input.trim()||loading)?"not-allowed":"pointer",
               display:"flex", alignItems:"center", justifyContent:"center", color:"white" }}>
             {loading?<Spinner size={12} color="white"/>:<ArrowRight size={14}/>}
@@ -11299,8 +11417,10 @@ Example: {"reply":"Created a workflow with 2 checks for mws.report","actions":[{
 
 
 // ── WorkflowBuilder — create / edit workflow with SQL checks ─────────────────
-function WorkflowBuilder({ initial, dbSchema, onSave, onCancel }) {
+function WorkflowBuilder({ initial, dbSchema: dbSchemaProp, onSave, onCancel }) {
   const T = useT();
+  const schemaFromHook = useSchema();
+  const dbSchema = dbSchemaProp || schemaFromHook;
   const blank = {
     name:"", desc:"", schedule:"every 30 min", enabled:true,
     checks:[], tables:[], db_key:"default", slack_channel:"", schema_group:""
@@ -11313,6 +11433,8 @@ function WorkflowBuilder({ initial, dbSchema, onSave, onCancel }) {
   const [testResult,setTestResult]= React.useState(null);
   const [testing,   setTesting]   = React.useState(false);
   const [sources,   setSources]   = React.useState([{id:"default",name:"Default (Redshift)",type:"redshift"}]);
+  const [dryRunning, setDryRunning] = React.useState(false);
+  const [dryResults, setDryResults] = React.useState(null); // {passed, failed, results:[]}
 
   // Load configured data sources
   React.useEffect(()=>{
@@ -11427,6 +11549,26 @@ No markdown, no backticks.`,
     border:`1px solid ${T.border}`, background:T.surface, color:T.text,
     fontFamily:"inherit", outline:"none", boxSizing:"border-box" };
 
+  const runDryRun = async () => {
+    if (!wf.checks.length) return;
+    setDryRunning(true); setDryResults(null);
+    const results = [];
+    for (const chk of wf.checks) {
+      if (!chk.sql?.trim()) continue;
+      try {
+        const r = await fetch(`${API}/api/query?sql=${encodeURIComponent(chk.sql + " LIMIT 5")}`);
+        const d = await r.json();
+        results.push({ name:chk.name, ok:!d.error, error:d.error||null,
+          rows: d.rows?.length??0, pass_condition:chk.pass_condition });
+      } catch(e) {
+        results.push({ name:chk.name, ok:false, error:e.message, rows:0 });
+      }
+    }
+    const passed = results.filter(r=>r.ok).length;
+    setDryResults({ passed, failed:results.length-passed, results });
+    setDryRunning(false);
+  };
+
   return (
     <div style={{ overflowY:"auto", padding:"24px 28px", maxWidth:800 }}>
       <div style={{ display:"flex", alignItems:"center", gap:12, marginBottom:22 }}>
@@ -11434,12 +11576,44 @@ No markdown, no backticks.`,
         <div style={{ fontSize:18, fontWeight:700, color:T.text }}>
           {initial ? "Edit Workflow" : "New Workflow"}
         </div>
-        <Btn onClick={()=>onSave(wf)} disabled={!wf.name.trim()}
-          style={{ marginLeft:"auto", background:`linear-gradient(135deg,${T.accent},${T.purple})`,
-            color:"white", border:"none" }}>
-          <Check size={11}/> Save Workflow
-        </Btn>
+        <div style={{ marginLeft:"auto", display:"flex", gap:8 }}>
+          <Btn onClick={runDryRun} disabled={dryRunning||!wf.checks.length} variant="ghost" size="sm">
+            {dryRunning?<Spinner size={9}/>:<Play size={9}/>} Dry Run
+          </Btn>
+          <Btn onClick={()=>onSave(wf)} disabled={!wf.name.trim()}
+            style={{ background:`linear-gradient(135deg,${T.accent},${T.purple})`,
+              color:"white", border:"none" }}>
+            <Check size={11}/> Save Workflow
+          </Btn>
+        </div>
       </div>
+
+      {dryResults && (
+        <div style={{ marginBottom:14, padding:"12px 16px", borderRadius:8,
+          border:`1px solid ${dryResults.failed>0?T.red:T.green}30`,
+          background:`${dryResults.failed>0?T.red:T.green}06` }}>
+          <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom:8 }}>
+            <span style={{ fontSize:12, fontWeight:700,
+              color:dryResults.failed>0?T.red:T.green }}>
+              {dryResults.failed>0
+                ? `⚠ Dry run: ${dryResults.failed} check(s) have SQL errors`
+                : `✓ Dry run passed — all ${dryResults.passed} check(s) execute without errors`}
+            </span>
+            <button onClick={()=>setDryResults(null)}
+              style={{ background:"none", border:"none", cursor:"pointer",
+                color:T.muted, fontSize:14 }}>×</button>
+          </div>
+          {dryResults.results.map((r,i)=>(
+            <div key={r.name||i} style={{ fontSize:11, color:r.ok?T.green:T.red,
+              display:"flex", gap:8, marginTop:4 }}>
+              <span>{r.ok?"✓":"✗"}</span>
+              <span style={{ fontWeight:600 }}>{r.name}</span>
+              {r.error && <span style={{ color:T.red, fontFamily:"monospace" }}>— {r.error.slice(0,80)}</span>}
+              {r.ok && <span style={{ color:T.muted }}>({r.rows} rows)</span>}
+            </div>
+          ))}
+        </div>
+      )}
 
       <div style={{ display:"flex", flexDirection:"column", gap:14 }}>
 
@@ -11957,7 +12131,7 @@ function PostRunPanel({ run, onClose, onSendToTriage, onNavigateResults }) {
                 </div>
                 <div style={{ display:"flex", flexDirection:"column", gap:5 }}>
                   {failedChecks.map((c,i)=>(
-                    <div key={i} style={{ display:"flex", alignItems:"center", gap:8,
+                    <div key={c.id||c.name||i} style={{ display:"flex", alignItems:"center", gap:8,
                       padding:"8px 12px", borderRadius:7, background:T.surface,
                       border:`1px solid ${T.border}` }}>
                       <X size={11} color={T.red}/>
@@ -12000,7 +12174,7 @@ function PostRunPanel({ run, onClose, onSendToTriage, onNavigateResults }) {
               {(analysis?.follow_up_checks||[]).map((chk,i)=>{
                 const res = followUpResults[i];
                 return (
-                  <div key={i} style={{ borderRadius:10, border:`1px solid ${T.border}`,
+                  <div key={chk.name||i} style={{ borderRadius:10, border:`1px solid ${T.border}`,
                     overflow:"hidden" }}>
                     <div style={{ padding:"12px 14px", background:T.surface }}>
                       <div style={{ display:"flex", alignItems:"center", gap:8, marginBottom:5 }}>
@@ -12101,7 +12275,18 @@ function AiBriefPanel() {
   const [error,   setError]   = React.useState(null);
   const [expanded,setExpanded]= React.useState(true);
 
-  const load = async () => {
+  const CACHE_KEY = "wz_brief_cache";
+  const CACHE_TTL  = 15 * 60 * 1000; // 15 minutes
+
+  const load = async (force=false) => {
+    if (!force) {
+      try {
+        const cached = JSON.parse(sessionStorage.getItem(CACHE_KEY)||"null");
+        if (cached && Date.now() - cached.ts < CACHE_TTL) {
+          setBrief(cached.data); return;
+        }
+      } catch(e) {}
+    }
     setLoading(true); setError(null);
     try {
       const res = await fetch(`${API}/api/ai/daily-brief`, {
@@ -12109,7 +12294,10 @@ function AiBriefPanel() {
       });
       const d = await res.json();
       if (d.error) setError(d.error);
-      else setBrief(d);
+      else {
+        setBrief(d);
+        try { sessionStorage.setItem(CACHE_KEY, JSON.stringify({data:d, ts:Date.now()})); } catch(e) {}
+      }
     } catch(e) { setError(e.message); }
     setLoading(false);
   };
@@ -12133,6 +12321,10 @@ function AiBriefPanel() {
             <div style={{ fontSize:11, color:T.muted, marginTop:1 }}>{brief.headline}</div>
           )}
         </div>
+        <button onClick={()=>load(true)} disabled={loading}
+          style={{ background:"none", border:"none", cursor:loading?"not-allowed":"pointer",
+            color:T.muted, fontSize:13, padding:"2px 6px", borderRadius:5, opacity:loading?0.4:1 }}
+          title="Refresh brief">↺</button>
         {score !== undefined && (
           <div style={{ textAlign:"center", padding:"4px 10px", borderRadius:8,
             background:`${scoreColor}12`, border:`1px solid ${scoreColor}25` }}>
@@ -12173,7 +12365,7 @@ function AiBriefPanel() {
                 </div>
               ) : (
                 (brief.priority_items||[]).map((item,i)=>(
-                  <div key={i} style={{ display:"flex", alignItems:"flex-start", gap:10,
+                  <div key={item.id||item.title||i} style={{ display:"flex", alignItems:"flex-start", gap:10,
                     padding:"10px 14px", borderRadius:8,
                     background:`${URGENCY_COLOR[item.urgency]||T.muted}08`,
                     border:`1px solid ${URGENCY_COLOR[item.urgency]||T.muted}20` }}>
@@ -12205,7 +12397,7 @@ function AiBriefPanel() {
                       ✨ Top {top3.length} actions today
                     </div>
                     {top3.map((item,i)=>(
-                      <div key={i} style={{ display:"flex", alignItems:"center", gap:8,
+                      <div key={item.id||i} style={{ display:"flex", alignItems:"center", gap:8,
                         fontSize:11, color:T.text2, marginBottom:i<top3.length-1?4:0 }}>
                         <span style={{ width:16, height:16, borderRadius:"50%", flexShrink:0,
                           background:`${T.accent}20`, display:"flex", alignItems:"center",
@@ -12345,7 +12537,7 @@ function ToolResultBlock({ tool, result, T }) {
           </table>
           {result.rows.length > 10 && (
             <div style={{ padding:"3px 8px", fontSize:9, color:"#9CA3AF",
-              background:"#F9FAFB" }}>+{result.rows.length-10} more rows</div>
+              background:T.surface }}>+{result.rows.length-10} more rows</div>
           )}
         </div>
       )}
@@ -12394,30 +12586,30 @@ function AgentMessage({ msg, onNavigate, T }) {
     <div style={{ marginBottom:12 }}>
       {/* Tool results */}
       {(msg.steps||[]).filter(s=>s.type==="tool_result").map((s,i)=>(
-        <ToolResultBlock key={i} tool={s.tool} result={s.result} T={T}/>
+        <ToolResultBlock key={s.call_id||s.tool||i} tool={s.tool} result={s.result} T={T}/>
       ))}
 
       {/* Navigate actions as clickable chips */}
       {(msg.actions||[]).filter(a=>a.type==="navigate").map((a,i)=>(
-        <div key={i}
+        <div key={s.type+String(i)}
           onClick={()=>onNavigate(a.tab)}
           style={{ display:"inline-flex", alignItems:"center", gap:5,
             padding:"4px 12px", borderRadius:99, marginBottom:8, cursor:"pointer",
-            background:"#EEF2FF", color:"#6366F1", border:"1px solid #C7D2FE",
+            background:`${T.accent}10`, color:T.accent, border:`1px solid ${T.accent}40`,
             fontSize:11, fontWeight:600, transition:"all 0.1s" }}
-          onMouseEnter={e=>e.currentTarget.style.background="#E0E7FF"}
-          onMouseLeave={e=>e.currentTarget.style.background="#EEF2FF"}>
+          onMouseEnter={e=>e.currentTarget.style.background=`${T.accent}20`}
+          onMouseLeave={e=>e.currentTarget.style.background=`${T.accent}10`}>
           🧭 Go to {a.tab} →
         </div>
       ))}
 
       {/* Created dataflow chip */}
       {(msg.actions||[]).filter(a=>a.type==="created_dataflow").map((a,i)=>(
-        <div key={i}
+        <div key={s.type+String(i)}
           onClick={()=>onNavigate("dataflows")}
           style={{ display:"inline-flex", alignItems:"center", gap:5,
             padding:"4px 12px", borderRadius:99, marginBottom:8, cursor:"pointer",
-            background:"#ECFDF5", color:"#10B981", border:"1px solid #A7F3D0",
+            background:`${T.green}10`, color:T.green, border:`1px solid ${T.green}`,
             fontSize:11, fontWeight:600 }}>
           ✨ Dataflow created — view in Dataflows →
         </div>
@@ -12426,8 +12618,8 @@ function AgentMessage({ msg, onNavigate, T }) {
       {/* Final text */}
       {msg.text && (
         <div style={{ padding:"9px 12px", borderRadius:10, borderBottomLeftRadius:3,
-          fontSize:12, lineHeight:1.6, color:"#0D1117",
-          background:"#FFFFFF", border:"1px solid #E8ECF0",
+          fontSize:12, lineHeight:1.6, color:T.text,
+          background:T.card, border:`1px solid ${T.border}`,
           whiteSpace:"pre-wrap", wordBreak:"break-word",
           maxWidth:"88%" }}>
           {msg.text}
@@ -12576,39 +12768,39 @@ function FloatingAssistant({ currentRun, currentTab, onNavigate }) {
       {open && (
         <div style={{ position:"fixed", bottom:86, right:24, zIndex:1500,
           width:panelW, height:panelH,
-          background:"#FFFFFF", borderRadius:16,
-          border:"1px solid #E8ECF0",
+          background:T.card, borderRadius:16,
+          border:`1px solid ${T.border}`,
           boxShadow:"0 12px 48px rgba(0,0,0,0.18)",
           display:"flex", flexDirection:"column", overflow:"hidden",
           transition:"width 0.2s, height 0.2s" }}>
 
           {/* Header */}
           <div style={{ padding:"12px 16px", flexShrink:0,
-            background:"linear-gradient(135deg,#6366F108,#8B5CF608)",
-            borderBottom:"1px solid #E8ECF0",
+            background:`linear-gradient(135deg,${T.accent}08,${T.purple}08)`,
+            borderBottom:`1px solid ${T.border}`,
             display:"flex", alignItems:"center", gap:8 }}>
             <div style={{ width:30, height:30, borderRadius:8,
               background:"linear-gradient(135deg,#6366F1,#8B5CF6)",
               display:"flex", alignItems:"center", justifyContent:"center",
               fontSize:15, flexShrink:0 }}>🤖</div>
             <div style={{ flex:1 }}>
-              <div style={{ fontSize:13, fontWeight:700, color:"#0D1117" }}>
+              <div style={{ fontSize:13, fontWeight:700, color:T.text }}>
                 WiziAgent
               </div>
-              <div style={{ fontSize:9, color:"#9CA3AF", marginTop:0 }}>
+              <div style={{ fontSize:9, color:T.muted, marginTop:0 }}>
                 Can run queries · trigger workflows · navigate · create checks
               </div>
             </div>
             <button onClick={()=>setSize(s=>s==="large"?"normal":"large")}
               title={size==="large"?"Shrink":"Expand"}
-              style={{ background:"none", border:"1px solid #E8ECF0", borderRadius:5,
-                cursor:"pointer", color:"#9CA3AF", padding:"3px 7px", fontSize:11 }}>
+              style={{ background:"none", border:`1px solid ${T.border}`, borderRadius:5,
+                cursor:"pointer", color:T.muted, padding:"3px 7px", fontSize:11 }}>
               {size==="large"?"⊟":"⊞"}
             </button>
             <button onClick={()=>setMessages([messages[0]])}
               title="Clear chat"
-              style={{ background:"none", border:"1px solid #E8ECF0", borderRadius:5,
-                cursor:"pointer", color:"#9CA3AF", padding:"3px 7px", fontSize:11 }}>
+              style={{ background:"none", border:`1px solid ${T.border}`, borderRadius:5,
+                cursor:"pointer", color:T.muted, padding:"3px 7px", fontSize:11 }}>
               ↺
             </button>
             <button onClick={()=>setOpen(false)}
@@ -12622,7 +12814,7 @@ function FloatingAssistant({ currentRun, currentTab, onNavigate }) {
             {/* Suggestion chips — only when just the welcome message */}
             {messages.length === 1 && (
               <div style={{ marginBottom:14 }}>
-                <div style={{ fontSize:10, color:"#9CA3AF", fontWeight:600,
+                <div style={{ fontSize:10, color:T.muted, fontWeight:600,
                   textTransform:"uppercase", letterSpacing:"0.05em", marginBottom:7 }}>
                   Try asking…
                 </div>
@@ -12630,11 +12822,11 @@ function FloatingAssistant({ currentRun, currentTab, onNavigate }) {
                   {SUGGESTIONS.map(s=>(
                     <button key={s} onClick={()=>send(s)}
                       style={{ fontSize:10, padding:"4px 10px", borderRadius:99,
-                        border:"1px solid #E0E7FF", background:"#F5F3FF",
-                        color:"#6366F1", cursor:"pointer", transition:"all 0.1s",
+                        border:`1px solid ${T.accent}30`, background:`${T.accent}08`,
+                        color:T.accent, cursor:"pointer", transition:"all 0.1s",
                         fontFamily:"inherit" }}
-                      onMouseEnter={e=>{e.currentTarget.style.background="#EDE9FE";}}
-                      onMouseLeave={e=>{e.currentTarget.style.background="#F5F3FF";}}>
+                      onMouseEnter={e=>{e.currentTarget.style.background=`${T.accent}15`;}}
+                      onMouseLeave={e=>{e.currentTarget.style.background=`${T.accent}08`;}}>
                       {s}
                     </button>
                   ))}
@@ -12643,14 +12835,14 @@ function FloatingAssistant({ currentRun, currentTab, onNavigate }) {
             )}
 
             {messages.map((m,i)=>(
-              <AgentMessage key={i} msg={m} onNavigate={onNavigate} T={T}/>
+              <AgentMessage key={m.ts||i} msg={m} onNavigate={onNavigate} T={T}/>
             ))}
             <div ref={bottomRef}/>
           </div>
 
           {/* Input */}
-          <div style={{ padding:"10px 12px", borderTop:"1px solid #E8ECF0",
-            flexShrink:0, background:"#FAFAFA" }}>
+          <div style={{ padding:"10px 12px", borderTop:`1px solid ${T.border}`,
+            flexShrink:0, background:T.surface }}>
             <div style={{ display:"flex", gap:8, alignItems:"flex-end" }}>
               <textarea
                 ref={inputRef}
@@ -12662,26 +12854,26 @@ function FloatingAssistant({ currentRun, currentTab, onNavigate }) {
                 placeholder="Ask me to run something, check your data, navigate…"
                 rows={1}
                 style={{ flex:1, padding:"8px 11px", borderRadius:9, fontSize:12,
-                  border:"1px solid #E8ECF0", background:"#FFFFFF",
-                  color:"#0D1117", outline:"none", fontFamily:"inherit",
+                  border:`1px solid ${T.border}`, background:T.surface,
+                  color:T.text, outline:"none", fontFamily:"inherit",
                   resize:"none", lineHeight:1.4, maxHeight:100, overflowY:"auto" }}
                 onInput={e=>{
                   e.target.style.height="auto";
                   e.target.style.height=Math.min(e.target.scrollHeight,100)+"px";
                 }}
-                onFocus={e=>e.target.style.borderColor="#6366F1"}
-                onBlur={e=>e.target.style.borderColor="#E8ECF0"}
+                onFocus={e=>e.target.style.borderColor=T.accent}
+                onBlur={e=>e.target.style.borderColor=T.border}
               />
               <button onClick={()=>send()} disabled={!input.trim()||loading}
                 style={{ width:34, height:34, borderRadius:8, flexShrink:0,
-                  background:(!input.trim()||loading)?"#E8ECF0":"linear-gradient(135deg,#6366F1,#8B5CF6)",
+                  background:(!input.trim()||loading)?T.border:"linear-gradient(135deg,#6366F1,#8B5CF6)",
                   border:"none", cursor:(!input.trim()||loading)?"not-allowed":"pointer",
                   display:"flex", alignItems:"center", justifyContent:"center",
                   color:"white", transition:"all 0.15s" }}>
                 {loading ? <Spinner size={12} color="white"/> : <ArrowRight size={14}/>}
               </button>
             </div>
-            <div style={{ fontSize:9, color:"#C4C9D4", marginTop:5, textAlign:"center" }}>
+            <div style={{ fontSize:9, color:T.dim, marginTop:5, textAlign:"center" }}>
               Enter to send · Shift+Enter for newline · I can take real actions
             </div>
           </div>
@@ -12725,7 +12917,7 @@ function DemoValidationTab() {
     } catch(e) {}
   }, []);
 
-  React.useEffect(()=>{ loadConfig(); }, []);
+  React.useEffect(()=>{ loadConfig().then(()=>run()); }, []);
 
   const saveConfig = async () => {
     setConfigSaving(true);
@@ -12790,7 +12982,6 @@ function DemoValidationTab() {
     setLoading(false);
   };
 
-  React.useEffect(()=>{ run(); }, []);
 
   const STATUS_COLOR = { pass:T.green, warn:T.yellow||"#F59E0B", fail:T.red, error:T.red };
   const STATUS_ICON  = { pass:"✓", warn:"⚠", fail:"✗", error:"✗" };
@@ -12842,7 +13033,7 @@ function DemoValidationTab() {
             </div>
             <div style={{ display:"flex", alignItems:"center", gap:8, flexWrap:"wrap" }}>
               {accountIds.map((id,i)=>(
-                <div key={i} style={{ display:"flex", alignItems:"center", gap:4 }}>
+                <div key={id||i} style={{ display:"flex", alignItems:"center", gap:4 }}>
                   <input type="number" value={id}
                     onChange={e=>setAccountIds(p=>p.map((v,j)=>j===i?Number(e.target.value):v))}
                     style={{ width:80, padding:"5px 8px", borderRadius:6, fontSize:12,
@@ -12866,7 +13057,7 @@ function DemoValidationTab() {
           </div>
           <div style={{ display:"flex", flexDirection:"column", gap:8, marginBottom:12 }}>
             {tables.map((tdef,i)=>(
-              <div key={i} style={{ padding:"12px 14px", borderRadius:8,
+              <div key={tdef.table||i} style={{ padding:"12px 14px", borderRadius:8,
                 border:`1px solid ${tdef.enabled!==false?T.accent+"30":T.border}`,
                 background: tdef.enabled!==false?`${T.accent}04`:T.bg,
                 display:"flex", gap:10, alignItems:"flex-start", flexWrap:"wrap" }}>
@@ -13042,7 +13233,7 @@ function DemoValidationTab() {
             </div>
           ) : (
             <Btn size="sm" variant="ghost"
-              onClick={()=>{ loadMwsTables(); setAddForm({table:"",date_col:"",label:"",max_age_days:7}); }}
+              onClick={()=>{ if(!mwsTables.length) loadMwsTables(); setAddForm({table:"",date_col:"",label:"",max_age_days:7}); }}
               style={{ marginBottom:12 }}>
               <Plus size={10}/> Add Table
             </Btn>
@@ -13301,6 +13492,8 @@ function ResultsTab({ onNavigate }) {
   const [selected,   setSelected]= React.useState(null);
   const [filter,     setFilter]  = React.useState("all");
   const [wfFilter,       setWfFilter]       = React.useState("all");
+  const [dateFrom,   setDateFrom] = React.useState("");
+  const [dateTo,     setDateTo]   = React.useState("");
   const [compareInsight, setCompareInsight] = React.useState(null);
   const [compareLoading, setCompareLoading] = React.useState(false);
 
@@ -13364,7 +13557,10 @@ function ResultsTab({ onNavigate }) {
     setLoading(false);
   };
 
-  React.useEffect(()=>{ load(); }, []);
+  React.useEffect(()=>{
+    load();
+    return () => { if (window.location.hash.startsWith("#results/")) window.location.hash = ""; };
+  }, []);
 
   React.useEffect(()=>{
     const hash = window.location.hash;
@@ -13379,7 +13575,7 @@ function ResultsTab({ onNavigate }) {
   }, [runs]);
 
   if (view==="detail" && selected && selected.check) return (
-    <div style={{ height:"calc(100vh - 2px)", display:"flex", flexDirection:"column", overflow:"hidden" }}>
+    <div style={{ display:"flex", flexDirection:"column", minHeight:"100%" }}>
       <ResultDetail
         run={selected.run}
         check={selected.check}
@@ -13398,6 +13594,8 @@ function ResultsTab({ onNavigate }) {
     if (filter==="failed" && r.status==="clean") return false;
     if (filter==="clean"  && r.status!=="clean") return false;
     if (wfFilter!=="all"  && r.workflow_name!==wfFilter) return false;
+    if (dateFrom && r.started_at && r.started_at.slice(0,10) < dateFrom) return false;
+    if (dateTo   && r.started_at && r.started_at.slice(0,10) > dateTo)   return false;
     return true;
   });
 
@@ -13566,9 +13764,28 @@ function ResultsTab({ onNavigate }) {
               {allWorkflows.map(w=><option key={w} value={w}>{w}</option>)}
             </select>
           )}
-          <span style={{ fontSize:11, color:T.muted, marginLeft:"auto" }}>
-            Showing {filtered.length} of {runs.length}
-          </span>
+          <div style={{ display:"flex", alignItems:"center", gap:6, marginLeft:"auto" }}>
+            <span style={{ fontSize:10, color:T.muted }}>From</span>
+            <input type="date" value={dateFrom} onChange={e=>setDateFrom(e.target.value)}
+              style={{ fontSize:11, padding:"4px 8px", borderRadius:6,
+                border:`1px solid ${T.border}`, background:T.surface,
+                color:T.text, outline:"none", fontFamily:"inherit" }}/>
+            <span style={{ fontSize:10, color:T.muted }}>To</span>
+            <input type="date" value={dateTo} onChange={e=>setDateTo(e.target.value)}
+              style={{ fontSize:11, padding:"4px 8px", borderRadius:6,
+                border:`1px solid ${T.border}`, background:T.surface,
+                color:T.text, outline:"none", fontFamily:"inherit" }}/>
+            {(dateFrom||dateTo) && (
+              <button onClick={()=>{setDateFrom("");setDateTo("");}}
+                style={{ fontSize:10, color:T.accent, background:"none",
+                  border:"none", cursor:"pointer", padding:"2px 4px" }}>
+                Clear
+              </button>
+            )}
+            <span style={{ fontSize:11, color:T.muted, marginLeft:4 }}>
+              {filtered.length}/{runs.length}
+            </span>
+          </div>
         </div>
       </div>
 
@@ -13854,6 +14071,7 @@ function ResultDetail({ run, check, allChecks, onBack, onSelectCheck, onNavigate
   const [noteSaving,setNoteSave] = React.useState(false);
   const [sharing,   setSharing]  = React.useState(false);
   const [shareMsg,  setShareMsg] = React.useState(null);
+  const debouncedSearch = useDebounce(search, 150);
   const [sortCol,   setSortCol]  = React.useState(null);
   const [sortDir,   setSortDir]  = React.useState("asc");
   const [search,    setSearch]   = React.useState("");
@@ -13930,7 +14148,7 @@ function ResultDetail({ run, check, allChecks, onBack, onSelectCheck, onNavigate
     let rows = [...data.rows];
     if (search) {
       rows = rows.filter(r=>
-        Object.values(r).some(v=>String(v??'').toLowerCase().includes(search.toLowerCase()))
+        Object.values(r).some(v=>String(v??'').toLowerCase().includes(debouncedSearch.toLowerCase()))
       );
     }
     if (sortCol) {
@@ -15187,7 +15405,7 @@ Rules: use only real columns, return actual rows not just counts, max 3 checks.`
                   })()}
                   {/* Results */}
                   {(runResult.results||[]).map((r,i) => (
-                    <div key={i} style={{ padding:"10px 14px", borderRadius:8,
+                    <div key={r.name||i} style={{ padding:"10px 14px", borderRadius:8,
                       border:`1px solid ${r.status==="pass"?T.green:T.red}25`,
                       background:`${r.status==="pass"?T.green:T.red}05`,
                       marginBottom:8 }}>
@@ -15448,7 +15666,7 @@ Respond ONLY with a JSON array (no markdown):
 
             <div style={{ display:"flex", flexDirection:"column", gap:12 }}>
               {form.checks.map((chk, i) => (
-                <div key={i} style={{ border:`1px solid ${T.border}`, borderRadius:8,
+                <div key={chk.id||chk.name||i} style={{ border:`1px solid ${T.border}`, borderRadius:8,
                   padding:"12px 14px", background:T.bg, position:"relative" }}>
                   <div style={{ display:"flex", gap:8, marginBottom:8 }}>
                     <span style={{ fontSize:9, fontWeight:700, color:T.muted,
@@ -15758,7 +15976,7 @@ pass_condition: "rows=0"|"rows>0"|"value>N". No markdown.`,
           </div>
         )}
         {messages.map((m,i)=>(
-          <div key={i}>
+          <div key={m.ts||m.text?.slice(0,20)||i}>
             {m.role==="user" && (
               <div style={{ display:"flex", justifyContent:"flex-end" }}>
                 <div style={{ maxWidth:"82%", padding:"8px 12px", borderRadius:10,
@@ -15815,7 +16033,7 @@ pass_condition: "rows=0"|"rows>0"|"value>N". No markdown.`,
             onBlur={e=>e.target.style.borderColor=T.border}/>
           <button onClick={()=>send()} disabled={!input.trim()||loading}
             style={{ width:30, height:30, borderRadius:7, border:"none", flexShrink:0,
-              background:(!input.trim()||loading)?"#E8ECF0":`linear-gradient(135deg,${T.accent},${T.purple})`,
+              background:(!input.trim()||loading)?T.border:`linear-gradient(135deg,${T.accent},${T.purple})`,
               cursor:(!input.trim()||loading)?"not-allowed":"pointer",
               display:"flex", alignItems:"center", justifyContent:"center", color:"white" }}>
             {loading?<Spinner size={10} color="white"/>:<ArrowRight size={12}/>}
@@ -15832,6 +16050,7 @@ function DataflowsTab({ onNavigate }) {
 
   // ── State ─────────────────────────────────────────────────────────────────
   const [dataflows, setDataflows] = useLocal(DF_STORAGE_KEY, []);
+  const debouncedSearch = useDebounce(search, 150);
   const [folders,   setFolders]   = useLocal(DF_FOLDERS_KEY, DEFAULT_FOLDERS);
 
   const [selectedFolder, setSelectedFolder] = React.useState(null); // null=all, "__starred__"=starred, fid=folder
@@ -15914,7 +16133,7 @@ function DataflowsTab({ onNavigate }) {
 
     // Search
     if (search.trim()) {
-      const q = search.toLowerCase();
+      const q = debouncedSearch.toLowerCase();
       list = list.filter(d =>
         d.name?.toLowerCase().includes(q) ||
         d.desc?.toLowerCase().includes(q) ||
@@ -17103,7 +17322,7 @@ function SchedulerTab({ onNavigate }) {
     if (filterStatus==="enabled")  list = list.filter(s=>s.enabled!==false);
     if (filterStatus==="disabled") list = list.filter(s=>s.enabled===false);
     if (search.trim()) {
-      const q = search.toLowerCase();
+      const q = debouncedSearch.toLowerCase();
       list = list.filter(s =>
         s.name?.toLowerCase().includes(q) ||
         s.owner?.toLowerCase().includes(q) ||
@@ -17148,7 +17367,7 @@ function SchedulerTab({ onNavigate }) {
   };
 
   return (
-    <div style={{ height:"100vh", display:"flex", flexDirection:"column", overflow:"hidden" }}>
+    <div style={{ display:"flex", flexDirection:"column", minHeight:"100%" }}>
 
       {/* Top bar */}
       <div style={{ padding:"14px 20px", borderBottom:`1px solid ${T.border}`,
@@ -17768,7 +17987,7 @@ Rules: 2-3 workflows max, 2-3 checks each, use only real columns, never COUNT(*)
         <div style={{ fontSize:12, color:T.muted, marginBottom:20 }}>{aiResult.summary}</div>
         <div style={{ display:"flex", flexDirection:"column", gap:10, marginBottom:24 }}>
           {(aiResult.workflows||[]).map((wf,i)=>(
-            <div key={i} style={{ padding:"12px 16px", borderRadius:10,
+            <div key={wf.name||i} style={{ padding:"12px 16px", borderRadius:10,
               background:`${T.accent}06`, border:`1px solid ${T.accent}20` }}>
               <div style={{ fontSize:13, fontWeight:700, color:T.text }}>{wf.name}</div>
               <div style={{ fontSize:11, color:T.muted, marginTop:2 }}>{wf.desc}</div>
@@ -17813,9 +18032,9 @@ export default function WiziAgentApp() {
 
   React.useEffect(() => {
     const SHORTCUT_MAP = {
-      "1":"brief", "2":"triage", "3":"workflows", "4":"workflows",
-      "5":"activity", "6":"chat", "7":"config", "8":"query",
-      "a":"approvals",
+      "1":"brief", "2":"triage", "3":"workflows", "4":"dataflows",
+      "5":"config", "6":"query", "7":"results", "8":"scheduler",
+      "9":"demo",
     };
     const handler = (e) => {
       // Skip if user is typing in an input/textarea
@@ -17949,6 +18168,19 @@ export default function WiziAgentApp() {
     border2: "#D1D9E0",
   };
 
+  // Suppress unhandled promise rejection warnings from mid-flight fetches on unmount
+  React.useEffect(() => {
+    const handler = (event) => {
+      if (event.reason?.name === "AbortError" || 
+          String(event.reason?.message).includes("unmounted") ||
+          String(event.reason?.message).includes("cancelled")) {
+        event.preventDefault();
+      }
+    };
+    window.addEventListener("unhandledrejection", handler);
+    return () => window.removeEventListener("unhandledrejection", handler);
+  }, []);
+
   React.useEffect(() => {
     const id = "wizi-font-link";
     let el = document.getElementById(id);
@@ -18004,7 +18236,8 @@ export default function WiziAgentApp() {
         display:"flex", height:"100vh",
         background:T.bg, color:T.text,
         fontFamily:T.font,
-        overflow:"hidden",
+        overflowX:"hidden",
+        overflowY:"hidden",
       }}>
         <Sidebar
           active={activeTab}
@@ -18015,9 +18248,9 @@ export default function WiziAgentApp() {
         />
         <ThemeCtx.Provider value={TC}>
         <main style={{
-          flex:1, overflow:"hidden", minWidth:0, position:"relative",
+          flex:1, overflowX:"hidden", overflowY:"auto", minWidth:0, position:"relative",
           background:TC.bg,
-          contain:"layout style",
+          contain:"style paint",
           backgroundImage: T.wallpaper ? `url("data:image/svg+xml;base64,${T.wallpaper}")` : "none",
           backgroundRepeat: "no-repeat",
           backgroundPosition: "top right",
@@ -18088,7 +18321,7 @@ export default function WiziAgentApp() {
             </div>
           )}
 
-          {activeTab==="brief"     && <>
+          {activeTab==="brief"     && <ErrorBoundary key="brief"><>
             {proactiveAlerts.length > 0 && (
               <div style={{ padding:"8px 20px", background:`${TC.red}08`,
                 borderBottom:`1px solid ${TC.red}20`,
@@ -18099,7 +18332,7 @@ export default function WiziAgentApp() {
                 </span>
                 <div style={{ display:"flex", gap:8, flex:1, flexWrap:"wrap" }}>
                   {proactiveAlerts.map((a,i)=>(
-                    <span key={i} style={{ fontSize:10, padding:"2px 8px", borderRadius:4,
+                    <span key={a.label||i} style={{ fontSize:10, padding:"2px 8px", borderRadius:4,
                       background:`${TC.red}10`, color:TC.red, border:`1px solid ${TC.red}20` }}>
                       {a.direction} {a.label}: {a.pct}% {a.direction==="↑"?"above":"below"} avg
                     </span>
@@ -18112,15 +18345,15 @@ export default function WiziAgentApp() {
             )}
             <AiBriefPanel/>
             <MorningBriefTab onNavigate={navigateTo} onIssueFound={setIssues}/>
-          </>}
-          {activeTab==="triage"    && <TriageTab initialIssues={issues}/>}
-          {activeTab==="workflows" && <WorkflowsTab navigateTo={navigateTo}/>}
-          {activeTab==="dataflows" && <DataflowsTab onNavigate={navigateTo}/>}
-          {activeTab==="config"    && <ConfigureTab/>}
-          {activeTab==="query"     && <QueryTab/>}
-          {activeTab==="results"   && <ResultsTab onNavigate={navigateTo}/>}
-          {activeTab==="scheduler" && <SchedulerTab onNavigate={navigateTo}/>}
-          {activeTab==="demo"      && <DemoValidationTab/>}
+          </></ErrorBoundary>}
+          {activeTab==="triage"    && <ErrorBoundary key="triage"><TriageTab initialIssues={issues}/></ErrorBoundary>}
+          {activeTab==="workflows" && <ErrorBoundary key="workflows"><WorkflowsTab navigateTo={navigateTo}/></ErrorBoundary>}
+          {activeTab==="dataflows" && <ErrorBoundary key="dataflows"><DataflowsTab onNavigate={navigateTo}/></ErrorBoundary>}
+          {activeTab==="config"    && <ErrorBoundary key="config"><ConfigureTab/></ErrorBoundary>}
+          {activeTab==="query"     && <ErrorBoundary key="query"><QueryTab/></ErrorBoundary>}
+          {activeTab==="results"   && <ErrorBoundary key="results"><ResultsTab onNavigate={navigateTo}/></ErrorBoundary>}
+          {activeTab==="scheduler" && <ErrorBoundary key="scheduler"><SchedulerTab onNavigate={navigateTo}/></ErrorBoundary>}
+          {activeTab==="demo"      && <ErrorBoundary key="demo"><DemoValidationTab/></ErrorBoundary>}
         </main>
         </ThemeCtx.Provider>
       </div>

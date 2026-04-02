@@ -2813,6 +2813,8 @@ Rows affected: ${issue.count}
       setPreviewLoading(false);
     }
   };
+  const [activeView, setActiveView] = React.useState("issues"); // issues | data | log
+
   // Auto-reload preview when switching to data tab or changing table while on data tab
   React.useEffect(() => {
     if (activeView === "data") {
@@ -2820,9 +2822,6 @@ Rows affected: ${issue.count}
       loadPreview(previewLimit, selectedTable);
     }
   }, [selectedTable, activeView]);
-
-
-  const [activeView, setActiveView] = React.useState("issues"); // issues | data | log
 
   const issues     = triageResult?.issues || [];
   const SEV_COLOR  = { critical:T.red, high:T.orange, medium:T.yellow, low:T.cyan };
@@ -7377,8 +7376,8 @@ function CheckLibrary({ onUse, standalone }) {
   const T = useT();
   const [checks,   setChecks]   = React.useState([]);
   const [loading,  setLoading]  = React.useState(false);
-  const debouncedSearch = useDebounce(search, 150);
   const [search,   setSearch]   = React.useState("");
+  const debouncedSearch = useDebounce(search, 150);
   const [tagFilter,setTagFilter]= React.useState("all");
   const [saving,   setSaving]   = React.useState(false);
   const [form,     setForm]     = React.useState(null); // null | check object being added/edited
@@ -10991,9 +10990,9 @@ function RunDetail({ run, T, dur, fmt }) {
 // ── AllRunsView — cross-workflow run history ───────────────────────────────────
 function AllRunsView({ history, workflows, onBack, onOpenWf }) {
   const T = useT();
-  const debouncedSearch = useDebounce(search, 150);
   const [filter, setFilter] = React.useState("all"); // all | failed | clean
   const [search, setSearch] = React.useState("");
+  const debouncedSearch = useDebounce(search, 150);
 
   const wfMap = Object.fromEntries(workflows.map(w=>[w.id,w]));
   const filtered = history.filter(r=>{
@@ -14071,10 +14070,10 @@ function ResultDetail({ run, check, allChecks, onBack, onSelectCheck, onNavigate
   const [noteSaving,setNoteSave] = React.useState(false);
   const [sharing,   setSharing]  = React.useState(false);
   const [shareMsg,  setShareMsg] = React.useState(null);
-  const debouncedSearch = useDebounce(search, 150);
   const [sortCol,   setSortCol]  = React.useState(null);
   const [sortDir,   setSortDir]  = React.useState("asc");
   const [search,    setSearch]   = React.useState("");
+  const debouncedSearch = useDebounce(search, 150);
   const [showStats,     setShowStats]     = React.useState(false);
   const [stakeholderMsg,setStakeholderMsg] = React.useState(null);
   const [stakeholderLoading,setStakeholderLoading] = React.useState(false);
@@ -16050,11 +16049,11 @@ function DataflowsTab({ onNavigate }) {
 
   // ── State ─────────────────────────────────────────────────────────────────
   const [dataflows, setDataflows] = useLocal(DF_STORAGE_KEY, []);
-  const debouncedSearch = useDebounce(search, 150);
   const [folders,   setFolders]   = useLocal(DF_FOLDERS_KEY, DEFAULT_FOLDERS);
 
   const [selectedFolder, setSelectedFolder] = React.useState(null); // null=all, "__starred__"=starred, fid=folder
   const [search,         setSearch]         = React.useState("");
+  const debouncedSearch = useDebounce(search, 150);
   const [sortBy,         setSortBy]         = React.useState("updated_at"); // name|checks|updated_at|priority
   const [sortDir,        setSortDir]        = React.useState("desc");
   const [filterTag,      setFilterTag]      = React.useState("all");

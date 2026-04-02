@@ -8364,35 +8364,12 @@ function SopConfigPanel({ config, setConfig, onSave, saving, msg, onClose, T }) 
 
 // ─── AdsSopTab sub-components ───────────────────────────────────────────────
 function SopGatePanel({ gateNum, token, decision, label, checks, gateTimeout, submitGate, submitting, running, T }) {
-  // All hooks must be at top — before any early returns
+  // ALL hooks at top — no exceptions, no conditionals
   const [elapsed,     setElapsed]     = React.useState(0);
   const [aiAdvice,    setAiAdvice]    = React.useState(null);
   const [aiAdviceLoad,setAiAdviceLoad]= React.useState(false);
 
-  if (decision === "skipped") return null;
   const isPending  = decision === "pending";
-  const isApproved = decision === "approved";
-  const isRejected = decision === "rejected";
-  const isTimeout  = decision === "timeout";
-  const busy = submitting[token];
-  // Show upcoming gate (no token yet, no decision)
-  if (!token && !isPending && !isApproved && !isRejected && !isTimeout) {
-    return (
-      <Card style={{ padding:"12px 18px", marginBottom:10,
-        borderColor:`${T.border}`, background:T.surface, opacity:0.6 }}>
-        <div style={{ display:"flex", alignItems:"center", gap:12 }}>
-          <div style={{ width:32, height:32, borderRadius:8, flexShrink:0,
-            background:T.border, display:"flex", alignItems:"center",
-            justifyContent:"center", fontSize:14, fontWeight:800, color:T.dim }}>
-            {gateNum}
-          </div>
-          <div style={{ fontSize:12, color:T.muted }}>
-            🔒 Gate {gateNum}: {label} <span style={{fontSize:10}}>— not yet reached</span>
-          </div>
-        </div>
-      </Card>
-    );
-  }
 
   React.useEffect(() => {
     if (!isPending) return;
@@ -8400,7 +8377,6 @@ function SopGatePanel({ gateNum, token, decision, label, checks, gateTimeout, su
     return ()=>clearInterval(id);
   }, [isPending]);
 
-  // Auto-fetch AI advice when gate becomes pending
   React.useEffect(() => {
     if (!isPending || aiAdvice) return;
     const timer = setTimeout(async () => {
@@ -8421,6 +8397,32 @@ function SopGatePanel({ gateNum, token, decision, label, checks, gateTimeout, su
     }, 2000);
     return () => clearTimeout(timer);
   }, [isPending]);
+
+  // Derived values — safe after hooks
+  const isApproved = decision === "approved";
+  const isRejected = decision === "rejected";
+  const isTimeout  = decision === "timeout";
+  const busy = submitting?.[token];
+
+  // Early returns AFTER all hooks
+  if (decision === "skipped") return null;
+  if (!token && !isPending && !isApproved && !isRejected && !isTimeout) {
+    return (
+      <Card style={{ padding:"12px 18px", marginBottom:10,
+        borderColor:`${T.border}`, background:T.surface, opacity:0.6 }}>
+        <div style={{ display:"flex", alignItems:"center", gap:12 }}>
+          <div style={{ width:32, height:32, borderRadius:8, flexShrink:0,
+            background:T.border, display:"flex", alignItems:"center",
+            justifyContent:"center", fontSize:14, fontWeight:800, color:T.dim }}>
+            {gateNum}
+          </div>
+          <div style={{ fontSize:12, color:T.muted }}>
+            🔒 Gate {gateNum}: {label} <span style={{fontSize:10}}>— not yet reached</span>
+          </div>
+        </div>
+      </Card>
+    );
+  }
 
   const pct = Math.min((elapsed / Number(gateTimeout)) * 100, 100);
   const remaining = Math.max(Number(gateTimeout) - elapsed, 0);

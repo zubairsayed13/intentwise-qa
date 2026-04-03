@@ -1358,6 +1358,7 @@ function DashboardTab({ onNavigate }) {
   const [loading,     setLoading]    = React.useState(true);
   const [kpiNarrative,setKpiNarrative]= React.useState(null);
   const [kpiNarrLoading,setKpiNarrLoading]= React.useState(false);
+  const [welcomeDismissed, setWelcomeDismissed] = useLocal("wz_welcome_dismissed", false);
 
   const generateKpiNarrative = React.useCallback(async (kpisData, triageData) => {
     if (!kpisData || kpiNarrative) return;
@@ -1584,7 +1585,10 @@ function DashboardTab({ onNavigate }) {
           <div style={{ fontSize:34, fontWeight:800, color:dispColor,
             letterSpacing:"-0.03em", lineHeight:1, fontVariantNumeric:"tabular-nums",
             flex:1, display:"flex", alignItems:"center" }}>
-            {loading?"…":val}
+            {loading
+              ? <div style={{ width:80, height:32, borderRadius:8, background:T.border,
+                  animation:"pulse 1.5s infinite" }}/>
+              : val}
           </div>
           {trend && (
             <div style={{ fontSize:10, color:trend.color, fontWeight:600,
@@ -1869,6 +1873,38 @@ function DashboardTab({ onNavigate }) {
 
   return (
     <div className="fade-in" style={{ overflowY:"auto", padding:"24px 28px", maxWidth:1280, overflowY:"auto" }}>
+
+      {/* Onboarding welcome card */}
+      {!welcomeDismissed && (
+        <div style={{ marginBottom:20, padding:"18px 22px", borderRadius:12,
+          background:`linear-gradient(135deg,${T.accent}10,${T.purple}08)`,
+          border:`1px solid ${T.accent}30`,
+          display:"flex", alignItems:"center", gap:16 }}>
+          <div style={{ fontSize:32, flexShrink:0 }}>👋</div>
+          <div style={{ flex:1 }}>
+            <div style={{ fontSize:14, fontWeight:700, color:T.text, marginBottom:4 }}>
+              Welcome to WiziAgent
+            </div>
+            <div style={{ fontSize:12, color:T.muted, lineHeight:1.6 }}>
+              Your AI-powered Amazon Seller data quality platform.
+              Run a <strong style={{color:T.text}}>Daily Brief</strong> to scan for issues,
+              use <strong style={{color:T.text}}>Workflows</strong> to automate checks with approval gates,
+              or let <strong style={{color:T.text}}>Auto-Pilot</strong> monitor and fix issues autonomously.
+            </div>
+          </div>
+          <div style={{ display:"flex", gap:8, flexShrink:0 }}>
+            <Btn size="sm" onClick={()=>onNavigate("brief")}
+              style={{ background:`linear-gradient(135deg,${T.accent},${T.purple})`,
+                color:"white", border:"none" }}>
+              <Play size={10}/> Run Brief
+            </Btn>
+            <Btn size="sm" variant="ghost" onClick={()=>setWelcomeDismissed(true)}
+              style={{ fontSize:10 }}>
+              Dismiss
+            </Btn>
+          </div>
+        </div>
+      )}
 
       {/* Header */}
       <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom:20 }}>
@@ -2275,10 +2311,35 @@ function MorningBriefTab({ onNavigate, onIssueFound }) {
       {/* Loading skeletons */}
       {loading && !brief && (
         <div style={{ display:"flex", flexDirection:"column", gap:12 }}>
-          {[1,2,3].map(i => (
-            <div key={i} style={{ height:68, borderRadius:10, background:T.border,
-              animation:"pulse 1.5s infinite", animationDelay:`${i*0.1}s` }}/>
+          {[1,2,3,4].map(i => (
+            <div key={i} style={{ height:72, borderRadius:10, background:T.border,
+              animation:"pulse 1.5s infinite", animationDelay:`${i*0.12}s`,
+              opacity: 1 - (i-1)*0.15 }}/>
           ))}
+          <div style={{ fontSize:11, color:T.dim, textAlign:"center", marginTop:4 }}>
+            Scanning mws.report for issues…
+          </div>
+        </div>
+      )}
+
+      {/* First-run empty state */}
+      {!loading && !brief && (
+        <div style={{ textAlign:"center", padding:"60px 20px" }}>
+          <div style={{ fontSize:48, marginBottom:16 }}>🔍</div>
+          <div style={{ fontSize:18, fontWeight:800, color:T.text, marginBottom:8,
+            letterSpacing:"-0.02em" }}>
+            No brief yet for today
+          </div>
+          <div style={{ fontSize:13, color:T.muted, maxWidth:380, margin:"0 auto 24px",
+            lineHeight:1.6 }}>
+            Run a scan to see data quality issues, pipeline health, and AI-generated insights
+            for your Amazon Seller data.
+          </div>
+          <Btn onClick={load} size="sm"
+            style={{ background:`linear-gradient(135deg,${T.accent},${T.purple})`,
+              color:"white", border:"none", padding:"8px 20px" }}>
+            <Play size={12}/> Run Scan Now
+          </Btn>
         </div>
       )}
 
@@ -11058,7 +11119,25 @@ function WorkflowDetail({ wf, history, liveRun, onBack, onEdit, onRun, running }
 
 // ── RunDetail — check-by-check results for one run ───────────────────────────
 function RunDetail({ run, T, dur, fmt }) {
-  const [expanded, setExpanded] = React.useState({});
+  const [expanded,     setExpanded]     = React.useState({});
+  const [explainTexts, setExplainTexts] = React.useState({});
+  const [explainLoad,  setExplainLoad]  = React.useState({});
+
+  const explainCheck = async (chk) => {
+    if (chk.passed || explainTexts[chk.id||chk.name]) return;
+    setExplainLoad(p=>({...p,[chk.id||chk.name]:true}));
+    try {
+      const r = await fetch(`${API}/api/ai/chat`,{method:"POST",headers:{"Content-Type":"application/json"},
+        body:JSON.stringify({
+          system:"Explain this data quality check failure in 1-2 plain English sentences for a business user. No SQL jargon. Focus on what it means and whether it needs urgent attention.",
+          messages:[{role:"user",content:`Check "${chk.name}" failed with ${chk.row_count} rows. Condition: ${chk.pass_condition}. Severity: ${chk.severity}.`}],
+          max_tokens:80
+        })});
+      const d = await r.json();
+      setExplainTexts(p=>({...p,[chk.id||chk.name]:d?.content?.[0]?.text?.trim()||""}));
+    } catch(e){}
+    setExplainLoad(p=>({...p,[chk.id||chk.name]:false}));
+  };
   const toggle = (id) => setExpanded(p=>({...p,[id]:!p[id]}));
 
   const passCount = (run.check_results||[]).filter(c=>c.passed).length;
@@ -11139,13 +11218,30 @@ function RunDetail({ run, T, dur, fmt }) {
                 </div>
               </div>
               <Badge label={chk.severity||"high"} color={SEV_COLOR[chk.severity]||T.muted}/>
+              {!chk.passed && (
+                <button onClick={e=>{e.stopPropagation();explainCheck(chk);}}
+                  style={{background:"none",border:`1px solid ${T.purple}30`,borderRadius:5,
+                    padding:"2px 8px",cursor:"pointer",fontSize:9,color:T.purple,fontWeight:600,
+                    opacity:explainTexts[chk.id||chk.name]?0.5:1}}>
+                  {explainLoad[chk.id||chk.name]?<Spinner size={7}/>:"✨"} Explain
+                </button>
+              )}
               <span style={{ fontSize:12, color:T.dim }}>{expanded[chk.id||i]?"▴":"▾"}</span>
             </div>
 
             {/* Expanded: SQL + sample rows */}
             {expanded[chk.id||i] && (
               <div style={{ borderTop:`1px solid ${T.border}20`, padding:"10px 14px" }}>
-                {chk.sql && (
+                {explainTexts[chk.id||chk.name] && (
+                  <div style={{ marginBottom:10, padding:"8px 10px", borderRadius:7,
+                    background:`linear-gradient(135deg,${T.purple}08,${T.accent}05)`,
+                    border:`1px solid ${T.purple}20`, fontSize:11, color:T.text, lineHeight:1.5,
+                    display:"flex", gap:8 }}>
+                    <span style={{flexShrink:0}}>✨</span>
+                    <span>{explainTexts[chk.id||chk.name]}</span>
+                  </div>
+                )}
+              {chk.sql && (
                   <div style={{ marginBottom:10 }}>
                     <div style={{ fontSize:10, fontWeight:600, color:T.muted, marginBottom:4 }}>SQL</div>
                     <pre style={{ margin:0, padding:"8px 10px", background:T.surface,
@@ -12761,11 +12857,12 @@ function ToolResultBlock({ tool, result, T }) {
 function AgentMessage({ msg, onNavigate, T }) {
   if (msg.role === "user") {
     return (
-      <div style={{ display:"flex", justifyContent:"flex-end", marginBottom:10 }}>
-        <div style={{ maxWidth:"82%", padding:"9px 13px", borderRadius:12,
-          borderBottomRightRadius:3, fontSize:12, lineHeight:1.5,
-          background:`linear-gradient(135deg,#6366F1,#8B5CF6)`,
-          color:"white", whiteSpace:"pre-wrap", wordBreak:"break-word" }}>
+      <div style={{ display:"flex", justifyContent:"flex-end", marginBottom:12 }}>
+        <div style={{ maxWidth:"80%", padding:"10px 14px", borderRadius:14,
+          borderBottomRightRadius:4, fontSize:12, lineHeight:1.55,
+          background:"linear-gradient(135deg,#6366F1,#8B5CF6)",
+          color:"white", whiteSpace:"pre-wrap", wordBreak:"break-word",
+          boxShadow:"0 2px 10px rgba(99,102,241,0.25)" }}>
           {msg.text}
         </div>
       </div>
@@ -12774,10 +12871,20 @@ function AgentMessage({ msg, onNavigate, T }) {
 
   if (msg.role === "thinking") {
     return (
-      <div style={{ display:"flex", alignItems:"center", gap:7,
-        color:"#9CA3AF", fontSize:11, marginBottom:8, padding:"0 4px" }}>
-        <Spinner size={10}/>
-        <span style={{ fontStyle:"italic" }}>{msg.text||"Thinking…"}</span>
+      <div style={{ display:"flex", alignItems:"center", gap:8,
+        marginBottom:10, padding:"8px 12px",
+        background:"white", borderRadius:10, border:"1px solid #EDE9FE",
+        boxShadow:"0 1px 4px rgba(0,0,0,0.04)", maxWidth:"75%" }}>
+        <div style={{ display:"flex", gap:3 }}>
+          {[0,1,2].map(i=>(
+            <div key={i} style={{ width:5, height:5, borderRadius:"50%",
+              background:"#A78BFA",
+              animation:`bounce 1.2s ${i*0.2}s infinite` }}/>
+          ))}
+        </div>
+        <span style={{ fontSize:11, color:"#8B5CF6", fontStyle:"italic", fontWeight:500 }}>
+          {msg.text||"Thinking…"}
+        </span>
       </div>
     );
   }
@@ -12785,72 +12892,156 @@ function AgentMessage({ msg, onNavigate, T }) {
   if (msg.role === "tool_call") {
     const meta = TOOL_META[msg.tool] || { icon:"🔧", label:msg.tool, color:"#6B7280" };
     return (
-      <div style={{ display:"flex", alignItems:"center", gap:6,
-        padding:"4px 10px", marginBottom:4, fontSize:11, color:"#9CA3AF" }}>
-        <span style={{ animation:"pulse 1s infinite" }}>{meta.icon}</span>
-        <span style={{ fontStyle:"italic" }}>{meta.label}…</span>
+      <div style={{ display:"flex", alignItems:"center", gap:7,
+        padding:"5px 10px", marginBottom:5, fontSize:11,
+        background:"#F5F3FF", borderRadius:8,
+        border:"1px solid #EDE9FE", maxWidth:"fit-content" }}>
+        <span>{meta.icon}</span>
+        <span style={{ color:"#7C3AED", fontStyle:"italic", fontWeight:500 }}>{meta.label}…</span>
       </div>
     );
   }
 
-  // assistant message (may have steps)
+  // assistant message
   return (
-    <div style={{ marginBottom:12 }}>
+    <div style={{ marginBottom:14 }}>
       {/* Tool results */}
       {(msg.steps||[]).filter(s=>s.type==="tool_result").map((s,i)=>(
         <ToolResultBlock key={s.call_id||s.tool||i} tool={s.tool} result={s.result} T={T}/>
       ))}
 
-      {/* Navigate actions as clickable chips */}
+      {/* Navigate action chips */}
       {(msg.actions||[]).filter(a=>a.type==="navigate").map((a,i)=>(
-        <div key={s.type+String(i)}
+        <div key={"nav"+i}
           onClick={()=>onNavigate(a.tab)}
-          style={{ display:"inline-flex", alignItems:"center", gap:5,
-            padding:"4px 12px", borderRadius:99, marginBottom:8, cursor:"pointer",
-            background:`${T.accent}10`, color:T.accent, border:`1px solid ${T.accent}40`,
-            fontSize:11, fontWeight:600, transition:"all 0.1s" }}
-          onMouseEnter={e=>e.currentTarget.style.background=`${T.accent}20`}
-          onMouseLeave={e=>e.currentTarget.style.background=`${T.accent}10`}>
+          style={{ display:"inline-flex", alignItems:"center", gap:6,
+            padding:"5px 13px", borderRadius:99, marginBottom:8, cursor:"pointer",
+            background:"#EEF2FF", color:"#6366F1",
+            border:"1.5px solid #C7D2FE",
+            fontSize:11, fontWeight:600, transition:"all 0.15s",
+            boxShadow:"0 1px 4px rgba(99,102,241,0.12)" }}
+          onMouseEnter={e=>{e.currentTarget.style.background="#E0E7FF";e.currentTarget.style.transform="translateY(-1px)";}}
+          onMouseLeave={e=>{e.currentTarget.style.background="#EEF2FF";e.currentTarget.style.transform="translateY(0)";}}>
           🧭 Go to {a.tab} →
         </div>
       ))}
 
       {/* Created dataflow chip */}
       {(msg.actions||[]).filter(a=>a.type==="created_dataflow").map((a,i)=>(
-        <div key={s.type+String(i)}
+        <div key={"df"+i}
           onClick={()=>onNavigate("dataflows")}
-          style={{ display:"inline-flex", alignItems:"center", gap:5,
-            padding:"4px 12px", borderRadius:99, marginBottom:8, cursor:"pointer",
-            background:`${T.green}10`, color:T.green, border:`1px solid ${T.green}`,
-            fontSize:11, fontWeight:600 }}>
+          style={{ display:"inline-flex", alignItems:"center", gap:6,
+            padding:"5px 13px", borderRadius:99, marginBottom:8, cursor:"pointer",
+            background:"#ECFDF5", color:"#059669",
+            border:"1.5px solid #A7F3D0",
+            fontSize:11, fontWeight:600, transition:"all 0.15s" }}
+          onMouseEnter={e=>e.currentTarget.style.background="#D1FAE5"}
+          onMouseLeave={e=>e.currentTarget.style.background="#ECFDF5"}>
           ✨ Dataflow created — view in Dataflows →
         </div>
       ))}
 
-      {/* Final text */}
+      {/* Final text — assistant bubble */}
       {msg.text && (
-        <div style={{ padding:"9px 12px", borderRadius:10, borderBottomLeftRadius:3,
-          fontSize:12, lineHeight:1.6, color:T.text,
-          background:T.card, border:`1px solid ${T.border}`,
-          whiteSpace:"pre-wrap", wordBreak:"break-word",
-          maxWidth:"88%" }}>
-          {msg.text}
+        <div style={{ display:"flex", gap:8, alignItems:"flex-start" }}>
+          <div style={{ width:24, height:24, borderRadius:7, flexShrink:0, marginTop:1,
+            background:"linear-gradient(135deg,#6366F1,#8B5CF6)",
+            display:"flex", alignItems:"center", justifyContent:"center",
+            fontSize:11, color:"white", fontWeight:700 }}>✦</div>
+          <div style={{ flex:1, padding:"10px 13px", borderRadius:14,
+            borderTopLeftRadius:4, fontSize:12, lineHeight:1.65,
+            color:"#1F2937", background:"white",
+            border:"1px solid #EDE9FE",
+            boxShadow:"0 1px 6px rgba(0,0,0,0.06)",
+            whiteSpace:"pre-wrap", wordBreak:"break-word",
+            maxWidth:"calc(100% - 32px)" }}>
+            {msg.text}
+          </div>
         </div>
       )}
     </div>
   );
 }
 
-const SUGGESTIONS = [
-  "What failed in the last 24 hours?",
-  "Run the daily data brief",
-  "Show me failed downloads today",
-  "Navigate to triage",
-  "What's my current inventory health?",
-  "Create a null check for mws.orders",
-  "What's the pass rate for my workflows?",
-  "Are there any stale tables?",
-];
+// ── useLiveChips — reactive suggestion chips based on current app state ────────
+function useLiveChips(currentTab, currentRun) {
+  return React.useMemo(() => {
+    const chips = [];
+
+    // 1. If there's a live run result with failures — most urgent
+    if (currentRun) {
+      const failCount = (currentRun.results||[]).filter(r=>r.status!=="pass").length;
+      const wfName = currentRun.workflow_name || currentRun.name;
+      if (failCount > 0) {
+        chips.push(`Why did ${wfName ? `"${wfName}"` : "the last run"} fail?`);
+        chips.push(`Send failed checks to triage`);
+      } else if (failCount === 0 && currentRun.results?.length > 0) {
+        chips.push(`Summarise the last run`);
+      }
+    }
+
+    // 2. Recent workflow failures from session storage
+    try {
+      const runs = JSON.parse(sessionStorage.getItem("wz_cwfHistory")||"[]");
+      const failed = runs.filter(r => r.status !== "clean" && r.status !== "pass");
+      if (failed.length && chips.length < 2) {
+        const wf = failed[0];
+        chips.push(`What went wrong in "${wf.workflow_name || wf.name || "last workflow"}"?`);
+      }
+    } catch {}
+
+    // 3. Open triage issues
+    try {
+      const issues = JSON.parse(sessionStorage.getItem("wz_pendingIssues")||"[]");
+      const critical = issues.filter(i => i.severity === "critical");
+      if (critical.length > 0) {
+        chips.push(`Explain the ${critical.length} critical issue${critical.length>1?"s":""} in triage`);
+      } else if (issues.length > 0 && chips.length < 3) {
+        chips.push(`What are the open triage issues?`);
+      }
+    } catch {}
+
+    // 4. Time-of-day aware — ads data check (after 3:30 PM IST = 10:00 UTC)
+    try {
+      const utcHour = new Date().getUTCHours();
+      const utcMin  = new Date().getUTCMinutes();
+      const pastAdsWindow = utcHour > 10 || (utcHour === 10 && utcMin >= 0);
+      if (pastAdsWindow && chips.length < 4) {
+        chips.push("Is today's campaign report data loaded?");
+      }
+    } catch {}
+
+    // 5. Brief health score
+    try {
+      const br = JSON.parse(sessionStorage.getItem("wz_brief")||"null");
+      if (br?.health_score !== undefined && br.health_score < 80 && chips.length < 4) {
+        chips.push(`Health is ${br.health_score}/100 — what's dragging it down?`);
+      }
+    } catch {}
+
+    // 6. Tab-aware fallback chips
+    if (chips.length < 3) {
+      const tabChips = {
+        workflows:  ["Show my workflow pass rates", "Run all critical workflows"],
+        triage:     ["Summarise open issues by severity", "Which issues need immediate attention?"],
+        dataflows:  ["Which dataflows haven't run today?", "Create a null check for mws.orders"],
+        results:    ["Compare today's results to yesterday", "Which checks failed most often this week?"],
+        monitor:    ["Show me tables with no data today", "Which report types failed most this week?"],
+        scheduler:  ["What's scheduled to run next?", "Are any schedules overdue?"],
+        autopilot:  ["What did AutoPilot detect today?", "Run the main detection pipeline"],
+      };
+      const extra = tabChips[currentTab] || [
+        "What failed in the last 24 hours?",
+        "Show me failed downloads today",
+        "What's my current inventory health?",
+        "Are there any stale tables?",
+      ];
+      extra.forEach(c => { if (!chips.includes(c)) chips.push(c); });
+    }
+
+    return chips.slice(0, 5);
+  }, [currentTab, currentRun]);
+}
 
 function FloatingAssistant({ currentRun, currentTab, onNavigate }) {
   const T = useT();
@@ -12866,6 +13057,7 @@ function FloatingAssistant({ currentRun, currentTab, onNavigate }) {
   const [size,     setSize]     = React.useState("normal"); // normal | large
   const bottomRef = React.useRef(null);
   const inputRef  = React.useRef(null);
+  const liveChips = useLiveChips(currentTab, currentRun);
 
   React.useEffect(()=>{
     if (bottomRef.current) bottomRef.current.scrollIntoView({behavior:"smooth"});
@@ -12889,6 +13081,77 @@ function FloatingAssistant({ currentRun, currentTab, onNavigate }) {
       content: m.text || (m.steps ? JSON.stringify(m.steps.map(s=>s.type==="tool_result"?{tool:s.tool,result:s.result}:null).filter(Boolean)) : "")
     })).filter(h => h.content);
 
+    // Build rich live context for the agent
+    const buildLiveContext = () => {
+      const parts = [];
+      const now = new Date();
+      parts.push(`Current time: ${now.toLocaleTimeString("en-IN", { timeZone:"Asia/Kolkata" })} IST, ${now.toLocaleDateString("en-IN", { timeZone:"Asia/Kolkata", weekday:"short", day:"numeric", month:"short" })}`);
+      parts.push(`Active tab: ${currentTab || "unknown"}`);
+
+      // Current run result (most important — what user is staring at)
+      if (currentRun) {
+        const total = currentRun.results?.length || 0;
+        const failed = (currentRun.results||[]).filter(r=>r.status!=="pass");
+        const passed = total - failed.length;
+        parts.push(`Current run: "${currentRun.workflow_name||currentRun.name||"unknown"}" — ${passed}/${total} passed${failed.length>0 ? `, failed checks: ${failed.map(f=>f.name).join(", ")}` : ""}`);
+      }
+
+      // Dashboard brief
+      try {
+        const br = JSON.parse(sessionStorage.getItem("wz_brief")||"null");
+        if (br) {
+          parts.push(`Dashboard health score: ${br.health_score??'?'}/100`);
+          if (br.critical_count) parts.push(`Critical issues: ${br.critical_count}`);
+          if (br.stale_tables?.length) parts.push(`Stale tables: ${br.stale_tables.slice(0,5).join(", ")}`);
+        }
+      } catch {}
+
+      // Triage issues
+      try {
+        const issues = JSON.parse(sessionStorage.getItem("wz_pendingIssues")||"[]");
+        if (issues.length) {
+          const bySev = { critical:0, high:0, medium:0, low:0 };
+          issues.forEach(i => { if (bySev[i.severity]!==undefined) bySev[i.severity]++; });
+          parts.push(`Open triage issues: ${issues.length} total (${Object.entries(bySev).filter(([,v])=>v>0).map(([k,v])=>`${v} ${k}`).join(", ")})`);
+          const topIssue = issues.find(i=>i.severity==="critical") || issues[0];
+          if (topIssue) parts.push(`Top issue: "${topIssue.title||topIssue.check_name}" on ${topIssue.table||topIssue.source||"unknown table"}`);
+        }
+      } catch {}
+
+      // Recent workflow runs
+      try {
+        const runs = JSON.parse(sessionStorage.getItem("wz_cwfHistory")||"[]");
+        if (runs.length) {
+          const recent = runs.slice(0,5);
+          const failedRuns = recent.filter(r=>r.status!=="clean"&&r.status!=="pass");
+          parts.push(`Recent workflow runs: ${recent.length} (${failedRuns.length} failed)`);
+          failedRuns.slice(0,3).forEach(r => {
+            parts.push(`  ↳ "${r.workflow_name||r.name}" failed — ${r.failed_checks||"?"} checks failed`);
+          });
+        }
+      } catch {}
+
+      // Proactive anomalies
+      try {
+        const pCount = Number(sessionStorage.getItem("wz_proactive_count")||"0");
+        if (pCount) parts.push(`Proactive anomalies detected today: ${pCount}`);
+      } catch {}
+
+      // Dataflows summary from localStorage
+      try {
+        const dfs = JSON.parse(localStorage.getItem("wz_dataflows_v1")||"[]");
+        if (dfs.length) {
+          const neverRun = dfs.filter(d=>!d.last_run_at).length;
+          const failing  = dfs.filter(d=>d.last_run_status && d.last_run_status!=="pass"&&d.last_run_status!=="clean").length;
+          parts.push(`Dataflows: ${dfs.length} total, ${failing} failing, ${neverRun} never run`);
+        }
+      } catch {}
+
+      return parts.join("\n");
+    };
+
+    const liveContext = buildLiveContext();
+
     try {
       const res = await fetch(`${API}/api/ai/agent`, {
         method:"POST", headers:{"Content-Type":"application/json"},
@@ -12897,29 +13160,7 @@ function FloatingAssistant({ currentRun, currentTab, onNavigate }) {
           history,
           schema_ctx: dbSchema,
           current_tab: currentTab,
-          session_ctx: (() => {
-            // Cross-tab memory: summarise what the user has done this session
-            const parts = [];
-            try {
-              const br = JSON.parse(sessionStorage.getItem("wz_brief")||"null");
-              if (br?.health_score !== undefined) parts.push(`Dashboard health: ${br.health_score}/100`);
-            } catch {}
-            try {
-              const issues = JSON.parse(sessionStorage.getItem("wz_pendingIssues")||"[]");
-              if (issues.length) parts.push(`${issues.length} open triage issues (${issues.filter(i=>i.severity==="critical").length} critical)`);
-            } catch {}
-            try {
-              const runs = JSON.parse(sessionStorage.getItem("wz_cwfHistory")||"[]");
-              const failed = runs.filter(r=>r.status!=="clean");
-              if (failed.length) parts.push(`${failed.length} workflow run(s) failed recently`);
-            } catch {}
-            try {
-              const pCount = Number(sessionStorage.getItem("wz_proactive_count")||"0");
-              if (pCount) parts.push(`${pCount} anomaly alert(s) detected today`);
-            } catch {}
-            if (currentTab) parts.push(`User is on the ${currentTab} tab`);
-            return parts.join(". ");
-          })(),
+          session_ctx: liveContext,
         })
       });
       const data = await res.json();
@@ -12957,88 +13198,152 @@ function FloatingAssistant({ currentRun, currentTab, onNavigate }) {
     setLoading(false);
   };
 
-  const panelW = size==="large" ? "min(640px,calc(100vw - 48px))" : "min(400px,calc(100vw - 48px))";
-  const panelH = size==="large" ? "min(680px,calc(100vh - 100px))" : "520px";
+  const panelW = size==="large" ? "min(520px,calc(100vw - 48px))" : "min(380px,calc(100vw - 48px))";
+  const panelH = size==="large" ? "min(720px,calc(100vh - 80px))" : "560px";
+
+  // derive a live status line for header
+  const headerStatus = React.useMemo(() => {
+    if (loading) return { text:"Working…", color:"#A78BFA", pulse:true };
+    try {
+      const issues = JSON.parse(sessionStorage.getItem("wz_pendingIssues")||"[]");
+      const crit = issues.filter(i=>i.severity==="critical").length;
+      if (crit > 0) return { text:`${crit} critical issue${crit>1?"s":""} open`, color:"#F87171" };
+      if (issues.length > 0) return { text:`${issues.length} issue${issues.length>1?"s":""} in triage`, color:"#FBBF24" };
+    } catch {}
+    try {
+      const br = JSON.parse(sessionStorage.getItem("wz_brief")||"null");
+      if (br?.health_score !== undefined) return { text:`Platform health ${br.health_score}/100`, color: br.health_score>=80?"#34D399":br.health_score>=60?"#FBBF24":"#F87171" };
+    } catch {}
+    return { text:"Ready · real actions enabled", color:"#6EE7B7" };
+  }, [loading]);
 
   return (
     <>
-      {/* Floating button */}
+      {/* ── Floating trigger button ─────────────────────────────────────── */}
       <button onClick={()=>setOpen(p=>!p)}
         style={{ position:"fixed", bottom:24, right:24, zIndex:1500,
-          width:52, height:52, borderRadius:"50%",
-          background:`linear-gradient(135deg,#6366f1,#8b5cf6)`,
-          border:"none", cursor:"pointer",
-          boxShadow:"0 4px 20px rgba(99,102,241,0.45)",
+          width:56, height:56, borderRadius:"50%",
+          background:"linear-gradient(135deg,#6366F1,#8B5CF6,#A855F7)",
+          border:"2px solid rgba(255,255,255,0.15)",
+          cursor:"pointer",
+          boxShadow:"0 4px 24px rgba(99,102,241,0.5), 0 0 0 0 rgba(99,102,241,0.4)",
           display:"flex", alignItems:"center", justifyContent:"center",
-          fontSize:22, color:"white",
+          fontSize:24, color:"white",
           transition:"transform 0.2s, box-shadow 0.2s" }}
-        onMouseEnter={e=>{e.currentTarget.style.transform="scale(1.08)";e.currentTarget.style.boxShadow="0 6px 28px rgba(99,102,241,0.55)";}}
-        onMouseLeave={e=>{e.currentTarget.style.transform="scale(1)";e.currentTarget.style.boxShadow="0 4px 20px rgba(99,102,241,0.45)";}}>
-        {open ? "×" : "🤖"}
+        onMouseEnter={e=>{e.currentTarget.style.transform="scale(1.1) rotate(-5deg)";e.currentTarget.style.boxShadow="0 8px 32px rgba(99,102,241,0.65), 0 0 0 6px rgba(99,102,241,0.12)";}}
+        onMouseLeave={e=>{e.currentTarget.style.transform="scale(1) rotate(0deg)";e.currentTarget.style.boxShadow="0 4px 24px rgba(99,102,241,0.5), 0 0 0 0 rgba(99,102,241,0.4)";}}>
+        {open ? "✕" : "✦"}
       </button>
 
       {open && (
-        <div style={{ position:"fixed", bottom:86, right:24, zIndex:1500,
+        <div style={{ position:"fixed", bottom:92, right:24, zIndex:1500,
           width:panelW, height:panelH,
-          background:T.card, borderRadius:16,
-          border:`1px solid ${T.border}`,
-          boxShadow:"0 12px 48px rgba(0,0,0,0.18)",
+          background:"#FFFFFF",
+          borderRadius:20,
+          border:"1px solid rgba(99,102,241,0.15)",
+          boxShadow:"0 24px 80px rgba(0,0,0,0.14), 0 4px 16px rgba(99,102,241,0.12)",
           display:"flex", flexDirection:"column", overflow:"hidden",
-          transition:"width 0.2s, height 0.2s" }}>
+          transition:"width 0.25s cubic-bezier(0.4,0,0.2,1), height 0.25s cubic-bezier(0.4,0,0.2,1)" }}>
 
-          {/* Header */}
-          <div style={{ padding:"12px 16px", flexShrink:0,
-            background:`linear-gradient(135deg,${T.accent}08,${T.purple}08)`,
-            borderBottom:`1px solid ${T.border}`,
-            display:"flex", alignItems:"center", gap:8 }}>
-            <div style={{ width:30, height:30, borderRadius:8,
-              background:"linear-gradient(135deg,#6366F1,#8B5CF6)",
-              display:"flex", alignItems:"center", justifyContent:"center",
-              fontSize:15, flexShrink:0 }}>🤖</div>
-            <div style={{ flex:1 }}>
-              <div style={{ fontSize:13, fontWeight:700, color:T.text }}>
-                WiziAgent
+          {/* ── Header ──────────────────────────────────────────────────── */}
+          <div style={{ flexShrink:0, background:"linear-gradient(135deg,#6366F1,#8B5CF6,#A855F7)",
+            padding:"14px 16px 12px", position:"relative", overflow:"hidden" }}>
+            {/* subtle noise/texture overlay */}
+            <div style={{ position:"absolute", inset:0, opacity:0.06,
+              backgroundImage:"url(\"data:image/svg+xml,%3Csvg width='40' height='40' viewBox='0 0 40 40' xmlns='http://www.w3.org/2000/svg'%3E%3Cg fill='%23fff' fill-opacity='1'%3E%3Cpath d='M0 0h1v1H0zm2 0h1v1H2zm2 0h1v1H4zm2 0h1v1H6zm2 0h1v1H8zm2 0h1v1h-1zm2 0h1v1h-1zm2 0h1v1h-1zm2 0h1v1h-1zm2 0h1v1h-1zm2 0h1v1h-1zm2 0h1v1h-1zm2 0h1v1h-1zm2 0h1v1h-1zm2 0h1v1h-1zm2 0h1v1h-1zm2 0h1v1h-1zm2 0h1v1h-1zm2 0h1v1h-1zm2 0h1v1h-1z'/%3E%3C/g%3E%3C/svg%3E\")" }} />
+            <div style={{ position:"relative", display:"flex", alignItems:"center", gap:10 }}>
+              {/* Avatar */}
+              <div style={{ width:36, height:36, borderRadius:10,
+                background:"rgba(255,255,255,0.2)",
+                border:"1.5px solid rgba(255,255,255,0.3)",
+                display:"flex", alignItems:"center", justifyContent:"center",
+                fontSize:18, flexShrink:0, backdropFilter:"blur(4px)" }}>✦</div>
+              <div style={{ flex:1, minWidth:0 }}>
+                <div style={{ fontSize:14, fontWeight:700, color:"white", letterSpacing:"-0.01em" }}>
+                  WiziAgent
+                </div>
+                <div style={{ display:"flex", alignItems:"center", gap:5, marginTop:2 }}>
+                  <div style={{ width:6, height:6, borderRadius:"50%",
+                    background: headerStatus.color,
+                    boxShadow:`0 0 6px ${headerStatus.color}`,
+                    animation: headerStatus.pulse ? "pulse 1s infinite" : "none" }}/>
+                  <span style={{ fontSize:10, color:"rgba(255,255,255,0.75)", fontWeight:500 }}>
+                    {headerStatus.text}
+                  </span>
+                </div>
               </div>
-              <div style={{ fontSize:9, color:T.muted, marginTop:0 }}>
-                Can run queries · trigger workflows · navigate · create checks
+              {/* Controls */}
+              <div style={{ display:"flex", gap:4 }}>
+                <button onClick={()=>setSize(s=>s==="large"?"normal":"large")}
+                  title={size==="large"?"Compact":"Expand"}
+                  style={{ width:26, height:26, background:"rgba(255,255,255,0.15)",
+                    border:"1px solid rgba(255,255,255,0.2)", borderRadius:6,
+                    cursor:"pointer", color:"white", fontSize:12,
+                    display:"flex", alignItems:"center", justifyContent:"center",
+                    transition:"background 0.15s" }}
+                  onMouseEnter={e=>e.currentTarget.style.background="rgba(255,255,255,0.25)"}
+                  onMouseLeave={e=>e.currentTarget.style.background="rgba(255,255,255,0.15)"}>
+                  {size==="large"?"⊟":"⊞"}
+                </button>
+                <button onClick={()=>setMessages([messages[0]])}
+                  title="New conversation"
+                  style={{ width:26, height:26, background:"rgba(255,255,255,0.15)",
+                    border:"1px solid rgba(255,255,255,0.2)", borderRadius:6,
+                    cursor:"pointer", color:"white", fontSize:12,
+                    display:"flex", alignItems:"center", justifyContent:"center",
+                    transition:"background 0.15s" }}
+                  onMouseEnter={e=>e.currentTarget.style.background="rgba(255,255,255,0.25)"}
+                  onMouseLeave={e=>e.currentTarget.style.background="rgba(255,255,255,0.15)"}>
+                  ↺
+                </button>
+                <button onClick={()=>setOpen(false)}
+                  style={{ width:26, height:26, background:"rgba(255,255,255,0.15)",
+                    border:"1px solid rgba(255,255,255,0.2)", borderRadius:6,
+                    cursor:"pointer", color:"white", fontSize:14,
+                    display:"flex", alignItems:"center", justifyContent:"center",
+                    transition:"background 0.15s" }}
+                  onMouseEnter={e=>e.currentTarget.style.background="rgba(255,255,255,0.25)"}
+                  onMouseLeave={e=>e.currentTarget.style.background="rgba(255,255,255,0.15)"}>
+                  ✕
+                </button>
               </div>
             </div>
-            <button onClick={()=>setSize(s=>s==="large"?"normal":"large")}
-              title={size==="large"?"Shrink":"Expand"}
-              style={{ background:"none", border:`1px solid ${T.border}`, borderRadius:5,
-                cursor:"pointer", color:T.muted, padding:"3px 7px", fontSize:11 }}>
-              {size==="large"?"⊟":"⊞"}
-            </button>
-            <button onClick={()=>setMessages([messages[0]])}
-              title="Clear chat"
-              style={{ background:"none", border:`1px solid ${T.border}`, borderRadius:5,
-                cursor:"pointer", color:T.muted, padding:"3px 7px", fontSize:11 }}>
-              ↺
-            </button>
-            <button onClick={()=>setOpen(false)}
-              style={{ background:"none", border:"none", cursor:"pointer",
-                color:"#9CA3AF", fontSize:18, lineHeight:1 }}>×</button>
           </div>
 
-          {/* Messages */}
-          <div style={{ flex:1, overflowY:"auto", padding:"14px 14px 8px" }}>
+          {/* ── Messages ────────────────────────────────────────────────── */}
+          <div style={{ flex:1, overflowY:"auto", padding:"16px 14px 8px",
+            background:"#F8F7FF" }}>
 
-            {/* Suggestion chips — only when just the welcome message */}
+            {/* Suggestion chips — only on welcome screen */}
             {messages.length === 1 && (
-              <div style={{ marginBottom:14 }}>
-                <div style={{ fontSize:10, color:T.muted, fontWeight:600,
-                  textTransform:"uppercase", letterSpacing:"0.05em", marginBottom:7 }}>
-                  Try asking…
+              <div style={{ marginBottom:16 }}>
+                <div style={{ fontSize:10, fontWeight:700, color:"#9CA3AF",
+                  textTransform:"uppercase", letterSpacing:"0.07em", marginBottom:8,
+                  display:"flex", alignItems:"center", gap:6 }}>
+                  <div style={{ flex:1, height:1, background:"#E5E7EB" }}/>
+                  {(() => {
+                    try {
+                      const runs = JSON.parse(sessionStorage.getItem("wz_cwfHistory")||"[]");
+                      if (runs.filter(r=>r.status!=="clean"&&r.status!=="pass").length > 0) return "⚠ Issues detected";
+                      const issues = JSON.parse(sessionStorage.getItem("wz_pendingIssues")||"[]");
+                      if (issues.length > 0) return "📋 Open issues";
+                    } catch {}
+                    return "Suggested";
+                  })()}
+                  <div style={{ flex:1, height:1, background:"#E5E7EB" }}/>
                 </div>
-                <div style={{ display:"flex", flexWrap:"wrap", gap:5 }}>
-                  {SUGGESTIONS.map(s=>(
+                <div style={{ display:"flex", flexWrap:"wrap", gap:6 }}>
+                  {liveChips.map(s=>(
                     <button key={s} onClick={()=>send(s)}
-                      style={{ fontSize:10, padding:"4px 10px", borderRadius:99,
-                        border:`1px solid ${T.accent}30`, background:`${T.accent}08`,
-                        color:T.accent, cursor:"pointer", transition:"all 0.1s",
-                        fontFamily:"inherit" }}
-                      onMouseEnter={e=>{e.currentTarget.style.background=`${T.accent}15`;}}
-                      onMouseLeave={e=>{e.currentTarget.style.background=`${T.accent}08`;}}>
+                      style={{ fontSize:11, padding:"5px 12px", borderRadius:99,
+                        border:"1.5px solid rgba(99,102,241,0.2)",
+                        background:"white",
+                        color:"#6366F1", cursor:"pointer",
+                        fontFamily:"inherit", fontWeight:500,
+                        boxShadow:"0 1px 3px rgba(0,0,0,0.06)",
+                        transition:"all 0.15s" }}
+                      onMouseEnter={e=>{e.currentTarget.style.background="#EEF2FF";e.currentTarget.style.borderColor="rgba(99,102,241,0.4)";e.currentTarget.style.transform="translateY(-1px)";e.currentTarget.style.boxShadow="0 3px 8px rgba(99,102,241,0.15)";}}
+                      onMouseLeave={e=>{e.currentTarget.style.background="white";e.currentTarget.style.borderColor="rgba(99,102,241,0.2)";e.currentTarget.style.transform="translateY(0)";e.currentTarget.style.boxShadow="0 1px 3px rgba(0,0,0,0.06)";}}>
                       {s}
                     </button>
                   ))}
@@ -13052,10 +13357,15 @@ function FloatingAssistant({ currentRun, currentTab, onNavigate }) {
             <div ref={bottomRef}/>
           </div>
 
-          {/* Input */}
-          <div style={{ padding:"10px 12px", borderTop:`1px solid ${T.border}`,
-            flexShrink:0, background:T.surface }}>
-            <div style={{ display:"flex", gap:8, alignItems:"flex-end" }}>
+          {/* ── Input ───────────────────────────────────────────────────── */}
+          <div style={{ flexShrink:0, background:"white",
+            borderTop:"1px solid #EDE9FE", padding:"10px 12px 12px" }}>
+            <div style={{ display:"flex", gap:8, alignItems:"flex-end",
+              background:"#F5F3FF", borderRadius:14,
+              border:"1.5px solid #EDE9FE", padding:"6px 6px 6px 12px",
+              transition:"border-color 0.15s", focusBorderColor:"#6366F1" }}
+              onFocusCapture={e=>e.currentTarget.style.borderColor="#A5B4FC"}
+              onBlurCapture={e=>e.currentTarget.style.borderColor="#EDE9FE"}>
               <textarea
                 ref={inputRef}
                 value={input}
@@ -13063,30 +13373,35 @@ function FloatingAssistant({ currentRun, currentTab, onNavigate }) {
                 onKeyDown={e=>{
                   if(e.key==="Enter"&&!e.shiftKey){ e.preventDefault(); send(); }
                 }}
-                placeholder="Ask me to run something, check your data, navigate…"
+                placeholder="Ask anything about your data…"
                 rows={1}
-                style={{ flex:1, padding:"8px 11px", borderRadius:9, fontSize:12,
-                  border:`1px solid ${T.border}`, background:T.surface,
-                  color:T.text, outline:"none", fontFamily:"inherit",
-                  resize:"none", lineHeight:1.4, maxHeight:100, overflowY:"auto" }}
+                style={{ flex:1, padding:"4px 0", fontSize:12, lineHeight:1.5,
+                  border:"none", background:"transparent",
+                  color:"#1F2937", outline:"none", fontFamily:"inherit",
+                  resize:"none", maxHeight:90, overflowY:"auto" }}
                 onInput={e=>{
                   e.target.style.height="auto";
-                  e.target.style.height=Math.min(e.target.scrollHeight,100)+"px";
+                  e.target.style.height=Math.min(e.target.scrollHeight,90)+"px";
                 }}
-                onFocus={e=>e.target.style.borderColor=T.accent}
-                onBlur={e=>e.target.style.borderColor=T.border}
               />
               <button onClick={()=>send()} disabled={!input.trim()||loading}
-                style={{ width:34, height:34, borderRadius:8, flexShrink:0,
-                  background:(!input.trim()||loading)?T.border:"linear-gradient(135deg,#6366F1,#8B5CF6)",
-                  border:"none", cursor:(!input.trim()||loading)?"not-allowed":"pointer",
+                style={{ width:32, height:32, borderRadius:10, flexShrink:0,
+                  background:(!input.trim()||loading)
+                    ?"#DDD6FE"
+                    :"linear-gradient(135deg,#6366F1,#8B5CF6)",
+                  border:"none",
+                  cursor:(!input.trim()||loading)?"not-allowed":"pointer",
                   display:"flex", alignItems:"center", justifyContent:"center",
-                  color:"white", transition:"all 0.15s" }}>
-                {loading ? <Spinner size={12} color="white"/> : <ArrowRight size={14}/>}
+                  color:"white", transition:"all 0.15s",
+                  boxShadow:(!input.trim()||loading)?"none":"0 2px 8px rgba(99,102,241,0.4)" }}
+                onMouseEnter={e=>{ if(input.trim()&&!loading){ e.currentTarget.style.transform="scale(1.05)"; e.currentTarget.style.boxShadow="0 4px 12px rgba(99,102,241,0.5)"; } }}
+                onMouseLeave={e=>{ e.currentTarget.style.transform="scale(1)"; e.currentTarget.style.boxShadow=(!input.trim()||loading)?"none":"0 2px 8px rgba(99,102,241,0.4)"; }}>
+                {loading ? <Spinner size={12} color="white"/> : <ArrowRight size={13}/>}
               </button>
             </div>
-            <div style={{ fontSize:9, color:T.dim, marginTop:5, textAlign:"center" }}>
-              Enter to send · Shift+Enter for newline · I can take real actions
+            <div style={{ fontSize:9, color:"#C4B5FD", marginTop:6,
+              textAlign:"center", letterSpacing:"0.03em" }}>
+              Enter to send · Shift+Enter for newline · takes real actions
             </div>
           </div>
         </div>
@@ -14513,8 +14828,10 @@ function ResultDetail({ run, check, allChecks, onBack, onSelectCheck, onNavigate
           </Btn>
           <Btn size="sm" variant="ghost" onClick={explainToStakeholder}
             disabled={stakeholderLoading}
-            style={{ color:T.purple, borderColor:`${T.purple}30` }}>
-            {stakeholderLoading?<Spinner size={9}/>:"✨"} Stakeholder
+            style={{ color:T.purple, borderColor:`${T.purple}40`,
+              background:stakeholderMsg?`${T.purple}08`:"transparent",
+              fontWeight:600 }}>
+            {stakeholderLoading?<Spinner size={9}/>:"✨"} Explain
           </Btn>
           <Btn size="sm" variant="ghost" onClick={sendToTriage}
             style={{ color:T.orange, borderColor:`${T.orange}30` }}>
@@ -14535,12 +14852,17 @@ function ResultDetail({ run, check, allChecks, onBack, onSelectCheck, onNavigate
             </span>
           )}
           {stakeholderMsg && (
-            <div style={{ width:"100%", marginTop:6, padding:"8px 12px", borderRadius:8,
-              background:`${T.purple}08`, border:`1px solid ${T.purple}20`,
-              fontSize:11, color:T.text2, lineHeight:1.5,
-              display:"flex", gap:8, alignItems:"flex-start" }}>
-              <span style={{ fontSize:13, flexShrink:0 }}>✨</span>
-              <span style={{ flex:1 }}>{stakeholderMsg}</span>
+            <div style={{ width:"100%", marginTop:8, padding:"10px 14px", borderRadius:9,
+              background:`linear-gradient(135deg,${T.purple}0A,${T.accent}06)`,
+              border:`1px solid ${T.purple}25`,
+              fontSize:12, color:T.text, lineHeight:1.6,
+              display:"flex", gap:10, alignItems:"flex-start" }}>
+              <span style={{ fontSize:16, flexShrink:0 }}>✨</span>
+              <div style={{ flex:1 }}>
+                <div style={{ fontSize:9, fontWeight:700, color:T.purple, textTransform:"uppercase",
+                  letterSpacing:"0.06em", marginBottom:4 }}>Plain English Explanation</div>
+                <span>{stakeholderMsg}</span>
+              </div>
               <button onClick={()=>{ navigator.clipboard.writeText(stakeholderMsg).catch(()=>{}); }}
                 style={{ fontSize:9, background:"none", border:`1px solid ${T.border}`,
                   borderRadius:4, padding:"2px 6px", cursor:"pointer", color:T.muted, flexShrink:0 }}>
@@ -18227,433 +18549,837 @@ Rules: 2-3 workflows max, 2-3 checks each, use only real columns, never COUNT(*)
 
 
 
-// ─── AutoPilotTab — multi-agent autonomous pipeline monitor ─────────────────
+// ─── AutoPilotTab — pipeline-based multi-agent autonomous monitor ────────────
 
-const DEFAULT_AGENTS = [
-  {id:"detection",name:"Detection Agent",icon:"🔍",color:"#6366f1",enabled:true,
-   description:"Runs SQL checks to detect data quality issues and anomalies",
-   system_prompt:"You are a data detection agent. Analyse SQL check results and identify genuine data quality issues. Be specific about what failed and why. Max 2 sentences.",
-   checks:[
-    {id:"c1",name:"Stuck copy jobs",sql:"SELECT COUNT(*) FROM mws.report WHERE copy_status IN ('IN_PROGRESS','TIMEOUT') AND updated_at < GETDATE() - INTERVAL '45 minutes'",pass_condition:"rows = 0",severity:"high"},
-    {id:"c2",name:"Failed downloads (retryable)",sql:"SELECT COUNT(*) FROM mws.report WHERE status = 'failed' AND tries < 3 AND download_date >= CURRENT_DATE - 2",pass_condition:"rows = 0",severity:"high"},
-    {id:"c3",name:"Not replicated today",sql:"SELECT COUNT(*) FROM mws.report WHERE status = 'processed' AND copy_status != 'REPLICATED' AND download_date = CURRENT_DATE",pass_condition:"rows = 0",severity:"critical"},
-    {id:"c4",name:"Missing ad data yesterday",sql:"SELECT COUNT(*) FROM public.tbl_amzn_campaign_report WHERE report_date = CURRENT_DATE - 1",pass_condition:"rows > 0",severity:"critical"},
-   ]},
-  {id:"diagnosis",name:"Diagnosis Agent",icon:"🧠",color:"#8B5CF6",enabled:true,
-   description:"Uses AI to reason about root cause using memory of past incidents",
-   system_prompt:"You are a data engineering diagnosis agent. Given a failed check and similar past incidents from memory, identify the most likely root cause. Reference past incidents if relevant. Max 3 sentences.",
-   checks:[]},
-  {id:"remediation",name:"Remediation Agent",icon:"🔧",color:"#F97316",enabled:true,
-   description:"Applies pre-approved safe fixes. Never modifies data without a matching safe action.",
-   system_prompt:"You are a remediation agent. Given a diagnosis, select the most appropriate safe action from the approved list. Explain your confidence level. Max 2 sentences.",
-   checks:[]},
-  {id:"verification",name:"Verification Agent",icon:"✅",color:"#10B981",enabled:true,
-   description:"Re-runs failed checks after remediation and updates memory with outcome.",
-   system_prompt:"You are a verification agent. After a fix has been applied, confirm whether the issue was resolved. Report clearly: resolved, partial, or unresolved. Max 2 sentences.",
-   checks:[]},
+// ── Defaults ──────────────────────────────────────────────────────────────────
+const AP_AGENT_TEMPLATES = [
+  { id:"detection",    name:"Detection Agent",    icon:"🔍", color:"#6366f1",
+    description:"Runs SQL checks to detect data quality issues",
+    system_prompt:"You are a data detection agent. Analyse SQL check results. Be specific about what failed and why. Max 2 sentences.",
+    type:"detection", checks:[] },
+  { id:"diagnosis",    name:"Diagnosis Agent",    icon:"🧠", color:"#8B5CF6",
+    description:"Uses AI + incident memory to reason about root cause",
+    system_prompt:"You are a data engineering diagnosis agent. Given a failed check and similar past incidents, identify the most likely root cause. Reference past incidents if relevant. Max 3 sentences.",
+    type:"diagnosis", checks:[] },
+  { id:"remediation",  name:"Remediation Agent",  icon:"🔧", color:"#F97316",
+    description:"Applies pre-approved safe fixes automatically",
+    system_prompt:"You are a remediation agent. Given a diagnosis, select the most appropriate safe action. Explain confidence level. Max 2 sentences.",
+    type:"remediation", checks:[] },
+  { id:"verification", name:"Verification Agent", icon:"✅", color:"#10B981",
+    description:"Re-runs checks after fixes and updates memory",
+    system_prompt:"You are a verification agent. After a fix, confirm whether resolved: resolved, partial, or unresolved. Max 2 sentences.",
+    type:"verification", checks:[] },
+  { id:"reporter",     name:"Report Writer",      icon:"📝", color:"#06B6D4",
+    description:"Summarises findings into a structured Slack report",
+    system_prompt:"You are a data quality reporter. Summarise the scan findings into a clear Slack message: what failed, what was fixed, what needs manual attention. Use bullet points. Max 10 lines.",
+    type:"reporter", checks:[] },
+  { id:"alerter",      name:"Alert Agent",        icon:"🚨", color:"#EF4444",
+    description:"Sends targeted Slack alerts for critical issues",
+    system_prompt:"You are an alert triage agent. For critical data issues, write a concise Slack alert with: what broke, business impact, urgency. Max 3 sentences.",
+    type:"alerter", checks:[] },
 ];
 
-const DEFAULT_SAFE_ACTIONS = [
-  {id:"a1",name:"Reset stuck copy jobs",enabled:true,confidence:95,
-   check_sql:"SELECT COUNT(*) FROM mws.report WHERE copy_status IN ('IN_PROGRESS','TIMEOUT') AND updated_at < GETDATE() - INTERVAL '45 minutes'",
-   fix_sql:"UPDATE mws.report SET copy_status = 'PENDING', updated_at = GETDATE() WHERE copy_status IN ('IN_PROGRESS','TIMEOUT') AND updated_at < GETDATE() - INTERVAL '45 minutes'",
-   description:"Resets copy jobs stuck > 45 min back to PENDING"},
-  {id:"a2",name:"Retrigger failed downloads",enabled:true,confidence:90,
-   check_sql:"SELECT COUNT(*) FROM mws.report WHERE status = 'failed' AND tries < 3 AND download_date >= CURRENT_DATE - 2",
-   fix_sql:"UPDATE mws.report SET status = 'pending', updated_at = GETDATE() WHERE status = 'failed' AND tries < 3 AND download_date >= CURRENT_DATE - 2",
-   description:"Retriggers downloads that failed but haven't exceeded retry limit"},
+const AP_DEFAULT_PIPELINES = [
+  {
+    id:"pipe_main",
+    name:"Full Pipeline Monitor",
+    icon:"🔄",
+    color:"#6366f1",
+    enabled:true,
+    dry_run:false,
+    interval_min:30,
+    confidence_threshold:85,
+    slack_channel:"", // uses global if empty
+    trigger:"schedule",
+    agents:[
+      { ...AP_AGENT_TEMPLATES[0], id:"det_main",
+        checks:[
+          {id:"c1",name:"Stuck copy jobs",sql:"SELECT COUNT(*) FROM mws.report WHERE copy_status IN ('IN_PROGRESS','TIMEOUT') AND updated_at < GETDATE() - INTERVAL '45 minutes'",pass_condition:"rows = 0",severity:"high",alert_threshold:0,autofix_threshold:0},
+          {id:"c2",name:"Failed downloads (retryable)",sql:"SELECT COUNT(*) FROM mws.report WHERE status = 'failed' AND tries < 3 AND download_date >= CURRENT_DATE - 2",pass_condition:"rows = 0",severity:"high",alert_threshold:0,autofix_threshold:0},
+          {id:"c3",name:"Not replicated today",sql:"SELECT COUNT(*) FROM mws.report WHERE status = 'processed' AND copy_status != 'REPLICATED' AND download_date = CURRENT_DATE",pass_condition:"rows = 0",severity:"critical",alert_threshold:0,autofix_threshold:0},
+          {id:"c4",name:"Missing ad data yesterday",sql:"SELECT COUNT(*) FROM public.tbl_amzn_campaign_report WHERE report_date = CURRENT_DATE - 1",pass_condition:"rows > 0",severity:"critical",alert_threshold:0,autofix_threshold:0},
+        ]},
+      { ...AP_AGENT_TEMPLATES[1], id:"diag_main" },
+      { ...AP_AGENT_TEMPLATES[2], id:"rem_main" },
+      { ...AP_AGENT_TEMPLATES[3], id:"ver_main" },
+    ],
+    safe_actions:[
+      {id:"a1",name:"Reset stuck copy jobs",enabled:true,confidence:95,
+       check_sql:"SELECT COUNT(*) FROM mws.report WHERE copy_status IN ('IN_PROGRESS','TIMEOUT') AND updated_at < GETDATE() - INTERVAL '45 minutes'",
+       fix_sql:"UPDATE mws.report SET copy_status = 'PENDING', updated_at = GETDATE() WHERE copy_status IN ('IN_PROGRESS','TIMEOUT') AND updated_at < GETDATE() - INTERVAL '45 minutes'",
+       rollback_sql:"",
+       description:"Resets copy jobs stuck > 45 min back to PENDING"},
+      {id:"a2",name:"Retrigger failed downloads",enabled:true,confidence:90,
+       check_sql:"SELECT COUNT(*) FROM mws.report WHERE status = 'failed' AND tries < 3 AND download_date >= CURRENT_DATE - 2",
+       fix_sql:"UPDATE mws.report SET status = 'pending', updated_at = GETDATE() WHERE status = 'failed' AND tries < 3 AND download_date >= CURRENT_DATE - 2",
+       rollback_sql:"",
+       description:"Retriggers downloads that failed but haven't exceeded retry limit"},
+    ],
+  },
+  {
+    id:"pipe_ads",
+    name:"Ads Data Quick Check",
+    icon:"📣",
+    color:"#8B5CF6",
+    enabled:false,
+    dry_run:false,
+    interval_min:15,
+    confidence_threshold:90,
+    slack_channel:"",
+    trigger:"schedule",
+    agents:[
+      { ...AP_AGENT_TEMPLATES[0], id:"det_ads",
+        checks:[
+          {id:"ca1",name:"Missing ad data yesterday",sql:"SELECT COUNT(*) FROM public.tbl_amzn_campaign_report WHERE report_date = CURRENT_DATE - 1",pass_condition:"rows > 0",severity:"critical",alert_threshold:0,autofix_threshold:0},
+          {id:"ca2",name:"Zero impression campaigns with spend",sql:"SELECT COUNT(*) FROM public.tbl_amzn_campaign_report WHERE impressions = 0 AND spend > 0 AND report_date = CURRENT_DATE - 1",pass_condition:"rows = 0",severity:"high",alert_threshold:0,autofix_threshold:0},
+        ]},
+      { ...AP_AGENT_TEMPLATES[5], id:"alert_ads" },
+    ],
+    safe_actions:[],
+  },
+  {
+    id:"pipe_orders",
+    name:"Order Integrity Check",
+    icon:"📦",
+    color:"#10B981",
+    enabled:false,
+    dry_run:true,
+    interval_min:60,
+    confidence_threshold:85,
+    slack_channel:"",
+    trigger:"schedule",
+    agents:[
+      { ...AP_AGENT_TEMPLATES[0], id:"det_ord",
+        checks:[
+          {id:"co1",name:"Null ASINs in orders",sql:"SELECT COUNT(*) FROM mws.orders WHERE asin IS NULL AND purchase_date >= CURRENT_DATE - 1",pass_condition:"rows = 0",severity:"high",alert_threshold:0,autofix_threshold:0},
+          {id:"co2",name:"Negative inventory",sql:"SELECT COUNT(*) FROM mws.inventory WHERE available < 0 AND snapshot_date = (SELECT MAX(snapshot_date) FROM mws.inventory)",pass_condition:"rows = 0",severity:"critical",alert_threshold:0,autofix_threshold:0},
+          {id:"co3",name:"Orders data freshness",sql:"SELECT COUNT(*) FROM mws.orders WHERE purchase_date = CURRENT_DATE",pass_condition:"rows > 0",severity:"critical",alert_threshold:0,autofix_threshold:0},
+        ]},
+      { ...AP_AGENT_TEMPLATES[1], id:"diag_ord" },
+      { ...AP_AGENT_TEMPLATES[4], id:"rep_ord" },
+    ],
+    safe_actions:[],
+  },
 ];
 
-const AP_MEMORY_KEY = "wz_agent_memory";
-const AP_MAX_MEM = 50;
-function apLoadMem() { try{return JSON.parse(localStorage.getItem(AP_MEMORY_KEY)||"[]");}catch(e){return[];} }
+const AP_MEMORY_KEY  = "wz_ap_memory_v2";
+const AP_HISTORY_KEY = "wz_ap_history_v2";
+const AP_MAX_MEM     = 100;
+
+function apLoadMem()  { try{return JSON.parse(localStorage.getItem(AP_MEMORY_KEY)||"[]");}catch(e){return[];} }
 function apSaveMem(m) { try{localStorage.setItem(AP_MEMORY_KEY,JSON.stringify(m.slice(0,AP_MAX_MEM)));}catch(e){} }
+function apLoadHist() { try{return JSON.parse(localStorage.getItem(AP_HISTORY_KEY)||"[]");}catch(e){return[];} }
+function apSaveHist(h){ try{localStorage.setItem(AP_HISTORY_KEY,JSON.stringify(h.slice(0,200)));}catch(e){} }
 
 function AutoPilotTab({ onNavigate }) {
   const T = useT();
   const { add: addNotif } = useNotif();
 
-  const [agents,      setAgents]      = useLocal("wz_ap_agents",   DEFAULT_AGENTS);
-  const [safeActions, setSafeActions] = useLocal("wz_ap_actions",  DEFAULT_SAFE_ACTIONS);
-  const [enabled,     setEnabled]     = useLocal("wz_autopilot",   false);
-  const [intervalMin, setIntervalMin] = useLocal("wz_ap_interval", 30);
-  const [confThresh,  setConfThresh]  = useLocal("wz_ap_confidence",85);
-  const [slackAlerts, setSlackAlerts] = useLocal("wz_ap_slack",    true);
+  // ── Persistent config ──────────────────────────────────────────────────────
+  const [pipelines,    setPipelines]   = useLocal("wz_ap_pipelines_v2", AP_DEFAULT_PIPELINES);
+  const [globalSlack,  setGlobalSlack] = useLocal("wz_ap_global_slack", true);
 
-  const [running,    setRunning]   = React.useState(false);
-  const [runLog,     setRunLog]    = React.useState([]);
-  const [memory,     setMemory]    = React.useState(apLoadMem);
-  const [activeView, setView]      = React.useState("dashboard");
-  const [editAgent,  setEditAgent] = React.useState(null);
-  const [editAction, setEditAction]= React.useState(null);
-  const [lastRun,    setLastRun]   = React.useState(null);
-  const [stats,      setStats]     = React.useState({total:0,fixed:0,detected:0,failures:0});
-  const intervalRef = React.useRef(null);
+  // ── Runtime state ──────────────────────────────────────────────────────────
+  const [memory,       setMemory]      = React.useState(apLoadMem);
+  const [scanHistory,  setScanHistory] = React.useState(apLoadHist);
+  const [activeView,   setView]        = React.useState("dashboard");
+  const [activePipe,   setActivePipe]  = React.useState(null);  // pipeline being edited/viewed
+  const [runningPipes, setRunning]     = React.useState({});    // {pipe_id: bool}
+  const [pipeLogs,     setPipeLogs]    = React.useState({});    // {pipe_id: [{ts,agent,msg,type}]}
+  const [editAgent,    setEditAgent]   = React.useState(null);
+  const [editAction,   setEditAction]  = React.useState(null);
+  const [showPipeForm, setPipeForm]    = React.useState(false);
+  const [newPipeData,  setNewPipe]     = React.useState(null);
+  const intervalRefs = React.useRef({});
 
-  const addLog = (agent, msg, type="info") =>
-    setRunLog(p=>[{ts:new Date().toISOString().slice(11,19),agent,msg,type},...p].slice(0,200));
+  const addLog = (pipeId, agent, msg, type="info") =>
+    setPipeLogs(p=>({...p,[pipeId]:[{ts:new Date().toISOString().slice(11,19),agent,msg,type},...(p[pipeId]||[])].slice(0,200)}));
 
-  const aiCall = async (agentId, userMsg, maxTokens=120) => {
-    const ag = agents.find(a=>a.id===agentId);
-    if (!ag?.enabled) return null;
+  // ── AI helper ──────────────────────────────────────────────────────────────
+  const aiCall = async (agent, userMsg, maxTokens=150) => {
+    if (!agent?.enabled) return null;
     try {
-      const r = await fetch(`${API}/api/ai/chat`,{method:"POST",headers:{"Content-Type":"application/json"},
-        body:JSON.stringify({system:ag.system_prompt,messages:[{role:"user",content:userMsg}],max_tokens:maxTokens,temperature:0.3})});
+      const r = await fetch(`${API}/api/ai/chat`,{
+        method:"POST", headers:{"Content-Type":"application/json"},
+        body:JSON.stringify({system:agent.system_prompt,messages:[{role:"user",content:userMsg}],max_tokens:maxTokens,temperature:0.3})
+      });
       const d = await r.json();
       return d?.content?.[0]?.text?.trim()||null;
     } catch(e){return null;}
   };
 
-  const runScan = React.useCallback(async () => {
-    if (running) return;
-    setRunning(true); setRunLog([]);
-    addLog("orchestrator","🚀 Starting autonomous scan…","info");
-    const mem=[...apLoadMem()];
-    let detected=0,fixed=0,failures=0;
+  // ── Pipeline runner ────────────────────────────────────────────────────────
+  const runPipeline = React.useCallback(async (pipeline) => {
+    const pid = pipeline.id;
+    if (runningPipes[pid]) return;
+    setRunning(p=>({...p,[pid]:true}));
+    setPipeLogs(p=>({...p,[pid]:[]}));
 
-    // Agent 1: Detection
-    addLog("detection","Running SQL checks…","info");
-    const issues=[];
-    const detAgent = agents.find(a=>a.id==="detection");
-    if (detAgent?.enabled) {
-      for (const chk of detAgent.checks) {
-        if (!chk.sql) continue;
-        try {
-          const r=await fetch(`${API}/api/query?sql=${encodeURIComponent(chk.sql)}`);
-          const d=await r.json();
-          const val=parseInt(Object.values(d.rows?.[0]||{})[0]||"0");
-          const [metric,op,thresh]=(chk.pass_condition||"rows = 0").split(" ");
-          const failed=!eval(`${val} ${op} ${thresh}`);
-          if(failed){issues.push({...chk,actual_rows:val});addLog("detection",`⚠ FAILED: ${chk.name} (${val} rows)`,"warn");detected++;}
-          else addLog("detection",`✓ ${chk.name}`,"success");
-        } catch(e){addLog("detection",`✗ ${chk.name}: ${e.message}`,"error");}
-      }
-    }
-    try {
-      const r=await fetch(`${API}/api/anomaly/proactive`);
-      const d=await r.json();
-      (d.alerts||[]).forEach(a=>{addLog("detection",`🚨 Anomaly: ${a.label} ${a.direction}${a.pct}%`,"warn");detected++;});
-    } catch(e){}
+    const log = (agent, msg, type="info") => addLog(pid, agent, msg, type);
+    const mem = [...apLoadMem()];
+    const scanEntry = { id:`scan_${Date.now()}`, pipeline_id:pid, pipeline_name:pipeline.name,
+      ts:new Date().toISOString(), issues:[], fixes:[], status:"running",
+      dry_run: pipeline.dry_run };
 
-    // Agent 2: Diagnosis
-    const diagnosed=[];
-    const diagAgent=agents.find(a=>a.id==="diagnosis");
-    for (const issue of issues) {
-      const similar=mem.filter(m=>m.check_id===issue.id).slice(0,3);
-      const memCtx=similar.length>0
-        ?`Past: ${similar.map(m=>`[${m.ts?.slice(0,10)}] ${m.diagnosis}→${m.fix_applied||"none"}→${m.resolved?"ok":"fail"}`).join(". ")}`
-        :"No past incidents.";
-      const diagnosis=diagAgent?.enabled
-        ?await aiCall("diagnosis",`Check "${issue.name}" failed with ${issue.actual_rows} rows. SQL: ${issue.sql.slice(0,120)}. ${memCtx}`)
-        :"Diagnosis agent disabled";
-      diagnosed.push({...issue,diagnosis:diagnosis||"Unknown root cause"});
-      if(diagnosis) addLog("diagnosis",`💡 ${issue.name}: ${diagnosis.slice(0,80)}`,"info");
-    }
+    log("orchestrator", `🚀 ${pipeline.dry_run?"[DRY RUN] ":""}Starting pipeline: ${pipeline.name}`, "info");
 
-    // Agent 3: Remediation
-    const remAgent=agents.find(a=>a.id==="remediation");
-    const fixResults=[];
-    if (remAgent?.enabled) {
-      for (const issue of diagnosed) {
-        const action=safeActions.find(a=>a.enabled&&a.confidence>=confThresh&&
-          (a.check_sql?.toLowerCase().includes((issue.sql?.split("FROM")[1]?.split("WHERE")[0]||"").trim().toLowerCase())||
-           a.name.toLowerCase().split(" ").some(w=>issue.name.toLowerCase().includes(w))));
-        if (action) {
+    // ── Run each agent in sequence ─────────────────────────────────────────
+    let issues = [];
+    let diagnosed = [];
+    let fixResults = [];
+
+    for (const agent of pipeline.agents) {
+      if (!agent.enabled) { log(agent.name,"⏭ Skipped (disabled)","info"); continue; }
+
+      // DETECTION agents
+      if (agent.type === "detection") {
+        log(agent.name, "Running SQL checks…", "info");
+        for (const chk of (agent.checks||[])) {
+          if (!chk.sql) continue;
           try {
-            const r=await fetch(`${API}/api/query?sql=${encodeURIComponent(action.fix_sql)}`);
-            const d=await r.json();
-            if(!d.error){
-              addLog("remediation",`✅ Fixed: ${action.name} (${action.confidence}%)`,"success");
-              fixResults.push({issue,action,success:true}); fixed++;
-              if(slackAlerts){const su=localStorage.getItem("wz_slack")||"";if(su)fetch(su,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({text:`🤖 Auto-Pilot fixed: *${action.name}*`})}).catch(()=>{});}
+            const r = await fetch(`${API}/api/query?sql=${encodeURIComponent(chk.sql)}`);
+            const d = await r.json();
+            const val = parseInt(Object.values(d.rows?.[0]||{})[0]||"0");
+            const [metric,op,thresh] = (chk.pass_condition||"rows = 0").split(" ");
+            const failed = !eval(`${val} ${op} ${Number(thresh)}`);
+            if (failed) {
+              issues.push({...chk, actual_rows:val});
+              log(agent.name, `⚠ FAILED: ${chk.name} (${val} rows)`, "warn");
+            } else {
+              log(agent.name, `✓ ${chk.name}`, "success");
             }
-          } catch(e){addLog("remediation",`✗ Fix failed: ${action.name}`,"error");failures++;}
+          } catch(e) { log(agent.name, `✗ ${chk.name}: ${e.message}`, "error"); }
+        }
+        // Proactive anomalies
+        try {
+          const r = await fetch(`${API}/api/anomaly/proactive`);
+          const d = await r.json();
+          (d.alerts||[]).forEach(a=>{
+            issues.push({id:`anom_${a.label}`,name:`Anomaly: ${a.label}`,sql:"",pass_condition:"rows = 0",severity:"high",actual_rows:1,anomaly:a});
+            log(agent.name,`🚨 Anomaly: ${a.label} ${a.direction}${a.pct}%`,"warn");
+          });
+        } catch(e){}
+      }
+
+      // DIAGNOSIS agents
+      else if (agent.type === "diagnosis") {
+        log(agent.name, `Diagnosing ${issues.length} issue(s)…`, "info");
+        for (const issue of issues) {
+          const similar = mem.filter(m=>m.check_id===issue.id).slice(0,3);
+          const memCtx = similar.length>0
+            ? `Past incidents: ${similar.map(m=>`[${m.ts?.slice(0,10)}] ${m.diagnosis}→${m.fix_applied||"none"}→${m.resolved?"resolved":"unresolved"}`).join(". ")}`
+            : "No past incidents for this check.";
+          const diagnosis = await aiCall(agent,
+            `Pipeline "${pipeline.name}". Check "${issue.name}" failed with ${issue.actual_rows} rows. SQL: ${(issue.sql||"").slice(0,120)}. ${memCtx}`
+          );
+          diagnosed.push({...issue, diagnosis:diagnosis||"Unknown root cause"});
+          if (diagnosis) log(agent.name, `💡 ${issue.name}: ${diagnosis.slice(0,90)}`, "info");
+        }
+        if (issues.length===0) { log(agent.name,"✓ No issues to diagnose","success"); diagnosed=[]; }
+      }
+
+      // REMEDIATION agents
+      else if (agent.type === "remediation") {
+        const toFix = diagnosed.length>0 ? diagnosed : issues.map(i=>({...i,diagnosis:"Auto-detected"}));
+        log(agent.name, `Evaluating ${toFix.length} issue(s) for safe fixes…`, "info");
+        for (const issue of toFix) {
+          const action = (pipeline.safe_actions||[]).find(a =>
+            a.enabled && a.confidence >= pipeline.confidence_threshold &&
+            (a.check_sql?.toLowerCase().includes((issue.sql||"").split("FROM")[1]?.split("WHERE")[0]?.trim()?.toLowerCase()||"__")||
+             a.name.toLowerCase().split(" ").some(w=>w.length>3&&issue.name.toLowerCase().includes(w)))
+          );
+          if (!action) { log(agent.name,`⏭ No safe action matched: ${issue.name}`,"warn"); fixResults.push({issue,action:null,success:false}); continue; }
+          if (pipeline.dry_run) {
+            log(agent.name,`[DRY RUN] Would apply: ${action.name} (${action.confidence}%)`,"info");
+            fixResults.push({issue,action,success:false,dry_run:true});
+          } else {
+            try {
+              const r = await fetch(`${API}/api/query?sql=${encodeURIComponent(action.fix_sql)}`);
+              const d = await r.json();
+              if (!d.error) {
+                log(agent.name,`✅ Fixed: ${action.name} (${action.confidence}%)`,"success");
+                fixResults.push({issue,action,success:true});
+                const slackUrl = pipeline.slack_channel || (globalSlack?localStorage.getItem("wz_slack")||"":"");
+                if (slackUrl) fetch(slackUrl,{method:"POST",headers:{"Content-Type":"application/json"},
+                  body:JSON.stringify({text:`🤖 *${pipeline.name}* auto-fixed: *${action.name}*`})}).catch(()=>{});
+              }
+            } catch(e){log(agent.name,`✗ Fix failed: ${action.name}`,"error");fixResults.push({issue,action,success:false});}
+          }
+        }
+      }
+
+      // VERIFICATION agents
+      else if (agent.type === "verification") {
+        log(agent.name,"Verifying applied fixes…","info");
+        for (const fix of fixResults.filter(f=>f.success)) {
+          await new Promise(r=>setTimeout(r,800));
+          try {
+            const r = await fetch(`${API}/api/query?sql=${encodeURIComponent(fix.issue.sql)}`);
+            const d = await r.json();
+            const val = parseInt(Object.values(d.rows?.[0]||{})[0]||"0");
+            const [metric,op,thresh]=(fix.issue.pass_condition||"rows = 0").split(" ");
+            const resolved = eval(`${val} ${op} ${Number(thresh)}`);
+            log(agent.name, resolved?`✓ Resolved: ${fix.issue.name}`:`⚠ Still failing: ${fix.issue.name}`, resolved?"success":"warn");
+            const verif = await aiCall(agent,`Fix "${fix.action?.name}" applied. Re-check "${fix.issue.name}" now shows ${val} rows (pass: ${fix.issue.pass_condition}). Resolved?`);
+            mem.unshift({ts:new Date().toISOString(),check_id:fix.issue.id,check_name:fix.issue.name,
+              pipeline_id:pid,diagnosis:fix.issue.diagnosis,fix_applied:fix.action?.name||null,
+              resolved,verification:verif,rows_before:fix.issue.actual_rows,rows_after:val});
+          } catch(e){}
+        }
+        // Save unresolved to memory
+        (diagnosed.length>0?diagnosed:issues).filter(i=>!fixResults.find(f=>f.issue.id===i.id&&f.success))
+          .forEach(issue=>mem.unshift({ts:new Date().toISOString(),check_id:issue.id,check_name:issue.name,
+            pipeline_id:pid,diagnosis:issue.diagnosis||"No diagnosis",fix_applied:null,resolved:false,rows_before:issue.actual_rows}));
+      }
+
+      // REPORTER agents
+      else if (agent.type === "reporter") {
+        const summary = `Pipeline: ${pipeline.name}. Issues: ${issues.length}. Fixed: ${fixResults.filter(f=>f.success).length}. Failed checks: ${issues.map(i=>i.name).join(", ")||"none"}.`;
+        const report = await aiCall(agent, summary, 300);
+        if (report) {
+          log(agent.name, report.slice(0,120)+"…", "info");
+          const slackUrl = pipeline.slack_channel || (globalSlack?localStorage.getItem("wz_slack")||"":"");
+          if (slackUrl) fetch(slackUrl,{method:"POST",headers:{"Content-Type":"application/json"},
+            body:JSON.stringify({text:`📊 *${pipeline.name} Report*\n${report}`})}).catch(()=>{});
+        }
+      }
+
+      // ALERTER agents
+      else if (agent.type === "alerter") {
+        const criticals = issues.filter(i=>i.severity==="critical");
+        if (criticals.length>0) {
+          const alert = await aiCall(agent,`Critical issues in "${pipeline.name}": ${criticals.map(i=>i.name).join(", ")}. Rows affected: ${criticals.map(i=>i.actual_rows).join(", ")}.`,150);
+          if (alert) {
+            log(agent.name,`🚨 Alert sent: ${alert.slice(0,80)}`,"warn");
+            const slackUrl = pipeline.slack_channel || (globalSlack?localStorage.getItem("wz_slack")||"":"");
+            if (slackUrl) fetch(slackUrl,{method:"POST",headers:{"Content-Type":"application/json"},
+              body:JSON.stringify({text:`🚨 *ALERT — ${pipeline.name}*\n${alert}`})}).catch(()=>{});
+          }
         } else {
-          addLog("remediation",`⏭ No safe action for: ${issue.name}`,"warn");
-          fixResults.push({issue,action:null,success:false});
+          log(agent.name,"✓ No critical issues","success");
         }
       }
     }
 
-    // Agent 4: Verification + memory
-    const verAgent=agents.find(a=>a.id==="verification");
-    for (const fix of fixResults.filter(f=>f.success)) {
-      await new Promise(r=>setTimeout(r,800));
-      try {
-        const r=await fetch(`${API}/api/query?sql=${encodeURIComponent(fix.issue.sql)}`);
-        const d=await r.json();
-        const val=parseInt(Object.values(d.rows?.[0]||{})[0]||"0");
-        const [metric,op,thresh]=(fix.issue.pass_condition||"rows = 0").split(" ");
-        const resolved=eval(`${val} ${op} ${thresh}`);
-        addLog("verification",resolved?`✓ Resolved: ${fix.issue.name}`:`⚠ Still failing: ${fix.issue.name}`,resolved?"success":"warn");
-        const verif=verAgent?.enabled?await aiCall("verification",`Fix "${fix.action?.name}" applied. Re-check "${fix.issue.name}" now shows ${val} rows. Pass: ${fix.issue.pass_condition}. Resolved?`):null;
-        mem.unshift({ts:new Date().toISOString(),check_id:fix.issue.id,check_name:fix.issue.name,diagnosis:fix.issue.diagnosis,fix_applied:fix.action?.name||null,resolved,verification:verif,rows_before:fix.issue.actual_rows,rows_after:val});
-      } catch(e){}
-    }
-    diagnosed.filter(i=>!fixResults.find(f=>f.issue.id===i.id&&f.success)).forEach(issue=>
-      mem.unshift({ts:new Date().toISOString(),check_id:issue.id,check_name:issue.name,diagnosis:issue.diagnosis,fix_applied:null,resolved:false,rows_before:issue.actual_rows}));
-
+    // Finalise
     apSaveMem(mem); setMemory(mem);
-    setLastRun(new Date().toISOString());
-    setStats(p=>({total:p.total+1,fixed:p.fixed+fixed,detected:p.detected+detected,failures:p.failures+failures}));
-    addLog("orchestrator",`✅ Scan complete — ${detected} detected, ${fixed} fixed`,"success");
-    addNotif(`🤖 Auto-Pilot: ${detected} issue(s), ${fixed} fixed`,detected>0?"warn":"info");
+    scanEntry.status = "complete";
+    scanEntry.issues = issues.map(i=>({name:i.name,severity:i.severity,rows:i.actual_rows}));
+    scanEntry.fixes  = fixResults.filter(f=>f.success).map(f=>({check:f.issue.name,action:f.action?.name}));
+    const hist = [scanEntry, ...apLoadHist()];
+    apSaveHist(hist); setScanHistory(hist);
 
-    if(detected>0){
-      try{const r=await fetch(`${API}/api/custom-workflows/history/v2?limit=20`);const runs=await r.json();
-        if(Array.isArray(runs)){const byWf={};runs.forEach(run=>{if(!byWf[run.workflow_id])byWf[run.workflow_id]=[];byWf[run.workflow_id].push(run);});
-          for(const[wfId,wfRuns]of Object.entries(byWf)){if(wfRuns.slice(0,2).every(r=>r.status!=="clean")){addLog("orchestrator",`🔁 Re-running: ${wfRuns[0]?.workflow_name}`,"info");fetch(`${API}/api/custom-workflows/${wfId}/run/v2`,{method:"POST"}).catch(()=>{});}}}}catch(e){}
-    }
-    setRunning(false);
-  }, [running,agents,safeActions,confThresh,slackAlerts]);
+    const summary = `${issues.length} detected, ${fixResults.filter(f=>f.success).length} fixed${pipeline.dry_run?" [DRY RUN]":""}`;
+    log("orchestrator",`✅ Done — ${summary}`,"success");
+    addNotif(`🤖 ${pipeline.name}: ${summary}`, issues.length>0?"warn":"info");
+    setRunning(p=>({...p,[pid]:false}));
+  }, [runningPipes, pipelines, globalSlack]);
 
+  // ── Interval management ────────────────────────────────────────────────────
   React.useEffect(()=>{
-    if(!enabled){if(intervalRef.current)clearInterval(intervalRef.current);return;}
-    runScan();
-    intervalRef.current=setInterval(runScan,intervalMin*60*1000);
-    return()=>clearInterval(intervalRef.current);
-  },[enabled,intervalMin]);
+    pipelines.forEach(pipe=>{
+      if (intervalRefs.current[pipe.id]) {
+        clearInterval(intervalRefs.current[pipe.id]);
+        delete intervalRefs.current[pipe.id];
+      }
+      if (pipe.enabled && pipe.trigger==="schedule") {
+        runPipeline(pipe);
+        intervalRefs.current[pipe.id] = setInterval(()=>runPipeline(pipe), pipe.interval_min*60*1000);
+      }
+    });
+    return ()=>Object.values(intervalRefs.current).forEach(clearInterval);
+  }, [pipelines.map(p=>p.id+p.enabled+p.interval_min).join(",")]);
 
-  const inp={width:"100%",padding:"7px 10px",borderRadius:6,fontSize:11,border:`1px solid ${T.border}`,background:T.surface,color:T.text,fontFamily:"inherit",outline:"none",boxSizing:"border-box"};
-  const TYPE_COLOR={info:T.muted,warn:T.orange,error:T.red,success:T.green};
-  const VIEWS=[{id:"dashboard",label:"Dashboard",icon:"🏠"},{id:"agents",label:"Sub-Agents",icon:"🤖"},{id:"actions",label:"Safe Actions",icon:"⚡"},{id:"memory",label:"Memory",icon:"🧠"},{id:"settings",label:"Settings",icon:"⚙"}];
+  // ── Shared styles ──────────────────────────────────────────────────────────
+  const inp = {width:"100%",padding:"7px 10px",borderRadius:6,fontSize:11,
+    border:`1px solid ${T.border}`,background:T.surface,color:T.text,
+    fontFamily:"inherit",outline:"none",boxSizing:"border-box"};
+  const TC = {info:T.muted,warn:T.orange,error:T.red,success:T.green};
+
+  const VIEWS = [{id:"dashboard",label:"Dashboard",icon:"🏠"},{id:"pipelines",label:"Pipelines",icon:"⚡"},
+    {id:"memory",label:"Memory",icon:"🧠"},{id:"history",label:"History",icon:"📋"},{id:"settings",label:"Settings",icon:"⚙"}];
+
+  // ── Aggregate stats ────────────────────────────────────────────────────────
+  const totalScans   = scanHistory.length;
+  const totalIssues  = scanHistory.reduce((s,h)=>s+(h.issues?.length||0),0);
+  const totalFixed   = scanHistory.reduce((s,h)=>s+(h.fixes?.length||0),0);
+  const activePipes  = pipelines.filter(p=>p.enabled).length;
 
   return (
-    <div style={{padding:"28px 32px",maxWidth:1100}}>
+    <div style={{padding:"28px 32px",maxWidth:1200}}>
       {/* Header */}
       <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:24}}>
         <div>
           <div style={{fontSize:24,fontWeight:800,color:T.text,letterSpacing:"-0.03em",display:"flex",alignItems:"center",gap:10}}>
             <Bot size={28} color={T.accent}/>
             Auto-Pilot
-            <div style={{width:10,height:10,borderRadius:"50%",background:enabled?(running?"#FCD34D":"#34D399"):"#9CA3AF",animation:running?"pulse 1s infinite":"none"}}/>
+            <div style={{display:"flex",gap:5}}>
+              {pipelines.filter(p=>p.enabled).map(p=>(
+                <div key={p.id} style={{width:8,height:8,borderRadius:"50%",
+                  background:runningPipes[p.id]?"#FCD34D":p.color,
+                  animation:runningPipes[p.id]?"pulse 1s infinite":"none",title:p.name}}/>
+              ))}
+            </div>
           </div>
-          <div style={{fontSize:13,color:T.muted,marginTop:3}}>Multi-agent autonomous monitor · {agents.filter(a=>a.enabled).length} agents active</div>
-        </div>
-        <div style={{display:"flex",gap:10,alignItems:"center"}}>
-          {lastRun&&<span style={{fontSize:10,color:T.dim}}>Last: {new Date(lastRun).toLocaleTimeString()}</span>}
-          <Btn onClick={runScan} disabled={running} variant="ghost" size="sm">
-            {running?<Spinner size={10}/>:<RefreshCw size={10}/>} Scan Now
-          </Btn>
-          <div onClick={()=>setEnabled(p=>!p)}
-            style={{width:44,height:24,borderRadius:99,cursor:"pointer",background:enabled?T.green:T.border,position:"relative",transition:"background 0.2s"}}>
-            <div style={{width:18,height:18,borderRadius:"50%",background:"white",position:"absolute",top:3,left:enabled?23:3,transition:"left 0.15s",boxShadow:"0 1px 3px rgba(0,0,0,0.2)"}}/>
+          <div style={{fontSize:13,color:T.muted,marginTop:3}}>
+            {activePipes} active pipeline{activePipes!==1?"s":""} · {pipelines.reduce((s,p)=>s+p.agents.filter(a=>a.enabled).length,0)} agents total
           </div>
-          <span style={{fontSize:12,fontWeight:700,color:enabled?T.green:T.muted}}>{enabled?"ON":"OFF"}</span>
         </div>
+        <Btn onClick={()=>{
+            const newP={id:`pipe_${Date.now()}`,name:"New Pipeline",icon:"🔄",color:T.accent,enabled:false,dry_run:true,
+              interval_min:30,confidence_threshold:85,slack_channel:"",trigger:"schedule",agents:[],safe_actions:[]};
+            setPipelines(p=>[...p,newP]);
+            setActivePipe(newP.id);
+            setView("pipelines");
+          }} variant="primary" size="sm">
+          <Plus size={10}/> New Pipeline
+        </Btn>
       </div>
 
       {/* Sub-tabs */}
-      <div style={{display:"flex",gap:2,marginBottom:20,background:T.surface,padding:4,borderRadius:10,border:`1px solid ${T.border}`,width:"fit-content"}}>
+      <div style={{display:"flex",gap:2,marginBottom:20,background:T.surface,padding:4,borderRadius:10,
+        border:`1px solid ${T.border}`,width:"fit-content"}}>
         {VIEWS.map(v=>(
           <button key={v.id} onClick={()=>setView(v.id)}
-            style={{padding:"5px 14px",borderRadius:8,fontSize:11,cursor:"pointer",border:"none",fontWeight:activeView===v.id?700:400,
-              background:activeView===v.id?T.card:"transparent",color:activeView===v.id?T.accent:T.muted,
+            style={{padding:"5px 14px",borderRadius:8,fontSize:11,cursor:"pointer",border:"none",
+              fontWeight:activeView===v.id?700:400,background:activeView===v.id?T.card:"transparent",
+              color:activeView===v.id?T.accent:T.muted,
               boxShadow:activeView===v.id?"0 1px 3px rgba(0,0,0,0.08)":"none",transition:"all 0.12s"}}>
             {v.icon} {v.label}
           </button>
         ))}
       </div>
 
-      {/* DASHBOARD */}
+      {/* ── DASHBOARD ──────────────────────────────────────────────────────── */}
       {activeView==="dashboard"&&(
         <div>
+          {/* KPIs */}
           <div style={{display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:12,marginBottom:20}}>
-            {[{label:"Total Scans",value:stats.total,color:T.accent,icon:"🔄"},{label:"Issues Found",value:stats.detected,color:T.orange,icon:"⚠"},{label:"Auto-Fixed",value:stats.fixed,color:T.green,icon:"✅"},{label:"Failed Fixes",value:stats.failures,color:T.red,icon:"✗"}].map(k=>(
+            {[{label:"Total Scans",value:totalScans,color:T.accent,icon:"🔄"},
+              {label:"Issues Found",value:totalIssues,color:T.orange,icon:"⚠"},
+              {label:"Auto-Fixed",value:totalFixed,color:T.green,icon:"✅"},
+              {label:"Active Pipelines",value:activePipes,color:T.purple,icon:"⚡"}].map(k=>(
               <div key={k.label} style={{padding:"16px 18px",borderRadius:10,background:T.card,border:`1px solid ${T.border}`}}>
                 <div style={{fontSize:20,marginBottom:6}}>{k.icon}</div>
-                <div style={{fontSize:24,fontWeight:800,color:k.color}}>{k.value}</div>
+                <div style={{fontSize:28,fontWeight:800,color:k.color,letterSpacing:"-0.02em"}}>{k.value}</div>
                 <div style={{fontSize:11,color:T.muted}}>{k.label}</div>
               </div>
             ))}
           </div>
-          <div style={{display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:10,marginBottom:20}}>
-            {agents.map(ag=>(
-              <div key={ag.id} style={{padding:"12px 14px",borderRadius:9,border:`1px solid ${ag.enabled?ag.color+"40":T.border}`,background:ag.enabled?`${ag.color}06`:T.surface}}>
-                <div style={{fontSize:18,marginBottom:4}}>{ag.icon}</div>
-                <div style={{fontSize:11,fontWeight:700,color:T.text}}>{ag.name}</div>
-                <div style={{fontSize:10,color:T.muted,marginTop:2,lineHeight:1.4}}>{ag.description.slice(0,60)}…</div>
-                <div style={{marginTop:8}}><Badge label={ag.enabled?"active":"disabled"} color={ag.enabled?ag.color:T.muted}/></div>
-              </div>
-            ))}
-          </div>
-          <div style={{background:T.card,border:`1px solid ${T.border}`,borderRadius:10,padding:"14px 16px"}}>
-            <div style={{fontSize:12,fontWeight:700,color:T.text,marginBottom:10,display:"flex",alignItems:"center",gap:8}}>
-              <Terminal size={13} color={T.accent}/>
-              Live Log
-              {running&&<Badge label="RUNNING" color={T.green} pulse/>}
-            </div>
-            {runLog.length===0
-              ?<div style={{fontSize:11,color:T.dim,textAlign:"center",padding:"20px 0"}}>{enabled?"Waiting for next scan…":"Enable Auto-Pilot to start"}</div>
-              :<div style={{maxHeight:280,overflowY:"auto",display:"flex",flexDirection:"column",gap:2}}>
-                {runLog.map((entry,i)=>(
-                  <div key={i} style={{fontSize:10,display:"flex",gap:8,padding:"3px 0",borderBottom:`1px solid ${T.border}10`}}>
-                    <span style={{color:T.dim,fontFamily:"monospace",flexShrink:0}}>{entry.ts}</span>
-                    <span style={{padding:"0 6px",borderRadius:3,fontSize:9,fontWeight:700,flexShrink:0,
-                      background:`${agents.find(a=>a.id===entry.agent)?.color||T.accent}15`,
-                      color:agents.find(a=>a.id===entry.agent)?.color||T.accent}}>{entry.agent}</span>
-                    <span style={{color:TYPE_COLOR[entry.type]||T.text,flex:1}}>{entry.msg}</span>
-                  </div>
-                ))}
-              </div>
-            }
-          </div>
-        </div>
-      )}
 
-      {/* SUB-AGENTS */}
-      {activeView==="agents"&&(
-        <div style={{display:"flex",flexDirection:"column",gap:14}}>
-          {agents.map(ag=>(
-            <div key={ag.id} style={{background:T.card,borderRadius:12,border:`1px solid ${ag.enabled?ag.color+"40":T.border}`,overflow:"hidden"}}>
-              <div style={{padding:"14px 18px",display:"flex",alignItems:"center",gap:12}}>
-                <span style={{fontSize:22}}>{ag.icon}</span>
-                <div style={{flex:1}}>
-                  <div style={{fontSize:13,fontWeight:700,color:T.text}}>{ag.name}</div>
-                  <div style={{fontSize:11,color:T.muted}}>{ag.description}</div>
-                </div>
-                <div style={{display:"flex",gap:8,alignItems:"center"}}>
-                  <Btn size="sm" variant="ghost" onClick={()=>setEditAgent(editAgent===ag.id?null:ag.id)}>✏ Edit</Btn>
-                  <div onClick={()=>setAgents(p=>p.map(a=>a.id===ag.id?{...a,enabled:!a.enabled}:a))}
-                    style={{width:36,height:20,borderRadius:99,cursor:"pointer",background:ag.enabled?ag.color:T.border,position:"relative",transition:"background 0.2s"}}>
-                    <div style={{width:14,height:14,borderRadius:"50%",background:"white",position:"absolute",top:3,left:ag.enabled?19:3,transition:"left 0.15s"}}/>
-                  </div>
-                </div>
-              </div>
-              {editAgent===ag.id&&(
-                <div style={{padding:"0 18px 18px",borderTop:`1px solid ${T.border}`}}>
-                  <div style={{paddingTop:14,display:"flex",flexDirection:"column",gap:10}}>
-                    <div>
-                      <label style={{fontSize:10,fontWeight:600,color:T.muted,display:"block",marginBottom:4}}>System Prompt</label>
-                      <textarea value={ag.system_prompt} rows={3}
-                        onChange={e=>setAgents(p=>p.map(a=>a.id===ag.id?{...a,system_prompt:e.target.value}:a))}
-                        style={{...inp,fontFamily:"monospace",resize:"vertical"}}/>
-                    </div>
-                    {ag.checks?.length>0&&(
-                      <div>
-                        <div style={{fontSize:11,fontWeight:700,color:T.text,marginBottom:8}}>SQL Checks</div>
-                        {ag.checks.map((chk,ci)=>(
-                          <div key={chk.id} style={{padding:"10px 12px",borderRadius:8,border:`1px solid ${T.border}`,marginBottom:8,background:T.surface}}>
-                            <div style={{display:"flex",gap:8,marginBottom:6}}>
-                              <input value={chk.name} placeholder="Check name"
-                                onChange={e=>setAgents(p=>p.map(a=>a.id===ag.id?{...a,checks:a.checks.map((c,i)=>i===ci?{...c,name:e.target.value}:c)}:a))}
-                                style={{...inp,flex:2}}/>
-                              <select value={chk.severity}
-                                onChange={e=>setAgents(p=>p.map(a=>a.id===ag.id?{...a,checks:a.checks.map((c,i)=>i===ci?{...c,severity:e.target.value}:c)}:a))}
-                                style={{...inp,flex:1}}>
-                                {["critical","high","medium","low"].map(s=><option key={s} value={s}>{s}</option>)}
-                              </select>
-                              <button onClick={()=>setAgents(p=>p.map(a=>a.id===ag.id?{...a,checks:a.checks.filter((_,i)=>i!==ci)}:a))}
-                                style={{background:"none",border:"none",cursor:"pointer",color:T.red}}><Trash2 size={13}/></button>
-                            </div>
-                            <textarea value={chk.sql} rows={2} placeholder="SELECT SQL..."
-                              onChange={e=>setAgents(p=>p.map(a=>a.id===ag.id?{...a,checks:a.checks.map((c,i)=>i===ci?{...c,sql:e.target.value}:c)}:a))}
-                              style={{...inp,fontFamily:"monospace",resize:"vertical",marginBottom:4}}/>
-                            <input value={chk.pass_condition} placeholder="rows = 0"
-                              onChange={e=>setAgents(p=>p.map(a=>a.id===ag.id?{...a,checks:a.checks.map((c,i)=>i===ci?{...c,pass_condition:e.target.value}:c)}:a))}
-                              style={{...inp,fontFamily:"monospace"}}/>
-                          </div>
-                        ))}
-                        <Btn size="sm" variant="ghost" onClick={()=>setAgents(p=>p.map(a=>a.id===ag.id?{...a,checks:[...a.checks,{id:`c${Date.now()}`,name:"",sql:"",pass_condition:"rows = 0",severity:"high"}]}:a))}>
-                          <Plus size={10}/> Add Check
+          {/* Pipeline cards */}
+          <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:12,marginBottom:20}}>
+            {pipelines.map(pipe=>{
+              const isRunning = !!runningPipes[pipe.id];
+              const logs = pipeLogs[pipe.id]||[];
+              const lastLog = logs[0];
+              const pipeScans = scanHistory.filter(h=>h.pipeline_id===pipe.id);
+              const lastScan = pipeScans[0];
+              return (
+                <div key={pipe.id} style={{background:T.card,borderRadius:12,
+                  border:`1px solid ${pipe.enabled?pipe.color+"40":T.border}`,overflow:"hidden"}}>
+                  <div style={{padding:"14px 16px"}}>
+                    <div style={{display:"flex",alignItems:"center",gap:10,marginBottom:8}}>
+                      <span style={{fontSize:20}}>{pipe.icon}</span>
+                      <div style={{flex:1}}>
+                        <div style={{display:"flex",alignItems:"center",gap:8}}>
+                          <span style={{fontSize:13,fontWeight:700,color:T.text}}>{pipe.name}</span>
+                          {pipe.dry_run&&<Badge label="DRY RUN" color={T.cyan}/>}
+                          {pipe.enabled&&!pipe.dry_run&&<Badge label="LIVE" color={pipe.color}/>}
+                        </div>
+                        <div style={{fontSize:10,color:T.muted,marginTop:2}}>
+                          {pipe.agents.length} agents · every {pipe.interval_min}m · {pipe.confidence_threshold}% confidence
+                        </div>
+                      </div>
+                      <div style={{display:"flex",gap:6}}>
+                        <Btn size="sm" variant="ghost" onClick={()=>runPipeline(pipe)} disabled={isRunning}>
+                          {isRunning?<Spinner size={9}/>:<Play size={9}/>} Run
+                        </Btn>
+                        <Btn size="sm" variant="ghost" onClick={()=>{setActivePipe(pipe.id);setView("pipelines");}}>
+                          ✏ Edit
                         </Btn>
                       </div>
+                    </div>
+
+                    {/* Agent pills */}
+                    <div style={{display:"flex",gap:4,flexWrap:"wrap",marginBottom:8}}>
+                      {pipe.agents.map(ag=>(
+                        <span key={ag.id} style={{fontSize:9,padding:"2px 8px",borderRadius:99,
+                          background:`${ag.color||T.accent}12`,color:ag.color||T.accent,fontWeight:600}}>
+                          {ag.icon} {ag.name}
+                        </span>
+                      ))}
+                    </div>
+
+                    {/* Last log line */}
+                    {lastLog&&(
+                      <div style={{fontSize:10,color:TC[lastLog.type]||T.muted,
+                        padding:"4px 8px",borderRadius:5,background:`${T.border}40`,marginBottom:6}}>
+                        {lastLog.ts} · {lastLog.msg.slice(0,70)}
+                      </div>
                     )}
-                    {ag.id==="detection"&&ag.checks?.length===0&&(
-                      <Btn size="sm" variant="ghost" onClick={()=>setAgents(p=>p.map(a=>a.id==="detection"?{...a,checks:[{id:`c${Date.now()}`,name:"",sql:"",pass_condition:"rows = 0",severity:"high"}]}:a))}>
-                        <Plus size={10}/> Add First Check
-                      </Btn>
+
+                    {/* Last scan summary */}
+                    {lastScan&&(
+                      <div style={{fontSize:10,color:T.dim}}>
+                        Last: {lastScan.ts?.slice(0,16).replace("T"," ")} ·
+                        {lastScan.issues?.length||0} issues · {lastScan.fixes?.length||0} fixed
+                        {lastScan.dry_run&&" [dry run]"}
+                      </div>
                     )}
                   </div>
+
+                  {/* Running progress bar */}
+                  {isRunning && (
+                    <div style={{height:3,background:T.border}}>
+                      <div style={{height:"100%",background:`linear-gradient(90deg,${pipe.color},${T.purple})`,
+                        borderRadius:99,animation:"shimmer 1.5s infinite",width:"60%"}}/>
+                    </div>
+                  )}
+                  {/* Enable toggle bar */}
+                  <div style={{borderTop:isRunning?"none":`1px solid ${T.border}`,padding:"8px 16px",
+                    display:"flex",alignItems:"center",gap:8,
+                    background:isRunning?`${pipe.color}08`:`${T.border}20`}}>
+                    <div onClick={()=>setPipelines(p=>p.map(pp=>pp.id===pipe.id?{...pp,enabled:!pp.enabled}:pp))}
+                      style={{width:32,height:18,borderRadius:99,cursor:"pointer",
+                        background:pipe.enabled?pipe.color:T.border,position:"relative",transition:"background 0.2s"}}>
+                      <div style={{width:12,height:12,borderRadius:"50%",background:"white",
+                        position:"absolute",top:3,left:pipe.enabled?17:3,transition:"left 0.15s"}}/>
+                    </div>
+                    <span style={{fontSize:10,color:isRunning?pipe.color:pipe.enabled?pipe.color:T.muted,fontWeight:600}}>
+                      {isRunning?"Running…":pipe.enabled?"Enabled":"Disabled"}
+                    </span>
+                    <div style={{marginLeft:"auto",display:"flex",gap:4}}>
+                      {(pipeLogs[pipe.id]||[]).slice(0,5).map((l,i)=>(
+                        <div key={i} style={{width:6,height:6,borderRadius:"50%",
+                          background:TC[l.type]||T.muted,opacity:1-(i*0.15)}}/>
+                      ))}
+                    </div>
+                  </div>
                 </div>
-              )}
-            </div>
-          ))}
+              );
+            })}
+          </div>
         </div>
       )}
 
-      {/* SAFE ACTIONS */}
-      {activeView==="actions"&&(
-        <div>
-          <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:14}}>
-            <div>
-              <div style={{fontSize:13,fontWeight:700,color:T.text}}>Pre-approved Safe Actions</div>
-              <div style={{fontSize:11,color:T.muted,marginTop:2}}>Only these fixes can be applied automatically. Minimum confidence: {confThresh}%</div>
-            </div>
-            <Btn size="sm" variant="primary" onClick={()=>setSafeActions(p=>[...p,{id:`a${Date.now()}`,name:"New Action",enabled:false,confidence:80,check_sql:"",fix_sql:"",description:""}])}>
-              <Plus size={10}/> Add Action
-            </Btn>
-          </div>
-          <div style={{display:"flex",flexDirection:"column",gap:10}}>
-            {safeActions.map((action,ai)=>(
-              <div key={action.id} style={{background:T.card,borderRadius:10,border:`1px solid ${action.enabled?T.accent+"40":T.border}`}}>
-                <div style={{padding:"12px 16px",display:"flex",alignItems:"center",gap:10}}>
-                  <div style={{flex:1}}>
-                    <div style={{fontSize:12,fontWeight:700,color:T.text}}>{action.name}</div>
-                    <div style={{fontSize:10,color:T.muted}}>{action.description}</div>
+      {/* ── PIPELINES EDITOR ───────────────────────────────────────────────── */}
+      {activeView==="pipelines"&&(
+        <div style={{display:"grid",gridTemplateColumns:"240px 1fr",gap:16}}>
+          {/* Pipeline list sidebar */}
+          <div>
+            <div style={{fontSize:11,fontWeight:700,color:T.muted,textTransform:"uppercase",
+              letterSpacing:"0.06em",marginBottom:8}}>Pipelines</div>
+            <div style={{display:"flex",flexDirection:"column",gap:6}}>
+              {pipelines.map(pipe=>(
+                <div key={pipe.id}
+                  onClick={()=>setActivePipe(pipe.id)}
+                  style={{padding:"10px 12px",borderRadius:8,cursor:"pointer",
+                    border:`1px solid ${activePipe===pipe.id?pipe.color:T.border}`,
+                    background:activePipe===pipe.id?`${pipe.color}08`:T.surface,
+                    display:"flex",alignItems:"center",gap:8}}>
+                  <span style={{fontSize:16}}>{pipe.icon}</span>
+                  <div style={{flex:1,minWidth:0}}>
+                    <div style={{fontSize:11,fontWeight:600,color:T.text,
+                      overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{pipe.name}</div>
+                    <div style={{fontSize:9,color:T.muted}}>{pipe.agents.length} agents</div>
                   </div>
-                  <span style={{fontSize:11,fontWeight:700,color:action.confidence>=90?T.green:action.confidence>=70?T.orange:T.red}}>{action.confidence}%</span>
-                  <Btn size="sm" variant="ghost" onClick={()=>setEditAction(editAction===action.id?null:action.id)}>✏ Edit</Btn>
-                  <div onClick={()=>setSafeActions(p=>p.map((a,i)=>i===ai?{...a,enabled:!a.enabled}:a))}
-                    style={{width:36,height:20,borderRadius:99,cursor:"pointer",background:action.enabled?T.green:T.border,position:"relative",transition:"background 0.2s"}}>
-                    <div style={{width:14,height:14,borderRadius:"50%",background:"white",position:"absolute",top:3,left:action.enabled?19:3,transition:"left 0.15s"}}/>
-                  </div>
-                  <button onClick={()=>setSafeActions(p=>p.filter((_,i)=>i!==ai))}
-                    style={{background:"none",border:"none",cursor:"pointer",color:T.red}}><Trash2 size={13}/></button>
+                  <div style={{width:7,height:7,borderRadius:"50%",flexShrink:0,
+                    background:pipe.enabled?pipe.color:T.border}}/>
                 </div>
-                {editAction===action.id&&(
-                  <div style={{padding:"0 16px 16px",borderTop:`1px solid ${T.border}`}}>
-                    <div style={{paddingTop:12,display:"grid",gridTemplateColumns:"1fr 1fr",gap:10}}>
-                      <div><label style={{fontSize:10,fontWeight:600,color:T.muted,display:"block",marginBottom:3}}>Name</label>
-                        <input value={action.name} onChange={e=>setSafeActions(p=>p.map((a,i)=>i===ai?{...a,name:e.target.value}:a))} style={inp}/></div>
-                      <div><label style={{fontSize:10,fontWeight:600,color:T.muted,display:"block",marginBottom:3}}>Confidence %</label>
-                        <input type="number" min={50} max={100} value={action.confidence}
-                          onChange={e=>setSafeActions(p=>p.map((a,i)=>i===ai?{...a,confidence:Number(e.target.value)}:a))} style={inp}/></div>
-                      <div style={{gridColumn:"1/-1"}}><label style={{fontSize:10,fontWeight:600,color:T.muted,display:"block",marginBottom:3}}>Description</label>
-                        <input value={action.description} onChange={e=>setSafeActions(p=>p.map((a,i)=>i===ai?{...a,description:e.target.value}:a))} style={inp}/></div>
-                      <div style={{gridColumn:"1/-1"}}><label style={{fontSize:10,fontWeight:600,color:T.muted,display:"block",marginBottom:3}}>Detection SQL</label>
-                        <textarea value={action.check_sql} rows={2}
-                          onChange={e=>setSafeActions(p=>p.map((a,i)=>i===ai?{...a,check_sql:e.target.value}:a))}
-                          style={{...inp,fontFamily:"monospace",resize:"vertical"}}/></div>
-                      <div style={{gridColumn:"1/-1"}}><label style={{fontSize:10,fontWeight:600,color:T.muted,display:"block",marginBottom:3}}>Fix SQL (auto-applied)</label>
-                        <textarea value={action.fix_sql} rows={2}
-                          onChange={e=>setSafeActions(p=>p.map((a,i)=>i===ai?{...a,fix_sql:e.target.value}:a))}
-                          style={{...inp,fontFamily:"monospace",resize:"vertical"}}/></div>
+              ))}
+              <Btn size="sm" variant="ghost" onClick={()=>{
+                const newP={id:`pipe_${Date.now()}`,name:"New Pipeline",icon:"🔄",color:T.accent,
+                  enabled:false,dry_run:true,interval_min:30,confidence_threshold:85,
+                  slack_channel:"",trigger:"schedule",agents:[],safe_actions:[]};
+                setPipelines(p=>[...p,newP]);
+                setActivePipe(newP.id);
+              }} style={{marginTop:4,fontSize:10}}>
+                <Plus size={9}/> Add Pipeline
+              </Btn>
+            </div>
+          </div>
+
+          {/* Pipeline detail editor */}
+          {activePipe&&(()=>{
+            const pipe = pipelines.find(p=>p.id===activePipe);
+            if (!pipe) return <div style={{color:T.muted,fontSize:12}}>Select a pipeline</div>;
+            const update = (key,val) => setPipelines(p=>p.map(pp=>pp.id===activePipe?{...pp,[key]:val}:pp));
+            const updateAgent = (agId,key,val) => setPipelines(p=>p.map(pp=>pp.id!==activePipe?pp:{...pp,
+              agents:pp.agents.map(a=>a.id===agId?{...a,[key]:val}:a)}));
+            const addAgent = (template) => {
+              const newAgent = {...template, id:`${template.id}_${Date.now()}`};
+              setPipelines(p=>p.map(pp=>pp.id!==activePipe?pp:{...pp,agents:[...pp.agents,newAgent]}));
+            };
+            const removeAgent = (agId) => setPipelines(p=>p.map(pp=>pp.id!==activePipe?pp:{...pp,
+              agents:pp.agents.filter(a=>a.id!==agId)}));
+            const addAction = () => setPipelines(p=>p.map(pp=>pp.id!==activePipe?pp:{...pp,
+              safe_actions:[...pp.safe_actions,{id:`a${Date.now()}`,name:"New Action",enabled:false,confidence:80,check_sql:"",fix_sql:"",rollback_sql:"",description:""}]}));
+            const updateAction = (ai,key,val) => setPipelines(p=>p.map(pp=>pp.id!==activePipe?pp:{...pp,
+              safe_actions:pp.safe_actions.map((a,i)=>i===ai?{...a,[key]:val}:a)}));
+            const removeAction = (ai) => setPipelines(p=>p.map(pp=>pp.id!==activePipe?pp:{...pp,
+              safe_actions:pp.safe_actions.filter((_,i)=>i!==ai)}));
+
+            return (
+              <div style={{display:"flex",flexDirection:"column",gap:16}}>
+                {/* Pipeline config */}
+                <div style={{background:T.card,borderRadius:12,border:`1px solid ${T.border}`,padding:"16px 18px"}}>
+                  <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:14}}>
+                    <div style={{fontSize:13,fontWeight:700,color:T.text}}>Pipeline Config</div>
+                    <div style={{display:"flex",gap:8}}>
+                      <Btn size="sm" onClick={()=>runPipeline(pipe)} disabled={!!runningPipes[pipe.id]} variant="ghost">
+                        {runningPipes[pipe.id]?<Spinner size={9}/>:<Play size={9}/>} Run Now
+                      </Btn>
+                      <Btn size="sm" variant="muted" onClick={()=>setPipelines(p=>p.filter(pp=>pp.id!==activePipe))
+                        .then?.(()=>setActivePipe(null))||setPipelines(p=>{setActivePipe(null);return p.filter(pp=>pp.id!==activePipe);})}
+                        style={{color:T.red}}>
+                        <Trash2 size={9}/>
+                      </Btn>
+                    </div>
+                  </div>
+                  <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10}}>
+                    <div><label style={{fontSize:10,color:T.muted,display:"block",marginBottom:3}}>Name</label>
+                      <input value={pipe.name} onChange={e=>update("name",e.target.value)} style={inp}/></div>
+                    <div><label style={{fontSize:10,color:T.muted,display:"block",marginBottom:3}}>Icon</label>
+                      <input value={pipe.icon} onChange={e=>update("icon",e.target.value)} style={{...inp,fontSize:20,textAlign:"center"}}/></div>
+                    <div><label style={{fontSize:10,color:T.muted,display:"block",marginBottom:3}}>Interval (min)</label>
+                      <select value={pipe.interval_min} onChange={e=>update("interval_min",Number(e.target.value))} style={inp}>
+                        {[5,10,15,30,60,120,240].map(m=><option key={m} value={m}>{m} min</option>)}</select></div>
+                    <div><label style={{fontSize:10,color:T.muted,display:"block",marginBottom:3}}>Confidence threshold %</label>
+                      <input type="number" min={50} max={100} value={pipe.confidence_threshold}
+                        onChange={e=>update("confidence_threshold",Number(e.target.value))} style={inp}/></div>
+                    <div style={{gridColumn:"1/-1"}}><label style={{fontSize:10,color:T.muted,display:"block",marginBottom:3}}>Slack webhook (overrides global)</label>
+                      <input value={pipe.slack_channel||""} onChange={e=>update("slack_channel",e.target.value)}
+                        placeholder="https://hooks.slack.com/… (leave blank to use global)" style={inp}/></div>
+                    <div style={{display:"flex",alignItems:"center",gap:8}}>
+                      <div onClick={()=>update("dry_run",!pipe.dry_run)}
+                        style={{width:32,height:18,borderRadius:99,cursor:"pointer",
+                          background:pipe.dry_run?T.cyan:T.border,position:"relative",transition:"background 0.2s"}}>
+                        <div style={{width:12,height:12,borderRadius:"50%",background:"white",
+                          position:"absolute",top:3,left:pipe.dry_run?17:3,transition:"left 0.15s"}}/>
+                      </div>
+                      <div><div style={{fontSize:11,color:T.text}}>Dry Run Mode</div>
+                        <div style={{fontSize:9,color:T.muted}}>Log what would be fixed, don't apply</div></div>
+                    </div>
+                    <div style={{display:"flex",alignItems:"center",gap:8}}>
+                      <div onClick={()=>update("enabled",!pipe.enabled)}
+                        style={{width:32,height:18,borderRadius:99,cursor:"pointer",
+                          background:pipe.enabled?T.green:T.border,position:"relative",transition:"background 0.2s"}}>
+                        <div style={{width:12,height:12,borderRadius:"50%",background:"white",
+                          position:"absolute",top:3,left:pipe.enabled?17:3,transition:"left 0.15s"}}/>
+                      </div>
+                      <div><div style={{fontSize:11,color:T.text}}>Enabled</div>
+                        <div style={{fontSize:9,color:T.muted}}>Run on schedule automatically</div></div>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Agents */}
+                <div style={{background:T.card,borderRadius:12,border:`1px solid ${T.border}`,padding:"16px 18px"}}>
+                  <div style={{fontSize:12,fontWeight:700,color:T.text,marginBottom:12,
+                    display:"flex",alignItems:"center",justifyContent:"space-between"}}>
+                    <span>Agent Sequence</span>
+                    <span style={{fontSize:10,color:T.muted}}>Agents run top-to-bottom</span>
+                  </div>
+                  {/* Agent list */}
+                  <div style={{display:"flex",flexDirection:"column",gap:8,marginBottom:12}}>
+                    {pipe.agents.map((ag,ai)=>(
+                      <div key={ag.id} style={{borderRadius:8,border:`1px solid ${ag.enabled?ag.color+"40":T.border}`,overflow:"hidden"}}>
+                        <div style={{padding:"10px 12px",display:"flex",alignItems:"center",gap:10}}>
+                          <span style={{fontSize:16}}>{ag.icon}</span>
+                          <div style={{flex:1}}>
+                            <div style={{fontSize:11,fontWeight:700,color:T.text}}>{ag.name}</div>
+                            <div style={{fontSize:9,color:T.muted}}>{ag.type} · {ag.checks?.length||0} checks</div>
+                          </div>
+                          <div style={{display:"flex",gap:4,alignItems:"center"}}>
+                            {ai>0&&<button onClick={()=>setPipelines(p=>p.map(pp=>pp.id!==activePipe?pp:{...pp,agents:pp.agents.map((a,i)=>i===ai?pp.agents[ai-1]:i===ai-1?ag:a)}))}
+                              style={{background:"none",border:"none",cursor:"pointer",color:T.muted,fontSize:12}}>↑</button>}
+                            {ai<pipe.agents.length-1&&<button onClick={()=>setPipelines(p=>p.map(pp=>pp.id!==activePipe?pp:{...pp,agents:pp.agents.map((a,i)=>i===ai?pp.agents[ai+1]:i===ai+1?ag:a)}))}
+                              style={{background:"none",border:"none",cursor:"pointer",color:T.muted,fontSize:12}}>↓</button>}
+                            <Btn size="sm" variant="ghost" onClick={()=>setEditAgent(editAgent===ag.id?null:ag.id)}>✏</Btn>
+                            <div onClick={()=>updateAgent(ag.id,"enabled",!ag.enabled)}
+                              style={{width:28,height:16,borderRadius:99,cursor:"pointer",
+                                background:ag.enabled?ag.color:T.border,position:"relative",transition:"background 0.2s"}}>
+                              <div style={{width:10,height:10,borderRadius:"50%",background:"white",
+                                position:"absolute",top:3,left:ag.enabled?15:3,transition:"left 0.15s"}}/>
+                            </div>
+                            <button onClick={()=>removeAgent(ag.id)}
+                              style={{background:"none",border:"none",cursor:"pointer",color:T.red}}><Trash2 size={11}/></button>
+                          </div>
+                        </div>
+                        {editAgent===ag.id&&(
+                          <div style={{padding:"0 12px 12px",borderTop:`1px solid ${T.border}`}}>
+                            <div style={{paddingTop:10,display:"flex",flexDirection:"column",gap:8}}>
+                              <div><label style={{fontSize:10,color:T.muted,display:"block",marginBottom:3}}>System Prompt</label>
+                                <textarea value={ag.system_prompt} rows={3}
+                                  onChange={e=>updateAgent(ag.id,"system_prompt",e.target.value)}
+                                  style={{...inp,fontFamily:"monospace",resize:"vertical"}}/></div>
+                              {(ag.type==="detection")&&(
+                                <div>
+                                  <div style={{fontSize:11,fontWeight:700,color:T.text,marginBottom:6,display:"flex",alignItems:"center",justifyContent:"space-between"}}>
+                                    <span>SQL Checks</span>
+                                    <Btn size="sm" variant="ghost" onClick={()=>updateAgent(ag.id,"checks",[...(ag.checks||[]),{id:`c${Date.now()}`,name:"",sql:"",pass_condition:"rows = 0",severity:"high",alert_threshold:0,autofix_threshold:0}])}>
+                                      <Plus size={9}/> Add
+                                    </Btn>
+                                  </div>
+                                  {(ag.checks||[]).map((chk,ci)=>(
+                                    <div key={chk.id} style={{padding:"8px 10px",borderRadius:6,border:`1px solid ${T.border}`,marginBottom:6,background:T.surface}}>
+                                      <div style={{display:"flex",gap:6,marginBottom:5}}>
+                                        <input value={chk.name} placeholder="Check name"
+                                          onChange={e=>updateAgent(ag.id,"checks",(ag.checks||[]).map((c,i)=>i===ci?{...c,name:e.target.value}:c))}
+                                          style={{...inp,flex:2}}/>
+                                        <select value={chk.severity}
+                                          onChange={e=>updateAgent(ag.id,"checks",(ag.checks||[]).map((c,i)=>i===ci?{...c,severity:e.target.value}:c))}
+                                          style={{...inp,flex:1}}>
+                                          {["critical","high","medium","low"].map(s=><option key={s} value={s}>{s}</option>)}
+                                        </select>
+                                        <button onClick={()=>updateAgent(ag.id,"checks",(ag.checks||[]).filter((_,i)=>i!==ci))}
+                                          style={{background:"none",border:"none",cursor:"pointer",color:T.red}}><Trash2 size={11}/></button>
+                                      </div>
+                                      <textarea value={chk.sql} rows={2} placeholder="SELECT SQL..."
+                                        onChange={e=>updateAgent(ag.id,"checks",(ag.checks||[]).map((c,i)=>i===ci?{...c,sql:e.target.value}:c))}
+                                        style={{...inp,fontFamily:"monospace",resize:"vertical",marginBottom:4}}/>
+                                      <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:4}}>
+                                        <input value={chk.pass_condition} placeholder="rows = 0"
+                                          onChange={e=>updateAgent(ag.id,"checks",(ag.checks||[]).map((c,i)=>i===ci?{...c,pass_condition:e.target.value}:c))}
+                                          style={{...inp,fontFamily:"monospace",fontSize:10}}/>
+                                        <input type="number" value={chk.alert_threshold||0} placeholder="Alert ≥"
+                                          onChange={e=>updateAgent(ag.id,"checks",(ag.checks||[]).map((c,i)=>i===ci?{...c,alert_threshold:Number(e.target.value)}:c))}
+                                          style={{...inp,fontSize:10}} title="Alert if rows ≥ this value"/>
+                                        <input type="number" value={chk.autofix_threshold||0} placeholder="Autofix ≥"
+                                          onChange={e=>updateAgent(ag.id,"checks",(ag.checks||[]).map((c,i)=>i===ci?{...c,autofix_threshold:Number(e.target.value)}:c))}
+                                          style={{...inp,fontSize:10}} title="Autofix if rows ≥ this value"/>
+                                      </div>
+                                    </div>
+                                  ))}
+                                </div>
+                              )}
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                  {/* Add agent from library */}
+                  <div style={{borderTop:`1px solid ${T.border}`,paddingTop:10}}>
+                    <div style={{fontSize:10,color:T.muted,marginBottom:6}}>Add agent from library:</div>
+                    <div style={{display:"flex",gap:6,flexWrap:"wrap"}}>
+                      {AP_AGENT_TEMPLATES.map(tpl=>(
+                        <button key={tpl.id} onClick={()=>addAgent(tpl)}
+                          style={{padding:"4px 10px",borderRadius:99,fontSize:10,cursor:"pointer",
+                            border:`1px solid ${tpl.color}40`,background:`${tpl.color}08`,
+                            color:tpl.color,fontWeight:600}}>
+                          {tpl.icon} {tpl.name}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                </div>
+
+                {/* Safe Actions */}
+                <div style={{background:T.card,borderRadius:12,border:`1px solid ${T.border}`,padding:"16px 18px"}}>
+                  <div style={{fontSize:12,fontWeight:700,color:T.text,marginBottom:12,
+                    display:"flex",alignItems:"center",justifyContent:"space-between"}}>
+                    <span>Safe Actions for this Pipeline</span>
+                    <Btn size="sm" variant="ghost" onClick={addAction}><Plus size={9}/> Add</Btn>
+                  </div>
+                  {pipe.safe_actions.length===0
+                    ?<div style={{fontSize:11,color:T.dim,textAlign:"center",padding:"12px 0"}}>No safe actions — agent will detect but not auto-fix</div>
+                    :pipe.safe_actions.map((action,ai)=>(
+                      <div key={action.id} style={{borderRadius:8,border:`1px solid ${action.enabled?T.accent+"40":T.border}`,marginBottom:8}}>
+                        <div style={{padding:"10px 12px",display:"flex",alignItems:"center",gap:8}}>
+                          <div style={{flex:1}}>
+                            <div style={{fontSize:11,fontWeight:700,color:T.text}}>{action.name}</div>
+                            <div style={{fontSize:9,color:T.muted}}>{action.description}</div>
+                          </div>
+                          <span style={{fontSize:10,fontWeight:700,color:action.confidence>=90?T.green:action.confidence>=70?T.orange:T.red}}>{action.confidence}%</span>
+                          <Btn size="sm" variant="ghost" onClick={()=>setEditAction(editAction===action.id?null:action.id)}>✏</Btn>
+                          <div onClick={()=>updateAction(ai,"enabled",!action.enabled)}
+                            style={{width:28,height:16,borderRadius:99,cursor:"pointer",
+                              background:action.enabled?T.green:T.border,position:"relative",transition:"background 0.2s"}}>
+                            <div style={{width:10,height:10,borderRadius:"50%",background:"white",
+                              position:"absolute",top:3,left:action.enabled?15:3,transition:"left 0.15s"}}/>
+                          </div>
+                          <button onClick={()=>removeAction(ai)}
+                            style={{background:"none",border:"none",cursor:"pointer",color:T.red}}><Trash2 size={11}/></button>
+                        </div>
+                        {editAction===action.id&&(
+                          <div style={{padding:"0 12px 12px",borderTop:`1px solid ${T.border}`}}>
+                            <div style={{paddingTop:10,display:"grid",gridTemplateColumns:"1fr 1fr",gap:8}}>
+                              <div><label style={{fontSize:10,color:T.muted,display:"block",marginBottom:3}}>Name</label>
+                                <input value={action.name} onChange={e=>updateAction(ai,"name",e.target.value)} style={inp}/></div>
+                              <div><label style={{fontSize:10,color:T.muted,display:"block",marginBottom:3}}>Confidence %</label>
+                                <input type="number" min={50} max={100} value={action.confidence}
+                                  onChange={e=>updateAction(ai,"confidence",Number(e.target.value))} style={inp}/></div>
+                              <div style={{gridColumn:"1/-1"}}><label style={{fontSize:10,color:T.muted,display:"block",marginBottom:3}}>Description</label>
+                                <input value={action.description} onChange={e=>updateAction(ai,"description",e.target.value)} style={inp}/></div>
+                              <div style={{gridColumn:"1/-1"}}><label style={{fontSize:10,color:T.muted,display:"block",marginBottom:3}}>Detection SQL</label>
+                                <textarea value={action.check_sql} rows={2} onChange={e=>updateAction(ai,"check_sql",e.target.value)} style={{...inp,fontFamily:"monospace",resize:"vertical"}}/></div>
+                              <div style={{gridColumn:"1/-1"}}><label style={{fontSize:10,color:T.muted,display:"block",marginBottom:3}}>Fix SQL (auto-applied)</label>
+                                <textarea value={action.fix_sql} rows={2} onChange={e=>updateAction(ai,"fix_sql",e.target.value)} style={{...inp,fontFamily:"monospace",resize:"vertical"}}/></div>
+                              <div style={{gridColumn:"1/-1"}}><label style={{fontSize:10,color:T.muted,display:"block",marginBottom:3}}>Rollback SQL (optional — undo the fix)</label>
+                                <textarea value={action.rollback_sql||""} rows={2} onChange={e=>updateAction(ai,"rollback_sql",e.target.value)} style={{...inp,fontFamily:"monospace",resize:"vertical"}}/></div>
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                    ))
+                  }
+                </div>
+
+                {/* Live log for this pipeline */}
+                {pipeLogs[pipe.id]?.length>0&&(
+                  <div style={{background:T.card,borderRadius:12,border:`1px solid ${T.border}`,padding:"14px 16px"}}>
+                    <div style={{fontSize:11,fontWeight:700,color:T.text,marginBottom:8,display:"flex",alignItems:"center",gap:6}}>
+                      <Terminal size={12} color={T.accent}/> Live Log
+                      {runningPipes[pipe.id]&&<Badge label="RUNNING" color={T.green} pulse/>}
+                    </div>
+                    <div style={{maxHeight:200,overflowY:"auto",display:"flex",flexDirection:"column",gap:1}}>
+                      {(pipeLogs[pipe.id]||[]).map((entry,i)=>(
+                        <div key={i} style={{fontSize:10,display:"flex",gap:7,padding:"2px 0"}}>
+                          <span style={{color:T.dim,fontFamily:"monospace",flexShrink:0}}>{entry.ts}</span>
+                          <span style={{fontSize:9,padding:"0 5px",borderRadius:3,fontWeight:700,flexShrink:0,
+                            background:`${pipe.agents.find(a=>a.name===entry.agent)?.color||T.accent}15`,
+                            color:pipe.agents.find(a=>a.name===entry.agent)?.color||T.accent}}>{entry.agent}</span>
+                          <span style={{color:TC[entry.type]||T.text}}>{entry.msg}</span>
+                        </div>
+                      ))}
                     </div>
                   </div>
                 )}
               </div>
-            ))}
-          </div>
+            );
+          })()}
         </div>
       )}
 
-      {/* MEMORY */}
+      {/* ── MEMORY ─────────────────────────────────────────────────────────── */}
       {activeView==="memory"&&(
         <div>
           <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:14}}>
             <div>
               <div style={{fontSize:13,fontWeight:700,color:T.text}}>Incident Memory</div>
-              <div style={{fontSize:11,color:T.muted,marginTop:2}}>{memory.length} incidents · Powers Diagnosis Agent accuracy</div>
+              <div style={{fontSize:11,color:T.muted,marginTop:2}}>{memory.length} incidents · Powers Diagnosis Agent accuracy across all pipelines</div>
             </div>
             <Btn size="sm" variant="muted" onClick={()=>{apSaveMem([]);setMemory([]);}}>
               <Trash2 size={10}/> Clear
             </Btn>
           </div>
           {memory.length===0
-            ?<EmptyState icon={Brain} title="No incidents yet" desc="Memory builds as the agent runs scans. Each incident improves future diagnosis accuracy."/>
+            ?<EmptyState icon={Brain} title="No incidents yet" desc="Memory builds as agents run. Each incident improves future diagnosis accuracy."/>
             :<div style={{display:"flex",flexDirection:"column",gap:8}}>
               {memory.map((m,i)=>(
                 <div key={i} style={{padding:"12px 16px",borderRadius:9,
                   border:`1px solid ${m.resolved?T.green+"30":T.orange+"30"}`,
                   background:m.resolved?`${T.green}04`:`${T.orange}04`}}>
-                  <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:6}}>
+                  <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:5}}>
                     <Badge label={m.resolved?"resolved":"unresolved"} color={m.resolved?T.green:T.orange}/>
                     <span style={{fontSize:12,fontWeight:600,color:T.text}}>{m.check_name}</span>
+                    {m.pipeline_id&&<Badge label={pipelines.find(p=>p.id===m.pipeline_id)?.name||m.pipeline_id} color={T.purple}/>}
                     <span style={{fontSize:10,color:T.dim,marginLeft:"auto",fontFamily:"monospace"}}>{m.ts?.slice(0,16).replace("T"," ")}</span>
                   </div>
-                  <div style={{fontSize:11,color:T.text2,marginBottom:4}}>💡 <strong>Diagnosis:</strong> {m.diagnosis}</div>
-                  {m.fix_applied&&<div style={{fontSize:11,color:T.text2,marginBottom:4}}>🔧 <strong>Fix:</strong> {m.fix_applied}{m.rows_before!=null&&<span style={{color:T.muted}}> · {m.rows_before}→{m.rows_after??0} rows</span>}</div>}
+                  {m.diagnosis&&<div style={{fontSize:11,color:T.text2,marginBottom:3}}>💡 {m.diagnosis}</div>}
+                  {m.fix_applied&&<div style={{fontSize:11,color:T.text2,marginBottom:3}}>🔧 {m.fix_applied}{m.rows_before!=null&&<span style={{color:T.muted}}> · {m.rows_before}→{m.rows_after??0} rows</span>}</div>}
                   {m.verification&&<div style={{fontSize:10,color:T.muted,fontStyle:"italic"}}>✅ {m.verification}</div>}
                 </div>
               ))}
@@ -18662,36 +19388,74 @@ function AutoPilotTab({ onNavigate }) {
         </div>
       )}
 
-      {/* SETTINGS */}
+      {/* ── HISTORY ────────────────────────────────────────────────────────── */}
+      {activeView==="history"&&(
+        <div>
+          <div style={{fontSize:13,fontWeight:700,color:T.text,marginBottom:14}}>
+            Scan History <span style={{fontSize:11,color:T.muted,fontWeight:400}}>({scanHistory.length} runs)</span>
+          </div>
+          {scanHistory.length===0
+            ?<EmptyState icon={Clock} title="No scans yet" desc="Scan history appears here after pipelines run."/>
+            :<div style={{display:"flex",flexDirection:"column",gap:8}}>
+              {scanHistory.map((scan,i)=>{
+                const pipe = pipelines.find(p=>p.id===scan.pipeline_id);
+                return (
+                  <div key={i} style={{padding:"12px 16px",borderRadius:9,background:T.card,
+                    border:`1px solid ${scan.issues?.length>0?T.orange+"30":T.green+"30"}`}}>
+                    <div style={{display:"flex",alignItems:"center",gap:8}}>
+                      <span style={{fontSize:16}}>{pipe?.icon||"🔄"}</span>
+                      <div style={{flex:1}}>
+                        <div style={{fontSize:12,fontWeight:600,color:T.text,display:"flex",alignItems:"center",gap:6}}>
+                          {scan.pipeline_name}
+                          {scan.dry_run&&<Badge label="dry run" color={T.cyan}/>}
+                        </div>
+                        <div style={{fontSize:10,color:T.muted,marginTop:2}}>
+                          {scan.ts?.slice(0,16).replace("T"," ")} · {scan.issues?.length||0} issues · {scan.fixes?.length||0} fixed
+                        </div>
+                      </div>
+                      <Badge label={scan.status} color={scan.status==="complete"?T.green:T.orange}/>
+                    </div>
+                    {scan.issues?.length>0&&(
+                      <div style={{marginTop:6,display:"flex",gap:4,flexWrap:"wrap"}}>
+                        {scan.issues.map((iss,j)=>(
+                          <span key={j} style={{fontSize:9,padding:"2px 7px",borderRadius:99,
+                            background:`${T.orange}12`,color:T.orange}}>{iss.name}</span>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          }
+        </div>
+      )}
+
+      {/* ── SETTINGS ───────────────────────────────────────────────────────── */}
       {activeView==="settings"&&(
         <div style={{maxWidth:500,display:"flex",flexDirection:"column",gap:14}}>
           <div style={{background:T.card,borderRadius:10,border:`1px solid ${T.border}`,padding:"18px 20px"}}>
-            <div style={{fontSize:12,fontWeight:700,color:T.text,marginBottom:14}}>Scan Settings</div>
-            <div style={{display:"flex",flexDirection:"column",gap:12}}>
-              <div><label style={{fontSize:11,color:T.muted,display:"block",marginBottom:4}}>Scan interval</label>
-                <select value={intervalMin} onChange={e=>setIntervalMin(Number(e.target.value))} style={inp}>
-                  {[5,10,15,30,60,120].map(m=><option key={m} value={m}>{m} minutes</option>)}
-                </select></div>
-              <div><label style={{fontSize:11,color:T.muted,display:"block",marginBottom:4}}>Min confidence to auto-fix ({confThresh}%)</label>
-                <input type="range" min={50} max={100} step={5} value={confThresh}
-                  onChange={e=>setConfThresh(Number(e.target.value))}
-                  style={{width:"100%",accentColor:T.accent}}/>
-                <div style={{display:"flex",justifyContent:"space-between",fontSize:9,color:T.dim,marginTop:2}}><span>50% aggressive</span><span>100% certain only</span></div>
-              </div>
-              <div style={{display:"flex",alignItems:"center",justifyContent:"space-between"}}>
-                <div><div style={{fontSize:11,color:T.text}}>Slack alerts</div><div style={{fontSize:10,color:T.muted}}>Posts to configured webhook on auto-fix</div></div>
-                <div onClick={()=>setSlackAlerts(p=>!p)}
-                  style={{width:36,height:20,borderRadius:99,cursor:"pointer",background:slackAlerts?T.green:T.border,position:"relative",transition:"background 0.2s"}}>
-                  <div style={{width:14,height:14,borderRadius:"50%",background:"white",position:"absolute",top:3,left:slackAlerts?19:3,transition:"left 0.15s"}}/>
-                </div>
+            <div style={{fontSize:12,fontWeight:700,color:T.text,marginBottom:12}}>Global Settings</div>
+            <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:12}}>
+              <div><div style={{fontSize:11,color:T.text}}>Global Slack alerts</div>
+                <div style={{fontSize:10,color:T.muted}}>Use configured webhook for all pipelines without a custom channel</div></div>
+              <div onClick={()=>setGlobalSlack(p=>!p)}
+                style={{width:36,height:20,borderRadius:99,cursor:"pointer",
+                  background:globalSlack?T.green:T.border,position:"relative",transition:"background 0.2s"}}>
+                <div style={{width:14,height:14,borderRadius:"50%",background:"white",
+                  position:"absolute",top:3,left:globalSlack?19:3,transition:"left 0.15s"}}/>
               </div>
             </div>
           </div>
           <div style={{background:T.card,borderRadius:10,border:`1px solid ${T.border}`,padding:"18px 20px"}}>
-            <div style={{fontSize:12,fontWeight:700,color:T.text,marginBottom:8}}>Reset Defaults</div>
+            <div style={{fontSize:12,fontWeight:700,color:T.text,marginBottom:8}}>Data</div>
+            <div style={{fontSize:11,color:T.muted,marginBottom:10}}>
+              Memory: {memory.length} incidents · History: {scanHistory.length} scans
+            </div>
             <div style={{display:"flex",gap:8}}>
-              <Btn size="sm" variant="muted" onClick={()=>setAgents(DEFAULT_AGENTS)}>Reset Agents</Btn>
-              <Btn size="sm" variant="muted" onClick={()=>setSafeActions(DEFAULT_SAFE_ACTIONS)}>Reset Actions</Btn>
+              <Btn size="sm" variant="muted" onClick={()=>{apSaveMem([]);setMemory([]);}}>Clear Memory</Btn>
+              <Btn size="sm" variant="muted" onClick={()=>{apSaveHist([]);setScanHistory([]);}}>Clear History</Btn>
+              <Btn size="sm" variant="muted" onClick={()=>setPipelines(AP_DEFAULT_PIPELINES)}>Reset Pipelines</Btn>
             </div>
           </div>
         </div>

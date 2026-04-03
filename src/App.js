@@ -825,9 +825,15 @@ function Sidebar({ active, setActive, pendingCount, themeKey, setThemeKey }) {
           })();
           const cwfIssueCount = (() => {
             try {
-              const h = JSON.parse(sessionStorage.getItem("wz_cwfHistory")||"[]");
+              const h = JSON.parse(localStorage.getItem("wz_wf_runhistory_v1")||"[]");
               return h.filter(r => r.total_issues > 0).length;
             } catch { return 0; }
+          })();
+          const briefHealthScore = (() => {
+            try {
+              const br = JSON.parse(sessionStorage.getItem("wz_brief")||"null");
+              return br?.health_score ?? null;
+            } catch { return null; }
           })();
           const badgeCount =
             item.id === "approvals" ? pendingCount :
@@ -837,6 +843,8 @@ function Sidebar({ active, setActive, pendingCount, themeKey, setThemeKey }) {
             item.id === "activity"  ? (pendingCount + anomalyCount) :
             0;
           const hasBadge = badgeCount > 0;
+          const showHealthDot = item.id === "brief" && briefHealthScore !== null && !hasBadge;
+          const healthDotColor = briefHealthScore >= 80 ? "#34D399" : briefHealthScore >= 60 ? "#FBBF24" : "#F87171";
           return (
             <button key={item.id}
               onClick={() => setActive(item.id)}
@@ -885,6 +893,16 @@ function Sidebar({ active, setActive, pendingCount, themeKey, setThemeKey }) {
                       background:T.red, color:"white", fontSize:9, fontWeight:700,
                       display:"flex", alignItems:"center", justifyContent:"center"
                     }}>{badgeCount}</span>
+                  )}
+                  {showHealthDot && (
+                    <span style={{
+                      fontSize:9, fontWeight:700, color:healthDotColor,
+                      display:"flex", alignItems:"center", gap:3
+                    }}>
+                      <div style={{ width:5, height:5, borderRadius:"50%",
+                        background:healthDotColor, flexShrink:0 }}/>
+                      {briefHealthScore}
+                    </span>
                   )}
                 </>
               )}
@@ -1351,7 +1369,9 @@ function DashboardTab({ onNavigate }) {
   const [wData,       setWData]      = React.useState({}); // {wid: {rows,columns,error,loading}}
   const [kpis,        setKpis]       = React.useState(null);
   const [triage,      setTriage]     = React.useState(null);
-  const [cwfHistory,  setCwfHistory] = React.useState([]);
+  const [cwfHistory,  setCwfHistory] = React.useState(() => {
+    try { return JSON.parse(localStorage.getItem("wz_wf_runhistory_v1")||"[]").slice(0,12); } catch { return []; }
+  });
   const [accounts,    setAccounts]   = React.useState([]);
   const [accountId,   setAccountId]  = React.useState("all");
   const [healthHist,  setHealthHist] = React.useState([]);
@@ -1400,7 +1420,13 @@ function DashboardTab({ onNavigate }) {
       ]);
       if (!k.error) { setKpis(k); generateKpiNarrative(k, tg); }
       if (!tg.error) setTriage(tg);
-      if (Array.isArray(cwf)) setCwfHistory(cwf.slice(0,12));
+      if (Array.isArray(cwf) && cwf.length > 0) {
+        // Merge API results with localStorage — deduplicate by run_id
+        const local = (() => { try { return JSON.parse(localStorage.getItem("wz_wf_runhistory_v1")||"[]"); } catch { return []; } })();
+        const seen = new Set(cwf.map(r=>r.run_id||r.id).filter(Boolean));
+        const merged = [...cwf, ...local.filter(r=>!seen.has(r.run_id||r.id))].slice(0,20);
+        setCwfHistory(merged.slice(0,12));
+      }
     } catch(e) {}
     setLoading(false);
   }, []);
@@ -2160,6 +2186,50 @@ function MorningBriefTab({ onNavigate, onIssueFound }) {
   // Non-primary monitored tables
   const otherTables = monTables.filter(t => !t.primary);
 
+  // ── Unified health score ──────────────────────────────────────────────────
+  // Combines mws.report issues + monitored table results + anomalies
+  const unifiedHealthScore = React.useMemo(() => {
+    if (!brief) return null;
+    let score = 100;
+    // Deduct for mws.report issues
+    issues.forEach(i => {
+      if (i.severity === "critical") score -= 20;
+      else if (i.severity === "high") score -= 12;
+      else if (i.severity === "medium") score -= 6;
+      else score -= 3;
+    });
+    // Deduct for other monitored tables with issues
+    otherTables.forEach(t => {
+      const key = `${t.schema}.${t.table}`;
+      const res = tableResults[key];
+      if (res?.alerts?.length > 0) {
+        score -= Math.min(15, res.alerts.length * 5);
+      }
+    });
+    // Deduct for anomalies
+    if (anomalies?.tables_with_anomalies > 0) {
+      score -= Math.min(20, anomalies.tables_with_anomalies * 7);
+    }
+    const finalScore = Math.max(0, Math.min(100, Math.round(score)));
+    // Write unified score to wz_brief so WiziAgent context picks it up
+    try {
+      const stored = JSON.parse(sessionStorage.getItem("wz_brief")||"null");
+      if (stored) {
+        stored.health_score = finalScore;
+        stored.monitored_tables_count = otherTables.length;
+        stored.monitored_tables_issues = otherTables.filter(t => {
+          const res = tableResults[`${t.schema}.${t.table}`];
+          return res?.alerts?.length > 0;
+        }).length;
+        stored.stale_tables = otherTables
+          .filter(t => !tableResults[`${t.schema}.${t.table}`])
+          .map(t => `${t.schema}.${t.table}`);
+        sessionStorage.setItem("wz_brief", JSON.stringify(stored));
+      }
+    } catch {}
+    return finalScore;
+  }, [brief, issues, tableResults, anomalies, otherTables]);
+
   return (
     <div className="fade-in" style={{ display:"flex", flexDirection:"column", minHeight:"100%" }}>
       {/* Sub-view bar */}
@@ -2279,7 +2349,7 @@ function MorningBriefTab({ onNavigate, onIssueFound }) {
         </Card>
       )}
 
-      {/* Summary banner */}
+      {/* Summary banner — unified health */}
       {!loading && brief && (
         <Card style={{ padding:"18px 22px", marginBottom:20,
           background: isHealthy ? `${T.green}08` : `${T.red}06`,
@@ -2297,8 +2367,28 @@ function MorningBriefTab({ onNavigate, onIssueFound }) {
               </div>
               <div style={{ fontSize:12, color:T.muted, marginTop:2 }}>
                 {totalRows.toLocaleString()} rows · {scannedAt}
+                {otherTables.length > 0 && (
+                  <span> · {otherTables.length} table{otherTables.length>1?"s":""} monitored</span>
+                )}
               </div>
             </div>
+            {/* Unified health score badge */}
+            {unifiedHealthScore !== null && (
+              <div style={{ textAlign:"center", flexShrink:0 }}>
+                <div style={{ fontSize:28, fontWeight:800, lineHeight:1,
+                  color: unifiedHealthScore>=80?T.green:unifiedHealthScore>=60?T.orange:T.red,
+                  fontFamily:"monospace" }}>
+                  {unifiedHealthScore}
+                </div>
+                <div style={{ fontSize:9, color:T.muted, textTransform:"uppercase",
+                  letterSpacing:"0.05em", marginTop:2 }}>
+                  health score
+                </div>
+                <div style={{ fontSize:8, color:T.dim, marginTop:1 }}>
+                  {otherTables.length > 0 ? "mws + monitored" : "mws.report"}
+                </div>
+              </div>
+            )}
             {!isHealthy && (
               <Btn onClick={()=>onNavigate("triage")} size="sm">
                 Review Issues <ArrowRight size={12}/>
@@ -2625,14 +2715,36 @@ function TriageTab({ initialIssues }) {
   const addLog = (msg, level="info") =>
     setLog(p => [...p.slice(-80), { ts:new Date().toLocaleTimeString(), msg, level }]);
 
-  // ── Confidence score heuristic ──────────────────────────────────────────
+  // ── Confidence score heuristic (enhanced with fix history) ──────────────
   const confidence = (issue, dryRun) => {
     if (!dryRun || dryRun==="loading" || dryRun==="error") return null;
     const pct = dryRun.rows_affected / Math.max(dryRun.before, 1) * 100;
-    if (issue.fix_action === "recopy")       return 98; // always safe
-    if (issue.fix_action === "redrive_copy") return 95; // safe
-    if (issue.fix_action === "redrive")      return pct < 10 ? 92 : pct < 30 ? 80 : 65;
-    return 85;
+    // Base score by fix action
+    let base;
+    if (issue.fix_action === "recopy")       base = 98;
+    else if (issue.fix_action === "redrive_copy") base = 95;
+    else if (issue.fix_action === "redrive")  base = pct < 10 ? 92 : pct < 30 ? 80 : 65;
+    else base = 85;
+    // Boost/reduce based on historical fix outcomes for same action
+    try {
+      const history = JSON.parse(localStorage.getItem("wz_fix_history_v1")||"[]");
+      const similar = history.filter(h => h.fix_action === issue.fix_action);
+      if (similar.length >= 2) {
+        const successRate = similar.filter(h=>h.outcome==="success").length / similar.length;
+        // Blend base with historical success rate (weighted: 70% base, 30% history)
+        base = Math.round(base * 0.7 + successRate * 100 * 0.3);
+      }
+    } catch {}
+    return Math.min(99, Math.max(10, base));
+  };
+
+  // ── Record fix outcome to history ────────────────────────────────────────
+  const recordFixOutcome = (fix_action, outcome) => {
+    try {
+      const history = JSON.parse(localStorage.getItem("wz_fix_history_v1")||"[]");
+      history.push({ fix_action, outcome, ts: new Date().toISOString() });
+      localStorage.setItem("wz_fix_history_v1", JSON.stringify(history.slice(-100)));
+    } catch {}
   };
 
   // ── Issue age label from first-seen ts ──────────────────────────────────
@@ -2686,6 +2798,8 @@ function TriageTab({ initialIssues }) {
       setTriageResult(data);
       setScanTs(new Date().toISOString());
       setFixResults({}); setDryRuns({});
+      // Write issues to wz_pendingIssues so nudge strip + WiziAgent context can read them
+      try { sessionStorage.setItem("wz_pendingIssues", JSON.stringify(data.issues||[])); } catch {}
       addLog(`Scanned ${selectedTable} — ${data.total_rows?.toLocaleString()} rows, ${data.issues?.length||0} issue(s)`, "info");
     } catch(e) { addLog(`Scan failed: ${e.message}`, "error"); }
     setLoading(false);
@@ -2697,6 +2811,7 @@ function TriageTab({ initialIssues }) {
       if (data.error) throw new Error(data.error);
       setTriageResult(data);
       setScanTs(new Date().toISOString());
+      try { sessionStorage.setItem("wz_pendingIssues", JSON.stringify(data.issues||[])); } catch {}
       const remaining = data.issues?.length || 0;
       addLog(remaining === 0 ? "✓ Re-scan complete — all issues resolved" : `Re-scan: ${remaining} issue(s) remain`, remaining===0?"success":"warning");
     } catch(e) { addLog(`Re-scan failed: ${e.message}`, "error"); }
@@ -2741,6 +2856,7 @@ function TriageTab({ initialIssues }) {
       setFixResults(p => ({...p,[issue.id]:data}));
       const durationMs = Date.now() - fixStart;
       addLog(`✓ Fixed: before ${data.before} → after ${data.after}`, "success");
+      recordFixOutcome(issue.fix_action, "success"); // Upgrade 6: record outcome
       try { const c=JSON.parse(localStorage.getItem("wz_onboarding")||"{}"); localStorage.setItem("wz_onboarding",JSON.stringify({...c,triage:true})); } catch {}
       setFixHistory(p => [...p, {
         action: issue.fix_action, table:"mws.report",
@@ -2749,7 +2865,10 @@ function TriageTab({ initialIssues }) {
       }]);
       // Auto re-scan after fix
       await reScan();
-    } catch(e) { addLog(`Fix failed: ${e.message}`, "error"); }
+    } catch(e) {
+      addLog(`Fix failed: ${e.message}`, "error");
+      recordFixOutcome(issue.fix_action, "failure"); // Upgrade 6: record failure
+    }
     setFixing(p => ({...p,[issue.id]:false}));
   };
 
@@ -3377,6 +3496,19 @@ Rows affected: ${issue.count}
                               :conf>=75?"✨ Review recommended before applying"
                               :"✨ High risk — manual review required"}
                           </div>
+                          {(() => {
+                            try {
+                              const h = JSON.parse(localStorage.getItem("wz_fix_history_v1")||"[]");
+                              const similar = h.filter(x=>x.fix_action===issue.fix_action);
+                              if (similar.length >= 2) {
+                                const successes = similar.filter(x=>x.outcome==="success").length;
+                                return <div style={{fontSize:9,color:T.dim,textAlign:"right"}}>
+                                  Based on {similar.length} past fix{similar.length!==1?"es":""} · {successes} succeeded
+                                </div>;
+                              }
+                            } catch {}
+                            return null;
+                          })()}
                         </div>
                       )}
                     </div>
@@ -3793,12 +3925,18 @@ function ActivityTab({ onNavigate }) {
   const [sopResult]    = useSession("wz_sopResult", null);
   const [agentResult]  = useSession("wz_agentResult", null);
   const [triageResult] = useSession("wz_triage", null);
-  const [cwfHistory,   setCwfHistory]   = React.useState([]);
+  const [cwfHistory,   setCwfHistory]   = React.useState(() => {
+    // Seed from persisted localStorage immediately — no API round-trip needed
+    try { return JSON.parse(localStorage.getItem("wz_wf_runhistory_v1")||"[]"); } catch { return []; }
+  });
   const [anomalies]    = useSession("wz_anomalies", null);
 
   React.useEffect(() => {
+    // Also try API to get any newer runs not yet in localStorage
     fetch(`${API}/api/custom-workflows/history`)
-      .then(r=>r.json()).then(d=>{ if(Array.isArray(d)) setCwfHistory(d); }).catch(()=>{});
+      .then(r=>r.json()).then(d=>{
+        if (Array.isArray(d) && d.length > 0) setCwfHistory(d);
+      }).catch(()=>{});
   }, []);
 
   const alerts = React.useMemo(() => {
@@ -5643,6 +5781,108 @@ function SlaThresholdsCard() {
 }
 
 // ─── Configure Tab ────────────────────────────────────────────────────────────
+// ─── Table Dependency Map Card ────────────────────────────────────────────────
+const DEP_MAP_KEY = "wz_dep_map_v1";
+function depMapLoad() { try { return JSON.parse(localStorage.getItem(DEP_MAP_KEY)||"{}"); } catch { return {}; } }
+function depMapSave(m) { try { localStorage.setItem(DEP_MAP_KEY, JSON.stringify(m)); } catch {} }
+function depMapSummary() {
+  const m = depMapLoad();
+  const entries = Object.entries(m).filter(([,v])=>v.length>0);
+  if (!entries.length) return "";
+  return "Table dependencies (A feeds B):\n" + entries.map(([a,bs])=>`  ${a} → ${bs.join(", ")}`).join("\n");
+}
+
+function DepMapCard() {
+  const T = useT();
+  const [map, setMap] = React.useState(depMapLoad);
+  const [from, setFrom] = React.useState("");
+  const [to, setTo]   = React.useState("");
+  const [saved, setSaved] = React.useState(false);
+
+  const add = () => {
+    const f = from.trim().toLowerCase(), t = to.trim().toLowerCase();
+    if (!f || !t || f === t) return;
+    const next = { ...map, [f]: [...new Set([...(map[f]||[]), t])] };
+    setMap(next); depMapSave(next);
+    setFrom(""); setTo(""); setSaved(true);
+    setTimeout(()=>setSaved(false), 1500);
+  };
+  const remove = (f, t) => {
+    const next = { ...map, [f]: (map[f]||[]).filter(x=>x!==t) };
+    if (!next[f].length) delete next[f];
+    setMap(next); depMapSave(next);
+  };
+
+  const inp = { padding:"6px 10px", borderRadius:6, fontSize:11,
+    border:`1px solid ${T.border}`, background:T.surface, color:T.text,
+    fontFamily:"inherit", outline:"none" };
+
+  const entries = Object.entries(map).filter(([,v])=>v.length>0);
+
+  return (
+    <Card style={{ padding:"20px 24px", marginBottom:14 }}>
+      <div style={{ display:"flex", alignItems:"center", gap:10, marginBottom:4 }}>
+        <span style={{fontSize:15}}>🔗</span>
+        <span style={{ fontSize:13, fontWeight:700, color:T.text }}>Table Dependency Map</span>
+        <Badge label={`${entries.length} defined`} color={T.accent}/>
+      </div>
+      <div style={{ fontSize:11, color:T.muted, marginBottom:14 }}>
+        Define which tables feed others. WiziAgent uses this to trace root causes automatically.
+      </div>
+      {/* Add row */}
+      <div style={{ display:"flex", gap:8, alignItems:"center", marginBottom:12, flexWrap:"wrap" }}>
+        <input value={from} onChange={e=>setFrom(e.target.value)}
+          placeholder="Source table e.g. mws.report"
+          style={{ ...inp, flex:1, minWidth:140 }}
+          onFocus={e=>e.target.style.borderColor=T.accent}
+          onBlur={e=>e.target.style.borderColor=T.border}
+          onKeyDown={e=>e.key==="Enter"&&add()}/>
+        <span style={{fontSize:12, color:T.muted}}>→ feeds →</span>
+        <input value={to} onChange={e=>setTo(e.target.value)}
+          placeholder="Downstream table e.g. mws.orders"
+          style={{ ...inp, flex:1, minWidth:140 }}
+          onFocus={e=>e.target.style.borderColor=T.accent}
+          onBlur={e=>e.target.style.borderColor=T.border}
+          onKeyDown={e=>e.key==="Enter"&&add()}/>
+        <Btn size="sm" onClick={add} disabled={!from.trim()||!to.trim()}
+          style={{ background:saved?T.green:`linear-gradient(135deg,${T.accent},${T.purple})`, color:"white", border:"none" }}>
+          {saved ? <Check size={11}/> : <Plus size={11}/>}
+          {saved ? "Saved" : "Add"}
+        </Btn>
+      </div>
+      {/* Existing entries */}
+      {entries.length === 0 ? (
+        <div style={{ fontSize:11, color:T.dim, fontStyle:"italic" }}>
+          No dependencies defined yet. Add relationships above.
+        </div>
+      ) : (
+        <div style={{ display:"flex", flexDirection:"column", gap:6 }}>
+          {entries.map(([src, targets])=>(
+            <div key={src} style={{ display:"flex", alignItems:"center", gap:6,
+              padding:"7px 10px", borderRadius:7, background:T.bg,
+              border:`1px solid ${T.border}`, flexWrap:"wrap" }}>
+              <span style={{ fontSize:11, fontWeight:600, color:T.text,
+                fontFamily:"monospace", background:`${T.accent}10`,
+                padding:"1px 7px", borderRadius:4 }}>{src}</span>
+              <span style={{ fontSize:10, color:T.muted }}>→</span>
+              {targets.map(t=>(
+                <div key={t} style={{ display:"flex", alignItems:"center", gap:3 }}>
+                  <span style={{ fontSize:11, fontFamily:"monospace",
+                    color:T.text2, background:T.border,
+                    padding:"1px 7px", borderRadius:4 }}>{t}</span>
+                  <button onClick={()=>remove(src,t)}
+                    style={{ background:"none", border:"none", cursor:"pointer",
+                      color:T.muted, fontSize:13, lineHeight:1, padding:"0 2px" }}>×</button>
+                </div>
+              ))}
+            </div>
+          ))}
+        </div>
+      )}
+    </Card>
+  );
+}
+
 function ConfigureTab() {
   const T = useT();
   const [slackUrl, setSlackUrl] = useLocal("wz_slack", "");
@@ -5840,6 +6080,8 @@ function ConfigureTab() {
       </Card>
 
 
+
+      <DepMapCard/>
 
       {/* ── Evals ──────────────────────────────────────────────────────── */}
       <Card style={{ padding:"20px 24px" }}>
@@ -8595,7 +8837,7 @@ function SopChecklist({ title, items, icon, type, T }) {
         <span style={{ fontSize:16 }}>{icon}</span>
         <span style={{ fontSize:12, fontWeight:700, color:T.text }}>{title}</span>
         {autoChecked > 0 && (
-          <Badge label="auto-triggered (dummy)" color={T.purple}/>
+          <Badge label="auto-triggered" color={T.purple}/>
         )}
         <span style={{ fontSize:11, color:T.muted, marginLeft:"auto" }}>
           {done}/{items.length} done
@@ -10049,7 +10291,7 @@ function WorkflowsTab({ navigateTo }) {
   const [editingWf,  setEditing] = React.useState(null);
   const [detailWf,   setDetail]  = React.useState(null);
   const [loading,    setLoading] = React.useState(false);
-  const [runHistory, setHistory] = React.useState([]); // all runs
+  const [runHistory, setHistory] = useLocal("wz_wf_runhistory_v1", []); // persisted run history
   const [running,    setRunning] = React.useState({}); // {wf_id: bool}
   const [liveRun,    setLiveRun] = React.useState(null); // latest run result being shown
 
@@ -10147,13 +10389,15 @@ function WorkflowsTab({ navigateTo }) {
       if (data.error) {
         addNotif(`${wf.name}: ${data.error}`, "error", {persistent:true});
       } else {
-        setHistory(p=>[data,...p]);
+        setHistory(p=>[data,...p].slice(0,200));
         setLiveRun(data);
         const failed = data.failed || 0;
         if (failed > 0) {
           addNotif(`${wf.name}: ${failed} check${failed!==1?"s":""} failed`, "error", {
             persistent:true, actionLabel:"View results", action:()=>setView("detail")
           });
+          // ⚡ Signal event-driven pipelines
+          window.dispatchEvent(new CustomEvent("wz_failure_detected", { detail:{ source:"workflow", name:wf.name, failed } }));
         } else {
           addNotif(`${wf.name}: all checks passed ✓`, "success");
         }
@@ -10354,10 +10598,10 @@ Respond with ONLY this JSON array (no other text, no backticks):
   if (view==="builder") return (
     <div style={{ display:"flex", flexDirection:"column", height:"100%", overflow:"hidden" }}>
       {saveError && (
-        <div style={{ padding:"10px 20px", background:`${T.red}08`, borderBottom:"1px solid #fca5a5",
-          fontSize:12, color:"#ef4444", flexShrink:0 }}>
+        <div style={{ padding:"10px 20px", background:`${T.red}08`, borderBottom:`1px solid ${T.red}30`,
+          fontSize:12, color:T.red, flexShrink:0 }}>
           ✗ Save failed: {saveError} —{" "}
-          <button onClick={()=>setSaveError(null)} style={{background:"none",border:"none",cursor:"pointer",color:"#ef4444",textDecoration:"underline"}}>dismiss</button>
+          <button onClick={()=>setSaveError(null)} style={{background:"none",border:"none",cursor:"pointer",color:T.red,textDecoration:"underline"}}>dismiss</button>
         </div>
       )}
       <WorkflowBuilder
@@ -10459,6 +10703,54 @@ Respond with ONLY this JSON array (no other text, no backticks):
           </Btn>
         </div>
       </div>
+
+      {/* ── Cross-workflow correlation banner ── */}
+      {(() => {
+        if (runHistory.length < 2) return null;
+        const windowMs = 15 * 60 * 1000; // 15-minute window
+        const now = Date.now();
+        // Group recent failures within 15-min windows
+        const recentFails = runHistory
+          .filter(r => r.status !== "clean" && r.status !== "pass" && r.started_at)
+          .filter(r => (now - new Date(r.started_at).getTime()) < 2 * 60 * 60 * 1000) // last 2h
+          .slice(0, 20);
+        if (recentFails.length < 2) return null;
+        // Find largest cluster within 15 min
+        let bestCluster = [];
+        recentFails.forEach(anchor => {
+          const t = new Date(anchor.started_at).getTime();
+          const cluster = recentFails.filter(r => Math.abs(new Date(r.started_at).getTime() - t) <= windowMs);
+          if (cluster.length > bestCluster.length) bestCluster = cluster;
+        });
+        if (bestCluster.length < 2) return null;
+        const names = [...new Set(bestCluster.map(r => r.workflow_name || r.name || "Unknown"))];
+        const earliest = bestCluster.map(r=>new Date(r.started_at)).sort((a,b)=>a-b)[0];
+        const minsAgo = Math.round((now - earliest.getTime()) / 60000);
+        return (
+          <div style={{ marginBottom:16, padding:"10px 14px", borderRadius:10,
+            background:"#FFF7ED", border:"1px solid #FED7AA",
+            display:"flex", gap:10, alignItems:"flex-start" }}>
+            <span style={{fontSize:16, flexShrink:0}}>🔗</span>
+            <div style={{flex:1}}>
+              <div style={{fontSize:12, fontWeight:700, color:"#C2410C", marginBottom:2}}>
+                {bestCluster.length} workflows failed within 15 minutes — possible shared root cause
+              </div>
+              <div style={{fontSize:11, color:"#9A3412"}}>
+                {names.slice(0,4).join(", ")}{names.length>4?` +${names.length-4} more`:""} · {minsAgo < 60 ? `${minsAgo}m ago` : `${Math.round(minsAgo/60)}h ago`}
+              </div>
+            </div>
+            <button onClick={()=>{
+                sessionStorage.setItem("wz_agent_nudge", `Why did ${names.slice(0,3).join(", ")} all fail around the same time?`);
+                window.dispatchEvent(new CustomEvent("wz_open_agent"));
+              }}
+              style={{fontSize:10, padding:"3px 10px", borderRadius:6,
+                background:"#FED7AA", border:"1px solid #FDBA74",
+                color:"#92400E", cursor:"pointer", fontFamily:"inherit", fontWeight:600, flexShrink:0}}>
+              Investigate →
+            </button>
+          </div>
+        );
+      })()}
 
       {/* Recent activity strip */}
       {recentRuns.length > 0 && (
@@ -10598,6 +10890,17 @@ Respond with ONLY this JSON array (no other text, no backticks):
                           color:lastRun.status==="clean"?T.green:T.red }}>
                           · last: {lastRun.status==="clean"?"✓":"✗"} {lastRun.started_at?.slice(11,16)}
                         </span>
+                      )}
+                      {/* Sparkline — last 10 runs */}
+                      {wfRuns.length > 1 && (
+                        <div style={{ display:"flex", gap:2, alignItems:"center", marginLeft:4 }}>
+                          {wfRuns.slice(0,10).reverse().map((r,i)=>(
+                            <div key={i} style={{ width:6, height:6, borderRadius:"50%",
+                              background:r.status==="clean"?T.green:T.red,
+                              opacity: 0.4 + (i/10)*0.6,
+                              title:r.started_at?.slice(0,16) }}/>
+                          ))}
+                        </div>
                       )}
                     </div>
                     <div style={{ display:"flex", gap:7, flexWrap:"wrap" }}>
@@ -12982,7 +13285,7 @@ function useLiveChips(currentTab, currentRun) {
 
     // 2. Recent workflow failures from session storage
     try {
-      const runs = JSON.parse(sessionStorage.getItem("wz_cwfHistory")||"[]");
+      const runs = JSON.parse(localStorage.getItem("wz_wf_runhistory_v1")||"[]");
       const failed = runs.filter(r => r.status !== "clean" && r.status !== "pass");
       if (failed.length && chips.length < 2) {
         const wf = failed[0];
@@ -13043,6 +13346,19 @@ function useLiveChips(currentTab, currentRun) {
   }, [currentTab, currentRun]);
 }
 
+// ── Agent memory helpers ──────────────────────────────────────────────────────
+const MEM_KEY = "wz_agent_memory_v1";
+const MEM_MAX = 10;
+function memLoad() { try { return JSON.parse(localStorage.getItem(MEM_KEY)||"[]"); } catch { return []; } }
+function memSave(convos) { try { localStorage.setItem(MEM_KEY, JSON.stringify(convos.slice(-MEM_MAX))); } catch {} }
+function memSummary() {
+  const convos = memLoad();
+  if (!convos.length) return "";
+  return "Past sessions (newest first):\n" + convos.slice(-5).reverse().map((c,i)=>
+    `[${i+1}] ${c.ts} — User: "${c.user}" → "${c.reply.slice(0,100)}${c.reply.length>100?"…":""}"`
+  ).join("\n");
+}
+
 function FloatingAssistant({ currentRun, currentTab, onNavigate }) {
   const T = useT();
   const dbSchema = useSchema();
@@ -13067,6 +13383,18 @@ function FloatingAssistant({ currentRun, currentTab, onNavigate }) {
     if (open && inputRef.current) inputRef.current.focus();
   }, [open]);
 
+  // Listen for external nudge events (e.g. from correlation banner)
+  React.useEffect(()=>{
+    const handler = () => {
+      const nudge = sessionStorage.getItem("wz_agent_nudge");
+      sessionStorage.removeItem("wz_agent_nudge");
+      setOpen(true);
+      if (nudge) setTimeout(()=>send(nudge), 150);
+    };
+    window.addEventListener("wz_open_agent", handler);
+    return ()=>window.removeEventListener("wz_open_agent", handler);
+  }, []);
+
   const send = async (textOverride) => {
     const text = (textOverride || input).trim();
     if (!text || loading) return;
@@ -13087,6 +13415,8 @@ function FloatingAssistant({ currentRun, currentTab, onNavigate }) {
       const now = new Date();
       parts.push(`Current time: ${now.toLocaleTimeString("en-IN", { timeZone:"Asia/Kolkata" })} IST, ${now.toLocaleDateString("en-IN", { timeZone:"Asia/Kolkata", weekday:"short", day:"numeric", month:"short" })}`);
       parts.push(`Active tab: ${currentTab || "unknown"}`);
+      const mem = memSummary();
+      if (mem) parts.push("\n" + mem);
 
       // Current run result (most important — what user is staring at)
       if (currentRun) {
@@ -13120,7 +13450,7 @@ function FloatingAssistant({ currentRun, currentTab, onNavigate }) {
 
       // Recent workflow runs
       try {
-        const runs = JSON.parse(sessionStorage.getItem("wz_cwfHistory")||"[]");
+        const runs = JSON.parse(localStorage.getItem("wz_wf_runhistory_v1")||"[]");
         if (runs.length) {
           const recent = runs.slice(0,5);
           const failedRuns = recent.filter(r=>r.status!=="clean"&&r.status!=="pass");
@@ -13146,6 +13476,9 @@ function FloatingAssistant({ currentRun, currentTab, onNavigate }) {
           parts.push(`Dataflows: ${dfs.length} total, ${failing} failing, ${neverRun} never run`);
         }
       } catch {}
+      // Table dependency map
+      const depSummary = depMapSummary();
+      if (depSummary) parts.push(depSummary);
 
       return parts.join("\n");
     };
@@ -13191,6 +13524,12 @@ function FloatingAssistant({ currentRun, currentTab, onNavigate }) {
         ...p.filter(m=>m.role!=="thinking"),
         { role:"assistant", text:data.final_message, steps:data.steps||[], actions:data.actions||[] }
       ]);
+      // Save to persistent memory
+      if (data.final_message) {
+        const convos = memLoad();
+        convos.push({ ts: new Date().toLocaleString("en-IN",{timeZone:"Asia/Kolkata",dateStyle:"short",timeStyle:"short"}), user: text.slice(0,120), reply: data.final_message.slice(0,200) });
+        memSave(convos);
+      }
     } catch(e) {
       setMessages(p=>[...p.filter(m=>m.role!=="thinking"),
         { role:"assistant", text:`Connection error: ${e.message}`, steps:[], actions:[] }]);
@@ -13314,6 +13653,45 @@ function FloatingAssistant({ currentRun, currentTab, onNavigate }) {
           <div style={{ flex:1, overflowY:"auto", padding:"16px 14px 8px",
             background:"#F8F7FF" }}>
 
+            {/* ── Proactive nudge strip ── shows when issues exist + not yet chatting */}
+            {messages.length === 1 && (() => {
+              const nudges = [];
+              try {
+                const issues = JSON.parse(sessionStorage.getItem("wz_pendingIssues")||"[]");
+                const crit = issues.filter(i=>i.severity==="critical").length;
+                if (crit > 0) nudges.push({ icon:"🔴", text:`${crit} critical issue${crit>1?"s":""} need attention`, q:`Summarise the ${crit} critical triage issues` });
+                else if (issues.length > 0) nudges.push({ icon:"🟡", text:`${issues.length} open issue${issues.length>1?"s":""} in triage`, q:"What are the open triage issues?" });
+              } catch {}
+              try {
+                const runs = JSON.parse(localStorage.getItem("wz_wf_runhistory_v1")||"[]");
+                const failed = runs.filter(r=>r.status!=="clean"&&r.status!=="pass");
+                if (failed.length > 0) nudges.push({ icon:"⚠️", text:`${failed.length} workflow run${failed.length>1?"s":""} failed recently`, q:`Why did ${failed[0].workflow_name||failed[0].name||"the last workflow"} fail?` });
+              } catch {}
+              try {
+                const br = JSON.parse(sessionStorage.getItem("wz_brief")||"null");
+                if (br?.health_score !== undefined && br.health_score < 75) nudges.push({ icon:"📉", text:`Platform health at ${br.health_score}/100`, q:"What's dragging down the health score?" });
+              } catch {}
+              if (!nudges.length) return null;
+              return (
+                <div style={{ marginBottom:12, borderRadius:10, overflow:"hidden",
+                  border:"1px solid #FEE2E2", background:"#FFF7F7" }}>
+                  {nudges.slice(0,2).map((n,i)=>(
+                    <div key={i} onClick={()=>send(n.q)}
+                      style={{ display:"flex", alignItems:"center", gap:8,
+                        padding:"8px 12px", cursor:"pointer",
+                        borderBottom: i<nudges.slice(0,2).length-1 ? "1px solid #FEE2E2" : "none",
+                        transition:"background 0.15s" }}
+                      onMouseEnter={e=>e.currentTarget.style.background="#FEE2E2"}
+                      onMouseLeave={e=>e.currentTarget.style.background="transparent"}>
+                      <span style={{fontSize:13}}>{n.icon}</span>
+                      <span style={{fontSize:11, color:"#DC2626", fontWeight:500, flex:1}}>{n.text}</span>
+                      <span style={{fontSize:10, color:"#F87171"}}>Ask →</span>
+                    </div>
+                  ))}
+                </div>
+              );
+            })()}
+
             {/* Suggestion chips — only on welcome screen */}
             {messages.length === 1 && (
               <div style={{ marginBottom:16 }}>
@@ -13323,7 +13701,7 @@ function FloatingAssistant({ currentRun, currentTab, onNavigate }) {
                   <div style={{ flex:1, height:1, background:"#E5E7EB" }}/>
                   {(() => {
                     try {
-                      const runs = JSON.parse(sessionStorage.getItem("wz_cwfHistory")||"[]");
+                      const runs = JSON.parse(localStorage.getItem("wz_wf_runhistory_v1")||"[]");
                       if (runs.filter(r=>r.status!=="clean"&&r.status!=="pass").length > 0) return "⚠ Issues detected";
                       const issues = JSON.parse(sessionStorage.getItem("wz_pendingIssues")||"[]");
                       if (issues.length > 0) return "📋 Open issues";
@@ -15905,6 +16283,22 @@ Rules: use only real columns, return actual rows not just counts, max 3 checks.`
                       </div>
                     ))}
                   </div>
+                  {/* Anomaly banner — first-time failures */}
+                  {runResult.anomalies?.length > 0 && (
+                    <div style={{ padding:"8px 12px", borderRadius:8, marginBottom:10,
+                      background:"#FFF7ED", border:"1px solid #FED7AA",
+                      display:"flex", gap:8, alignItems:"flex-start" }}>
+                      <span style={{fontSize:14}}>🆕</span>
+                      <div>
+                        <div style={{fontSize:11, fontWeight:700, color:"#C2410C", marginBottom:2}}>
+                          New failure{runResult.anomalies.length>1?"s":""} — not seen before
+                        </div>
+                        <div style={{fontSize:11, color:"#9A3412"}}>
+                          {runResult.anomalies.join(", ")} {runResult.anomalies.length===1?"was":"were"} passing consistently until now
+                        </div>
+                      </div>
+                    </div>
+                  )}
                   {/* AI run commentary — 80 tokens, fires automatically */}
                   {(() => {
                     const [commentary, setCommentary] = React.useState(null);
@@ -16363,6 +16757,182 @@ function MoveFolderModal({ df, folders, onMove, onClose, T }) {
 
 
 // ═══════════════════════════════════════════════════════════════════════════════
+// ── SuggestChecksPanel — analyses run history to propose new checks ──────────
+function SuggestChecksPanel({ dataflows, dbSchema, onSave, onClose, T }) {
+  const [loading,     setLoading]     = React.useState(false);
+  const [suggestions, setSuggestions] = React.useState([]);
+  const [applied,     setApplied]     = React.useState(new Set());
+  const [error,       setError]       = React.useState("");
+
+  const analyse = async () => {
+    setLoading(true); setError(""); setSuggestions([]);
+    try {
+      // Gather run history evidence from localStorage
+      const evidence = [];
+      dataflows.slice(0,20).forEach(df => {
+        try {
+          const log = JSON.parse(localStorage.getItem(`wz_df_runlog_${df.id}`)||"[]");
+          const recent = log.slice(-10);
+          if (!recent.length) return;
+          const failRates = {};
+          recent.forEach(run => (run.results||[]).forEach(r => {
+            if (!failRates[r.name]) failRates[r.name] = {fail:0,total:0};
+            failRates[r.name].total++;
+            if (r.status !== "pass") failRates[r.name].fail++;
+          }));
+          const topFails = Object.entries(failRates)
+            .filter(([,v])=>v.fail>0)
+            .map(([name,v])=>({name, rate:Math.round(v.fail/v.total*100)}))
+            .sort((a,b)=>b.rate-a.rate).slice(0,3);
+          if (topFails.length) evidence.push({df:df.name, fails:topFails});
+        } catch {}
+      });
+
+      const depMap = (() => { try { return JSON.parse(localStorage.getItem("wz_dep_map_v1")||"{}"); } catch { return {}; } })();
+      const existingNames = dataflows.flatMap(d=>(d.checks||[]).map(c=>c.name));
+
+      const res = await fetch(`${API}/api/ai/chat`, {
+        method:"POST", headers:{"Content-Type":"application/json"},
+        body: JSON.stringify({
+          system:`You are a data quality engineer. Analyse failure history and suggest NEW checks not already covered.
+SCHEMA: ${dbSchema||"mws.report, mws.orders, mws.inventory, public.tbl_amzn_campaign_report, public.tbl_amzn_keyword_report"}
+DEPENDENCY MAP: ${JSON.stringify(depMap)}
+EXISTING CHECK NAMES: ${existingNames.slice(0,30).join(", ")||"none"}
+Return ONLY a JSON array (no markdown), max 5 items:
+[{"dataflow_name":"existing dataflow name or 'New Dataflow'","check_name":"string","reason":"one sentence why this gap exists","sql":"SELECT ...","pass_condition":"rows = 0 or rows > 0","severity":"critical|high|medium"}]
+Rules: use only real columns from schema, each check must be genuinely new.`,
+          messages:[{role:"user", content:`Failure evidence:
+${evidence.length ? JSON.stringify(evidence) : "No run history yet — suggest 5 foundational checks based on the schema."}`}],
+          max_tokens:600
+        })
+      });
+      const d = await res.json();
+      const text = (d?.content?.[0]?.text||"[]").replace(/```json|```/g,"").trim();
+      const arr = JSON.parse(text);
+      if (Array.isArray(arr) && arr.length) setSuggestions(arr);
+      else setError("No suggestions returned — try running some dataflows first to build history.");
+    } catch(e) { setError(`Error: ${e.message}`); }
+    setLoading(false);
+  };
+
+  React.useEffect(()=>{ analyse(); }, []);
+
+  const applyCheck = (s) => {
+    const existing = dataflows.find(d=>d.name===s.dataflow_name);
+    const now = new Date().toISOString();
+    if (existing) {
+      const updated = { ...existing,
+        checks:[...(existing.checks||[]), {name:s.check_name, sql:s.sql, pass_condition:s.pass_condition, severity:s.severity}],
+        updated_at:now };
+      onSave(updated);
+    } else {
+      onSave({ id:`df_${Date.now().toString(36)}`, name:s.dataflow_name==="New Dataflow"?s.check_name+" Monitor":s.dataflow_name,
+        desc:"Auto-generated from suggestions", folder_id:"f_custom", tags:["ai-suggested"],
+        priority:"Medium", schedule:"daily", owner:"admin", db_key:"default",
+        starred:false, created_at:now, updated_at:now,
+        checks:[{name:s.check_name, sql:s.sql, pass_condition:s.pass_condition, severity:s.severity}] });
+    }
+    setApplied(p=>new Set([...p, s.check_name]));
+  };
+
+  const sevColor = {critical:"#EF4444",high:"#F97316",medium:"#F59E0B",low:"#6B7280"};
+
+  return (
+    <div style={{ position:"fixed", inset:0, background:"rgba(0,0,0,0.55)",
+      display:"flex", alignItems:"center", justifyContent:"center", zIndex:250 }}
+      onClick={e=>{ if(e.target===e.currentTarget) onClose(); }}>
+      <div style={{ background:T.surface, borderRadius:16, width:"min(680px,95vw)",
+        maxHeight:"88vh", display:"flex", flexDirection:"column",
+        border:`1px solid ${T.border}`, boxShadow:"0 24px 64px rgba(0,0,0,0.18)",
+        overflow:"hidden" }}>
+        {/* Header */}
+        <div style={{ padding:"18px 22px", borderBottom:`1px solid ${T.border}`,
+          display:"flex", alignItems:"center", gap:12, flexShrink:0,
+          background:`linear-gradient(135deg,${T.purple}08,${T.accent}08)` }}>
+          <div style={{ width:36, height:36, borderRadius:9, flexShrink:0,
+            background:`linear-gradient(135deg,${T.purple},${T.accent})`,
+            display:"flex", alignItems:"center", justifyContent:"center", fontSize:17 }}>🔍</div>
+          <div style={{ flex:1 }}>
+            <div style={{ fontSize:14, fontWeight:700, color:T.text }}>Suggest Checks</div>
+            <div style={{ fontSize:11, color:T.muted }}>
+              AI analyses your run history + schema to find coverage gaps
+            </div>
+          </div>
+          <button onClick={()=>{ setSuggestions([]); analyse(); }}
+            disabled={loading}
+            style={{ background:"none", border:`1px solid ${T.border}`, borderRadius:6,
+              cursor:"pointer", color:T.muted, padding:"4px 10px", fontSize:11 }}>
+            {loading?<Spinner size={10}/>:"↺ Refresh"}
+          </button>
+          <button onClick={onClose}
+            style={{ background:"none", border:"none", cursor:"pointer",
+              color:T.muted, fontSize:20, lineHeight:1 }}>×</button>
+        </div>
+        {/* Body */}
+        <div style={{ flex:1, overflowY:"auto", padding:"18px 22px" }}>
+          {loading && (
+            <div style={{ textAlign:"center", padding:"40px 0" }}>
+              <Spinner size={28} style={{margin:"0 auto 12px"}}/>
+              <div style={{ fontSize:13, color:T.muted, marginTop:12 }}>
+                Analysing run history + schema…
+              </div>
+            </div>
+          )}
+          {error && !loading && (
+            <div style={{ padding:"14px", borderRadius:8, background:`${T.orange}08`,
+              border:`1px solid ${T.orange}30`, color:T.orange, fontSize:12 }}>{error}</div>
+          )}
+          {!loading && suggestions.length > 0 && (
+            <div style={{ display:"flex", flexDirection:"column", gap:10 }}>
+              <div style={{ fontSize:11, color:T.muted, marginBottom:4 }}>
+                {suggestions.length} gap{suggestions.length!==1?"s":""} found — click Apply to add to a dataflow
+              </div>
+              {suggestions.map((s,i)=>{
+                const done = applied.has(s.check_name);
+                const sc = sevColor[s.severity]||T.muted;
+                return (
+                  <div key={i} style={{ padding:"14px 16px", borderRadius:10,
+                    border:`1px solid ${done?T.green:T.border}`,
+                    background: done?`${T.green}06`:T.bg }}>
+                    <div style={{ display:"flex", alignItems:"flex-start", gap:10 }}>
+                      <div style={{ width:3, alignSelf:"stretch", borderRadius:2,
+                        background:sc, flexShrink:0 }}/>
+                      <div style={{ flex:1, minWidth:0 }}>
+                        <div style={{ display:"flex", alignItems:"center", gap:8, marginBottom:4 }}>
+                          <span style={{ fontSize:12, fontWeight:700, color:T.text }}>{s.check_name}</span>
+                          <span style={{ fontSize:9, padding:"1px 7px", borderRadius:99,
+                            background:`${sc}15`, color:sc, fontWeight:700,
+                            textTransform:"uppercase" }}>{s.severity}</span>
+                          <span style={{ fontSize:10, color:T.muted, marginLeft:"auto" }}>
+                            → {s.dataflow_name}
+                          </span>
+                        </div>
+                        <div style={{ fontSize:11, color:T.muted, marginBottom:6 }}>{s.reason}</div>
+                        <div style={{ fontSize:10, fontFamily:"monospace", color:T.text2,
+                          background:T.surface, padding:"6px 10px", borderRadius:6,
+                          border:`1px solid ${T.border}`, whiteSpace:"pre-wrap", wordBreak:"break-all" }}>
+                          {s.sql}
+                        </div>
+                      </div>
+                      <button onClick={()=>applyCheck(s)} disabled={done}
+                        style={{ flexShrink:0, padding:"5px 14px", borderRadius:7,
+                          background:done?T.green:`linear-gradient(135deg,${T.accent},${T.purple})`,
+                          border:"none", color:"white", cursor:done?"default":"pointer",
+                          fontSize:11, fontWeight:600 }}>
+                        {done?"✓ Added":"Apply"}
+                      </button>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // MAIN DataflowsTab COMPONENT
 // ═══════════════════════════════════════════════════════════════════════════════
 // ── AI Dataflow Assistant — build dataflows from plain text ──────────────────
@@ -16598,6 +17168,7 @@ function DataflowsTab({ onNavigate }) {
   const [moveModal, setMoveModal]   = React.useState(null); // df to move
   const [selectedIds,    setSelectedIds]    = React.useState(new Set());
   const [showAiDf,       setShowAiDf]       = React.useState(false); // bulk selection
+  const [suggestOpen,    setSuggestOpen]    = React.useState(false);
   const [bulkRunning, setBulkRunning] = React.useState(false);
 
   const toggleSelect = (id) => setSelectedIds(p => {
@@ -16758,12 +17329,41 @@ function DataflowsTab({ onNavigate }) {
         body: JSON.stringify({ checks: df.checks || [] })
       });
       const data = await res.json();
-      // Update last_run_at
       const now = new Date().toISOString();
+      // ── Anomaly baseline: store run log ──────────────────────────────────
+      const logKey = `wz_df_runlog_${df.id}`;
+      try {
+        const log = JSON.parse(localStorage.getItem(logKey)||"[]");
+        log.push({ ts:now, overall:data.overall,
+          results:(data.results||[]).map(r=>({name:r.name,status:r.status})) });
+        localStorage.setItem(logKey, JSON.stringify(log.slice(-30)));
+      } catch {}
+      // ── Detect anomaly: was this check passing before? ───────────────────
+      const anomalies = [];
+      try {
+        const log = JSON.parse(localStorage.getItem(logKey)||"[]");
+        const prevRuns = log.slice(-11,-1); // last 10 before this one
+        if (prevRuns.length >= 3) {
+          (data.results||[]).forEach(r => {
+            if (r.status !== "pass") {
+              const prevStatuses = prevRuns.map(run =>
+                (run.results||[]).find(x=>x.name===r.name)?.status
+              ).filter(Boolean);
+              const prevPassRate = prevStatuses.filter(s=>s==="pass").length / prevStatuses.length;
+              if (prevPassRate >= 0.8) anomalies.push(r.name); // was passing 80%+ before
+            }
+          });
+        }
+      } catch {}
       setDataflows(p => p.map(d =>
-        d.id===df.id ? {...d, last_run_at:now, last_run_status:data.overall} : d
+        d.id===df.id ? {...d, last_run_at:now, last_run_status:data.overall,
+          last_anomalies: anomalies.length ? anomalies : undefined } : d
       ));
-      return data;
+      // ⚡ Signal event-driven pipelines on dataflow failure
+      if (data.overall && data.overall !== "pass" && data.overall !== "clean") {
+        window.dispatchEvent(new CustomEvent("wz_failure_detected", { detail:{ source:"dataflow", name:df.name } }));
+      }
+      return { ...data, anomalies };
     } catch(e) {
       return { error: e.message, results:[] };
     }
@@ -16852,7 +17452,7 @@ function DataflowsTab({ onNavigate }) {
 
       {/* Left Sidebar — Folders */}
       <div style={{ width:240, flexShrink:0,
-        background:"#1C1917", /* matches Wizi's sidebar */
+        background: T.sidebarBg || "#1C1917",
         borderRight:`1px solid rgba(255,255,255,0.06)`,
         display:"flex", flexDirection:"column",
         overflowY:"auto" }}>
@@ -16927,6 +17527,10 @@ function DataflowsTab({ onNavigate }) {
             style={{ border:`1px solid ${T.accent}30`, color:T.accent, flexShrink:0 }}>
             ✨ AI Builder
           </Btn>
+          <Btn onClick={()=>setSuggestOpen(p=>!p)} variant="ghost"
+            style={{ border:`1px solid ${T.purple}30`, color:T.purple, flexShrink:0 }}>
+            🔍 Suggest Checks
+          </Btn>
           <Btn onClick={() => setFormModal({})}
             style={{ background:`linear-gradient(135deg,${T.accent},${T.purple})`,
               color:"white", border:"none", flexShrink:0 }}>
@@ -16936,7 +17540,7 @@ function DataflowsTab({ onNavigate }) {
 
         {/* Bulk action bar */}
         {selectedIds.size > 0 && (
-          <div style={{ padding:"8px 20px", background:"#1C1917",
+          <div style={{ padding:"8px 20px", background: T.sidebarBg || "#1C1917",
             display:"flex", alignItems:"center", gap:10, flexShrink:0, flexWrap:"wrap" }}>
             <span style={{ fontSize:12, fontWeight:700, color:"white" }}>
               {selectedIds.size} selected
@@ -17107,6 +17711,17 @@ function DataflowsTab({ onNavigate }) {
           folders={folders.filter(f=>f.id!=="f_root"||true)}
           onMove={moveDataflow}
           onClose={() => setMoveModal(null)}
+          T={T}
+        />
+      )}
+
+      {/* ── Self-Writing Checks Panel ── */}
+      {suggestOpen && (
+        <SuggestChecksPanel
+          dataflows={dataflows}
+          dbSchema={dbSchema}
+          onSave={saveDataflow}
+          onClose={()=>setSuggestOpen(false)}
           T={T}
         />
       )}
@@ -17500,6 +18115,74 @@ function ScheduleFormModal({ initial, workflows, dataflows, onSave, onClose, onR
         {/* Body */}
         <div style={{ flex:1, overflowY:"auto", padding:"20px 24px",
           display:"flex", flexDirection:"column", gap:18 }}>
+
+          {/* ── NL SLA Contract input ── */}
+          {(() => {
+            const [nlInput,    setNlInput]   = React.useState("");
+            const [nlLoading,  setNlLoading] = React.useState(false);
+            const [nlMsg,      setNlMsg]     = React.useState("");
+            const parseNl = async () => {
+              if (!nlInput.trim() || nlLoading) return;
+              setNlLoading(true); setNlMsg("");
+              try {
+                const res = await fetch(`${API}/api/ai/chat`, {
+                  method:"POST", headers:{"Content-Type":"application/json"},
+                  body: JSON.stringify({
+                    system:`You parse natural language SLA contracts into a JSON schedule config.
+Return ONLY valid JSON, no markdown:
+{"name":"string","schedule":"cron or interval string e.g. 0 10 * * 1-5 or every 30 min","notes":"string","check_suggestion":"one-line SQL check description or empty string"}
+Schedule format rules:
+- Use cron (5-field) for specific times: "0 10 * * 1-5" = 10am weekdays
+- IST to UTC: subtract 5:30 (e.g. 4pm IST = 10:30 UTC = "30 10 * * *")
+- Use "every N min" for intervals
+- "daily" for once a day without specific time`,
+                    messages:[{role:"user", content:nlInput}],
+                    max_tokens:150
+                  })
+                });
+                const d = await res.json();
+                const text = (d?.content?.[0]?.text||"{}").replace(/```json|```/g,"").trim();
+                const parsed = JSON.parse(text);
+                if (parsed.name)     field("name",     parsed.name);
+                if (parsed.schedule) field("schedule", parsed.schedule);
+                if (parsed.notes)    field("notes",    parsed.notes);
+                setNlMsg(parsed.check_suggestion
+                  ? `✓ Applied · Check idea: "${parsed.check_suggestion}"`
+                  : "✓ Applied to form");
+                setNlInput("");
+              } catch(e) { setNlMsg("Couldn't parse — try being more specific"); }
+              setNlLoading(false);
+            };
+            return (
+              <div style={{ padding:"12px 14px", borderRadius:10,
+                background:`${T.accent}05`, border:`1px dashed ${T.accent}30` }}>
+                <div style={{ fontSize:10, fontWeight:700, color:T.accent,
+                  textTransform:"uppercase", letterSpacing:"0.06em", marginBottom:8 }}>
+                  ✦ Natural Language SLA
+                </div>
+                <div style={{ display:"flex", gap:8 }}>
+                  <input value={nlInput} onChange={e=>setNlInput(e.target.value)}
+                    onKeyDown={e=>e.key==="Enter"&&parseNl()}
+                    placeholder='e.g. "Campaign data must be present by 4 PM IST every weekday"'
+                    style={{ flex:1, padding:"7px 11px", borderRadius:7, fontSize:11,
+                      border:`1px solid ${T.accent}25`, background:T.surface,
+                      color:T.text, fontFamily:"inherit", outline:"none" }}
+                    onFocus={e=>e.target.style.borderColor=T.accent}
+                    onBlur={e=>e.target.style.borderColor=`${T.accent}25`}/>
+                  <Btn size="sm" onClick={parseNl} disabled={!nlInput.trim()||nlLoading}
+                    style={{ background:`linear-gradient(135deg,${T.accent},${T.purple})`,
+                      color:"white", border:"none", flexShrink:0 }}>
+                    {nlLoading ? <Spinner size={10} color="white"/> : "✦ Parse"}
+                  </Btn>
+                </div>
+                {nlMsg && (
+                  <div style={{ fontSize:10, marginTop:6, color:nlMsg.startsWith("✓")?T.green:T.orange }}>
+                    {nlMsg}
+                  </div>
+                )}
+              </div>
+            );
+          })()}
 
           {/* Row 1: Name + Owner */}
           <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:12 }}>
@@ -18890,6 +19573,21 @@ function AutoPilotTab({ onNavigate }) {
     return ()=>Object.values(intervalRefs.current).forEach(clearInterval);
   }, [pipelines.map(p=>p.id+p.enabled+p.interval_min).join(",")]);
 
+  // ── Event-driven watch mode — fires pipeline when failure detected ─────────
+  React.useEffect(()=>{
+    const handler = () => {
+      const triggered = pipelines.filter(p => p.enabled && p.trigger_on_failure && !runningPipes[p.id]);
+      if (!triggered.length) return;
+      triggered.forEach(pipe => {
+        addLog(pipe.id, "orchestrator", "⚡ Event-triggered: failure detected — starting pipeline", "warn");
+        runPipeline(pipe);
+      });
+    };
+    // Listen for workflow failures (dispatched by WorkflowsTab on failed run)
+    window.addEventListener("wz_failure_detected", handler);
+    return () => window.removeEventListener("wz_failure_detected", handler);
+  }, [pipelines, runningPipes]);
+
   // ── Shared styles ──────────────────────────────────────────────────────────
   const inp = {width:"100%",padding:"7px 10px",borderRadius:6,fontSize:11,
     border:`1px solid ${T.border}`,background:T.surface,color:T.text,
@@ -19170,6 +19868,16 @@ function AutoPilotTab({ onNavigate }) {
                       </div>
                       <div><div style={{fontSize:11,color:T.text}}>Enabled</div>
                         <div style={{fontSize:9,color:T.muted}}>Run on schedule automatically</div></div>
+                    </div>
+                    <div style={{display:"flex",alignItems:"center",gap:8}}>
+                      <div onClick={()=>update("trigger_on_failure",!pipe.trigger_on_failure)}
+                        style={{width:32,height:18,borderRadius:99,cursor:"pointer",
+                          background:pipe.trigger_on_failure?"#F97316":T.border,position:"relative",transition:"background 0.2s"}}>
+                        <div style={{width:12,height:12,borderRadius:"50%",background:"white",
+                          position:"absolute",top:3,left:pipe.trigger_on_failure?17:3,transition:"left 0.15s"}}/>
+                      </div>
+                      <div><div style={{fontSize:11,color:T.text}}>⚡ Trigger on Failure</div>
+                        <div style={{fontSize:9,color:T.muted}}>Also fires when any workflow or dataflow fails</div></div>
                     </div>
                   </div>
                 </div>

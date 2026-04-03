@@ -381,11 +381,15 @@ function StatusDot({ status }) {
     idle:T.dim,
   };
   const c = colors[status] || T.dim;
+  const anim =
+    status==="running"||status==="scanning" ? "pulseBlue 1.5s ease-in-out infinite" :
+    status==="critical"||status==="error"||status==="failed"||status==="fail" ? "pulseRed 2s ease-in-out infinite" :
+    status==="warning"||status==="pending"||status==="awaiting_approval" ? "pulseAmber 2.5s ease-in-out infinite" :
+    "none";
   return (
     <span style={{
       display:"inline-block", width:8, height:8, borderRadius:"50%",
-      background:c, flexShrink:0,
-      animation: status==="running"||status==="scanning" ? "pulse 1.5s infinite" : "none"
+      background:c, flexShrink:0, animation:anim
     }}/>
   );
 }
@@ -464,6 +468,26 @@ const GLOBAL_CSS = `
   [data-scroll] { will-change: transform; transform: translateZ(0); }
   /* Remove tap highlight on mobile */
   button, [role="button"] { -webkit-tap-highlight-color: transparent; touch-action: manipulation; }
+
+  /* ── Animation library ── */
+  @keyframes countUp { from { opacity:0; transform:translateY(8px) scale(0.92); } to { opacity:1; transform:translateY(0) scale(1); } }
+  @keyframes staggerIn { from { opacity:0; transform:translateY(10px); } to { opacity:1; transform:translateY(0); } }
+  @keyframes modalPop { from { opacity:0; transform:scale(0.94) translateY(8px); } to { opacity:1; transform:scale(1) translateY(0); } }
+  @keyframes barFill { from { width:0 !important; } to { } }
+  @keyframes pulseRed { 0%,100%{box-shadow:0 0 0 0 rgba(239,68,68,0.4)} 50%{box-shadow:0 0 0 5px rgba(239,68,68,0)} }
+  @keyframes pulseAmber { 0%,100%{box-shadow:0 0 0 0 rgba(245,158,11,0.4)} 50%{box-shadow:0 0 0 5px rgba(245,158,11,0)} }
+  @keyframes pulseBlue { 0%,100%{box-shadow:0 0 0 0 rgba(59,130,246,0.4)} 50%{box-shadow:0 0 0 5px rgba(59,130,246,0)} }
+  .wz-stagger > * { animation: staggerIn 0.25s ease both; }
+  .wz-stagger > *:nth-child(1) { animation-delay:0ms; }
+  .wz-stagger > *:nth-child(2) { animation-delay:40ms; }
+  .wz-stagger > *:nth-child(3) { animation-delay:80ms; }
+  .wz-stagger > *:nth-child(4) { animation-delay:120ms; }
+  .wz-stagger > *:nth-child(5) { animation-delay:160ms; }
+  .wz-stagger > *:nth-child(6) { animation-delay:200ms; }
+  .wz-stagger > *:nth-child(n+7) { animation-delay:240ms; }
+  .wz-modal-inner { animation: modalPop 0.22s cubic-bezier(0.34,1.56,0.64,1) both; }
+  .wz-bar-fill { animation: barFill 0.8s cubic-bezier(0.4,0,0.2,1) both; }
+  .wz-kpi-val { animation: countUp 0.35s cubic-bezier(0.34,1.56,0.64,1) both; }
 `;
 
 
@@ -1614,7 +1638,7 @@ function DashboardTab({ onNavigate }) {
             {loading
               ? <div style={{ width:80, height:32, borderRadius:8, background:T.border,
                   animation:"pulse 1.5s infinite" }}/>
-              : val}
+              : <span key={val} className="wz-kpi-val">{val}</span>}
           </div>
           {trend && (
             <div style={{ fontSize:10, color:trend.color, fontWeight:600,
@@ -2435,7 +2459,7 @@ function MorningBriefTab({ onNavigate, onIssueFound }) {
 
       {/* Issue cards */}
       {!loading && sorted.length > 0 && (
-        <div style={{ display:"flex", flexDirection:"column", gap:10, marginBottom:20 }}>
+        <div className="wz-stagger" style={{ display:"flex", flexDirection:"column", gap:10, marginBottom:20 }}>
           {sorted.map(issue => {
             const color = SEV_COLOR[issue.severity] || T.muted;
             return (
@@ -11483,9 +11507,9 @@ function RunDetail({ run, T, dur, fmt }) {
             <span>{passCount}/{total} passed</span>
           </div>
           <div style={{ height:6, background:T.border, borderRadius:99, overflow:"hidden" }}>
-            <div style={{ height:"100%", width:`${total>0?passCount/total*100:0}%`,
+            <div className="wz-bar-fill" style={{ height:"100%", width:`${total>0?passCount/total*100:0}%`,
               background:failCount===0?T.green:`linear-gradient(90deg,${T.green},${T.orange})`,
-              borderRadius:99, transition:"width 0.5s" }}/>
+              borderRadius:99, transition:"width 0.8s cubic-bezier(0.4,0,0.2,1)" }}/>
           </div>
         </div>
       )}
@@ -13062,83 +13086,72 @@ const TOOL_META = {
   get_schedules:     { icon:"🕐", label:"Checking schedules",color:"#8B5CF6" },
 };
 
-// Render a tool result compactly
-function ToolResultBlock({ tool, result, T }) {
-  const meta = TOOL_META[tool] || { icon:"🔧", label:tool, color:T.accent };
+// Render a tool result compactly — warm premium card
+function ToolResultBlock({ tool, result, T, WZ }) {
+  WZ = WZ || WIZI_THEMES.sand;
+  const meta = TOOL_META[tool] || { icon:"🔧", label:tool, color:"#7C5C3E" };
   const [expanded, setExpanded] = React.useState(false);
 
   const summary = React.useMemo(() => {
     if (!result) return "Done";
     if (result.error) return `Error: ${result.error}`;
-    if (tool === "run_sql") {
-      if (result.row_count === 0) return "0 rows returned";
-      const cols = result.columns?.slice(0,3).join(", ") || "";
-      return `${result.row_count} row${result.row_count!==1?"s":""} · ${cols}`;
+    if (tool==="run_sql") {
+      if (result.row_count===0) return "0 rows returned";
+      return `${result.row_count} row${result.row_count!==1?"s":""} · ${(result.columns||[]).slice(0,3).join(", ")}`;
     }
-    if (tool === "navigate") return `→ ${result.tab}`;
-    if (tool === "run_workflow" || tool === "run_dataflow") {
-      return result.status === "pass" || result.status === "clean"
+    if (tool==="navigate") return `→ ${result.tab}`;
+    if (tool==="run_workflow"||tool==="run_dataflow")
+      return result.status==="pass"||result.status==="clean"
         ? `✓ All ${result.total_checks||0} checks passed`
-        : `✗ ${result.failed||0}/${result.total_checks||0} checks failed`;
-    }
-    if (tool === "get_recent_results" && Array.isArray(result)) {
-      const f = result.filter(r=>r.status!=="clean").length;
-      return `${result.length} runs · ${f} failed`;
-    }
-    if (tool === "get_kpis") {
-      const rev = result.sales?.total_sales;
-      return rev ? `Revenue: $${Number(rev).toLocaleString()}` : "KPIs loaded";
-    }
-    if (tool === "get_alerts" && Array.isArray(result)) {
-      return result.length === 0 ? "No alerts" : `${result.length} alert${result.length!==1?"s":""}`;
-    }
-    if (tool === "create_dataflow") return `Created: ${result.name} (${result.checks} checks)`;
+        : `✗ ${result.failed||0}/${result.total_checks||0} failed`;
+    if (tool==="get_triage_issues") { const n=(result.issues||[]).length; return n===0?"No open issues":`${n} issue${n!==1?"s":""} found`; }
+    if (tool==="get_recent_runs") { const r=result.runs||[]; const f=r.filter(x=>x.status!=="clean"&&x.status!=="pass").length; return `${r.length} runs · ${f} failed`; }
+    if (tool==="get_dataflows") { const d=result.dataflows||[]; return `${d.length} dataflows loaded`; }
+    if (tool==="get_health") return `Health ${result.health_score??'?'}/100 · ${result.issues||0} issues`;
     if (Array.isArray(result)) return `${result.length} item${result.length!==1?"s":""}`;
     return "Done";
   }, [result, tool]);
 
-  const hasDetail = result && !result.error && tool === "run_sql" && result.rows?.length > 0;
+  const hasDetail = result && !result.error && tool==="run_sql" && result.rows?.length>0;
+  const isErr = !!result?.error;
 
   return (
-    <div style={{ margin:"4px 0 6px 0" }}>
-      <div style={{ display:"flex", alignItems:"center", gap:6,
-        padding:"5px 10px", borderRadius:7,
-        background:`${meta.color}12`, border:`1px solid ${meta.color}25`,
-        fontSize:11 }}>
-        <span style={{ fontSize:13 }}>{meta.icon}</span>
-        <span style={{ color:meta.color, fontWeight:600 }}>{meta.label}</span>
-        <span style={{ color:"#6B7280", flex:1 }}>{summary}</span>
+    <div style={{ margin:"3px 0 8px 30px" }}>
+      <div style={{ display:"flex", alignItems:"center", gap:7, padding:"6px 11px",
+        borderRadius:8, background: isErr?"#FEF2F2":WZ.card,
+        border:`1px solid ${isErr?"#FECACA":WZ.border}`, fontSize:11 }}>
+        <span style={{fontSize:13}}>{meta.icon}</span>
+        <span style={{ color:isErr?"#B91C1C":WZ.accent, fontWeight:700,
+          fontSize:10, letterSpacing:"0.04em", textTransform:"uppercase" }}>{meta.label}</span>
+        <span style={{ color: isErr?"#DC2626":WZ.muted, flex:1, fontSize:11 }}>{summary}</span>
         {hasDetail && (
           <button onClick={()=>setExpanded(p=>!p)}
-            style={{ background:"none", border:"none", cursor:"pointer",
-              color:"#9CA3AF", fontSize:10 }}>
-            {expanded?"▲ hide":"▼ show"}
+            style={{ background:"none", border:"1px solid #E8E0D0", cursor:"pointer",
+              color:WZ.muted, fontSize:9, fontWeight:700, padding:"1px 7px",
+              borderRadius:4, letterSpacing:"0.04em", border:`1px solid ${WZ.border}` }}>
+            {expanded?"▲":"▼ show"}
           </button>
         )}
       </div>
       {expanded && hasDetail && (
-        <div style={{ margin:"4px 0 0 0", borderRadius:6, overflow:"auto",
-          maxHeight:200, border:`1px solid ${T.border}` }}>
-          <table style={{ borderCollapse:"collapse", fontSize:10, width:"100%",
-            fontFamily:"monospace" }}>
+        <div style={{ marginTop:3, borderRadius:7, overflow:"auto",
+          maxHeight:180, border:`1px solid ${WZ.border}`, background:WZ.panel }}>
+          <table style={{ borderCollapse:"collapse", fontSize:10.5, width:"100%", fontFamily:"monospace" }}>
             <thead>
-              <tr style={{ background:`${meta.color}10` }}>
+              <tr style={{ background:WZ.chipHov }}>
                 {result.columns.map(c=>(
-                  <th key={c} style={{ padding:"4px 8px", textAlign:"left",
-                    fontSize:9, fontWeight:700, color:"#6B7280",
-                    borderBottom:`1px solid ${T.border}`,
-                    textTransform:"uppercase", whiteSpace:"nowrap" }}>{c}</th>
+                  <th key={c} style={{ padding:"5px 10px", textAlign:"left",
+                    fontSize:9, fontWeight:800, color:WZ.accent, borderBottom:`1px solid ${WZ.border}`,
+                    textTransform:"uppercase", letterSpacing:"0.06em", whiteSpace:"nowrap" }}>{c}</th>
                 ))}
               </tr>
             </thead>
             <tbody>
               {result.rows.slice(0,10).map((row,i)=>(
-                <tr key={i}>
+                <tr key={i} style={{ borderBottom:`1px solid ${WZ.border2}` }}>
                   {result.columns.map(c=>(
-                    <td key={c} style={{ padding:"3px 8px",
-                      borderBottom:`1px solid ${T.border}20`,
-                      color:row[c]===null?"#EF4444":"#374151",
-                      whiteSpace:"nowrap" }}>
+                    <td key={c} style={{ padding:"4px 10px",
+                      color:row[c]===null?"#EF4444":WZ.text2, whiteSpace:"nowrap" }}>
                       {row[c]===null?"NULL":String(row[c]).slice(0,40)}
                     </td>
                   ))}
@@ -13146,9 +13159,10 @@ function ToolResultBlock({ tool, result, T }) {
               ))}
             </tbody>
           </table>
-          {result.rows.length > 10 && (
-            <div style={{ padding:"3px 8px", fontSize:9, color:"#9CA3AF",
-              background:T.surface }}>+{result.rows.length-10} more rows</div>
+          {result.rows.length>10 && (
+            <div style={{ padding:"3px 10px", fontSize:9, color:WZ.muted, background:WZ.chip }}>
+              +{result.rows.length-10} more rows
+            </div>
           )}
         </div>
       )}
@@ -13156,108 +13170,102 @@ function ToolResultBlock({ tool, result, T }) {
   );
 }
 
-// One message in the chat thread
-function AgentMessage({ msg, onNavigate, T }) {
-  if (msg.role === "user") {
+function AgentMessage({ msg, onNavigate, T, WZ }) {
+  WZ = WZ || WIZI_THEMES.sand;
+  if (msg.role==="user") {
     return (
-      <div style={{ display:"flex", justifyContent:"flex-end", marginBottom:12 }}>
-        <div style={{ maxWidth:"80%", padding:"10px 14px", borderRadius:14,
-          borderBottomRightRadius:4, fontSize:12, lineHeight:1.55,
-          background:"linear-gradient(135deg,#6366F1,#8B5CF6)",
-          color:"white", whiteSpace:"pre-wrap", wordBreak:"break-word",
-          boxShadow:"0 2px 10px rgba(99,102,241,0.25)" }}>
+      <div style={{ display:"flex", justifyContent:"flex-end", marginBottom:14 }}>
+        <div style={{ maxWidth:"78%", padding:"10px 15px", borderRadius:16,
+          borderBottomRightRadius:3, fontSize:12.5, lineHeight:1.6,
+          background:WZ.userBubble, color:WZ.userText,
+          whiteSpace:"pre-wrap", wordBreak:"break-word",
+          boxShadow:`0 2px 12px ${WZ.btnPulse}` }}>
           {msg.text}
         </div>
       </div>
     );
   }
 
-  if (msg.role === "thinking") {
+  if (msg.role==="thinking") {
+    const label = msg.text || "Thinking…";
+    const isTooling = label!=="Thinking…" && label!=="";
     return (
-      <div style={{ display:"flex", alignItems:"center", gap:8,
-        marginBottom:10, padding:"8px 12px",
-        background:"white", borderRadius:10, border:"1px solid #EDE9FE",
-        boxShadow:"0 1px 4px rgba(0,0,0,0.04)", maxWidth:"75%" }}>
-        <div style={{ display:"flex", gap:3 }}>
-          {[0,1,2].map(i=>(
-            <div key={i} style={{ width:5, height:5, borderRadius:"50%",
-              background:"#A78BFA",
-              animation:`bounce 1.2s ${i*0.2}s infinite` }}/>
-          ))}
-        </div>
-        <span style={{ fontSize:11, color:"#8B5CF6", fontStyle:"italic", fontWeight:500 }}>
-          {msg.text||"Thinking…"}
+      <div style={{ display:"flex", alignItems:"center", gap:9, marginBottom:10,
+        padding:"9px 13px", maxWidth:"82%",
+        background:WZ.card, borderRadius:10,
+        border:`1px solid ${WZ.border}`, boxShadow:"0 1px 4px rgba(0,0,0,0.04)" }}>
+        {isTooling ? (
+          <div style={{ width:18, height:18, borderRadius:5, flexShrink:0,
+            background:WZ.btn, display:"flex", alignItems:"center",
+            justifyContent:"center", fontSize:9, color:WZ.aiBubble,
+            animation:"pulse 0.9s infinite" }}>⚡</div>
+        ) : (
+          <div style={{ display:"flex", gap:3, flexShrink:0 }}>
+            {[0,1,2].map(i=>(
+              <div key={i} style={{ width:5, height:5, borderRadius:"50%",
+                background:WZ.dim, animation:`bounce 1.1s ${i*0.18}s infinite` }}/>
+            ))}
+          </div>
+        )}
+        <span style={{ fontSize:11, color:WZ.accent, fontStyle:"italic", fontWeight:500 }}>
+          {label || "Thinking…"}
         </span>
       </div>
     );
   }
 
-  if (msg.role === "tool_call") {
-    const meta = TOOL_META[msg.tool] || { icon:"🔧", label:msg.tool, color:"#6B7280" };
+  if (msg.role==="tool_call") {
+    const meta = TOOL_META[msg.tool] || { icon:"🔧", label:msg.tool };
     return (
-      <div style={{ display:"flex", alignItems:"center", gap:7,
-        padding:"5px 10px", marginBottom:5, fontSize:11,
-        background:"#F5F3FF", borderRadius:8,
-        border:"1px solid #EDE9FE", maxWidth:"fit-content" }}>
-        <span>{meta.icon}</span>
-        <span style={{ color:"#7C3AED", fontStyle:"italic", fontWeight:500 }}>{meta.label}…</span>
+      <div style={{ display:"inline-flex", alignItems:"center", gap:6, padding:"4px 10px",
+        marginBottom:5, fontSize:10, background:WZ.chip, border:`1px solid ${WZ.chipBorder}`,
+        borderRadius:6, maxWidth:"fit-content", color:WZ.accent, fontWeight:600 }}>
+        <span style={{fontSize:11}}>{meta.icon}</span>{meta.label}…
       </div>
     );
   }
 
-  // assistant message
   return (
-    <div style={{ marginBottom:14 }}>
-      {/* Tool results */}
+    <div style={{ marginBottom:16 }}>
       {(msg.steps||[]).filter(s=>s.type==="tool_result").map((s,i)=>(
-        <ToolResultBlock key={s.call_id||s.tool||i} tool={s.tool} result={s.result} T={T}/>
+        <ToolResultBlock key={s.call_id||s.tool||i} tool={s.tool} result={s.result} T={T} WZ={WZ}/>
       ))}
-
-      {/* Navigate action chips */}
       {(msg.actions||[]).filter(a=>a.type==="navigate").map((a,i)=>(
-        <div key={"nav"+i}
-          onClick={()=>onNavigate(a.tab)}
+        <div key={"nav"+i} onClick={()=>onNavigate(a.tab)}
           style={{ display:"inline-flex", alignItems:"center", gap:6,
-            padding:"5px 13px", borderRadius:99, marginBottom:8, cursor:"pointer",
-            background:"#EEF2FF", color:"#6366F1",
-            border:"1.5px solid #C7D2FE",
-            fontSize:11, fontWeight:600, transition:"all 0.15s",
-            boxShadow:"0 1px 4px rgba(99,102,241,0.12)" }}
-          onMouseEnter={e=>{e.currentTarget.style.background="#E0E7FF";e.currentTarget.style.transform="translateY(-1px)";}}
-          onMouseLeave={e=>{e.currentTarget.style.background="#EEF2FF";e.currentTarget.style.transform="translateY(0)";}}>
+            padding:"5px 12px", borderRadius:8, marginBottom:8, cursor:"pointer",
+            background:WZ.chip, color:WZ.accent,
+            border:`1px solid ${WZ.chipBorder}`, fontSize:11, fontWeight:600, transition:"all 0.15s",
+            boxShadow:"0 1px 3px rgba(0,0,0,0.06)" }}
+          onMouseEnter={e=>{e.currentTarget.style.background=WZ.chipHov;e.currentTarget.style.transform="translateY(-1px)";}}
+          onMouseLeave={e=>{e.currentTarget.style.background=WZ.chip;e.currentTarget.style.transform="translateY(0)";}}>
           🧭 Go to {a.tab} →
         </div>
       ))}
-
-      {/* Created dataflow chip */}
       {(msg.actions||[]).filter(a=>a.type==="created_dataflow").map((a,i)=>(
-        <div key={"df"+i}
-          onClick={()=>onNavigate("dataflows")}
+        <div key={"df"+i} onClick={()=>onNavigate("dataflows")}
           style={{ display:"inline-flex", alignItems:"center", gap:6,
-            padding:"5px 13px", borderRadius:99, marginBottom:8, cursor:"pointer",
-            background:"#ECFDF5", color:"#059669",
-            border:"1.5px solid #A7F3D0",
-            fontSize:11, fontWeight:600, transition:"all 0.15s" }}
-          onMouseEnter={e=>e.currentTarget.style.background="#D1FAE5"}
-          onMouseLeave={e=>e.currentTarget.style.background="#ECFDF5"}>
-          ✨ Dataflow created — view in Dataflows →
+            padding:"5px 12px", borderRadius:8, marginBottom:8, cursor:"pointer",
+            background:"#F0FAF5", color:"#15803D",
+            border:"1px solid #BBF7D0", fontSize:11, fontWeight:600 }}
+          onMouseEnter={e=>e.currentTarget.style.background="#DCFCE7"}
+          onMouseLeave={e=>e.currentTarget.style.background="#F0FAF5"}>
+          ✦ Dataflow created — view →
         </div>
       ))}
-
-      {/* Final text — assistant bubble */}
       {msg.text && (
-        <div style={{ display:"flex", gap:8, alignItems:"flex-start" }}>
-          <div style={{ width:24, height:24, borderRadius:7, flexShrink:0, marginTop:1,
-            background:"linear-gradient(135deg,#6366F1,#8B5CF6)",
+        <div style={{ display:"flex", gap:9, alignItems:"flex-start" }}>
+          <div style={{ width:24, height:24, borderRadius:7, flexShrink:0, marginTop:2,
+            background:WZ.avatarBg, border:`1px solid ${WZ.border}`,
             display:"flex", alignItems:"center", justifyContent:"center",
-            fontSize:11, color:"white", fontWeight:700 }}>✦</div>
-          <div style={{ flex:1, padding:"10px 13px", borderRadius:14,
-            borderTopLeftRadius:4, fontSize:12, lineHeight:1.65,
-            color:"#1F2937", background:"white",
-            border:"1px solid #EDE9FE",
-            boxShadow:"0 1px 6px rgba(0,0,0,0.06)",
+            fontSize:11, color:WZ.avatarText, fontWeight:700 }}>✦</div>
+          <div style={{ flex:1, padding:"11px 14px", borderRadius:14,
+            borderTopLeftRadius:3, fontSize:12.5, lineHeight:1.7,
+            color:WZ.aiText, background:WZ.aiBubble,
+            border:`1px solid ${WZ.border}`,
+            boxShadow:"0 2px 8px rgba(0,0,0,0.05)",
             whiteSpace:"pre-wrap", wordBreak:"break-word",
-            maxWidth:"calc(100% - 32px)" }}>
+            maxWidth:"calc(100% - 33px)" }}>
             {msg.text}
           </div>
         </div>
@@ -13359,18 +13367,149 @@ function memSummary() {
   ).join("\n");
 }
 
+// ── WiziAgent theme definitions ──────────────────────────────────────────────
+const WIZI_THEMES = {
+  sand: {
+    name:"Sand", dot:"#C4A882",
+    panel:"#FEFCF8", msgs:"#F8F4EE", card:"#FAF7F2", border:"#D4C4A8", border2:"#EDE5D8",
+    text:"#1C1917", text2:"#57534E", muted:"#92836E", dim:"#B5A898",
+    accent:"#7C5C3E", accentHov:"#5C3E26",
+    userBubble:"#1C1917", userText:"#FAF7F2",
+    aiBubble:"#FEFCF8", aiText:"#1C1917",
+    avatarBg:"#1C1917", avatarText:"#D4C4A8",
+    chip:"#FAF7F2", chipBorder:"#D4C4A8", chipText:"#57534E", chipHov:"#F0EAE0",
+    input:"#FAF7F2", inputBorder:"#D4C4A8", inputFocus:"#7C5C3E",
+    send:"#1C1917", sendHov:"#3C3733",
+    nudge:"#FFFBF5", nudgeBorder:"#E8D5B7",
+    btn:"#1C1917", btnFocus:"rgba(124,92,62,0.08)",
+    btnPulse:"rgba(124,92,62,0.35)",
+  },
+  slate: {
+    name:"Slate", dot:"#B8A000",
+    panel:"#F4F6F8", msgs:"#EEF1F5", card:"#F8FAFC", border:"#CBD5E1", border2:"#DDE4ED",
+    text:"#0F172A", text2:"#334155", muted:"#64748B", dim:"#94A3B8",
+    accent:"#B8860B", accentHov:"#96700A",
+    userBubble:"#0F172A", userText:"#F8FAFC",
+    aiBubble:"#F8FAFC", aiText:"#0F172A",
+    avatarBg:"#0F172A", avatarText:"#B8860B",
+    chip:"#F8FAFC", chipBorder:"#CBD5E1", chipText:"#334155", chipHov:"#E2E8F0",
+    input:"#F8FAFC", inputBorder:"#CBD5E1", inputFocus:"#B8860B",
+    send:"#0F172A", sendHov:"#1E293B",
+    nudge:"#FFFDF0", nudgeBorder:"#E8D88A",
+    btn:"#0F172A", btnFocus:"rgba(184,134,11,0.08)",
+    btnPulse:"rgba(184,134,11,0.3)",
+  },
+  forest: {
+    name:"Forest", dot:"#4A7C59",
+    panel:"#FAFAF7", msgs:"#F2F5EF", card:"#F6F8F3", border:"#C8D4C0", border2:"#DDE6D8",
+    text:"#1A2E1A", text2:"#2D4A2D", muted:"#5C7A5C", dim:"#8AAA8A",
+    accent:"#4A7C59", accentHov:"#3A6247",
+    userBubble:"#1A2E1A", userText:"#F6F8F3",
+    aiBubble:"#FAFAF7", aiText:"#1A2E1A",
+    avatarBg:"#1A2E1A", avatarText:"#A8C8A8",
+    chip:"#F6F8F3", chipBorder:"#C8D4C0", chipText:"#2D4A2D", chipHov:"#E4EDE0",
+    input:"#F6F8F3", inputBorder:"#C8D4C0", inputFocus:"#4A7C59",
+    send:"#1A2E1A", sendHov:"#2D4A2D",
+    nudge:"#F5FBF5", nudgeBorder:"#B8D8B8",
+    btn:"#1A2E1A", btnFocus:"rgba(74,124,89,0.08)",
+    btnPulse:"rgba(74,124,89,0.3)",
+  },
+  ink: {
+    name:"Ink", dot:"#1E3A5F",
+    panel:"#FFFFFF", msgs:"#F7F7F5", card:"#FAFAFA", border:"#E0DDD8", border2:"#ECEAE6",
+    text:"#0A0A0A", text2:"#1A1A1A", muted:"#6B6B6B", dim:"#9CA3AF",
+    accent:"#1E3A5F", accentHov:"#152B47",
+    userBubble:"#0A0A0A", userText:"#FAFAFA",
+    aiBubble:"#FFFFFF", aiText:"#0A0A0A",
+    avatarBg:"#0A0A0A", avatarText:"#C8C8C8",
+    chip:"#FAFAFA", chipBorder:"#E0DDD8", chipText:"#1A1A1A", chipHov:"#F0EDEA",
+    input:"#FAFAFA", inputBorder:"#E0DDD8", inputFocus:"#1E3A5F",
+    send:"#0A0A0A", sendHov:"#1A1A1A",
+    nudge:"#FFFEF8", nudgeBorder:"#E8D89A",
+    btn:"#0A0A0A", btnFocus:"rgba(30,58,95,0.08)",
+    btnPulse:"rgba(30,58,95,0.25)",
+  },
+  mauve: {
+    name:"Mauve", dot:"#6B4F8C",
+    panel:"#FDFCFF", msgs:"#F5F2FB", card:"#F8F6FC", border:"#D4C8E8", border2:"#E4DCF2",
+    text:"#2D1B4E", text2:"#3D2860", muted:"#6B5A80", dim:"#9E90B4",
+    accent:"#6B4F8C", accentHov:"#573F72",
+    userBubble:"#2D1B4E", userText:"#F8F6FC",
+    aiBubble:"#FDFCFF", aiText:"#2D1B4E",
+    avatarBg:"#2D1B4E", avatarText:"#C8B8E4",
+    chip:"#F8F6FC", chipBorder:"#D4C8E8", chipText:"#3D2860", chipHov:"#EDE4F8",
+    input:"#F8F6FC", inputBorder:"#D4C8E8", inputFocus:"#6B4F8C",
+    send:"#2D1B4E", sendHov:"#3D2860",
+    nudge:"#FDF5FF", nudgeBorder:"#E0C8F0",
+    btn:"#2D1B4E", btnFocus:"rgba(107,79,140,0.08)",
+    btnPulse:"rgba(107,79,140,0.3)",
+  },
+  amber: {
+    name:"Amber", dot:"#A0622A",
+    panel:"#FDFAF5", msgs:"#F8F2E6", card:"#FAF5EC", border:"#D4AA6E", border2:"#E8D4A8",
+    text:"#1A1108", text2:"#2E1E0E", muted:"#7A5A38", dim:"#A88860",
+    accent:"#A0622A", accentHov:"#804E22",
+    userBubble:"#1A1108", userText:"#FAF5EC",
+    aiBubble:"#FDFAF5", aiText:"#1A1108",
+    avatarBg:"#1A1108", avatarText:"#D4AA6E",
+    chip:"#FAF5EC", chipBorder:"#D4AA6E", chipText:"#2E1E0E", chipHov:"#F0E4C8",
+    input:"#FAF5EC", inputBorder:"#D4AA6E", inputFocus:"#A0622A",
+    send:"#1A1108", sendHov:"#2E1E0E",
+    nudge:"#FFFBF0", nudgeBorder:"#E8C878",
+    btn:"#1A1108", btnFocus:"rgba(160,98,42,0.08)",
+    btnPulse:"rgba(160,98,42,0.3)",
+  },
+  arctic: {
+    name:"Arctic", dot:"#0E6B8A",
+    panel:"#F7FBFF", msgs:"#EDF4FB", card:"#F2F8FE", border:"#C5DCEE", border2:"#D8EAF5",
+    text:"#0D2035", text2:"#1A3550", muted:"#4A7090", dim:"#7A9EB8",
+    accent:"#0E6B8A", accentHov:"#0A526A",
+    userBubble:"#0D2035", userText:"#F2F8FE",
+    aiBubble:"#F7FBFF", aiText:"#0D2035",
+    avatarBg:"#0D2035", avatarText:"#8AC8E0",
+    chip:"#F2F8FE", chipBorder:"#C5DCEE", chipText:"#1A3550", chipHov:"#E0EFFA",
+    input:"#F2F8FE", inputBorder:"#C5DCEE", inputFocus:"#0E6B8A",
+    send:"#0D2035", sendHov:"#1A3550",
+    nudge:"#F0FBFF", nudgeBorder:"#A8D8EC",
+    btn:"#0D2035", btnFocus:"rgba(14,107,138,0.08)",
+    btnPulse:"rgba(14,107,138,0.3)",
+  },
+};
+
 function FloatingAssistant({ currentRun, currentTab, onNavigate }) {
   const T = useT();
   const dbSchema = useSchema();
   const { add: addNotif } = useNotif();
 
   const [open,     setOpen]     = React.useState(false);
-  const [messages, setMessages] = React.useState([
-    { role:"assistant", text:"Hi! I'm WiziAgent. I can run queries, check your workflows, navigate the dashboard, and take real actions — just tell me what you need.", steps:[], actions:[] }
-  ]);
-  const [input,    setInput]    = React.useState("");
-  const [loading,  setLoading]  = React.useState(false);
-  const [size,     setSize]     = React.useState("normal"); // normal | large
+  const [messages, setMessages] = React.useState(() => {
+    const hour = new Date().toLocaleString("en-IN",{timeZone:"Asia/Kolkata",hour:"numeric",hour12:false});
+    const h = parseInt(hour);
+    const greeting = h < 12 ? "Good morning" : h < 17 ? "Good afternoon" : "Good evening";
+    let ctx = "";
+    try {
+      const br = JSON.parse(sessionStorage.getItem("wz_brief")||"null");
+      const issues = JSON.parse(sessionStorage.getItem("wz_pendingIssues")||"[]");
+      const runs = JSON.parse(localStorage.getItem("wz_wf_runhistory_v1")||"[]");
+      const failed = runs.filter(r=>r.status!=="clean"&&r.status!=="pass").length;
+      if (br?.health_score !== undefined && br.health_score < 80) {
+        ctx = ` Platform health is at ${br.health_score}/100${issues.length > 0 ? ` with ${issues.length} open issue${issues.length>1?"s":""}` : ""}. Want me to investigate?`;
+      } else if (failed > 0) {
+        ctx = ` I noticed ${failed} workflow run${failed>1?"s":""} failed recently. Want me to dig in?`;
+      } else if (br?.health_score >= 80) {
+        ctx = ` Platform is looking healthy at ${br.health_score}/100. What can I help with?`;
+      } else {
+        ctx = " I can run queries, check workflows, navigate the dashboard, and take real actions.";
+      }
+    } catch { ctx = " I can run queries, check workflows, navigate the dashboard, and take real actions."; }
+    return [{ role:"assistant", text:`${greeting}!${ctx}`, steps:[], actions:[] }];
+  });
+  const [input,      setInput]      = React.useState("");
+  const [loading,    setLoading]    = React.useState(false);
+  const [thinkingText, setThinking] = React.useState("Thinking…");
+  const [size,        setSize]       = React.useState("normal"); // normal | large
+  const [wiziThemeKey,setWiziTheme]  = useLocal("wz_wizi_theme", "sand");
+  const WZ = WIZI_THEMES[wiziThemeKey] || WIZI_THEMES.sand;
   const bottomRef = React.useRef(null);
   const inputRef  = React.useRef(null);
   const liveChips = useLiveChips(currentTab, currentRun);
@@ -13378,6 +13517,12 @@ function FloatingAssistant({ currentRun, currentTab, onNavigate }) {
   React.useEffect(()=>{
     if (bottomRef.current) bottomRef.current.scrollIntoView({behavior:"smooth"});
   }, [messages]);
+
+  // Sync thinkingText into the live thinking bubble
+  React.useEffect(()=>{
+    if (!loading) return;
+    setMessages(p => p.map(m => m.role==="thinking" ? {...m, text:thinkingText} : m));
+  }, [thinkingText]);
 
   React.useEffect(()=>{
     if (open && inputRef.current) inputRef.current.focus();
@@ -13400,7 +13545,8 @@ function FloatingAssistant({ currentRun, currentTab, onNavigate }) {
     if (!text || loading) return;
     setInput("");
     const userMsg = { role:"user", text };
-    setMessages(p=>[...p, userMsg, { role:"thinking", text:"Working on it…" }]);
+    setThinking("Thinking…");
+    setMessages(p=>[...p, userMsg, { role:"thinking", text:"" }]);
     setLoading(true);
 
     // Build history for context (last 6 turns)
@@ -13485,243 +13631,349 @@ function FloatingAssistant({ currentRun, currentTab, onNavigate }) {
 
     const liveContext = buildLiveContext();
 
-    try {
-      const res = await fetch(`${API}/api/ai/agent`, {
-        method:"POST", headers:{"Content-Type":"application/json"},
-        body:JSON.stringify({
-          message: text,
-          history,
-          schema_ctx: dbSchema,
-          current_tab: currentTab,
-          session_ctx: liveContext,
-        })
-      });
-      const data = await res.json();
+    // ── Agentic loop — runs entirely through /api/ai/chat ──────────────────
+    // Tools the agent can call by returning JSON with {"tool":"...","...":"..."}
+    const executeTool = async (toolCall) => {
+      const { tool } = toolCall;
+      try {
+        if (tool === "run_sql") {
+          const res = await fetch(`${API}/api/query?sql=${encodeURIComponent(toolCall.sql)}`);
+          const d = await res.json();
+          if (d.error) return { tool, error: d.error };
+          return { tool, columns: d.columns||[], rows: d.rows||[], row_count: (d.rows||[]).length };
+        }
+        if (tool === "navigate") {
+          onNavigate(toolCall.tab);
+          addNotif(`WiziAgent navigated to ${toolCall.tab}`, "info");
+          return { tool, tab: toolCall.tab, done: true };
+        }
+        if (tool === "get_triage_issues") {
+          const issues = JSON.parse(sessionStorage.getItem("wz_pendingIssues")||"[]");
+          return { tool, issues: issues.slice(0,10) };
+        }
+        if (tool === "get_recent_runs") {
+          const runs = JSON.parse(localStorage.getItem("wz_wf_runhistory_v1")||"[]");
+          return { tool, runs: runs.slice(0,10).map(r=>({ name:r.workflow_name||r.name, status:r.status, failed:r.failed||0, ts:r.started_at?.slice(0,16) })) };
+        }
+        if (tool === "get_dataflows") {
+          const dfs = JSON.parse(localStorage.getItem("wz_dataflows_v1")||"[]");
+          return { tool, dataflows: dfs.slice(0,15).map(d=>({ name:d.name, status:d.last_run_status||"not run", checks:d.checks?.length||0, last_run:d.last_run_at?.slice(0,16) })) };
+        }
+        if (tool === "get_health") {
+          const br = JSON.parse(sessionStorage.getItem("wz_brief")||"null");
+          return { tool, health_score: br?.health_score, issues: br?.issues?.length||0, stale_tables: br?.stale_tables||[] };
+        }
+        if (tool === "get_schema") {
+          return { tool, schema: dbSchema?.slice(0,800)||"Schema not loaded" };
+        }
+      } catch(e) {
+        return { tool, error: e.message };
+      }
+      return { tool, error: `Unknown tool: ${tool}` };
+    };
 
-      if (data.error) {
-        setMessages(p=>[...p.filter(m=>m.role!=="thinking"),
-          { role:"assistant", text:`Error: ${data.error}`, steps:[], actions:[] }]);
-        setLoading(false);
-        return;
+    const SYSTEM = `You are WiziAgent, an expert data quality assistant for an Amazon Seller/Vendor Central analytics platform (Redshift backend).
+
+LIVE CONTEXT:
+${liveContext}
+
+SCHEMA:
+${dbSchema?.slice(0,600)||"mws.report, mws.orders, mws.inventory, public.tbl_amzn_campaign_report, public.tbl_amzn_keyword_report, public.tbl_amzn_targets_report"}
+
+TOOLS — call one by responding with ONLY a JSON object (no text before or after):
+{"tool":"run_sql","sql":"SELECT ..."}           — run a Redshift query
+{"tool":"navigate","tab":"triage"}              — navigate to tab (brief/triage/workflows/dataflows/results/query/scheduler/autopilot/config)
+{"tool":"get_triage_issues"}                    — get open triage issues
+{"tool":"get_recent_runs"}                      — get recent workflow run history
+{"tool":"get_dataflows"}                        — get dataflow list and status
+{"tool":"get_health"}                           — get platform health score and issues
+{"tool":"get_schema"}                           — get full database schema
+
+RULES:
+- If you need data to answer, call a tool first. Never guess SQL results.
+- After getting tool results, respond naturally in 2-4 sentences. Be specific — use actual numbers, table names, check names.
+- For SQL: write correct Redshift SQL. Use CURRENT_DATE for today. mws schema for operational data, public schema for ads tables.
+- Never say "I don't have access" — you have tools. Use them.
+- If something failed, explain specifically what and suggest the next step.
+- Keep responses concise and actionable. You're talking to a data engineer.`;
+
+    const agentMessages = [
+      ...history.map(h => ({ role: h.role, content: h.content })),
+      { role: "user", content: text }
+    ];
+
+    const toolSteps = [];
+    const actions = [];
+    let finalText = "";
+    const MAX_TURNS = 3;
+
+    try {
+      for (let turn = 0; turn < MAX_TURNS; turn++) {
+        const res = await fetch(`${API}/api/ai/chat`, {
+          method:"POST", headers:{"Content-Type":"application/json"},
+          body: JSON.stringify({ system: SYSTEM, messages: agentMessages, max_tokens: 400 })
+        });
+        const data = await res.json();
+        const rawText = data?.content?.[0]?.text?.trim() || "";
+
+        if (!rawText) {
+          finalText = "I didn't get a response. Please try again.";
+          break;
+        }
+
+        // Try to parse as tool call
+        let toolCall = null;
+        try {
+          const cleaned = rawText.replace(/```json|```/g,"").trim();
+          if (cleaned.startsWith("{") && cleaned.includes('"tool"')) {
+            toolCall = JSON.parse(cleaned);
+          }
+        } catch {}
+
+        if (toolCall?.tool) {
+          // Update thinking label contextually
+          const toolLabels = {
+            run_sql:"Running SQL query…", navigate:"Navigating…",
+            get_triage_issues:"Checking triage issues…", get_recent_runs:"Fetching run history…",
+            get_dataflows:"Checking dataflows…", get_health:"Reading health score…",
+            get_schema:"Reading schema…"
+          };
+          setThinking(toolLabels[toolCall.tool] || `Using ${toolCall.tool}…`);
+          setMessages(p=>p.map(m=>m.role==="thinking"?{...m,text:""}:m));
+          // Execute tool
+          const result = await executeTool(toolCall);
+          toolSteps.push({ type:"tool_result", tool:toolCall.tool, result });
+          if (toolCall.tool === "navigate") {
+            actions.push({ type:"navigate", tab:toolCall.tab });
+          }
+          // Feed result back to AI
+          agentMessages.push({ role:"assistant", content: rawText });
+          agentMessages.push({ role:"user", content: `Tool result for ${toolCall.tool}:
+${JSON.stringify(result, null, 2).slice(0,1200)}` });
+        } else {
+          // Natural language response — we're done
+          finalText = rawText;
+          break;
+        }
       }
 
-      // Execute UI actions
-      for (const action of (data.actions||[])) {
-        if (action.type === "navigate" && action.tab) {
-          onNavigate(action.tab);
-          addNotif(`WiziAgent navigated to ${action.tab}`, "info");
-        }
-        if (action.type === "run_complete") {
-          const ok = action.result?.status === "pass" || action.result?.status === "clean";
-          addNotif(ok ? "Workflow run completed ✓" : `Workflow run: ${action.result?.failed||0} checks failed`, ok?"success":"error");
-        }
-        if (action.type === "created_dataflow") {
-          addNotif(`Dataflow "${action.result?.name}" created`, "success");
-        }
+      if (!finalText) {
+        finalText = "I've gathered the data. Let me know if you need more detail on anything specific.";
       }
 
       setMessages(p=>[
         ...p.filter(m=>m.role!=="thinking"),
-        { role:"assistant", text:data.final_message, steps:data.steps||[], actions:data.actions||[] }
+        { role:"assistant", text:finalText, steps:toolSteps, actions }
       ]);
+
       // Save to persistent memory
-      if (data.final_message) {
-        const convos = memLoad();
-        convos.push({ ts: new Date().toLocaleString("en-IN",{timeZone:"Asia/Kolkata",dateStyle:"short",timeStyle:"short"}), user: text.slice(0,120), reply: data.final_message.slice(0,200) });
-        memSave(convos);
-      }
+      const convos = memLoad();
+      convos.push({ ts: new Date().toLocaleString("en-IN",{timeZone:"Asia/Kolkata",dateStyle:"short",timeStyle:"short"}), user: text.slice(0,120), reply: finalText.slice(0,200) });
+      memSave(convos);
+
     } catch(e) {
+      const isNetErr = e.message.includes("fetch") || e.message.includes("network") || e.message.includes("Failed");
       setMessages(p=>[...p.filter(m=>m.role!=="thinking"),
-        { role:"assistant", text:`Connection error: ${e.message}`, steps:[], actions:[] }]);
+        { role:"assistant", text: isNetErr
+            ? "Can't reach the backend right now. Check that Railway is running at intentwise-backend-production.up.railway.app."
+            : `Something went wrong: ${e.message}. Try rephrasing or check the browser console.`,
+          steps:[], actions:[] }]);
     }
     setLoading(false);
   };
 
-  const panelW = size==="large" ? "min(520px,calc(100vw - 48px))" : "min(380px,calc(100vw - 48px))";
-  const panelH = size==="large" ? "min(720px,calc(100vh - 80px))" : "560px";
+  const panelW = size==="large" ? "min(520px,calc(100vw - 48px))" : "min(400px,calc(100vw - 48px))";
+  const panelH = size==="large" ? "min(740px,calc(100vh - 80px))" : "580px";
 
-  // derive a live status line for header
   const headerStatus = React.useMemo(() => {
-    if (loading) return { text:"Working…", color:"#A78BFA", pulse:true };
+    if (loading) return { text:"Working…", dot:WZ.dim, pulse:true };
     try {
       const issues = JSON.parse(sessionStorage.getItem("wz_pendingIssues")||"[]");
       const crit = issues.filter(i=>i.severity==="critical").length;
-      if (crit > 0) return { text:`${crit} critical issue${crit>1?"s":""} open`, color:"#F87171" };
-      if (issues.length > 0) return { text:`${issues.length} issue${issues.length>1?"s":""} in triage`, color:"#FBBF24" };
+      if (crit>0) return { text:`${crit} critical issue${crit>1?"s":""} open`, dot:"#EF4444" };
+      if (issues.length>0) return { text:`${issues.length} issue${issues.length>1?"s":""} in triage`, dot:"#F59E0B" };
     } catch {}
     try {
       const br = JSON.parse(sessionStorage.getItem("wz_brief")||"null");
-      if (br?.health_score !== undefined) return { text:`Platform health ${br.health_score}/100`, color: br.health_score>=80?"#34D399":br.health_score>=60?"#FBBF24":"#F87171" };
+      if (br?.health_score!==undefined) return { text:`Platform health ${br.health_score}/100`, dot:br.health_score>=80?"#22C55E":br.health_score>=60?"#F59E0B":"#EF4444" };
     } catch {}
-    return { text:"Ready · real actions enabled", color:"#6EE7B7" };
-  }, [loading]);
+    return { text:"Ready", dot:"#22C55E" };
+  }, [loading, WZ]);
+
+  React.useEffect(()=>{
+    if (document.getElementById("wizi-styles-v3")) return;
+    const s = document.createElement("style");
+    s.id = "wizi-styles-v3";
+    s.textContent = `
+      @keyframes wizi-open{from{opacity:0;transform:scale(0.96) translateY(8px)}to{opacity:1;transform:scale(1) translateY(0)}}
+      @keyframes wizi-btn-pulse-v{0%,100%{box-shadow:var(--wizi-pulse-shadow,0 4px 20px rgba(124,92,62,0.35))}50%{box-shadow:var(--wizi-pulse-shadow2,0 4px 28px rgba(124,92,62,0.5))}}
+      #wizi-msgs-v3::-webkit-scrollbar{width:3px}
+      #wizi-msgs-v3::-webkit-scrollbar-track{background:transparent}
+      #wizi-msgs-v3::-webkit-scrollbar-thumb{background:var(--wizi-scroll-color,#D4C4A8);border-radius:99px}
+    `;
+    document.head.appendChild(s);
+  }, []);
 
   return (
     <>
-      {/* ── Floating trigger button ─────────────────────────────────────── */}
+      {/* ── Trigger button ─────────────────────────────────────────────── */}
       <button onClick={()=>setOpen(p=>!p)}
         style={{ position:"fixed", bottom:24, right:24, zIndex:1500,
-          width:56, height:56, borderRadius:"50%",
-          background:"linear-gradient(135deg,#6366F1,#8B5CF6,#A855F7)",
-          border:"2px solid rgba(255,255,255,0.15)",
+          width:52, height:52, borderRadius:14,
+          background: open ? WZ.btn : WZ.panel,
+          border:`1px solid ${open ? WZ.border : WZ.border}`,
           cursor:"pointer",
-          boxShadow:"0 4px 24px rgba(99,102,241,0.5), 0 0 0 0 rgba(99,102,241,0.4)",
+          boxShadow:`0 4px 20px ${WZ.btnPulse}`,
           display:"flex", alignItems:"center", justifyContent:"center",
-          fontSize:24, color:"white",
-          transition:"transform 0.2s, box-shadow 0.2s" }}
-        onMouseEnter={e=>{e.currentTarget.style.transform="scale(1.1) rotate(-5deg)";e.currentTarget.style.boxShadow="0 8px 32px rgba(99,102,241,0.65), 0 0 0 6px rgba(99,102,241,0.12)";}}
-        onMouseLeave={e=>{e.currentTarget.style.transform="scale(1) rotate(0deg)";e.currentTarget.style.boxShadow="0 4px 24px rgba(99,102,241,0.5), 0 0 0 0 rgba(99,102,241,0.4)";}}>
-        {open ? "✕" : "✦"}
+          fontSize:20, color: open ? WZ.aiBubble : WZ.accent,
+          transition:"all 0.2s cubic-bezier(0.4,0,0.2,1)",
+          animation:!open?"wizi-btn-pulse-v 3s ease-in-out infinite":"none",
+          "--wizi-pulse-shadow":`0 4px 20px ${WZ.btnPulse}`,
+          "--wizi-pulse-shadow2":`0 4px 28px ${WZ.btnPulse}, 0 0 0 6px ${WZ.btnFocus}` }}>
+        <span style={{ transition:"transform 0.2s", transform:open?"rotate(45deg)":"rotate(0deg)", display:"block", lineHeight:1 }}>
+          {open?"✕":"✦"}
+        </span>
       </button>
 
       {open && (
-        <div style={{ position:"fixed", bottom:92, right:24, zIndex:1500,
+        <div style={{ position:"fixed", bottom:88, right:24, zIndex:1500,
           width:panelW, height:panelH,
-          background:"#FFFFFF",
-          borderRadius:20,
-          border:"1px solid rgba(99,102,241,0.15)",
-          boxShadow:"0 24px 80px rgba(0,0,0,0.14), 0 4px 16px rgba(99,102,241,0.12)",
+          background:WZ.panel, borderRadius:18,
+          border:`1px solid ${WZ.border}`,
+          boxShadow:`0 24px 60px rgba(0,0,0,0.14), 0 4px 16px ${WZ.btnPulse}`,
           display:"flex", flexDirection:"column", overflow:"hidden",
-          transition:"width 0.25s cubic-bezier(0.4,0,0.2,1), height 0.25s cubic-bezier(0.4,0,0.2,1)" }}>
+          animation:"wizi-open 0.2s cubic-bezier(0.34,1.56,0.64,1)",
+          "--wizi-scroll-color":WZ.border }}>
 
-          {/* ── Header ──────────────────────────────────────────────────── */}
-          <div style={{ flexShrink:0, background:"linear-gradient(135deg,#6366F1,#8B5CF6,#A855F7)",
-            padding:"14px 16px 12px", position:"relative", overflow:"hidden" }}>
-            {/* subtle noise/texture overlay */}
-            <div style={{ position:"absolute", inset:0, opacity:0.06,
-              backgroundImage:"url(\"data:image/svg+xml,%3Csvg width='40' height='40' viewBox='0 0 40 40' xmlns='http://www.w3.org/2000/svg'%3E%3Cg fill='%23fff' fill-opacity='1'%3E%3Cpath d='M0 0h1v1H0zm2 0h1v1H2zm2 0h1v1H4zm2 0h1v1H6zm2 0h1v1H8zm2 0h1v1h-1zm2 0h1v1h-1zm2 0h1v1h-1zm2 0h1v1h-1zm2 0h1v1h-1zm2 0h1v1h-1zm2 0h1v1h-1zm2 0h1v1h-1zm2 0h1v1h-1zm2 0h1v1h-1zm2 0h1v1h-1zm2 0h1v1h-1zm2 0h1v1h-1zm2 0h1v1h-1zm2 0h1v1h-1z'/%3E%3C/g%3E%3C/svg%3E\")" }} />
-            <div style={{ position:"relative", display:"flex", alignItems:"center", gap:10 }}>
-              {/* Avatar */}
-              <div style={{ width:36, height:36, borderRadius:10,
-                background:"rgba(255,255,255,0.2)",
-                border:"1.5px solid rgba(255,255,255,0.3)",
-                display:"flex", alignItems:"center", justifyContent:"center",
-                fontSize:18, flexShrink:0, backdropFilter:"blur(4px)" }}>✦</div>
-              <div style={{ flex:1, minWidth:0 }}>
-                <div style={{ fontSize:14, fontWeight:700, color:"white", letterSpacing:"-0.01em" }}>
-                  WiziAgent
-                </div>
-                <div style={{ display:"flex", alignItems:"center", gap:5, marginTop:2 }}>
-                  <div style={{ width:6, height:6, borderRadius:"50%",
-                    background: headerStatus.color,
-                    boxShadow:`0 0 6px ${headerStatus.color}`,
-                    animation: headerStatus.pulse ? "pulse 1s infinite" : "none" }}/>
-                  <span style={{ fontSize:10, color:"rgba(255,255,255,0.75)", fontWeight:500 }}>
-                    {headerStatus.text}
-                  </span>
-                </div>
+          {/* ── Header ─────────────────────────────────────────────────── */}
+          <div style={{ flexShrink:0, padding:"12px 14px 10px",
+            background:WZ.panel, borderBottom:`1px solid ${WZ.border2}`,
+            display:"flex", alignItems:"center", gap:10 }}>
+            <div style={{ width:32, height:32, borderRadius:10, flexShrink:0,
+              background:WZ.avatarBg, border:`1px solid ${WZ.border}`,
+              display:"flex", alignItems:"center", justifyContent:"center",
+              fontSize:14, color:WZ.avatarText,
+              boxShadow:`0 2px 8px ${WZ.btnPulse}` }}>✦</div>
+            <div style={{ flex:1, minWidth:0 }}>
+              <div style={{ fontSize:13, fontWeight:800, color:WZ.text,
+                letterSpacing:"-0.02em", display:"flex", alignItems:"center", gap:6 }}>
+                WiziAgent
+                <span style={{ fontSize:8, fontWeight:700, padding:"2px 6px", borderRadius:4,
+                  background:WZ.card, color:WZ.muted,
+                  letterSpacing:"0.08em", textTransform:"uppercase", border:`1px solid ${WZ.border}` }}>ops ai</span>
               </div>
-              {/* Controls */}
-              <div style={{ display:"flex", gap:4 }}>
-                <button onClick={()=>setSize(s=>s==="large"?"normal":"large")}
-                  title={size==="large"?"Compact":"Expand"}
-                  style={{ width:26, height:26, background:"rgba(255,255,255,0.15)",
-                    border:"1px solid rgba(255,255,255,0.2)", borderRadius:6,
-                    cursor:"pointer", color:"white", fontSize:12,
-                    display:"flex", alignItems:"center", justifyContent:"center",
-                    transition:"background 0.15s" }}
-                  onMouseEnter={e=>e.currentTarget.style.background="rgba(255,255,255,0.25)"}
-                  onMouseLeave={e=>e.currentTarget.style.background="rgba(255,255,255,0.15)"}>
-                  {size==="large"?"⊟":"⊞"}
-                </button>
-                <button onClick={()=>setMessages([messages[0]])}
-                  title="New conversation"
-                  style={{ width:26, height:26, background:"rgba(255,255,255,0.15)",
-                    border:"1px solid rgba(255,255,255,0.2)", borderRadius:6,
-                    cursor:"pointer", color:"white", fontSize:12,
-                    display:"flex", alignItems:"center", justifyContent:"center",
-                    transition:"background 0.15s" }}
-                  onMouseEnter={e=>e.currentTarget.style.background="rgba(255,255,255,0.25)"}
-                  onMouseLeave={e=>e.currentTarget.style.background="rgba(255,255,255,0.15)"}>
-                  ↺
-                </button>
-                <button onClick={()=>setOpen(false)}
-                  style={{ width:26, height:26, background:"rgba(255,255,255,0.15)",
-                    border:"1px solid rgba(255,255,255,0.2)", borderRadius:6,
-                    cursor:"pointer", color:"white", fontSize:14,
-                    display:"flex", alignItems:"center", justifyContent:"center",
-                    transition:"background 0.15s" }}
-                  onMouseEnter={e=>e.currentTarget.style.background="rgba(255,255,255,0.25)"}
-                  onMouseLeave={e=>e.currentTarget.style.background="rgba(255,255,255,0.15)"}>
-                  ✕
-                </button>
+              <div style={{ display:"flex", alignItems:"center", gap:5, marginTop:1 }}>
+                <div style={{ width:5, height:5, borderRadius:"50%", flexShrink:0,
+                  background:headerStatus.dot, boxShadow:`0 0 4px ${headerStatus.dot}80`,
+                  animation:headerStatus.pulse?"pulse 0.9s infinite":"none" }}/>
+                <span style={{ fontSize:10, color:WZ.muted, fontWeight:500 }}>{headerStatus.text}</span>
               </div>
+            </div>
+            {/* Theme picker */}
+            <div style={{ display:"flex", gap:4, alignItems:"center", marginRight:4 }}>
+              {Object.entries(WIZI_THEMES).map(([key, th])=>(
+                <button key={key} onClick={()=>setWiziTheme(key)} title={th.name}
+                  style={{ width:14, height:14, borderRadius:"50%", cursor:"pointer",
+                    background:th.panel, border:`2px solid ${wiziThemeKey===key ? th.accent : th.border}`,
+                    padding:0, outline:"none",
+                    boxShadow: wiziThemeKey===key ? `0 0 0 2px ${th.accent}40` : "none",
+                    transition:"all 0.15s", transform: wiziThemeKey===key?"scale(1.2)":"scale(1)" }}
+                  onMouseEnter={e=>{ if(wiziThemeKey!==key){ e.currentTarget.style.transform="scale(1.1)"; e.currentTarget.style.borderColor=th.accent; }}}
+                  onMouseLeave={e=>{ if(wiziThemeKey!==key){ e.currentTarget.style.transform="scale(1)"; e.currentTarget.style.borderColor=th.border; }}}
+                />
+              ))}
+            </div>
+            {/* Controls */}
+            <div style={{ display:"flex", gap:3 }}>
+              {[
+                { title:size==="large"?"Compact":"Expand", icon:size==="large"?"⊟":"⊞", fn:()=>setSize(s=>s==="large"?"normal":"large") },
+                { title:"New chat", icon:"↺", fn:()=>setMessages([messages[0]]) },
+                { title:"Close", icon:"✕", fn:()=>setOpen(false) },
+              ].map(b=>(
+                <button key={b.title} onClick={b.fn} title={b.title}
+                  style={{ width:24, height:24, background:"transparent",
+                    border:`1px solid ${WZ.border}`, borderRadius:6,
+                    cursor:"pointer", color:WZ.muted, fontSize:11,
+                    display:"flex", alignItems:"center", justifyContent:"center",
+                    transition:"all 0.12s" }}
+                  onMouseEnter={e=>{e.currentTarget.style.background=WZ.chip;e.currentTarget.style.color=WZ.text;e.currentTarget.style.borderColor=WZ.accent;}}
+                  onMouseLeave={e=>{e.currentTarget.style.background="transparent";e.currentTarget.style.color=WZ.muted;e.currentTarget.style.borderColor=WZ.border;}}>
+                  {b.icon}
+                </button>
+              ))}
             </div>
           </div>
 
-          {/* ── Messages ────────────────────────────────────────────────── */}
-          <div style={{ flex:1, overflowY:"auto", padding:"16px 14px 8px",
-            background:"#F8F7FF" }}>
+          {/* ── Messages ───────────────────────────────────────────────── */}
+          <div id="wizi-msgs-v3" style={{ flex:1, overflowY:"auto",
+            padding:"16px 14px 8px", background:WZ.msgs }}>
 
-            {/* ── Proactive nudge strip ── shows when issues exist + not yet chatting */}
-            {messages.length === 1 && (() => {
+            {/* Proactive nudge strip */}
+            {messages.length===1 && (() => {
               const nudges = [];
               try {
                 const issues = JSON.parse(sessionStorage.getItem("wz_pendingIssues")||"[]");
                 const crit = issues.filter(i=>i.severity==="critical").length;
-                if (crit > 0) nudges.push({ icon:"🔴", text:`${crit} critical issue${crit>1?"s":""} need attention`, q:`Summarise the ${crit} critical triage issues` });
-                else if (issues.length > 0) nudges.push({ icon:"🟡", text:`${issues.length} open issue${issues.length>1?"s":""} in triage`, q:"What are the open triage issues?" });
+                if (crit>0) nudges.push({ text:`${crit} critical issue${crit>1?"s":""} need attention`, q:`Summarise the ${crit} critical triage issues`, dot:"#DC2626" });
+                else if (issues.length>0) nudges.push({ text:`${issues.length} open issue${issues.length>1?"s":""} in triage`, q:"What are the open triage issues?", dot:"#D97706" });
               } catch {}
               try {
                 const runs = JSON.parse(localStorage.getItem("wz_wf_runhistory_v1")||"[]");
                 const failed = runs.filter(r=>r.status!=="clean"&&r.status!=="pass");
-                if (failed.length > 0) nudges.push({ icon:"⚠️", text:`${failed.length} workflow run${failed.length>1?"s":""} failed recently`, q:`Why did ${failed[0].workflow_name||failed[0].name||"the last workflow"} fail?` });
+                if (failed.length>0) nudges.push({ text:`${failed.length} workflow run${failed.length>1?"s":""} failed recently`, q:`Why did ${failed[0].workflow_name||failed[0].name||"the last workflow"} fail?`, dot:"#D97706" });
               } catch {}
               try {
                 const br = JSON.parse(sessionStorage.getItem("wz_brief")||"null");
-                if (br?.health_score !== undefined && br.health_score < 75) nudges.push({ icon:"📉", text:`Platform health at ${br.health_score}/100`, q:"What's dragging down the health score?" });
+                if (br?.health_score!==undefined && br.health_score<75) nudges.push({ text:`Platform health at ${br.health_score}/100`, q:"What's dragging down the health score?", dot:"#D97706" });
               } catch {}
               if (!nudges.length) return null;
               return (
-                <div style={{ marginBottom:12, borderRadius:10, overflow:"hidden",
-                  border:"1px solid #FEE2E2", background:"#FFF7F7" }}>
+                <div style={{ marginBottom:14, borderRadius:10, overflow:"hidden",
+                  border:`1px solid ${WZ.nudgeBorder}`, background:WZ.nudge }}>
                   {nudges.slice(0,2).map((n,i)=>(
                     <div key={i} onClick={()=>send(n.q)}
-                      style={{ display:"flex", alignItems:"center", gap:8,
-                        padding:"8px 12px", cursor:"pointer",
-                        borderBottom: i<nudges.slice(0,2).length-1 ? "1px solid #FEE2E2" : "none",
-                        transition:"background 0.15s" }}
-                      onMouseEnter={e=>e.currentTarget.style.background="#FEE2E2"}
+                      style={{ display:"flex", alignItems:"center", gap:9, padding:"9px 13px",
+                        cursor:"pointer", transition:"background 0.12s",
+                        borderBottom:i<nudges.slice(0,2).length-1?`1px solid ${WZ.nudgeBorder}`:"none" }}
+                      onMouseEnter={e=>e.currentTarget.style.background=WZ.chipHov}
                       onMouseLeave={e=>e.currentTarget.style.background="transparent"}>
-                      <span style={{fontSize:13}}>{n.icon}</span>
-                      <span style={{fontSize:11, color:"#DC2626", fontWeight:500, flex:1}}>{n.text}</span>
-                      <span style={{fontSize:10, color:"#F87171"}}>Ask →</span>
+                      <div style={{ width:6, height:6, borderRadius:"50%", background:n.dot, flexShrink:0 }}/>
+                      <span style={{ fontSize:11, color:WZ.text, fontWeight:600, flex:1 }}>{n.text}</span>
+                      <span style={{ fontSize:10, color:WZ.muted }}>Ask →</span>
                     </div>
                   ))}
                 </div>
               );
             })()}
 
-            {/* Suggestion chips — only on welcome screen */}
-            {messages.length === 1 && (
+            {/* Suggestion chips */}
+            {messages.length===1 && (
               <div style={{ marginBottom:16 }}>
-                <div style={{ fontSize:10, fontWeight:700, color:"#9CA3AF",
-                  textTransform:"uppercase", letterSpacing:"0.07em", marginBottom:8,
-                  display:"flex", alignItems:"center", gap:6 }}>
-                  <div style={{ flex:1, height:1, background:"#E5E7EB" }}/>
+                <div style={{ fontSize:9, fontWeight:700, color:WZ.dim,
+                  textTransform:"uppercase", letterSpacing:"0.1em", marginBottom:9,
+                  display:"flex", alignItems:"center", gap:8 }}>
+                  <div style={{ flex:1, height:"1px", background:WZ.border }}/>
                   {(() => {
                     try {
                       const runs = JSON.parse(localStorage.getItem("wz_wf_runhistory_v1")||"[]");
-                      if (runs.filter(r=>r.status!=="clean"&&r.status!=="pass").length > 0) return "⚠ Issues detected";
+                      if (runs.filter(r=>r.status!=="clean"&&r.status!=="pass").length>0) return "Issues detected";
                       const issues = JSON.parse(sessionStorage.getItem("wz_pendingIssues")||"[]");
-                      if (issues.length > 0) return "📋 Open issues";
+                      if (issues.length>0) return "Open issues";
                     } catch {}
                     return "Suggested";
                   })()}
-                  <div style={{ flex:1, height:1, background:"#E5E7EB" }}/>
+                  <div style={{ flex:1, height:"1px", background:WZ.border }}/>
                 </div>
                 <div style={{ display:"flex", flexWrap:"wrap", gap:6 }}>
                   {liveChips.map(s=>(
                     <button key={s} onClick={()=>send(s)}
-                      style={{ fontSize:11, padding:"5px 12px", borderRadius:99,
-                        border:"1.5px solid rgba(99,102,241,0.2)",
-                        background:"white",
-                        color:"#6366F1", cursor:"pointer",
-                        fontFamily:"inherit", fontWeight:500,
-                        boxShadow:"0 1px 3px rgba(0,0,0,0.06)",
-                        transition:"all 0.15s" }}
-                      onMouseEnter={e=>{e.currentTarget.style.background="#EEF2FF";e.currentTarget.style.borderColor="rgba(99,102,241,0.4)";e.currentTarget.style.transform="translateY(-1px)";e.currentTarget.style.boxShadow="0 3px 8px rgba(99,102,241,0.15)";}}
-                      onMouseLeave={e=>{e.currentTarget.style.background="white";e.currentTarget.style.borderColor="rgba(99,102,241,0.2)";e.currentTarget.style.transform="translateY(0)";e.currentTarget.style.boxShadow="0 1px 3px rgba(0,0,0,0.06)";}}>
+                      style={{ fontSize:11, padding:"5px 12px", borderRadius:8,
+                        border:`1px solid ${WZ.chipBorder}`, background:WZ.chip,
+                        color:WZ.chipText, cursor:"pointer", fontFamily:"inherit",
+                        fontWeight:500, boxShadow:"0 1px 3px rgba(0,0,0,0.04)",
+                        transition:"all 0.12s" }}
+                      onMouseEnter={e=>{e.currentTarget.style.background=WZ.chipHov;e.currentTarget.style.borderColor=WZ.accent;e.currentTarget.style.color=WZ.text;e.currentTarget.style.transform="translateY(-1px)";e.currentTarget.style.boxShadow="0 3px 8px rgba(0,0,0,0.07)";}}
+                      onMouseLeave={e=>{e.currentTarget.style.background=WZ.chip;e.currentTarget.style.borderColor=WZ.chipBorder;e.currentTarget.style.color=WZ.chipText;e.currentTarget.style.transform="translateY(0)";e.currentTarget.style.boxShadow="0 1px 3px rgba(0,0,0,0.04)";}}>
                       {s}
                     </button>
                   ))}
@@ -13730,57 +13982,69 @@ function FloatingAssistant({ currentRun, currentTab, onNavigate }) {
             )}
 
             {messages.map((m,i)=>(
-              <AgentMessage key={m.ts||i} msg={m} onNavigate={onNavigate} T={T}/>
+              <AgentMessage key={m.ts||i} msg={m} onNavigate={onNavigate} T={T} WZ={WZ}/>
             ))}
             <div ref={bottomRef}/>
           </div>
 
-          {/* ── Input ───────────────────────────────────────────────────── */}
-          <div style={{ flexShrink:0, background:"white",
-            borderTop:"1px solid #EDE9FE", padding:"10px 12px 12px" }}>
+          {/* ── Input ──────────────────────────────────────────────────── */}
+          <div style={{ flexShrink:0, background:WZ.panel,
+            borderTop:`1px solid ${WZ.border2}`, padding:"10px 12px 12px" }}>
             <div style={{ display:"flex", gap:8, alignItems:"flex-end",
-              background:"#F5F3FF", borderRadius:14,
-              border:"1.5px solid #EDE9FE", padding:"6px 6px 6px 12px",
-              transition:"border-color 0.15s", focusBorderColor:"#6366F1" }}
-              onFocusCapture={e=>e.currentTarget.style.borderColor="#A5B4FC"}
-              onBlurCapture={e=>e.currentTarget.style.borderColor="#EDE9FE"}>
-              <textarea
-                ref={inputRef}
-                value={input}
+              background:WZ.input, borderRadius:12,
+              border:`1px solid ${WZ.inputBorder}`, padding:"7px 7px 7px 13px",
+              transition:"border-color 0.15s, box-shadow 0.15s" }}
+              onFocusCapture={e=>{e.currentTarget.style.borderColor=WZ.inputFocus;e.currentTarget.style.boxShadow=`0 0 0 3px ${WZ.btnFocus}`;}}
+              onBlurCapture={e=>{e.currentTarget.style.borderColor=WZ.inputBorder;e.currentTarget.style.boxShadow="none";}}>
+              <textarea ref={inputRef} value={input}
                 onChange={e=>setInput(e.target.value)}
-                onKeyDown={e=>{
-                  if(e.key==="Enter"&&!e.shiftKey){ e.preventDefault(); send(); }
-                }}
+                onKeyDown={e=>{ if(e.key==="Enter"&&!e.shiftKey){ e.preventDefault(); send(); } }}
                 placeholder="Ask anything about your data…"
                 rows={1}
-                style={{ flex:1, padding:"4px 0", fontSize:12, lineHeight:1.5,
-                  border:"none", background:"transparent",
-                  color:"#1F2937", outline:"none", fontFamily:"inherit",
-                  resize:"none", maxHeight:90, overflowY:"auto" }}
-                onInput={e=>{
-                  e.target.style.height="auto";
-                  e.target.style.height=Math.min(e.target.scrollHeight,90)+"px";
-                }}
+                style={{ flex:1, padding:"3px 0", fontSize:12.5, lineHeight:1.5,
+                  border:"none", background:"transparent", color:WZ.text,
+                  outline:"none", fontFamily:"inherit", resize:"none",
+                  maxHeight:90, overflowY:"auto", caretColor:WZ.accent }}
+                onInput={e=>{ e.target.style.height="auto"; e.target.style.height=Math.min(e.target.scrollHeight,90)+"px"; }}
               />
               <button onClick={()=>send()} disabled={!input.trim()||loading}
-                style={{ width:32, height:32, borderRadius:10, flexShrink:0,
-                  background:(!input.trim()||loading)
-                    ?"#DDD6FE"
-                    :"linear-gradient(135deg,#6366F1,#8B5CF6)",
-                  border:"none",
-                  cursor:(!input.trim()||loading)?"not-allowed":"pointer",
+                style={{ width:32, height:32, borderRadius:9, flexShrink:0,
+                  background:(!input.trim()||loading)?WZ.border:WZ.send,
+                  border:"none", cursor:(!input.trim()||loading)?"not-allowed":"pointer",
                   display:"flex", alignItems:"center", justifyContent:"center",
-                  color:"white", transition:"all 0.15s",
-                  boxShadow:(!input.trim()||loading)?"none":"0 2px 8px rgba(99,102,241,0.4)" }}
-                onMouseEnter={e=>{ if(input.trim()&&!loading){ e.currentTarget.style.transform="scale(1.05)"; e.currentTarget.style.boxShadow="0 4px 12px rgba(99,102,241,0.5)"; } }}
-                onMouseLeave={e=>{ e.currentTarget.style.transform="scale(1)"; e.currentTarget.style.boxShadow=(!input.trim()||loading)?"none":"0 2px 8px rgba(99,102,241,0.4)"; }}>
-                {loading ? <Spinner size={12} color="white"/> : <ArrowRight size={13}/>}
+                  color:(!input.trim()||loading)?WZ.muted:WZ.aiBubble,
+                  transition:"all 0.15s",
+                  boxShadow:(!input.trim()||loading)?"none":`0 2px 10px ${WZ.btnPulse}` }}
+                onMouseEnter={e=>{ if(input.trim()&&!loading){ e.currentTarget.style.transform="scale(1.06)"; e.currentTarget.style.background=WZ.sendHov; }}}
+                onMouseLeave={e=>{ e.currentTarget.style.transform="scale(1)"; if(input.trim()&&!loading) e.currentTarget.style.background=WZ.send; }}>
+                {loading ? <Spinner size={11} color={WZ.muted}/> : <ArrowRight size={13}/>}
               </button>
             </div>
-            <div style={{ fontSize:9, color:"#C4B5FD", marginTop:6,
-              textAlign:"center", letterSpacing:"0.03em" }}>
-              Enter to send · Shift+Enter for newline · takes real actions
+            <div style={{ fontSize:9, color:WZ.dim, marginTop:5,
+              textAlign:"center", letterSpacing:"0.05em" }}>
+              ↵ send · shift+↵ newline · executes real actions
             </div>
+            {!loading && messages.length<=2 && (
+              <div style={{ display:"flex", gap:5, marginTop:9, flexWrap:"wrap" }}>
+                {[
+                  { icon:"♡", label:"Health check",    q:"What's the current platform health status?" },
+                  { icon:"◎", label:"Triage issues",   q:"What are the open triage issues?" },
+                  { icon:"⚡", label:"Recent failures", q:"Show me recent workflow failures" },
+                  { icon:"⌗", label:"Query data",      q:"Show me failed downloads from mws.report today" },
+                ].map(a=>(
+                  <button key={a.label} onClick={()=>send(a.q)} disabled={loading}
+                    style={{ display:"flex", alignItems:"center", gap:4,
+                      padding:"4px 10px", borderRadius:6, fontSize:10.5, fontWeight:600,
+                      background:"transparent", border:`1px solid ${WZ.border}`,
+                      color:WZ.muted, cursor:"pointer", transition:"all 0.12s",
+                      fontFamily:"inherit" }}
+                    onMouseEnter={e=>{e.currentTarget.style.background=WZ.chipHov;e.currentTarget.style.borderColor=WZ.accent;e.currentTarget.style.color=WZ.text;}}
+                    onMouseLeave={e=>{e.currentTarget.style.background="transparent";e.currentTarget.style.borderColor=WZ.border;e.currentTarget.style.color=WZ.muted;}}>
+                    <span style={{fontSize:11}}>{a.icon}</span>{a.label}
+                  </button>
+                ))}
+              </div>
+            )}
           </div>
         </div>
       )}
@@ -16000,7 +16264,7 @@ Rules: use only real columns, return actual rows not just counts, max 3 checks.`
     <div style={{ position:"fixed", inset:0, background:"rgba(0,0,0,0.55)",
       display:"flex", alignItems:"center", justifyContent:"center", zIndex:200 }}
       onClick={e => { if(e.target===e.currentTarget) onClose(); }}>
-      <div style={{ background:T.surface, borderRadius:14, width:"min(860px,95vw)",
+      <div className="wz-modal-inner" style={{ background:T.surface, borderRadius:14, width:"min(860px,95vw)",
         maxHeight:"88vh", display:"flex", flexDirection:"column",
         border:`1px solid ${T.border}`, boxShadow:"0 24px 64px rgba(0,0,0,0.18)",
         overflow:"hidden" }}>
@@ -16482,7 +16746,7 @@ Respond ONLY with a JSON array (no markdown):
     <div style={{ position:"fixed", inset:0, background:"rgba(0,0,0,0.55)",
       display:"flex", alignItems:"center", justifyContent:"center", zIndex:200 }}
       onClick={e => { if(e.target===e.currentTarget) onClose(); }}>
-      <div style={{ background:T.surface, borderRadius:14, width:"min(740px,95vw)",
+      <div className="wz-modal-inner" style={{ background:T.surface, borderRadius:14, width:"min(740px,95vw)",
         maxHeight:"90vh", display:"flex", flexDirection:"column",
         border:`1px solid ${T.border}`, boxShadow:"0 24px 64px rgba(0,0,0,0.18)",
         overflow:"hidden" }}>
@@ -18085,7 +18349,7 @@ function ScheduleFormModal({ initial, workflows, dataflows, onSave, onClose, onR
     <div style={{ position:"fixed", inset:0, background:"rgba(0,0,0,0.55)",
       display:"flex", alignItems:"center", justifyContent:"center", zIndex:300 }}
       onClick={e=>{ if(e.target===e.currentTarget) onClose(); }}>
-      <div style={{ background:T.surface, borderRadius:14, width:"min(820px,96vw)",
+      <div className="wz-modal-inner" style={{ background:T.surface, borderRadius:14, width:"min(820px,96vw)",
         maxHeight:"92vh", display:"flex", flexDirection:"column",
         border:`1px solid ${T.border}`, boxShadow:"0 24px 64px rgba(0,0,0,0.2)",
         overflow:"hidden" }}>

@@ -493,16 +493,14 @@ const GLOBAL_CSS = `
 
 // ─── Nav items ────────────────────────────────────────────────────────────────
 const NAV = [
-  { id:"brief",     label:"Daily Brief",       icon:Zap,           shortcut:"1" },
-  { id:"triage",    label:"Triage & Monitor",  icon:AlertTriangle, shortcut:"3" },
-  { id:"workflows", label:"Workflows",         icon:GitBranch,     shortcut:"4" },
-  { id:"dataflows", label:"Dataflows",         icon:Layers,        shortcut:"5" },
-  { id:"config",    label:"Configure",         icon:Settings,      shortcut:"7" },
-  { id:"query",     label:"Data Explorer",     icon:Database,      shortcut:"8" },
-  { id:"results",   label:"Results",           icon:BarChart2,     shortcut:"9" },
-  { id:"scheduler", label:"Scheduler",         icon:Clock,         shortcut:"S" },
-  { id:"demo",      label:"Demo Validation",   icon:Shield,        shortcut:"D" },
-  { id:"autopilot", label:"Auto-Pilot",         icon:Bot,           shortcut:"A" },
+  { id:"autopilot",     label:"Auto-Pilot",        icon:Bot,           shortcut:"A" },
+  { id:"triage",        label:"Triage & Monitor",  icon:AlertTriangle, shortcut:"3" },
+  { id:"workflows",     label:"Workflows",         icon:GitBranch,     shortcut:"4" },
+  { id:"pipeline-runs", label:"Pipeline Runs",     icon:Layers,        shortcut:"5" },
+  { id:"reporting",     label:"Reporting",         icon:BarChart2,     shortcut:"R" },
+  { id:"query",         label:"Data Explorer",     icon:Database,      shortcut:"8" },
+  { id:"config",        label:"Configure",         icon:Settings,      shortcut:"7" },
+  { id:"demo",          label:"Demo Validation",   icon:Shield,        shortcut:"D" },
 ];
 
 // ─── Sidebar ──────────────────────────────────────────────────────────────────
@@ -2945,37 +2943,6 @@ function TriageTab({ initialIssues }) {
 
   const [showLibrary, setShowLibrary] = React.useState(false);
   const [libraryAdded, setLibraryAdded] = React.useState({});
-  const [explanations, setExplanations] = React.useState({}); // { [issue.id]: { loading, text } }
-
-  const explainIssue = async (issue) => {
-    setExplanations(p => ({...p, [issue.id]: { loading:true, text:null }}));
-    try {
-      const res = await fetch(`${API}/api/ai/chat`, {
-        method:"POST", headers:{"Content-Type":"application/json"},
-        body:JSON.stringify({
-          system:"You are WiziAgent explaining data quality issues to a junior QA engineer. Be clear, concise, and practical. Avoid jargon. Explain: what the issue is, why it matters, whether it is safe to fix, and what the fix does. Keep it under 5 sentences.",
-          messages:[{ role:"user", content:
-            `Explain this issue found in ${selectedTable}:
-` +
-            `ID: ${issue.id}
-Title: ${issue.title}
-Description: ${issue.description}
-` +
-            `Severity: ${issue.severity}
-Rows affected: ${issue.count}
-` +
-            (issue.fix_action ? `Fix action available: ${issue.fix_action}` : "No automatic fix available — informational only.")
-          }],
-          max_tokens:200
-        })
-      });
-      const data = await res.json();
-      const text = data.content?.[0]?.text || "Could not generate explanation.";
-      setExplanations(p => ({...p, [issue.id]: { loading:false, text }}));
-    } catch(e) {
-      setExplanations(p => ({...p, [issue.id]: { loading:false, text:`Error: ${e.message}` }}));
-    }
-  };
 
   const TEST_LIBRARY = [
     { id:"LIB-NULL",    icon:"🕳",  label:"Missing values",         desc:"Find columns with unexpected NULLs",                 check:"null_check",   severity:"high" },
@@ -3034,7 +3001,39 @@ Rows affected: ${issue.count}
     i.fix_action==="recopy" || i.fix_action==="redrive_copy"
   ).length;
 
-  const [aiScores, setAiScores] = React.useState({}); // {issue_id: {priority, action}}
+  const [aiScores,        setAiScores]        = React.useState({}); // {issue_id: {priority, action}}
+  const [aiExplanations,  setAiExplanations]  = React.useState({}); // {issue_id: string}
+  const [aiExplLoading,   setAiExplLoading]   = React.useState({}); // {issue_id: bool}
+
+  // Fetch plain-English AI explanation for a single issue
+  const explainIssue = React.useCallback(async (issue) => {
+    if (aiExplanations[issue.id] || aiExplLoading[issue.id]) return;
+    setAiExplLoading(p=>({...p,[issue.id]:true}));
+    try {
+      const res = await fetch(`${API}/api/ai/chat`, {
+        method:"POST", headers:{"Content-Type":"application/json"},
+        body: JSON.stringify({
+          system:`You are a data ops assistant. Given a data quality issue, write 1-2 plain-English sentences explaining:
+1. What is wrong (no SQL, no jargon)
+2. What data/business impact this has
+Be direct and specific. Max 30 words.`,
+          messages:[{role:"user", content:`Issue: "${issue.title}". Description: "${issue.description}". Affected rows: ${issue.count}. Severity: ${issue.severity}.`}],
+          max_tokens: 80,
+          temperature: 0.2,
+        })
+      });
+      const d = await res.json();
+      const text = d?.content?.[0]?.text?.trim()||"";
+      if (text) setAiExplanations(p=>({...p,[issue.id]:text}));
+    } catch(e) {}
+    setAiExplLoading(p=>({...p,[issue.id]:false}));
+  }, [aiExplanations, aiExplLoading]);
+
+  // Auto-explain all issues when they arrive (top 5 to save tokens)
+  React.useEffect(()=>{
+    if (!issues.length) return;
+    issues.slice(0,5).forEach(issue => explainIssue(issue));
+  }, [issues.length]);
 
   const scoreIssues = React.useCallback(async (issueList) => {
     if (!issueList?.length) return;
@@ -3399,6 +3398,22 @@ Rows affected: ${issue.count}
                           {issue.description}
                         </div>
 
+                        {/* AI plain-English explanation */}
+                        {(aiExplanations[issue.id]||aiExplLoading[issue.id])&&(
+                          <div style={{marginTop:8,padding:"7px 10px",borderRadius:7,
+                            background:`${T.accent}07`,border:`1px solid ${T.accent}20`,
+                            display:"flex",alignItems:"flex-start",gap:7}}>
+                            <span style={{fontSize:12,flexShrink:0,marginTop:1}}>✦</span>
+                            {aiExplLoading[issue.id]&&!aiExplanations[issue.id]?(
+                              <span style={{fontSize:11,color:T.muted,fontStyle:"italic"}}>AI analysing impact…</span>
+                            ):(
+                              <span style={{fontSize:11,color:T.text,lineHeight:1.5}}>
+                                {aiExplanations[issue.id]}
+                              </span>
+                            )}
+                          </div>
+                        )}
+
                         {/* Breakdown pills */}
                         {issue.breakdown?.length > 0 && (
                           <div style={{ display:"flex", gap:5, marginTop:8, flexWrap:"wrap" }}>
@@ -3452,10 +3467,10 @@ Rows affected: ${issue.count}
                           {dr==="loading" && <Spinner size={13}/>}
                           <Btn size="sm" variant="ghost"
                             onClick={()=>explainIssue(issue)}
-                            disabled={explanations[issue.id]?.loading}
+                            disabled={aiExplLoading[issue.id]}
                             style={{ fontSize:10, color:T.purple, borderColor:`${T.purple}30` }}>
-                            {explanations[issue.id]?.loading?<Spinner size={10}/>:"💬"}
-                            {explanations[issue.id]?.loading?"Asking…":"Explain"}
+                            {aiExplLoading[issue.id]?<Spinner size={10}/>:"💬"}
+                            {aiExplLoading[issue.id]?"Asking…":"Explain"}
                           </Btn>
                         </div>
                       </div>
@@ -3591,7 +3606,7 @@ Rows affected: ${issue.count}
                   )}
 
                   {/* ── AI Explanation ── */}
-                  {explanations[issue.id]?.text && (
+                  {aiExplanations[issue.id] && (
                     <div style={{ borderTop:`1px solid ${T.border}`, padding:"12px 18px",
                       background:`${T.purple}05` }}>
                       <div style={{ display:"flex", alignItems:"flex-start", gap:10 }}>
@@ -3604,7 +3619,7 @@ Rows affected: ${issue.count}
                           <div style={{ fontSize:10, fontWeight:700, color:T.purple, marginBottom:4,
                             textTransform:"uppercase", letterSpacing:"0.05em" }}>WiziAgent Explanation</div>
                           <div style={{ fontSize:12, color:T.text2, lineHeight:1.65 }}>
-                            {explanations[issue.id].text}
+                            {aiExplanations[issue.id]}
                           </div>
                         </div>
                         <button onClick={()=>setExplanations(p=>({...p,[issue.id]:null}))}
@@ -19163,18 +19178,58 @@ function SchedulerTab({ onNavigate }) {
         </div>
       )}
 
-      {/* Pagination bar */}
-      <div style={{ padding:"10px 20px", borderTop:`1px solid ${T.border}`,
-        background:T.surface, display:"flex", alignItems:"center",
-        justifyContent:"space-between", flexShrink:0 }}>
-        <div style={{ fontSize:11, color:T.muted }}>
-          {visible.length} of {schedules.length} schedule{schedules.length!==1?"s":""}
-          {schedules.length>0 && ` · ${schedules.filter(s=>s.enabled!==false).length} enabled`}
-        </div>
-        <div style={{ fontSize:11, color:T.muted }}>
-          1 of 1 pages (Displaying {visible.length} schedules)
-        </div>
-      </div>
+      {/* Next to Fire banner */}
+      {(()=>{
+        const enabledSchedules = schedules.filter(s=>s.enabled!==false&&s.schedule!=="manual");
+        if (!enabledSchedules.length) return (
+          <div style={{ padding:"10px 20px", borderTop:`1px solid ${T.border}`,
+            background:T.surface, fontSize:11, color:T.muted, flexShrink:0 }}>
+            {visible.length} of {schedules.length} schedule{schedules.length!==1?"s":""}
+            {schedules.length>0&&` · ${schedules.filter(s=>s.enabled!==false).length} enabled`}
+          </div>
+        );
+        // Find schedule with soonest next run
+        const withNext = enabledSchedules.map(s=>({s, next:cronNextRun(s.schedule)})).filter(x=>x.next);
+        if (!withNext.length) return null;
+        withNext.sort((a,b)=>a.next-b.next);
+        const {s:nextSch, next:nextTime} = withNext[0];
+        const msUntil = nextTime - Date.now();
+        const minUntil = Math.floor(msUntil/60000);
+        const hrUntil  = Math.floor(minUntil/60);
+        const countdownStr = hrUntil>0?`in ${hrUntil}h ${minUntil%60}m`:`in ${minUntil}m`;
+        const isUrgent = minUntil<=15;
+        const itemNames = [
+          ...(nextSch.workflow_ids||[]).map(id=>workflows.find(w=>w.id===id)?.name||id),
+          ...(nextSch.dataflow_ids||[]).map(id=>dataflows.find(d=>d.id===id)?.name||id),
+        ];
+        return (
+          <div style={{ padding:"10px 20px", borderTop:`1px solid ${T.border}`,
+            background:isUrgent?`${T.accent}06`:T.surface,
+            display:"flex", alignItems:"center", gap:12, flexShrink:0,
+            borderBottom:isUrgent?`1px solid ${T.accent}20`:"none" }}>
+            <div style={{display:"flex",alignItems:"center",gap:6}}>
+              <div style={{width:7,height:7,borderRadius:"50%",
+                background:isUrgent?T.accent:T.green,
+                animation:isUrgent?"pulse 1s infinite":"none"}}/>
+              <span style={{fontSize:10,fontWeight:700,
+                color:isUrgent?T.accent:T.muted,textTransform:"uppercase",letterSpacing:"0.05em"}}>
+                Next to fire
+              </span>
+            </div>
+            <span style={{fontSize:12,fontWeight:700,color:T.text}}>{nextSch.name}</span>
+            <span style={{fontSize:11,color:isUrgent?T.accent:T.green,fontWeight:600}}>{countdownStr}</span>
+            {itemNames.length>0&&(
+              <span style={{fontSize:10,color:T.muted}}>
+                → {itemNames.slice(0,2).join(", ")}{itemNames.length>2?` +${itemNames.length-2} more`:""}
+              </span>
+            )}
+            <span style={{fontSize:10,color:T.dim,marginLeft:"auto"}}>
+              {visible.length} of {schedules.length} schedule{schedules.length!==1?"s":""}
+              {schedules.length>0&&` · ${schedules.filter(s=>s.enabled!==false).length} enabled`}
+            </span>
+          </div>
+        );
+      })()}
 
       {/* Modal */}
       {formModal !== null && (
@@ -19632,12 +19687,133 @@ function AutoPilotTab({ onNavigate }) {
   const [activeView,   setView]        = React.useState("dashboard");
   const [activePipe,   setActivePipe]  = React.useState(null);  // pipeline being edited/viewed
   const [runningPipes, setRunning]     = React.useState({});    // {pipe_id: bool}
-  const [pipeLogs,     setPipeLogs]    = React.useState({});    // {pipe_id: [{ts,agent,msg,type}]}
+  const [pipeLogs,       setPipeLogs]      = React.useState({});    // {pipe_id: [{ts,agent,msg,type}]}
+  const [agentDecisions, setAgentDecisions] = React.useState({});   // {pipe_id: [{agent,action,confidence,issue,status}]}
+  const [scanExplanations, setScanExplanations] = React.useState({}); // {pipe_id: {text, ts, loading}}
+  const [correlatedFailures, setCorrelatedFailures] = React.useState(null); // {pipes, hypothesis, ts} | null
+  const [circuitBroken, setCircuitBroken] = React.useState({}); // {pipe_id: {count, ts}}
+  const [suppressedChecks, setSuppressedChecks] = React.useState(
+    ()=>{ try{return JSON.parse(localStorage.getItem("wz_suppressed_checks")||"{}");} catch(e){return {};} }
+  ); // {check_id: {name, count, suppressed_at, pipeline_id}}
+  const [predictions, setPredictions] = React.useState({}); // {pipe_id: {trend, severity, text, ts}}
+  const [stakeholderReport, setStakeholderReport] = React.useState(null); // {text, ts, loading}
   const [editAgent,    setEditAgent]   = React.useState(null);
   const [editAction,   setEditAction]  = React.useState(null);
   const [showPipeForm, setPipeForm]    = React.useState(false);
   const [newPipeData,  setNewPipe]     = React.useState(null);
+  const [showNlBuilder, setShowNlBuilder] = React.useState(false); // NL pipeline builder modal
+  const [nlBuilderText, setNlBuilderText] = React.useState("");
+  const [nlBuilderLoading, setNlBuilderLoading] = React.useState(false);
+  const [nlBuilderResult, setNlBuilderResult] = React.useState(null); // generated pipeline preview
   const intervalRefs = React.useRef({});
+
+  // Persist suppressedChecks to localStorage
+  React.useEffect(()=>{
+    try{localStorage.setItem("wz_suppressed_checks",JSON.stringify(suppressedChecks));}catch(e){}
+  },[suppressedChecks]);
+
+  // ── AI Health Banner ───────────────────────────────────────────────────────
+  const [healthSummary,  setHealthSummary]  = React.useState(null);  // {text, severity, ts}
+  const [healthLoading,  setHealthLoading]  = React.useState(false);
+  const healthTimerRef = React.useRef(null);
+
+  const fetchHealthSummary = React.useCallback(async (pipes, hist) => {
+    setHealthLoading(true);
+    try {
+      const recentScans = hist.slice(0, 10);
+      const pipeStatus = pipes.map(p => ({
+        name: p.name,
+        enabled: p.enabled,
+        dry_run: p.dry_run,
+        interval_min: p.interval_min,
+        lastScan: hist.find(h => h.pipeline_id === p.id),
+      }));
+      const ctx = `Pipelines: ${JSON.stringify(pipeStatus)}. Recent scans: ${JSON.stringify(recentScans)}`;
+      const r = await fetch(`${API}/api/ai/chat`, {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          system: `You are an AI ops assistant for a data pipeline monitoring dashboard. 
+Given pipeline statuses and recent scan history, write a SHORT (1-2 sentence) plain-English health summary for the operator.
+Focus on: what's failing, what needs attention, or confirm all is healthy.
+Prefix with one of: [CRITICAL], [WARNING], [HEALTHY].
+Be direct. No markdown. No bullet points.`,
+          messages: [{ role: "user", content: ctx }],
+          max_tokens: 120,
+          temperature: 0.2,
+        })
+      });
+      const d = await r.json();
+      const text = d?.content?.[0]?.text?.trim() || "";
+      if (text) {
+        const severity = text.startsWith("[CRITICAL]") ? "critical"
+          : text.startsWith("[WARNING]") ? "warning" : "healthy";
+        setHealthSummary({ text: text.replace(/^\[(CRITICAL|WARNING|HEALTHY)\]\s*/,""), severity, ts: new Date().toISOString() });
+      }
+    } catch(e) {}
+    setHealthLoading(false);
+  }, []);
+
+  // Auto-fetch health summary on mount and every 5 minutes
+  React.useEffect(() => {
+    fetchHealthSummary(pipelines, scanHistory);
+    healthTimerRef.current = setInterval(() => {
+      fetchHealthSummary(pipelines, apLoadHist());
+    }, 5 * 60 * 1000);
+    return () => clearInterval(healthTimerRef.current);
+  }, [pipelines.map(p => p.id + p.enabled).join(",")]);
+
+  // Re-fetch after every pipeline run completes (scan history changes)
+  const prevHistLen = React.useRef(scanHistory.length);
+  React.useEffect(() => {
+    if (scanHistory.length !== prevHistLen.current) {
+      prevHistLen.current = scanHistory.length;
+      fetchHealthSummary(pipelines, scanHistory);
+    }
+  }, [scanHistory.length]);
+
+  // ── Stakeholder Report generator ───────────────────────────────────────────
+  const generateStakeholderReport = React.useCallback(async () => {
+    setStakeholderReport(p=>({...p,loading:true}));
+    try {
+      const week = scanHistory.filter(h=>(Date.now()-new Date(h.ts).getTime())<7*24*60*60*1000);
+      const weekIssues = week.reduce((s,h)=>s+(h.issues?.length||0),0);
+      const weekFixed  = week.reduce((s,h)=>s+(h.fixes?.length||0),0);
+      const activePipeNames = pipelines.filter(p=>p.enabled).map(p=>p.name).join(", ")||"none";
+      const predAlerts = Object.values(predictions).filter(p=>p.text&&p.trend!=="stable"&&p.trend!=="improving");
+      const openIssueCount = scanHistory.slice(0,20).reduce((acc,h)=>{
+        (h.issues||[]).forEach(i=>{ if(!acc.includes(i.name)) acc.push(i.name); }); return acc;
+      },[]).length;
+
+      const r = await fetch(`${API}/api/ai/chat`,{
+        method:"POST",headers:{"Content-Type":"application/json"},
+        body:JSON.stringify({
+          system:`You are writing a data health status report for a non-technical business stakeholder (e.g. a VP or account manager).
+Write in plain English. No technical jargon, no SQL, no code.
+Structure your response as:
+1. Overall Status (1 sentence — use "Green", "Yellow", or "Red" with a brief reason)
+2. What's Working Well (1-2 sentences)
+3. Issues Requiring Attention (1-2 sentences, or "None" if clean)
+4. What the System Did Automatically (1 sentence about auto-fixes)
+5. Recommended Action (1 sentence for the business team, if any)
+
+Keep the whole report under 120 words. Be reassuring but honest.`,
+          messages:[{role:"user",content:
+            `Monitoring period: last 7 days. Active pipelines: ${activePipeNames}. ` +
+            `Total issues detected: ${weekIssues}. Auto-fixed: ${weekFixed}. ` +
+            `Currently open issues: ${openIssueCount}. ` +
+            `Pipelines with degrading trends: ${predAlerts.map(p=>p.trend).join(", ")||"none"}. ` +
+            `Circuit breakers tripped: ${Object.keys(circuitBroken).length}. ` +
+            `Suppressed false positives: ${Object.keys(suppressedChecks).length}.`
+          }],
+          max_tokens:200,temperature:0.3
+        })
+      });
+      const d = await r.json();
+      const text = d?.content?.[0]?.text?.trim()||"";
+      if (text) setStakeholderReport({text,ts:new Date().toISOString(),loading:false});
+      else setStakeholderReport(p=>({...p,loading:false}));
+    } catch(e){ setStakeholderReport(p=>({...p,loading:false})); }
+  }, [scanHistory, pipelines, predictions, circuitBroken, suppressedChecks]);
 
   const addLog = (pipeId, agent, msg, type="info") =>
     setPipeLogs(p=>({...p,[pipeId]:[{ts:new Date().toISOString().slice(11,19),agent,msg,type},...(p[pipeId]||[])].slice(0,200)}));
@@ -19659,8 +19835,27 @@ function AutoPilotTab({ onNavigate }) {
   const runPipeline = React.useCallback(async (pipeline) => {
     const pid = pipeline.id;
     if (runningPipes[pid]) return;
+
+    // ── Circuit Breaker — check consecutive failures ───────────────────────
+    const CIRCUIT_THRESHOLD = 3; // trips after 3 consecutive failing scans
+    const recentScans = apLoadHist().filter(h=>h.pipeline_id===pid).slice(0,CIRCUIT_THRESHOLD);
+    const consecutiveFails = recentScans.length===CIRCUIT_THRESHOLD &&
+      recentScans.every(h=>(h.issues?.length||0)>0);
+    if (consecutiveFails && !pipeline.dry_run) {
+      // Auto-disable the pipeline
+      setPipelines(p=>p.map(pp=>pp.id===pid?{...pp,enabled:false}:pp));
+      setCircuitBroken(p=>({...p,[pid]:{count:CIRCUIT_THRESHOLD,ts:new Date().toISOString(),name:pipeline.name}}));
+      addLog(pid,"orchestrator",`🔴 Circuit breaker tripped — ${CIRCUIT_THRESHOLD} consecutive failures. Pipeline auto-disabled.`,"error");
+      addNotif(`⚡ Circuit breaker: "${pipeline.name}" auto-disabled after ${CIRCUIT_THRESHOLD} consecutive failures`,"error",{persistent:true});
+      // Slack alert
+      const slackUrl = pipeline.slack_channel||(localStorage.getItem("wz_slack")||"");
+      if (slackUrl) fetch(slackUrl,{method:"POST",headers:{"Content-Type":"application/json"},
+        body:JSON.stringify({text:`🔴 *Circuit Breaker Tripped* — Pipeline *${pipeline.name}* has been auto-disabled after ${CIRCUIT_THRESHOLD} consecutive failing scans. Manual review required.`})}).catch(()=>{});
+      return; // abort run
+    }
     setRunning(p=>({...p,[pid]:true}));
     setPipeLogs(p=>({...p,[pid]:[]}));
+    setAgentDecisions(p=>({...p,[pid]:[]}));
 
     const log = (agent, msg, type="info") => addLog(pid, agent, msg, type);
     const mem = [...apLoadMem()];
@@ -19683,6 +19878,11 @@ function AutoPilotTab({ onNavigate }) {
         log(agent.name, "Running SQL checks…", "info");
         for (const chk of (agent.checks||[])) {
           if (!chk.sql) continue;
+          // ── Skip suppressed checks ──────────────────────────────────────
+          if (suppressedChecks[chk.id||chk.name]) {
+            log(agent.name, `⏭ Suppressed (false positive): ${chk.name}`, "info");
+            continue;
+          }
           try {
             const r = await fetch(`${API}/api/query?sql=${encodeURIComponent(chk.sql)}`);
             const d = await r.json();
@@ -19706,6 +19906,24 @@ function AutoPilotTab({ onNavigate }) {
             log(agent.name,`🚨 Anomaly: ${a.label} ${a.direction}${a.pct}%`,"warn");
           });
         } catch(e){}
+
+        // ── Auto-detect suppression candidates after detection ─────────────
+        // Any check that has failed 3+ times with no fix gets flagged
+        const SUPPRESS_THRESHOLD = 3;
+        const hist = apLoadMem();
+        const candidates = {};
+        hist.forEach(m=>{
+          if (m.resolved||m.fix_applied) return; // was fixed, not a false positive
+          const key = m.check_id||m.check_name;
+          if (!key) return;
+          candidates[key] = (candidates[key]||{count:0,name:m.check_name,pipeline_id:m.pipeline_id});
+          candidates[key].count++;
+        });
+        Object.entries(candidates).forEach(([key,c])=>{
+          if (c.count>=SUPPRESS_THRESHOLD && !suppressedChecks[key]) {
+            log(agent.name,`🔇 Auto-flagged "${c.name}" as potential false positive (${c.count} unresolved occurrences) — review in Settings`,"warn");
+          }
+        });
       }
 
       // DIAGNOSIS agents
@@ -19735,10 +19953,16 @@ function AutoPilotTab({ onNavigate }) {
             (a.check_sql?.toLowerCase().includes((issue.sql||"").split("FROM")[1]?.split("WHERE")[0]?.trim()?.toLowerCase()||"__")||
              a.name.toLowerCase().split(" ").some(w=>w.length>3&&issue.name.toLowerCase().includes(w)))
           );
-          if (!action) { log(agent.name,`⏭ No safe action matched: ${issue.name}`,"warn"); fixResults.push({issue,action:null,success:false}); continue; }
+          if (!action) {
+            log(agent.name,`⏭ No safe action matched: ${issue.name}`,"warn");
+            fixResults.push({issue,action:null,success:false});
+            setAgentDecisions(p=>({...p,[pid]:[...(p[pid]||[]),{agent:agent.name,issue:issue.name,action:null,confidence:null,status:"skipped"}]}));
+            continue;
+          }
           if (pipeline.dry_run) {
             log(agent.name,`[DRY RUN] Would apply: ${action.name} (${action.confidence}%)`,"info");
             fixResults.push({issue,action,success:false,dry_run:true});
+            setAgentDecisions(p=>({...p,[pid]:[...(p[pid]||[]),{agent:agent.name,issue:issue.name,action:action.name,confidence:action.confidence,status:"dry_run"}]}));
           } else {
             try {
               const r = await fetch(`${API}/api/query?sql=${encodeURIComponent(action.fix_sql)}`);
@@ -19746,11 +19970,16 @@ function AutoPilotTab({ onNavigate }) {
               if (!d.error) {
                 log(agent.name,`✅ Fixed: ${action.name} (${action.confidence}%)`,"success");
                 fixResults.push({issue,action,success:true});
+                setAgentDecisions(p=>({...p,[pid]:[...(p[pid]||[]),{agent:agent.name,issue:issue.name,action:action.name,confidence:action.confidence,status:"applied"}]}));
                 const slackUrl = pipeline.slack_channel || (globalSlack?localStorage.getItem("wz_slack")||"":"");
                 if (slackUrl) fetch(slackUrl,{method:"POST",headers:{"Content-Type":"application/json"},
                   body:JSON.stringify({text:`🤖 *${pipeline.name}* auto-fixed: *${action.name}*`})}).catch(()=>{});
               }
-            } catch(e){log(agent.name,`✗ Fix failed: ${action.name}`,"error");fixResults.push({issue,action,success:false});}
+            } catch(e){
+              log(agent.name,`✗ Fix failed: ${action.name}`,"error");
+              fixResults.push({issue,action,success:false});
+              setAgentDecisions(p=>({...p,[pid]:[...(p[pid]||[]),{agent:agent.name,issue:issue.name,action:action.name,confidence:action.confidence,status:"failed"}]}));
+            }
           }
         }
       }
@@ -19767,10 +19996,40 @@ function AutoPilotTab({ onNavigate }) {
             const [metric,op,thresh]=(fix.issue.pass_condition||"rows = 0").split(" ");
             const resolved = eval(`${val} ${op} ${Number(thresh)}`);
             log(agent.name, resolved?`✓ Resolved: ${fix.issue.name}`:`⚠ Still failing: ${fix.issue.name}`, resolved?"success":"warn");
-            const verif = await aiCall(agent,`Fix "${fix.action?.name}" applied. Re-check "${fix.issue.name}" now shows ${val} rows (pass: ${fix.issue.pass_condition}). Resolved?`);
+
+            // ── Rollback if fix didn't resolve and rollback_sql exists ────
+            if (!resolved && fix.action?.rollback_sql && !pipeline.dry_run) {
+              log(agent.name,`↩ Rolling back: ${fix.action.name}…`,"warn");
+              try {
+                const rb = await fetch(`${API}/api/query?sql=${encodeURIComponent(fix.action.rollback_sql)}`);
+                const rbData = await rb.json();
+                if (!rbData.error) {
+                  log(agent.name,`↩ Rollback applied: ${fix.action.name}`,"warn");
+                  // Record rollback in agentDecisions
+                  setAgentDecisions(p=>({...p,[pid]:[...(p[pid]||[]),
+                    {agent:agent.name,issue:fix.issue.name,action:`↩ Rollback: ${fix.action.name}`,
+                     confidence:fix.action.confidence,status:"rolled_back"}
+                  ]}));
+                  // Slack alert for rollback
+                  const slackUrl = pipeline.slack_channel||(globalSlack?localStorage.getItem("wz_slack")||"":"");
+                  if (slackUrl) fetch(slackUrl,{method:"POST",headers:{"Content-Type":"application/json"},
+                    body:JSON.stringify({text:`↩ *${pipeline.name}* rolled back: *${fix.action.name}* — fix did not resolve "${fix.issue.name}"`})}).catch(()=>{});
+                } else {
+                  log(agent.name,`✗ Rollback failed: ${rbData.error}`,"error");
+                }
+              } catch(e){ log(agent.name,`✗ Rollback error: ${e.message}`,"error"); }
+            } else if (!resolved && fix.action?.rollback_sql && pipeline.dry_run) {
+              log(agent.name,`[DRY RUN] Would rollback: ${fix.action.name}`,"info");
+            } else if (!resolved && !fix.action?.rollback_sql) {
+              log(agent.name,`⚠ No rollback available for: ${fix.action?.name||fix.issue.name}`,"warn");
+            }
+
+            const rollbackNote = resolved?"Yes":`No — rollback ${fix.action?.rollback_sql?"was attempted":"not available"}`;
+            const verif = await aiCall(agent,`Fix "${fix.action?.name}" applied. Re-check "${fix.issue.name}" now shows ${val} rows (pass: ${fix.issue.pass_condition}). Resolved? ${rollbackNote}`);
             mem.unshift({ts:new Date().toISOString(),check_id:fix.issue.id,check_name:fix.issue.name,
               pipeline_id:pid,diagnosis:fix.issue.diagnosis,fix_applied:fix.action?.name||null,
-              resolved,verification:verif,rows_before:fix.issue.actual_rows,rows_after:val});
+              resolved,verification:verif,rows_before:fix.issue.actual_rows,rows_after:val,
+              rolled_back:!resolved&&!!fix.action?.rollback_sql});
           } catch(e){}
         }
         // Save unresolved to memory
@@ -19820,6 +20079,142 @@ function AutoPilotTab({ onNavigate }) {
     log("orchestrator",`✅ Done — ${summary}`,"success");
     addNotif(`🤖 ${pipeline.name}: ${summary}`, issues.length>0?"warn":"info");
     setRunning(p=>({...p,[pid]:false}));
+    // Clear circuit breaker if scan came back clean
+    if (!issues.length) setCircuitBroken(p=>{const n={...p};delete n[pid];return n;});
+    // Auto-refresh stakeholder report after scan
+    if (activeView==="stakeholder"&&stakeholderReport) generateStakeholderReport();
+
+    // ── AI Anomaly Explanation (async, non-blocking) ───────────────────────
+    setScanExplanations(p=>({...p,[pid]:{text:null,ts:new Date().toISOString(),loading:true}}));
+    (async()=>{
+      try {
+        const memCtx = mem.slice(0,5).map(m=>`${m.ts?.slice(0,10)}: ${m.check_name} → ${m.fix_applied||"no fix"} → ${m.resolved?"resolved":"unresolved"}`).join(". ");
+        const issueCtx = issues.map(i=>`"${i.name}" (${i.actual_rows} rows, ${i.severity})`).join(", ")||"none";
+        const fixCtx   = fixResults.filter(f=>f.success).map(f=>`"${f.action?.name}"`).join(", ")||"none";
+        const r = await fetch(`${API}/api/ai/chat`,{
+          method:"POST",headers:{"Content-Type":"application/json"},
+          body:JSON.stringify({
+            system:`You are a data ops assistant. After a pipeline scan, write a SHORT (2-3 sentence) plain-English explanation of what happened.
+Include: what was found, likely root cause if known, what was fixed or what needs attention.
+If all clean, say so briefly. No bullet points. No markdown. Be specific and direct.`,
+            messages:[{role:"user",content:
+              `Pipeline: "${pipeline.name}". Issues found: ${issueCtx}. Fixes applied: ${fixCtx}. ` +
+              `Dry run: ${pipeline.dry_run}. Past incidents: ${memCtx||"none"}.`
+            }],
+            max_tokens:120,temperature:0.2
+          })
+        });
+        const d = await r.json();
+        const text = d?.content?.[0]?.text?.trim()||"";
+        if (text) setScanExplanations(p=>({...p,[pid]:{text,ts:new Date().toISOString(),loading:false}}));
+        else setScanExplanations(p=>({...p,[pid]:{...p[pid],loading:false}}));
+      } catch(e){ setScanExplanations(p=>({...p,[pid]:{...p[pid],loading:false}})); }
+    })();
+
+    // ── Predictive Alerting — trend analysis over last 7 runs ─────────────
+    (async()=>{
+      const pipeHist = apLoadHist().filter(h=>h.pipeline_id===pid).slice(0,7);
+      if (pipeHist.length < 3) return; // not enough data
+
+      // Compute failure rate per run (0=clean, 1=has issues)
+      const rates = pipeHist.map(h=>(h.issues?.length||0)>0?1:0);
+      // Split into older half vs newer half to detect trend
+      const mid   = Math.floor(rates.length/2);
+      const older = rates.slice(mid);
+      const newer = rates.slice(0,mid);
+      const olderRate = older.reduce((s,v)=>s+v,0)/older.length;
+      const newerRate = newer.reduce((s,v)=>s+v,0)/newer.length;
+      const delta = newerRate - olderRate; // positive = getting worse
+
+      const trend = delta > 0.2 ? "degrading"
+        : delta < -0.2 ? "improving"
+        : newerRate > 0.5 ? "consistently_failing"
+        : "stable";
+
+      // Only call AI if degrading or consistently failing
+      if (trend === "stable" || trend === "improving") {
+        setPredictions(p=>({...p,[pid]:{trend,severity:"low",text:null,ts:new Date().toISOString()}}));
+        return;
+      }
+
+      try {
+        const issueNames = [...new Set(pipeHist.flatMap(h=>(h.issues||[]).map(i=>i.name)))];
+        const runSummary = pipeHist.map((h,i)=>
+          `Run ${pipeHist.length-i}: ${(h.issues?.length||0)===0?"clean":`${h.issues.length} issues (${h.issues.map(i=>i.name).join(",")})`}`
+        ).join("; ");
+
+        const r = await fetch(`${API}/api/ai/chat`,{
+          method:"POST",headers:{"Content-Type":"application/json"},
+          body:JSON.stringify({
+            system:`You are a predictive data ops assistant. Given a pipeline's recent run history, predict what will happen next.
+Write 1-2 sentences: state the trend, estimate when failure is likely if not addressed, and the most probable cause.
+Be specific and direct. No bullet points. No markdown. Start with a timeframe like "At this rate..." or "Based on the last N runs..."`,
+            messages:[{role:"user",content:
+              `Pipeline: "${pipeline.name}". Last ${pipeHist.length} runs: ${runSummary}. ` +
+              `Recurring issues: ${issueNames.join(", ")||"none"}. ` +
+              `Failure rate trending ${trend==="degrading"?"upward (getting worse)":"consistently high"}.`
+            }],
+            max_tokens:100,temperature:0.2
+          })
+        });
+        const d = await r.json();
+        const text = d?.content?.[0]?.text?.trim()||"";
+        if (text) {
+          const severity = trend==="consistently_failing"?"high":"medium";
+          setPredictions(p=>({...p,[pid]:{trend,severity,text,ts:new Date().toISOString()}}));
+          // Notify if high severity
+          if (severity==="high") addNotif(`🔮 ${pipeline.name}: ${text.slice(0,80)}…`,"warn");
+        }
+      } catch(e){}
+    })();
+
+    // ── Cross-Pipeline Correlation Detection ──────────────────────────────
+    // Find other pipelines that also had failures within 10 minutes of this scan
+    (async()=>{
+      if (!issues.length) { setCorrelatedFailures(null); return; }
+      const nowMs = Date.now();
+      const windowMs = 10 * 60 * 1000; // 10 min window
+      const recentFailing = apLoadHist().filter(h => {
+        if (h.pipeline_id === pid) return false; // exclude current
+        if (!(h.issues?.length > 0)) return false;
+        const age = nowMs - new Date(h.ts).getTime();
+        return age < windowMs;
+      });
+      if (!recentFailing.length) { setCorrelatedFailures(null); return; }
+
+      // Build correlation set
+      const involvedPipeIds = [...new Set([pid, ...recentFailing.map(h=>h.pipeline_id)])];
+      const involvedPipes   = pipelines.filter(p=>involvedPipeIds.includes(p.id));
+      const allIssueNames   = [
+        ...issues.map(i=>i.name),
+        ...recentFailing.flatMap(h=>(h.issues||[]).map(i=>i.name)),
+      ];
+
+      // Ask AI for shared root cause hypothesis
+      try {
+        const r = await fetch(`${API}/api/ai/chat`,{
+          method:"POST",headers:{"Content-Type":"application/json"},
+          body:JSON.stringify({
+            system:`You are a data ops assistant analyzing correlated pipeline failures. Given multiple pipelines that failed around the same time, hypothesize a shared root cause in 1-2 sentences. Be specific. No bullet points. No markdown.`,
+            messages:[{role:"user",content:
+              `Pipelines that failed within 10 minutes of each other: ${involvedPipes.map(p=>p.name).join(", ")}. ` +
+              `Issues across all pipelines: ${[...new Set(allIssueNames)].join(", ")}.`
+            }],
+            max_tokens:100,temperature:0.3
+          })
+        });
+        const d = await r.json();
+        const hypothesis = d?.content?.[0]?.text?.trim()||"";
+        if (hypothesis) {
+          setCorrelatedFailures({
+            pipes:involvedPipes,
+            issueCount:allIssueNames.length,
+            hypothesis,
+            ts:new Date().toISOString()
+          });
+        }
+      } catch(e){}
+    })();
   }, [runningPipes, pipelines, globalSlack]);
 
   // ── Interval management ────────────────────────────────────────────────────
@@ -19839,15 +20234,21 @@ function AutoPilotTab({ onNavigate }) {
 
   // ── Event-driven watch mode — fires pipeline when failure detected ─────────
   React.useEffect(()=>{
-    const handler = () => {
+    const handler = (e) => {
+      const detail = e?.detail||{};
+      const sourceLabel = detail.source==="workflow"
+        ? `workflow "${detail.name}" (${detail.failed} check${detail.failed!==1?"s":""} failed)`
+        : detail.source==="dataflow"
+        ? `dataflow "${detail.name}"`
+        : "external signal";
       const triggered = pipelines.filter(p => p.enabled && p.trigger_on_failure && !runningPipes[p.id]);
       if (!triggered.length) return;
       triggered.forEach(pipe => {
-        addLog(pipe.id, "orchestrator", "⚡ Event-triggered: failure detected — starting pipeline", "warn");
+        addLog(pipe.id, "orchestrator", `⚡ Event-triggered by ${sourceLabel} — starting pipeline`, "warn");
         runPipeline(pipe);
       });
     };
-    // Listen for workflow failures (dispatched by WorkflowsTab on failed run)
+    // Listen for failures dispatched by WorkflowsTab + DataflowsTab
     window.addEventListener("wz_failure_detected", handler);
     return () => window.removeEventListener("wz_failure_detected", handler);
   }, [pipelines, runningPipes]);
@@ -19859,7 +20260,8 @@ function AutoPilotTab({ onNavigate }) {
   const TC = {info:T.muted,warn:T.orange,error:T.red,success:T.green};
 
   const VIEWS = [{id:"dashboard",label:"Dashboard",icon:"🏠"},{id:"pipelines",label:"Pipelines",icon:"⚡"},
-    {id:"memory",label:"Memory",icon:"🧠"},{id:"history",label:"History",icon:"📋"},{id:"settings",label:"Settings",icon:"⚙"}];
+    {id:"memory",label:"Memory",icon:"🧠"},{id:"history",label:"History",icon:"📋"},
+    {id:"stakeholder",label:"Stakeholder",icon:"📣"},{id:"settings",label:"Settings",icon:"⚙"}];
 
   // ── Aggregate stats ────────────────────────────────────────────────────────
   const totalScans   = scanHistory.length;
@@ -19887,15 +20289,21 @@ function AutoPilotTab({ onNavigate }) {
             {activePipes} active pipeline{activePipes!==1?"s":""} · {pipelines.reduce((s,p)=>s+p.agents.filter(a=>a.enabled).length,0)} agents total
           </div>
         </div>
-        <Btn onClick={()=>{
-            const newP={id:`pipe_${Date.now()}`,name:"New Pipeline",icon:"🔄",color:T.accent,enabled:false,dry_run:true,
-              interval_min:30,confidence_threshold:85,slack_channel:"",trigger:"schedule",agents:[],safe_actions:[]};
-            setPipelines(p=>[...p,newP]);
-            setActivePipe(newP.id);
-            setView("pipelines");
-          }} variant="primary" size="sm">
-          <Plus size={10}/> New Pipeline
-        </Btn>
+        <div style={{display:"flex",gap:6}}>
+          <Btn onClick={()=>setShowNlBuilder(true)} variant="primary" size="sm"
+            style={{background:`linear-gradient(135deg,${T.accent},${T.purple})`,border:"none",color:"white"}}>
+            ✦ Build with AI
+          </Btn>
+          <Btn onClick={()=>{
+              const newP={id:`pipe_${Date.now()}`,name:"New Pipeline",icon:"🔄",color:T.accent,enabled:false,dry_run:true,
+                interval_min:30,confidence_threshold:85,slack_channel:"",trigger:"schedule",trigger_on_failure:false,agents:[],safe_actions:[]};
+              setPipelines(p=>[...p,newP]);
+              setActivePipe(newP.id);
+              setView("pipelines");
+            }} variant="ghost" size="sm">
+            <Plus size={10}/> Blank
+          </Btn>
+        </div>
       </div>
 
       {/* Sub-tabs */}
@@ -19915,113 +20323,642 @@ function AutoPilotTab({ onNavigate }) {
       {/* ── DASHBOARD ──────────────────────────────────────────────────────── */}
       {activeView==="dashboard"&&(
         <div>
-          {/* KPIs */}
-          <div style={{display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:12,marginBottom:20}}>
-            {[{label:"Total Scans",value:totalScans,color:T.accent,icon:"🔄"},
-              {label:"Issues Found",value:totalIssues,color:T.orange,icon:"⚠"},
-              {label:"Auto-Fixed",value:totalFixed,color:T.green,icon:"✅"},
-              {label:"Active Pipelines",value:activePipes,color:T.purple,icon:"⚡"}].map(k=>(
-              <div key={k.label} style={{padding:"16px 18px",borderRadius:10,background:T.card,border:`1px solid ${T.border}`}}>
-                <div style={{fontSize:20,marginBottom:6}}>{k.icon}</div>
-                <div style={{fontSize:28,fontWeight:800,color:k.color,letterSpacing:"-0.02em"}}>{k.value}</div>
-                <div style={{fontSize:11,color:T.muted}}>{k.label}</div>
-              </div>
-            ))}
-          </div>
-
-          {/* Pipeline cards */}
-          <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:12,marginBottom:20}}>
-            {pipelines.map(pipe=>{
-              const isRunning = !!runningPipes[pipe.id];
-              const logs = pipeLogs[pipe.id]||[];
-              const lastLog = logs[0];
-              const pipeScans = scanHistory.filter(h=>h.pipeline_id===pipe.id);
-              const lastScan = pipeScans[0];
-              return (
-                <div key={pipe.id} style={{background:T.card,borderRadius:12,
-                  border:`1px solid ${pipe.enabled?pipe.color+"40":T.border}`,overflow:"hidden"}}>
-                  <div style={{padding:"14px 16px"}}>
-                    <div style={{display:"flex",alignItems:"center",gap:10,marginBottom:8}}>
-                      <span style={{fontSize:20}}>{pipe.icon}</span>
-                      <div style={{flex:1}}>
-                        <div style={{display:"flex",alignItems:"center",gap:8}}>
-                          <span style={{fontSize:13,fontWeight:700,color:T.text}}>{pipe.name}</span>
-                          {pipe.dry_run&&<Badge label="DRY RUN" color={T.cyan}/>}
-                          {pipe.enabled&&!pipe.dry_run&&<Badge label="LIVE" color={pipe.color}/>}
-                        </div>
-                        <div style={{fontSize:10,color:T.muted,marginTop:2}}>
-                          {pipe.agents.length} agents · every {pipe.interval_min}m · {pipe.confidence_threshold}% confidence
-                        </div>
-                      </div>
-                      <div style={{display:"flex",gap:6}}>
-                        <Btn size="sm" variant="ghost" onClick={()=>runPipeline(pipe)} disabled={isRunning}>
-                          {isRunning?<Spinner size={9}/>:<Play size={9}/>} Run
-                        </Btn>
-                        <Btn size="sm" variant="ghost" onClick={()=>{setActivePipe(pipe.id);setView("pipelines");}}>
-                          ✏ Edit
-                        </Btn>
-                      </div>
+          {/* ── AI Health Banner ─────────────────────────────────────────── */}
+          {(()=>{
+            const bannerColors = {
+              critical: { bg:`${T.red}12`, border:T.red, icon:"🚨", label:"CRITICAL", color:T.red },
+              warning:  { bg:`${T.orange}12`, border:T.orange, icon:"⚠️", label:"WARNING", color:T.orange },
+              healthy:  { bg:`${T.green}10`, border:T.green, icon:"✅", label:"HEALTHY", color:T.green },
+            };
+            const s = bannerColors[healthSummary?.severity||"healthy"];
+            return (
+              <div style={{marginBottom:16,borderRadius:10,padding:"12px 16px",
+                background:healthLoading?`${T.accent}06`:s.bg,
+                border:`1px solid ${healthLoading?T.border:s.border+"50"}`,
+                display:"flex",alignItems:"center",gap:12}}>
+                {healthLoading?(
+                  <><Spinner size={13} color={T.accent}/>
+                    <span style={{fontSize:12,color:T.muted}}>AI is analysing pipeline health…</span></>
+                ):healthSummary?(
+                  <>
+                    <span style={{fontSize:18,flexShrink:0}}>{s.icon}</span>
+                    <div style={{flex:1}}>
+                      <span style={{fontSize:10,fontWeight:700,color:s.color,
+                        textTransform:"uppercase",letterSpacing:"0.07em",marginRight:8}}>{s.label}</span>
+                      <span style={{fontSize:12,color:T.text}}>{healthSummary.text}</span>
                     </div>
+                    <div style={{display:"flex",alignItems:"center",gap:8,flexShrink:0}}>
+                      <span style={{fontSize:9,color:T.dim}}>
+                        {healthSummary.ts?new Date(healthSummary.ts).toLocaleTimeString([],{hour:"2-digit",minute:"2-digit"}):""}
+                      </span>
+                      <button onClick={()=>fetchHealthSummary(pipelines,scanHistory)}
+                        title="Refresh AI health summary"
+                        style={{background:"none",border:`1px solid ${T.border}`,borderRadius:6,
+                          padding:"3px 8px",cursor:"pointer",color:T.muted,fontSize:10,
+                          display:"flex",alignItems:"center",gap:4}}>
+                        <RefreshCw size={9}/> Refresh
+                      </button>
+                    </div>
+                  </>
+                ):(
+                  <span style={{fontSize:12,color:T.dim}}>No health data yet — run a pipeline to get started.</span>
+                )}
+              </div>
+            );
+          })()}
 
-                    {/* Agent pills */}
-                    <div style={{display:"flex",gap:4,flexWrap:"wrap",marginBottom:8}}>
-                      {pipe.agents.map(ag=>(
-                        <span key={ag.id} style={{fontSize:9,padding:"2px 8px",borderRadius:99,
-                          background:`${ag.color||T.accent}12`,color:ag.color||T.accent,fontWeight:600}}>
-                          {ag.icon} {ag.name}
-                        </span>
+          {/* ── KPIs (meaningful only) ───────────────────────────────────── */}
+          {(()=>{
+            const week = scanHistory.filter(h=>{
+              const d = new Date(h.ts); return (Date.now()-d.getTime()) < 7*24*60*60*1000;
+            });
+            const weekIssues = week.reduce((s,h)=>s+(h.issues?.length||0),0);
+            const weekFixed  = week.reduce((s,h)=>s+(h.fixes?.length||0),0);
+            const fixRate    = weekIssues>0 ? Math.round(weekFixed/weekIssues*100) : 100;
+            const openIssues = scanHistory.slice(0,20).reduce((acc,h)=>{
+              (h.issues||[]).forEach(i=>{
+                const alreadyFixed = scanHistory.slice(0,scanHistory.indexOf(h)).some(later=>
+                  (later.fixes||[]).some(f=>f.check===i.name));
+                if (!alreadyFixed) {
+                  const key = i.name;
+                  if (!acc.find(x=>x.name===key)) acc.push({...i, pipeline:h.pipeline_name, ts:h.ts, pipeline_id:h.pipeline_id});
+                }
+              });
+              return acc;
+            }, []);
+            const staleCount = pipelines.filter(p=>{
+              if (!p.enabled||!p.interval_min) return false;
+              const last = scanHistory.find(h=>h.pipeline_id===p.id);
+              if (!last) return true;
+              const age = (Date.now()-new Date(last.ts).getTime())/60000;
+              return age > p.interval_min*2;
+            }).length;
+
+            return (
+              <>
+                {/* KPI row */}
+                <div style={{display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:12,marginBottom:20}}>
+                  {[
+                    {label:"Open Issues",value:openIssues.length,
+                      color:openIssues.length>0?T.red:T.green,icon:openIssues.length>0?"🔴":"🟢",
+                      sub:openIssues.length===0?"All clear":"Need attention"},
+                    {label:"Auto-Fix Rate",value:`${fixRate}%`,
+                      color:fixRate>=80?T.green:fixRate>=50?T.orange:T.red,icon:"🔧",
+                      sub:`${weekFixed} of ${weekIssues} fixed this week`},
+                    {label:"Issues Found",value:totalIssues,color:T.orange,icon:"⚠",
+                      sub:"All time"},
+                    {label:"Stale Pipelines",value:staleCount,
+                      color:staleCount>0?T.orange:T.green,icon:staleCount>0?"⏰":"✅",
+                      sub:staleCount>0?"Overdue for scan":"All on schedule"},
+                  ].map(k=>(
+                    <div key={k.label} style={{padding:"16px 18px",borderRadius:10,background:T.card,
+                      border:`1px solid ${k.color}25`}}>
+                      <div style={{fontSize:18,marginBottom:4}}>{k.icon}</div>
+                      <div style={{fontSize:26,fontWeight:800,color:k.color,letterSpacing:"-0.02em"}}>{k.value}</div>
+                      <div style={{fontSize:11,fontWeight:600,color:T.text,marginBottom:2}}>{k.label}</div>
+                      <div style={{fontSize:9,color:T.muted}}>{k.sub}</div>
+                    </div>
+                  ))}
+                </div>
+
+                {/* ── Circuit Breaker Banner ───────────────────────────── */}
+                {Object.values(circuitBroken).length>0&&(
+                  <div style={{marginBottom:16,borderRadius:10,overflow:"hidden",
+                    border:`1px solid ${T.red}40`,background:T.card}}>
+                    <div style={{padding:"10px 16px",background:`${T.red}10`,
+                      borderBottom:`1px solid ${T.red}25`,
+                      display:"flex",alignItems:"center",gap:8}}>
+                      <span style={{fontSize:16}}>⚡</span>
+                      <div style={{fontSize:12,fontWeight:700,color:T.red}}>Circuit Breaker Tripped</div>
+                      <span style={{fontSize:9,padding:"2px 8px",borderRadius:99,
+                        background:`${T.red}20`,color:T.red,fontWeight:700,marginLeft:"auto"}}>
+                        {Object.values(circuitBroken).length} pipeline{Object.values(circuitBroken).length!==1?"s":""} auto-disabled
+                      </span>
+                    </div>
+                    <div style={{padding:"10px 16px",display:"flex",flexDirection:"column",gap:8}}>
+                      {Object.entries(circuitBroken).map(([pipId,cb])=>(
+                        <div key={pipId} style={{display:"flex",alignItems:"center",gap:10}}>
+                          <div style={{flex:1}}>
+                            <div style={{fontSize:11,fontWeight:600,color:T.text}}>{cb.name}</div>
+                            <div style={{fontSize:9,color:T.muted,marginTop:1}}>
+                              {cb.count} consecutive failures · auto-disabled at {new Date(cb.ts).toLocaleTimeString([],{hour:"2-digit",minute:"2-digit"})}
+                            </div>
+                          </div>
+                          <div style={{display:"flex",gap:6}}>
+                            <button
+                              onClick={()=>{
+                                // Re-enable in dry-run mode for safe recovery
+                                setPipelines(p=>p.map(pp=>pp.id===pipId?{...pp,enabled:true,dry_run:true}:pp));
+                                setCircuitBroken(p=>{const n={...p};delete n[pipId];return n;});
+                              }}
+                              style={{fontSize:9,padding:"4px 10px",borderRadius:6,
+                                border:`1px solid ${T.green}40`,background:`${T.green}08`,
+                                color:T.green,cursor:"pointer",fontWeight:600}}>
+                              ↺ Re-enable (Dry Run)
+                            </button>
+                            <button
+                              onClick={()=>{setActivePipe(pipId);setView("pipelines");}}
+                              style={{fontSize:9,padding:"4px 10px",borderRadius:6,
+                                border:`1px solid ${T.border}`,background:"none",
+                                color:T.muted,cursor:"pointer"}}>
+                              Inspect
+                            </button>
+                          </div>
+                        </div>
                       ))}
                     </div>
+                  </div>
+                )}
 
-                    {/* Last log line */}
-                    {lastLog&&(
-                      <div style={{fontSize:10,color:TC[lastLog.type]||T.muted,
-                        padding:"4px 8px",borderRadius:5,background:`${T.border}40`,marginBottom:6}}>
-                        {lastLog.ts} · {lastLog.msg.slice(0,70)}
+                {/* ── Correlated Failures Banner ───────────────────────── */}
+                {correlatedFailures&&(
+                  <div style={{marginBottom:16,borderRadius:10,overflow:"hidden",
+                    border:`1px solid ${T.purple}30`,background:T.card}}>
+                    <div style={{padding:"10px 16px",background:`${T.purple}08`,
+                      borderBottom:`1px solid ${T.purple}20`,
+                      display:"flex",alignItems:"center",gap:8}}>
+                      <span style={{fontSize:14}}>🔗</span>
+                      <div style={{fontSize:12,fontWeight:700,color:T.purple}}>Correlated Failures Detected</div>
+                      <span style={{fontSize:9,padding:"2px 8px",borderRadius:99,
+                        background:`${T.purple}15`,color:T.purple,fontWeight:700,marginLeft:"auto"}}>
+                        {correlatedFailures.pipes.length} pipelines · {correlatedFailures.issueCount} issues
+                      </span>
+                      <button onClick={()=>setCorrelatedFailures(null)}
+                        style={{background:"none",border:"none",cursor:"pointer",
+                          color:T.muted,fontSize:16,lineHeight:1,padding:"0 2px"}}>×</button>
+                    </div>
+                    <div style={{padding:"10px 16px",display:"flex",alignItems:"flex-start",gap:10}}>
+                      <div style={{flex:1}}>
+                        <div style={{display:"flex",gap:6,flexWrap:"wrap",marginBottom:8}}>
+                          {correlatedFailures.pipes.map(p=>(
+                            <span key={p.id} style={{fontSize:10,padding:"2px 8px",borderRadius:99,
+                              background:`${p.color}15`,color:p.color,fontWeight:600}}>
+                              {p.icon} {p.name}
+                            </span>
+                          ))}
+                        </div>
+                        <div style={{fontSize:11,color:T.text,lineHeight:1.5}}>
+                          <span style={{fontSize:10,fontWeight:700,color:T.purple,marginRight:6}}>✦ Hypothesis:</span>
+                          {correlatedFailures.hypothesis}
+                        </div>
+                        <div style={{fontSize:9,color:T.dim,marginTop:4}}>
+                          Detected {new Date(correlatedFailures.ts).toLocaleTimeString([],{hour:"2-digit",minute:"2-digit"})} · within 10-minute window
+                        </div>
                       </div>
-                    )}
+                    </div>
+                  </div>
+                )}
 
-                    {/* Last scan summary */}
-                    {lastScan&&(
-                      <div style={{fontSize:10,color:T.dim}}>
-                        Last: {lastScan.ts?.slice(0,16).replace("T"," ")} ·
-                        {lastScan.issues?.length||0} issues · {lastScan.fixes?.length||0} fixed
-                        {lastScan.dry_run&&" [dry run]"}
-                      </div>
-                    )}
+                {/* ── Two-column layout: issues feed + pipeline status ─── */}
+                <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:16,marginBottom:20}}>
+
+                  {/* Open Issues Feed */}
+                  <div style={{background:T.card,borderRadius:12,border:`1px solid ${T.border}`,overflow:"hidden"}}>
+                    <div style={{padding:"12px 16px",borderBottom:`1px solid ${T.border}`,
+                      display:"flex",alignItems:"center",justifyContent:"space-between"}}>
+                      <div style={{fontSize:12,fontWeight:700,color:T.text}}>🔴 Open Issues</div>
+                      <span style={{fontSize:9,padding:"2px 8px",borderRadius:99,
+                        background:openIssues.length>0?`${T.red}15`:`${T.green}15`,
+                        color:openIssues.length>0?T.red:T.green,fontWeight:700}}>
+                        {openIssues.length} open
+                      </span>
+                    </div>
+                    <div style={{maxHeight:280,overflowY:"auto"}}>
+                      {openIssues.length===0?(
+                        <div style={{padding:"32px 16px",textAlign:"center"}}>
+                          <div style={{fontSize:24,marginBottom:8}}>✅</div>
+                          <div style={{fontSize:12,color:T.muted}}>No open issues — all checks passing</div>
+                        </div>
+                      ):openIssues.map((issue,i)=>{
+                        const ageMs = Date.now()-new Date(issue.ts).getTime();
+                        const ageHr = Math.floor(ageMs/3600000);
+                        const ageMn = Math.floor((ageMs%3600000)/60000);
+                        const ageStr = ageHr>0?`${ageHr}h ${ageMn}m ago`:`${ageMn}m ago`;
+                        const sevColor = issue.severity==="critical"?T.red:issue.severity==="high"?T.orange:T.muted;
+                        return (
+                          <div key={i} style={{padding:"10px 16px",borderBottom:`1px solid ${T.border}20`,
+                            display:"flex",alignItems:"flex-start",gap:10}}>
+                            <div style={{width:7,height:7,borderRadius:"50%",
+                              background:sevColor,marginTop:4,flexShrink:0,
+                              boxShadow:`0 0 0 3px ${sevColor}25`}}/>
+                            <div style={{flex:1,minWidth:0}}>
+                              <div style={{fontSize:11,fontWeight:600,color:T.text,
+                                overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>
+                                {issue.name}
+                              </div>
+                              <div style={{fontSize:9,color:T.muted,marginTop:2,display:"flex",gap:8}}>
+                                <span>{issue.pipeline}</span>
+                                <span style={{color:ageHr>=2?T.orange:T.dim}}>⏱ {ageStr}</span>
+                                {issue.actual_rows!=null&&<span>{issue.actual_rows} rows</span>}
+                              </div>
+                            </div>
+                            <button
+                              onClick={()=>{
+                                const pipe = pipelines.find(p=>p.id===issue.pipeline_id);
+                                if (pipe) runPipeline(pipe);
+                              }}
+                              title="Re-run pipeline to attempt fix"
+                              style={{fontSize:9,padding:"3px 8px",borderRadius:6,
+                                border:`1px solid ${T.accent}30`,background:`${T.accent}08`,
+                                color:T.accent,cursor:"pointer",flexShrink:0,whiteSpace:"nowrap"}}>
+                              ▶ Fix
+                            </button>
+                          </div>
+                        );
+                      })}
+                    </div>
                   </div>
 
-                  {/* Running progress bar */}
-                  {isRunning && (
-                    <div style={{height:3,background:T.border}}>
-                      <div style={{height:"100%",background:`linear-gradient(90deg,${pipe.color},${T.purple})`,
-                        borderRadius:99,animation:"shimmer 1.5s infinite",width:"60%"}}/>
-                    </div>
-                  )}
-                  {/* Enable toggle bar */}
-                  <div style={{borderTop:isRunning?"none":`1px solid ${T.border}`,padding:"8px 16px",
-                    display:"flex",alignItems:"center",gap:8,
-                    background:isRunning?`${pipe.color}08`:`${T.border}20`}}>
-                    <div onClick={()=>setPipelines(p=>p.map(pp=>pp.id===pipe.id?{...pp,enabled:!pp.enabled}:pp))}
-                      style={{width:32,height:18,borderRadius:99,cursor:"pointer",
-                        background:pipe.enabled?pipe.color:T.border,position:"relative",transition:"background 0.2s"}}>
-                      <div style={{width:12,height:12,borderRadius:"50%",background:"white",
-                        position:"absolute",top:3,left:pipe.enabled?17:3,transition:"left 0.15s"}}/>
-                    </div>
-                    <span style={{fontSize:10,color:isRunning?pipe.color:pipe.enabled?pipe.color:T.muted,fontWeight:600}}>
-                      {isRunning?"Running…":pipe.enabled?"Enabled":"Disabled"}
-                    </span>
-                    <div style={{marginLeft:"auto",display:"flex",gap:4}}>
-                      {(pipeLogs[pipe.id]||[]).slice(0,5).map((l,i)=>(
-                        <div key={i} style={{width:6,height:6,borderRadius:"50%",
-                          background:TC[l.type]||T.muted,opacity:1-(i*0.15)}}/>
-                      ))}
-                    </div>
+                  {/* Pipeline Status Cards */}
+                  <div style={{display:"flex",flexDirection:"column",gap:10}}>
+                    {pipelines.map(pipe=>{
+                      const isRunning = !!runningPipes[pipe.id];
+                      const pipeScans = scanHistory.filter(h=>h.pipeline_id===pipe.id);
+                      const lastScan  = pipeScans[0];
+                      const lastLog   = (pipeLogs[pipe.id]||[])[0];
+                      // Health score: pass rate over last 10 scans
+                      const recent10  = pipeScans.slice(0,10);
+                      const passCount = recent10.filter(h=>(h.issues?.length||0)===0).length;
+                      const healthPct = recent10.length>0?Math.round(passCount/recent10.length*100):null;
+                      // Staleness
+                      const ageMs     = lastScan?Date.now()-new Date(lastScan.ts).getTime():null;
+                      const isStale   = pipe.enabled&&pipe.interval_min&&ageMs!=null&&(ageMs/60000)>pipe.interval_min*2;
+                      const ageStr    = ageMs!=null?(ageMs<3600000?`${Math.floor(ageMs/60000)}m ago`:`${Math.floor(ageMs/3600000)}h ago`):null;
+
+                      return (
+                        <div key={pipe.id} style={{background:T.card,borderRadius:10,
+                          border:`1px solid ${isStale?T.orange+"60":pipe.enabled?pipe.color+"35":T.border}`,
+                          overflow:"hidden"}}>
+                          <div style={{padding:"12px 14px"}}>
+                            <div style={{display:"flex",alignItems:"center",gap:10}}>
+                              <span style={{fontSize:18}}>{pipe.icon}</span>
+                              <div style={{flex:1,minWidth:0}}>
+                                <div style={{display:"flex",alignItems:"center",gap:6}}>
+                                  <span style={{fontSize:12,fontWeight:700,color:T.text}}>{pipe.name}</span>
+                                  {pipe.dry_run&&<Badge label="DRY RUN" color={T.cyan}/>}
+                                  {isStale&&<Badge label="STALE" color={T.orange}/>}
+                                  {!isStale&&pipe.enabled&&!pipe.dry_run&&<Badge label="LIVE" color={pipe.color}/>}
+                                </div>
+                                <div style={{fontSize:9,color:T.muted,marginTop:1}}>
+                                  every {pipe.interval_min}m
+                                  {ageStr&&<span style={{color:isStale?T.orange:T.dim}}> · last run {ageStr}</span>}
+                                </div>
+                              </div>
+
+                              {/* Health score ring */}
+                              {healthPct!=null&&(
+                                <div title={`${healthPct}% pass rate (last ${recent10.length} scans)`}
+                                  style={{width:36,height:36,borderRadius:"50%",flexShrink:0,
+                                    background:`conic-gradient(${healthPct>=80?T.green:healthPct>=50?T.orange:T.red} ${healthPct*3.6}deg, ${T.border} 0deg)`,
+                                    display:"flex",alignItems:"center",justifyContent:"center",cursor:"default"}}>
+                                  <div style={{width:26,height:26,borderRadius:"50%",background:T.card,
+                                    display:"flex",alignItems:"center",justifyContent:"center"}}>
+                                    <span style={{fontSize:8,fontWeight:800,
+                                      color:healthPct>=80?T.green:healthPct>=50?T.orange:T.red}}>
+                                      {healthPct}%
+                                    </span>
+                                  </div>
+                                </div>
+                              )}
+
+                              <Btn size="sm" variant="ghost" onClick={()=>runPipeline(pipe)} disabled={isRunning}>
+                                {isRunning?<Spinner size={9}/>:<Play size={9}/>}
+                              </Btn>
+                            </div>
+
+                            {/* Last log line */}
+                            {lastLog&&(
+                              <div style={{marginTop:8,fontSize:10,color:TC[lastLog.type]||T.muted,
+                                padding:"3px 8px",borderRadius:5,background:`${T.border}40`,
+                                overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>
+                                {lastLog.ts} · {lastLog.msg.slice(0,65)}
+                              </div>
+                            )}
+
+                            {/* Agent Confidence Meters */}
+                            {(agentDecisions[pipe.id]||[]).length>0&&(
+                              <div style={{marginTop:8,display:"flex",flexDirection:"column",gap:4}}>
+                                {(agentDecisions[pipe.id]||[]).map((dec,di)=>{
+                                  const confColor = !dec.confidence?T.muted
+                                    :dec.confidence>=90?T.green
+                                    :dec.confidence>=70?T.orange:T.red;
+                                  const statusIcon = dec.status==="applied"?"✅"
+                                    :dec.status==="dry_run"?"🔬"
+                                    :dec.status==="failed"?"✗"
+                                    :dec.status==="rolled_back"?"↩"
+                                    :dec.status==="skipped"?"⏭":"·";
+                                  return (
+                                    <div key={di} style={{display:"flex",alignItems:"center",gap:7}}>
+                                      <span style={{fontSize:9,flexShrink:0}}>{statusIcon}</span>
+                                      <div style={{flex:1,minWidth:0}}>
+                                        <div style={{fontSize:9,color:T.muted,marginBottom:2,
+                                          overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>
+                                          {dec.action||dec.issue}
+                                        </div>
+                                        {dec.confidence!=null&&(
+                                          <div style={{position:"relative",height:4,
+                                            background:T.border,borderRadius:99,overflow:"hidden"}}>
+                                            <div style={{position:"absolute",top:0,left:0,height:"100%",
+                                              borderRadius:99,
+                                              width:`${dec.confidence}%`,
+                                              background:confColor,
+                                              transition:"width 0.6s ease-out"}}/>
+                                          </div>
+                                        )}
+                                      </div>
+                                      {dec.confidence!=null&&(
+                                        <span style={{fontSize:9,fontWeight:700,color:confColor,
+                                          flexShrink:0,fontFamily:"monospace"}}>
+                                          {dec.confidence}%
+                                        </span>
+                                      )}
+                                    </div>
+                                  );
+                                })}
+                              </div>
+                            )}
+
+                            {/* AI Scan Explanation */}
+                            {scanExplanations[pipe.id]&&(
+                              <div style={{marginTop:8,padding:"8px 10px",borderRadius:8,
+                                background:`${T.accent}06`,border:`1px solid ${T.accent}18`,
+                                display:"flex",alignItems:"flex-start",gap:7}}>
+                                <span style={{fontSize:12,flexShrink:0}}>✦</span>
+                                {scanExplanations[pipe.id].loading?(
+                                  <div style={{display:"flex",alignItems:"center",gap:6}}>
+                                    <Spinner size={9} color={T.accent}/>
+                                    <span style={{fontSize:10,color:T.muted,fontStyle:"italic"}}>Analysing scan…</span>
+                                  </div>
+                                ):(
+                                  <div style={{flex:1,minWidth:0}}>
+                                    <span style={{fontSize:10,color:T.text,lineHeight:1.5}}>
+                                      {scanExplanations[pipe.id].text}
+                                    </span>
+                                    <div style={{fontSize:8,color:T.dim,marginTop:3}}>
+                                      {new Date(scanExplanations[pipe.id].ts).toLocaleTimeString([],{hour:"2-digit",minute:"2-digit"})}
+                                    </div>
+                                  </div>
+                                )}
+                              </div>
+                            )}
+                          </div>
+
+                          {/* Progress bar when running */}
+                          {isRunning&&(
+                            <div style={{height:3,background:T.border}}>
+                              <div style={{height:"100%",background:`linear-gradient(90deg,${pipe.color},${T.purple})`,
+                                borderRadius:99,animation:"shimmer 1.5s infinite",width:"60%"}}/>
+                            </div>
+                          )}
+
+                          {/* Footer toggle */}
+                          <div style={{borderTop:`1px solid ${T.border}20`,padding:"6px 14px",
+                            display:"flex",alignItems:"center",gap:8,
+                            background:isRunning?`${pipe.color}08`:`${T.border}15`}}>
+                            <div onClick={()=>setPipelines(p=>p.map(pp=>pp.id===pipe.id?{...pp,enabled:!pp.enabled}:pp))}
+                              style={{width:28,height:16,borderRadius:99,cursor:"pointer",
+                                background:pipe.enabled?pipe.color:T.border,position:"relative",transition:"background 0.2s"}}>
+                              <div style={{width:10,height:10,borderRadius:"50%",background:"white",
+                                position:"absolute",top:3,left:pipe.enabled?15:3,transition:"left 0.15s"}}/>
+                            </div>
+                            <span style={{fontSize:9,color:isRunning?pipe.color:pipe.enabled?pipe.color:T.muted,fontWeight:600}}>
+                              {isRunning?"Running…":pipe.enabled?"Enabled":"Disabled"}
+                            </span>
+                            {lastScan&&(
+                              <span style={{marginLeft:"auto",fontSize:9,color:T.dim}}>
+                                {(lastScan.issues?.length||0)===0?"✓ Clean":`⚠ ${lastScan.issues.length} issue${lastScan.issues.length!==1?"s":""}`}
+                              </span>
+                            )}
+                          </div>
+                        </div>
+                      );
+                    })}
+                    {pipelines.length===0&&(
+                      <div style={{padding:"32px 16px",textAlign:"center",color:T.muted,fontSize:12}}>
+                        No pipelines yet — add one to get started.
+                      </div>
+                    )}
                   </div>
                 </div>
-              );
-            })}
-          </div>
+
+                {/* ── Predictive Alerts ────────────────────────────────── */}
+                {(()=>{
+                  const activePreds = Object.entries(predictions).filter(([,p])=>
+                    p.text && (p.trend==="degrading"||p.trend==="consistently_failing")
+                  );
+                  if (!activePreds.length) return null;
+                  return (
+                    <div style={{marginBottom:16,background:T.card,borderRadius:12,
+                      border:`1px solid ${T.purple}30`,overflow:"hidden"}}>
+                      <div style={{padding:"12px 16px",borderBottom:`1px solid ${T.purple}20`,
+                        background:`${T.purple}06`,display:"flex",alignItems:"center",gap:8}}>
+                        <span style={{fontSize:14}}>🔮</span>
+                        <div style={{fontSize:12,fontWeight:700,color:T.purple}}>Predictive Alerts</div>
+                        <span style={{fontSize:9,padding:"2px 8px",borderRadius:99,
+                          background:`${T.purple}15`,color:T.purple,fontWeight:700,marginLeft:"auto"}}>
+                          {activePreds.length} pipeline{activePreds.length!==1?"s":""} at risk
+                        </span>
+                      </div>
+                      <div>
+                        {activePreds.map(([pipId,pred],i)=>{
+                          const pipe = pipelines.find(p=>p.id===pipId);
+                          if (!pipe) return null;
+                          const sevColor = pred.severity==="high"?T.red:T.orange;
+                          const trendLabel = pred.trend==="consistently_failing"?"Consistently Failing":"Degrading";
+                          return (
+                            <div key={pipId} style={{padding:"10px 16px",
+                              borderBottom:i<activePreds.length-1?`1px solid ${T.border}15`:"none",
+                              display:"flex",alignItems:"flex-start",gap:10}}>
+                              <span style={{fontSize:16,flexShrink:0}}>{pipe.icon}</span>
+                              <div style={{flex:1,minWidth:0}}>
+                                <div style={{display:"flex",alignItems:"center",gap:6,marginBottom:4}}>
+                                  <span style={{fontSize:11,fontWeight:600,color:T.text}}>{pipe.name}</span>
+                                  <span style={{fontSize:9,padding:"1px 7px",borderRadius:99,
+                                    background:`${sevColor}15`,color:sevColor,fontWeight:700}}>
+                                    {trendLabel}
+                                  </span>
+                                </div>
+                                <div style={{fontSize:11,color:T.text2,lineHeight:1.5}}>{pred.text}</div>
+                                <div style={{fontSize:9,color:T.dim,marginTop:3}}>
+                                  Based on last 7 runs · {new Date(pred.ts).toLocaleTimeString([],{hour:"2-digit",minute:"2-digit"})}
+                                </div>
+                              </div>
+                              <button
+                                onClick={()=>runPipeline(pipe)}
+                                disabled={!!runningPipes[pipId]}
+                                style={{fontSize:9,padding:"4px 10px",borderRadius:6,
+                                  border:`1px solid ${T.accent}30`,background:`${T.accent}08`,
+                                  color:T.accent,cursor:"pointer",fontWeight:600,flexShrink:0}}>
+                                ▶ Run Now
+                              </button>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  );
+                })()}
+
+                {/* ── AI Triage Queue ───────────────────────────────────── */}
+                {openIssues.filter(i=>i.severity==="critical"||i.severity==="high").length>0&&(()=>{
+                  const critical = openIssues.filter(i=>i.severity==="critical"||i.severity==="high");
+                  return (
+                    <div style={{background:T.card,borderRadius:12,
+                      border:`1px solid ${T.red}30`,overflow:"hidden",marginBottom:16}}>
+                      <div style={{padding:"12px 16px",borderBottom:`1px solid ${T.red}20`,
+                        background:`${T.red}06`,display:"flex",alignItems:"center",gap:8}}>
+                        <span style={{fontSize:14}}>🧠</span>
+                        <div style={{fontSize:12,fontWeight:700,color:T.red}}>AI Triage Queue</div>
+                        <span style={{fontSize:9,padding:"2px 8px",borderRadius:99,
+                          background:`${T.red}15`,color:T.red,fontWeight:700,marginLeft:"auto"}}>
+                          {critical.length} critical / high
+                        </span>
+                      </div>
+                      <div>
+                        {critical.map((issue,i)=>(
+                          <div key={i} style={{padding:"10px 16px",
+                            borderBottom:i<critical.length-1?`1px solid ${T.border}20`:"none",
+                            display:"flex",alignItems:"center",gap:12}}>
+                            <div style={{fontSize:16}}>{issue.severity==="critical"?"🚨":"⚠️"}</div>
+                            <div style={{flex:1,minWidth:0}}>
+                              <div style={{fontSize:11,fontWeight:600,color:T.text}}>{issue.name}</div>
+                              <div style={{fontSize:9,color:T.muted,marginTop:1}}>
+                                {issue.pipeline} · {issue.actual_rows!=null?`${issue.actual_rows} rows affected`:"Check failed"}
+                              </div>
+                            </div>
+                            <div style={{display:"flex",gap:6}}>
+                              <button
+                                onClick={()=>{const p=pipelines.find(p=>p.id===issue.pipeline_id);if(p)runPipeline(p);}}
+                                style={{fontSize:9,padding:"4px 10px",borderRadius:6,
+                                  border:`1px solid ${T.red}40`,background:`${T.red}10`,
+                                  color:T.red,cursor:"pointer",fontWeight:600}}>
+                                ▶ Run Fix
+                              </button>
+                              <button
+                                onClick={()=>{setActivePipe(issue.pipeline_id);setView("pipelines");}}
+                                style={{fontSize:9,padding:"4px 10px",borderRadius:6,
+                                  border:`1px solid ${T.border}`,background:"none",
+                                  color:T.muted,cursor:"pointer"}}>
+                                Inspect
+                              </button>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  );
+                })()}
+
+                {/* ── Live Agent Activity Feed ──────────────────────────── */}
+                {(()=>{
+                  // Aggregate logs across all pipelines, newest first
+                  const anyRunning = Object.values(runningPipes).some(Boolean);
+                  const allLogs = pipelines.flatMap(pipe=>
+                    (pipeLogs[pipe.id]||[]).map(entry=>({
+                      ...entry,
+                      pipeName: pipe.name,
+                      pipeColor: pipe.color,
+                      pipeIcon: pipe.icon,
+                      agentColor: pipe.agents.find(a=>a.name===entry.agent)?.color||pipe.color,
+                    }))
+                  ).slice(0,40);
+
+                  if (!allLogs.length && !anyRunning) return null;
+
+                  const typeIcon = { info:"·", warn:"⚠", error:"✗", success:"✓" };
+                  const agentIcon = {
+                    detection:"🔍", diagnosis:"💡", remediation:"🔧",
+                    verification:"✅", reporter:"📊", alerter:"🚨", orchestrator:"🎯",
+                  };
+
+                  return (
+                    <div style={{background:T.card,borderRadius:12,border:`1px solid ${T.border}`,overflow:"hidden"}}>
+                      <div style={{padding:"12px 16px",borderBottom:`1px solid ${T.border}`,
+                        display:"flex",alignItems:"center",gap:8}}>
+                        <span style={{fontSize:14}}>⚡</span>
+                        <div style={{fontSize:12,fontWeight:700,color:T.text}}>Live Agent Activity</div>
+                        {anyRunning&&(
+                          <div style={{display:"flex",alignItems:"center",gap:5,marginLeft:4}}>
+                            <div style={{width:6,height:6,borderRadius:"50%",background:T.green,
+                              animation:"pulse 1s infinite"}}/>
+                            <span style={{fontSize:9,color:T.green,fontWeight:700}}>LIVE</span>
+                          </div>
+                        )}
+                        <span style={{fontSize:9,color:T.dim,marginLeft:"auto"}}>
+                          {allLogs.length} events
+                        </span>
+                      </div>
+
+                      {allLogs.length===0?(
+                        <div style={{padding:"24px 16px",textAlign:"center"}}>
+                          <div style={{fontSize:22,marginBottom:6}}>🤖</div>
+                          <div style={{fontSize:11,color:T.muted}}>Agents are standing by — run a pipeline to see activity</div>
+                        </div>
+                      ):(
+                        <div style={{maxHeight:320,overflowY:"auto",padding:"8px 0"}}>
+                          {allLogs.map((entry,i)=>{
+                            const aType = entry.agent?.toLowerCase()||"";
+                            const icon = Object.entries(agentIcon).find(([k])=>aType.includes(k))?.[1]||"🤖";
+                            const tColor = TC[entry.type]||T.muted;
+                            return (
+                              <div key={i} style={{padding:"5px 16px",display:"flex",
+                                alignItems:"flex-start",gap:9,
+                                borderBottom:i<allLogs.length-1?`1px solid ${T.border}10`:"none",
+                                background:i===0&&anyRunning?`${T.accent}04`:"transparent",
+                                transition:"background 0.3s"}}>
+                                {/* Agent icon + pipeline color dot */}
+                                <div style={{display:"flex",flexDirection:"column",alignItems:"center",
+                                  gap:2,flexShrink:0,width:22}}>
+                                  <span style={{fontSize:13,lineHeight:1}}>{icon}</span>
+                                  <div style={{width:5,height:5,borderRadius:"50%",
+                                    background:entry.pipeColor,opacity:0.7}}/>
+                                </div>
+                                {/* Content */}
+                                <div style={{flex:1,minWidth:0}}>
+                                  <div style={{display:"flex",alignItems:"center",gap:6,marginBottom:1}}>
+                                    <span style={{fontSize:9,fontWeight:700,
+                                      color:entry.agentColor,
+                                      background:`${entry.agentColor}12`,
+                                      padding:"1px 5px",borderRadius:3}}>
+                                      {entry.agent}
+                                    </span>
+                                    <span style={{fontSize:9,color:T.dim}}>{entry.pipeName}</span>
+                                    <span style={{fontSize:9,color:T.dim,marginLeft:"auto",
+                                      fontFamily:"monospace"}}>{entry.ts}</span>
+                                  </div>
+                                  <div style={{fontSize:11,color:tColor,lineHeight:1.4,
+                                    wordBreak:"break-word"}}>
+                                    <span style={{marginRight:5,fontWeight:700}}>{typeIcon[entry.type]||"·"}</span>
+                                    {entry.msg}
+                                  </div>
+                                </div>
+                              </div>
+                            );
+                          })}
+                          {/* Thinking indicator when running */}
+                          {anyRunning&&(
+                            <div style={{padding:"8px 16px",display:"flex",alignItems:"center",gap:8}}>
+                              <span style={{fontSize:13}}>🤖</span>
+                              <div style={{display:"flex",gap:3}}>
+                                {[0,1,2].map(i=>(
+                                  <div key={i} style={{width:5,height:5,borderRadius:"50%",
+                                    background:T.accent,
+                                    animation:`pulse 1s ${i*0.2}s infinite`}}/>
+                                ))}
+                              </div>
+                              <span style={{fontSize:10,color:T.muted,fontStyle:"italic"}}>
+                                Agents working…
+                              </span>
+                            </div>
+                          )}
+                        </div>
+                      )}
+                    </div>
+                  );
+                })()}
+              </>
+            );
+          })()}
         </div>
       )}
 
@@ -20053,7 +20990,7 @@ function AutoPilotTab({ onNavigate }) {
               <Btn size="sm" variant="ghost" onClick={()=>{
                 const newP={id:`pipe_${Date.now()}`,name:"New Pipeline",icon:"🔄",color:T.accent,
                   enabled:false,dry_run:true,interval_min:30,confidence_threshold:85,
-                  slack_channel:"",trigger:"schedule",agents:[],safe_actions:[]};
+                  slack_channel:"",trigger:"schedule",trigger_on_failure:false,agents:[],safe_actions:[]};
                 setPipelines(p=>[...p,newP]);
                 setActivePipe(newP.id);
               }} style={{marginTop:4,fontSize:10}}>
@@ -20141,7 +21078,10 @@ function AutoPilotTab({ onNavigate }) {
                           position:"absolute",top:3,left:pipe.trigger_on_failure?17:3,transition:"left 0.15s"}}/>
                       </div>
                       <div><div style={{fontSize:11,color:T.text}}>⚡ Trigger on Failure</div>
-                        <div style={{fontSize:9,color:T.muted}}>Also fires when any workflow or dataflow fails</div></div>
+                        <div style={{fontSize:9,color:T.muted}}>Fires when Workflows or Dataflows detect failures
+                          {pipe.trigger_on_failure&&<span style={{color:"#F97316",fontWeight:600}}> · ACTIVE — watching all tabs</span>}
+                        </div>
+                      </div>
                     </div>
                   </div>
                 </div>
@@ -20345,13 +21285,14 @@ function AutoPilotTab({ onNavigate }) {
                   border:`1px solid ${m.resolved?T.green+"30":T.orange+"30"}`,
                   background:m.resolved?`${T.green}04`:`${T.orange}04`}}>
                   <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:5}}>
-                    <Badge label={m.resolved?"resolved":"unresolved"} color={m.resolved?T.green:T.orange}/>
+                    <Badge label={m.resolved?"resolved":m.rolled_back?"rolled back":"unresolved"} color={m.resolved?T.green:m.rolled_back?T.purple:T.orange}/>
                     <span style={{fontSize:12,fontWeight:600,color:T.text}}>{m.check_name}</span>
                     {m.pipeline_id&&<Badge label={pipelines.find(p=>p.id===m.pipeline_id)?.name||m.pipeline_id} color={T.purple}/>}
                     <span style={{fontSize:10,color:T.dim,marginLeft:"auto",fontFamily:"monospace"}}>{m.ts?.slice(0,16).replace("T"," ")}</span>
                   </div>
                   {m.diagnosis&&<div style={{fontSize:11,color:T.text2,marginBottom:3}}>💡 {m.diagnosis}</div>}
                   {m.fix_applied&&<div style={{fontSize:11,color:T.text2,marginBottom:3}}>🔧 {m.fix_applied}{m.rows_before!=null&&<span style={{color:T.muted}}> · {m.rows_before}→{m.rows_after??0} rows</span>}</div>}
+                  {m.rolled_back&&<div style={{fontSize:11,color:T.purple,marginBottom:3}}>↩ Rolled back — fix did not resolve issue</div>}
                   {m.verification&&<div style={{fontSize:10,color:T.muted,fontStyle:"italic"}}>✅ {m.verification}</div>}
                 </div>
               ))}
@@ -20363,43 +21304,288 @@ function AutoPilotTab({ onNavigate }) {
       {/* ── HISTORY ────────────────────────────────────────────────────────── */}
       {activeView==="history"&&(
         <div>
-          <div style={{fontSize:13,fontWeight:700,color:T.text,marginBottom:14}}>
-            Scan History <span style={{fontSize:11,color:T.muted,fontWeight:400}}>({scanHistory.length} runs)</span>
-          </div>
           {scanHistory.length===0
             ?<EmptyState icon={Clock} title="No scans yet" desc="Scan history appears here after pipelines run."/>
-            :<div style={{display:"flex",flexDirection:"column",gap:8}}>
-              {scanHistory.map((scan,i)=>{
-                const pipe = pipelines.find(p=>p.id===scan.pipeline_id);
-                return (
-                  <div key={i} style={{padding:"12px 16px",borderRadius:9,background:T.card,
-                    border:`1px solid ${scan.issues?.length>0?T.orange+"30":T.green+"30"}`}}>
-                    <div style={{display:"flex",alignItems:"center",gap:8}}>
-                      <span style={{fontSize:16}}>{pipe?.icon||"🔄"}</span>
-                      <div style={{flex:1}}>
-                        <div style={{fontSize:12,fontWeight:600,color:T.text,display:"flex",alignItems:"center",gap:6}}>
-                          {scan.pipeline_name}
-                          {scan.dry_run&&<Badge label="dry run" color={T.cyan}/>}
-                        </div>
-                        <div style={{fontSize:10,color:T.muted,marginTop:2}}>
-                          {scan.ts?.slice(0,16).replace("T"," ")} · {scan.issues?.length||0} issues · {scan.fixes?.length||0} fixed
-                        </div>
+            :(()=>{
+              // ── Build day buckets (last 14 days) ──────────────────────────
+              const days = [];
+              for (let i=13; i>=0; i--) {
+                const d = new Date(); d.setDate(d.getDate()-i); d.setHours(0,0,0,0);
+                const label = i===0?"Today":i===1?"Yesterday":d.toLocaleDateString([],{month:"short",day:"numeric"});
+                const scans = scanHistory.filter(h=>{
+                  const hd = new Date(h.ts); hd.setHours(0,0,0,0);
+                  return hd.getTime()===d.getTime();
+                });
+                const issues = scans.reduce((s,h)=>s+(h.issues?.length||0),0);
+                const fixes  = scans.reduce((s,h)=>s+(h.fixes?.length||0),0);
+                days.push({ label, date:d, scans, issues, fixes,
+                  status: scans.length===0?"empty":issues===0?"clean":"issues" });
+              }
+
+              // ── Group scans by day for timeline ──────────────────────────
+              const grouped = {};
+              scanHistory.forEach(scan=>{
+                const key = scan.ts?.slice(0,10)||"unknown";
+                if (!grouped[key]) grouped[key]=[];
+                grouped[key].push(scan);
+              });
+              const groupedDays = Object.entries(grouped)
+                .sort((a,b)=>b[0].localeCompare(a[0]))
+                .slice(0,14);
+
+              return (
+                <>
+                  {/* ── 14-day Heatmap ─────────────────────────────────── */}
+                  <div style={{background:T.card,borderRadius:12,border:`1px solid ${T.border}`,
+                    padding:"14px 18px",marginBottom:20}}>
+                    <div style={{fontSize:11,fontWeight:700,color:T.text,marginBottom:12,
+                      display:"flex",alignItems:"center",justifyContent:"space-between"}}>
+                      <span>14-Day Health Heatmap</span>
+                      <div style={{display:"flex",alignItems:"center",gap:10,fontSize:9,color:T.dim}}>
+                        <span style={{display:"flex",alignItems:"center",gap:4}}>
+                          <div style={{width:10,height:10,borderRadius:2,background:T.green}}/> Clean
+                        </span>
+                        <span style={{display:"flex",alignItems:"center",gap:4}}>
+                          <div style={{width:10,height:10,borderRadius:2,background:T.orange}}/> Issues
+                        </span>
+                        <span style={{display:"flex",alignItems:"center",gap:4}}>
+                          <div style={{width:10,height:10,borderRadius:2,background:T.border}}/> No runs
+                        </span>
                       </div>
-                      <Badge label={scan.status} color={scan.status==="complete"?T.green:T.orange}/>
                     </div>
-                    {scan.issues?.length>0&&(
-                      <div style={{marginTop:6,display:"flex",gap:4,flexWrap:"wrap"}}>
-                        {scan.issues.map((iss,j)=>(
-                          <span key={j} style={{fontSize:9,padding:"2px 7px",borderRadius:99,
-                            background:`${T.orange}12`,color:T.orange}}>{iss.name}</span>
-                        ))}
-                      </div>
-                    )}
+                    <div style={{display:"grid",gridTemplateColumns:"repeat(14,1fr)",gap:4}}>
+                      {days.map((day,i)=>{
+                        const bg = day.status==="clean"?T.green
+                          :day.status==="issues"?T.orange
+                          :T.border;
+                        const intensity = day.status==="empty"?0.15
+                          :day.status==="clean"?0.7
+                          :Math.min(0.4+day.issues*0.1,1);
+                        return (
+                          <div key={i} title={`${day.label}: ${day.scans.length} scans, ${day.issues} issues, ${day.fixes} fixed`}
+                            style={{aspectRatio:"1",borderRadius:4,cursor:"default",
+                              background:`${bg}`,opacity:intensity,
+                              display:"flex",alignItems:"center",justifyContent:"center",
+                              transition:"opacity 0.2s"}}
+                            onMouseEnter={e=>e.currentTarget.style.opacity="1"}
+                            onMouseLeave={e=>e.currentTarget.style.opacity=String(intensity)}>
+                          </div>
+                        );
+                      })}
+                    </div>
+                    <div style={{display:"grid",gridTemplateColumns:"repeat(14,1fr)",gap:4,marginTop:4}}>
+                      {days.map((day,i)=>(
+                        <div key={i} style={{fontSize:7,color:T.dim,textAlign:"center",
+                          overflow:"hidden",whiteSpace:"nowrap"}}>
+                          {i===0||i===7||i===13?day.label:""}
+                        </div>
+                      ))}
+                    </div>
+                    {/* Summary row */}
+                    <div style={{marginTop:12,display:"flex",gap:16,flexWrap:"wrap"}}>
+                      {[
+                        {label:"Total runs",value:scanHistory.length,color:T.accent},
+                        {label:"Clean days",value:days.filter(d=>d.status==="clean").length,color:T.green},
+                        {label:"Issue days",value:days.filter(d=>d.status==="issues").length,color:T.orange},
+                        {label:"Total fixes",value:scanHistory.reduce((s,h)=>s+(h.fixes?.length||0),0),color:T.purple},
+                      ].map(s=>(
+                        <div key={s.label}>
+                          <div style={{fontSize:16,fontWeight:800,color:s.color}}>{s.value}</div>
+                          <div style={{fontSize:9,color:T.muted}}>{s.label}</div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+
+                  {/* ── Vertical Timeline ──────────────────────────────── */}
+                  <div style={{display:"flex",flexDirection:"column",gap:0}}>
+                    {groupedDays.map(([dateKey, scans],gi)=>{
+                      const dayLabel = dateKey===new Date().toISOString().slice(0,10)?"Today"
+                        :dateKey===new Date(Date.now()-86400000).toISOString().slice(0,10)?"Yesterday"
+                        :new Date(dateKey).toLocaleDateString([],{weekday:"short",month:"short",day:"numeric"});
+                      const dayIssues = scans.reduce((s,h)=>s+(h.issues?.length||0),0);
+                      const dayFixes  = scans.reduce((s,h)=>s+(h.fixes?.length||0),0);
+
+                      return (
+                        <div key={dateKey} style={{display:"flex",gap:14,marginBottom:20}}>
+                          {/* Timeline spine */}
+                          <div style={{display:"flex",flexDirection:"column",alignItems:"center",
+                            width:32,flexShrink:0}}>
+                            <div style={{width:12,height:12,borderRadius:"50%",flexShrink:0,
+                              background:dayIssues===0?T.green:T.orange,
+                              boxShadow:`0 0 0 3px ${dayIssues===0?T.green:T.orange}20`,
+                              zIndex:1}}/>
+                            {gi<groupedDays.length-1&&(
+                              <div style={{flex:1,width:2,background:T.border,marginTop:4,minHeight:40}}/>
+                            )}
+                          </div>
+
+                          {/* Day content */}
+                          <div style={{flex:1,minWidth:0,paddingBottom:4}}>
+                            <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:8,marginTop:-2}}>
+                              <span style={{fontSize:12,fontWeight:700,color:T.text}}>{dayLabel}</span>
+                              <span style={{fontSize:9,color:T.muted}}>{scans.length} scan{scans.length!==1?"s":""}</span>
+                              {dayIssues>0&&<span style={{fontSize:9,color:T.orange,fontWeight:600}}>⚠ {dayIssues} issues</span>}
+                              {dayFixes>0&&<span style={{fontSize:9,color:T.green,fontWeight:600}}>✓ {dayFixes} fixed</span>}
+                            </div>
+
+                            <div style={{display:"flex",flexDirection:"column",gap:6}}>
+                              {scans.map((scan,si)=>{
+                                const pipe = pipelines.find(p=>p.id===scan.pipeline_id);
+                                const hasIssues = (scan.issues?.length||0)>0;
+                                const hasFixes  = (scan.fixes?.length||0)>0;
+                                const timeStr   = scan.ts?.slice(11,16)||"";
+                                return (
+                                  <div key={si} style={{padding:"10px 14px",borderRadius:9,
+                                    background:T.card,
+                                    border:`1px solid ${hasIssues?T.orange+"30":T.green+"30"}`,
+                                    display:"flex",gap:10,alignItems:"flex-start"}}>
+                                    <span style={{fontSize:16,flexShrink:0}}>{pipe?.icon||"🔄"}</span>
+                                    <div style={{flex:1,minWidth:0}}>
+                                      <div style={{display:"flex",alignItems:"center",gap:6,marginBottom:3}}>
+                                        <span style={{fontSize:11,fontWeight:600,color:T.text}}>
+                                          {scan.pipeline_name}
+                                        </span>
+                                        {scan.dry_run&&<Badge label="dry run" color={T.cyan}/>}
+                                        <span style={{fontSize:9,color:T.dim,marginLeft:"auto",
+                                          fontFamily:"monospace"}}>{timeStr}</span>
+                                      </div>
+                                      <div style={{display:"flex",gap:8,flexWrap:"wrap"}}>
+                                        {hasIssues?(
+                                          scan.issues.map((iss,j)=>(
+                                            <span key={j} style={{fontSize:9,padding:"2px 7px",
+                                              borderRadius:99,background:`${T.orange}12`,color:T.orange}}>
+                                              ⚠ {iss.name}
+                                            </span>
+                                          ))
+                                        ):(
+                                          <span style={{fontSize:9,color:T.green,fontWeight:600}}>✓ All checks passed</span>
+                                        )}
+                                        {hasFixes&&scan.fixes.map((fix,j)=>(
+                                          <span key={`fix-${j}`} style={{fontSize:9,padding:"2px 7px",
+                                            borderRadius:99,background:`${T.green}12`,color:T.green}}>
+                                            🔧 {fix.action||fix.check}
+                                          </span>
+                                        ))}
+                                      </div>
+                                    </div>
+                                  </div>
+                                );
+                              })}
+                            </div>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </>
+              );
+            })()
+          }
+        </div>
+      )}
+
+      {/* ── STAKEHOLDER VIEW ─────────────────────────────────────────────── */}
+      {activeView==="stakeholder"&&(
+        <div style={{maxWidth:680}}>
+          {/* Header */}
+          <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:20}}>
+            <div>
+              <div style={{fontSize:15,fontWeight:700,color:T.text}}>📣 Stakeholder Report</div>
+              <div style={{fontSize:11,color:T.muted,marginTop:2}}>
+                Plain-English data health summary — safe to share with business stakeholders
+              </div>
+            </div>
+            <div style={{display:"flex",gap:8}}>
+              {stakeholderReport?.text&&(
+                <button
+                  onClick={()=>navigator.clipboard?.writeText(stakeholderReport.text).catch(()=>{})}
+                  style={{fontSize:10,padding:"5px 12px",borderRadius:7,cursor:"pointer",
+                    border:`1px solid ${T.border}`,background:T.surface,color:T.muted,
+                    display:"flex",alignItems:"center",gap:5}}>
+                  📋 Copy
+                </button>
+              )}
+              <Btn size="sm" onClick={generateStakeholderReport} disabled={stakeholderReport?.loading}
+                style={{background:`linear-gradient(135deg,${T.accent},${T.purple})`,color:"white",border:"none"}}>
+                {stakeholderReport?.loading?<><Spinner size={10} color="white"/> Generating…</>:<>✦ Generate Report</>}
+              </Btn>
+            </div>
+          </div>
+
+          {/* Report card */}
+          {!stakeholderReport?(
+            <div style={{padding:"48px 24px",textAlign:"center",background:T.card,
+              borderRadius:14,border:`1px solid ${T.border}`}}>
+              <div style={{fontSize:32,marginBottom:12}}>📣</div>
+              <div style={{fontSize:14,fontWeight:700,color:T.text,marginBottom:6}}>
+                Generate your stakeholder report
+              </div>
+              <div style={{fontSize:12,color:T.muted,marginBottom:20,maxWidth:360,margin:"0 auto 20px"}}>
+                AI summarizes your pipeline health, issues, and auto-fixes in plain English — no technical jargon.
+              </div>
+              <Btn onClick={generateStakeholderReport}
+                style={{background:`linear-gradient(135deg,${T.accent},${T.purple})`,color:"white",border:"none"}}>
+                ✦ Generate Report
+              </Btn>
+            </div>
+          ):stakeholderReport.loading?(
+            <div style={{padding:"48px 24px",textAlign:"center",background:T.card,
+              borderRadius:14,border:`1px solid ${T.border}`}}>
+              <Spinner size={24} color={T.accent}/>
+              <div style={{fontSize:12,color:T.muted,marginTop:16}}>Writing stakeholder report…</div>
+            </div>
+          ):(
+            <div style={{background:T.card,borderRadius:14,border:`1px solid ${T.border}`,overflow:"hidden"}}>
+              {/* Status bar */}
+              {(()=>{
+                const text = stakeholderReport.text||"";
+                const statusColor = text.includes("Green")?T.green:text.includes("Red")?T.red:T.orange;
+                const statusLabel = text.includes("Green")?"Green":text.includes("Red")?"Red":"Yellow";
+                return (
+                  <div style={{padding:"10px 20px",background:`${statusColor}10`,
+                    borderBottom:`1px solid ${statusColor}25`,
+                    display:"flex",alignItems:"center",gap:8}}>
+                    <div style={{width:10,height:10,borderRadius:"50%",background:statusColor,flexShrink:0}}/>
+                    <span style={{fontSize:11,fontWeight:700,color:statusColor}}>
+                      Status: {statusLabel}
+                    </span>
+                    <span style={{fontSize:10,color:T.dim,marginLeft:"auto"}}>
+                      Generated {new Date(stakeholderReport.ts).toLocaleString([],{month:"short",day:"numeric",hour:"2-digit",minute:"2-digit"})}
+                    </span>
                   </div>
                 );
-              })}
+              })()}
+
+              {/* Report body */}
+              <div style={{padding:"24px 28px"}}>
+                <div style={{fontSize:13,color:T.text,lineHeight:1.9,whiteSpace:"pre-wrap"}}>
+                  {stakeholderReport.text}
+                </div>
+              </div>
+
+              {/* Data snapshot */}
+              <div style={{padding:"14px 28px",borderTop:`1px solid ${T.border}`,
+                background:`${T.border}10`,display:"flex",gap:20,flexWrap:"wrap"}}>
+                {[
+                  {label:"Active Pipelines",value:pipelines.filter(p=>p.enabled).length},
+                  {label:"Issues This Week",value:scanHistory.filter(h=>(Date.now()-new Date(h.ts).getTime())<7*24*60*60*1000).reduce((s,h)=>s+(h.issues?.length||0),0)},
+                  {label:"Auto-Fixed",value:scanHistory.filter(h=>(Date.now()-new Date(h.ts).getTime())<7*24*60*60*1000).reduce((s,h)=>s+(h.fixes?.length||0),0)},
+                  {label:"Total Scans",value:scanHistory.length},
+                ].map(s=>(
+                  <div key={s.label}>
+                    <div style={{fontSize:16,fontWeight:800,color:T.accent}}>{s.value}</div>
+                    <div style={{fontSize:9,color:T.muted}}>{s.label}</div>
+                  </div>
+                ))}
+              </div>
             </div>
-          }
+          )}
+
+          {/* Auto-refresh hint */}
+          <div style={{marginTop:12,fontSize:10,color:T.dim,textAlign:"center"}}>
+            ✦ Report updates automatically after each pipeline scan
+          </div>
         </div>
       )}
 
@@ -20430,16 +21616,392 @@ function AutoPilotTab({ onNavigate }) {
               <Btn size="sm" variant="muted" onClick={()=>setPipelines(AP_DEFAULT_PIPELINES)}>Reset Pipelines</Btn>
             </div>
           </div>
+
+          {/* Noise Suppression */}
+          <div style={{background:T.card,borderRadius:10,border:`1px solid ${T.border}`,padding:"18px 20px"}}>
+            <div style={{fontSize:12,fontWeight:700,color:T.text,marginBottom:4}}>🔇 Noise Suppression</div>
+            <div style={{fontSize:10,color:T.muted,marginBottom:12}}>
+              Checks flagged as false positives are skipped in future detection runs.
+              A check is auto-flagged after {3} unresolved occurrences in memory.
+            </div>
+            {Object.keys(suppressedChecks).length===0?(
+              <div style={{fontSize:11,color:T.dim}}>No checks suppressed yet.</div>
+            ):(
+              <div style={{display:"flex",flexDirection:"column",gap:6}}>
+                {Object.entries(suppressedChecks).map(([key,s])=>(
+                  <div key={key} style={{display:"flex",alignItems:"center",gap:10,
+                    padding:"8px 10px",borderRadius:8,background:T.bg,
+                    border:`1px solid ${T.border}`}}>
+                    <span style={{fontSize:12}}>🔇</span>
+                    <div style={{flex:1,minWidth:0}}>
+                      <div style={{fontSize:11,fontWeight:600,color:T.text,
+                        overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>
+                        {s.name||key}
+                      </div>
+                      <div style={{fontSize:9,color:T.muted,marginTop:1}}>
+                        {s.count} unresolved occurrences · suppressed {s.suppressed_at?new Date(s.suppressed_at).toLocaleDateString():"manually"}
+                      </div>
+                    </div>
+                    <button
+                      onClick={()=>setSuppressedChecks(p=>{const n={...p};delete n[key];return n;})}
+                      title="Unsuppress — re-enable this check"
+                      style={{fontSize:9,padding:"3px 8px",borderRadius:6,
+                        border:`1px solid ${T.green}30`,background:`${T.green}08`,
+                        color:T.green,cursor:"pointer",fontWeight:600,flexShrink:0}}>
+                      ↺ Restore
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
+
+            {/* Manual suppression from memory candidates */}
+            {(()=>{
+              const SUPPRESS_THRESHOLD = 3;
+              const hist = memory;
+              const candidates = {};
+              hist.forEach(m=>{
+                if (m.resolved||m.fix_applied) return;
+                const key = m.check_id||m.check_name;
+                if (!key||suppressedChecks[key]) return;
+                if (!candidates[key]) candidates[key]={count:0,name:m.check_name,pipeline_id:m.pipeline_id};
+                candidates[key].count++;
+              });
+              const flagged = Object.entries(candidates).filter(([,c])=>c.count>=SUPPRESS_THRESHOLD);
+              if (!flagged.length) return null;
+              return (
+                <div style={{marginTop:12,padding:"10px 12px",borderRadius:8,
+                  background:`${T.orange}06`,border:`1px solid ${T.orange}25`}}>
+                  <div style={{fontSize:10,fontWeight:700,color:T.orange,marginBottom:8}}>
+                    ⚠ {flagged.length} candidate{flagged.length!==1?"s":""} flagged for suppression
+                  </div>
+                  {flagged.map(([key,c])=>(
+                    <div key={key} style={{display:"flex",alignItems:"center",gap:8,marginBottom:6}}>
+                      <span style={{fontSize:11,color:T.text,flex:1}}>{c.name}</span>
+                      <span style={{fontSize:9,color:T.muted}}>{c.count}× unresolved</span>
+                      <button
+                        onClick={()=>setSuppressedChecks(p=>({...p,[key]:{
+                          name:c.name,count:c.count,
+                          pipeline_id:c.pipeline_id,
+                          suppressed_at:new Date().toISOString()
+                        }}))}
+                        style={{fontSize:9,padding:"3px 8px",borderRadius:6,
+                          border:`1px solid ${T.orange}40`,background:`${T.orange}10`,
+                          color:T.orange,cursor:"pointer",fontWeight:600,flexShrink:0}}>
+                        🔇 Suppress
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              );
+            })()}
+          </div>
         </div>
       )}
+
+      {/* ── NL Pipeline Builder Modal ─────────────────────────────────────── */}
+      {showNlBuilder&&(()=>{
+        const AP_AGENT_COLORS = {detection:"#3B82F6",diagnosis:"#8B5CF6",remediation:"#10B981",verification:"#F59E0B",reporter:"#6366F1",alerter:"#EF4444"};
+        const AP_AGENT_ICONS  = {detection:"🔍",diagnosis:"💡",remediation:"🔧",verification:"✅",reporter:"📊",alerter:"🚨"};
+
+        const buildPipeline = async () => {
+          if (!nlBuilderText.trim()||nlBuilderLoading) return;
+          setNlBuilderLoading(true); setNlBuilderResult(null);
+          try {
+            const r = await fetch(`${API}/api/ai/chat`,{
+              method:"POST",headers:{"Content-Type":"application/json"},
+              body:JSON.stringify({
+                system:`You are an AI pipeline builder for a data quality monitoring system. Given a plain-English description, generate a pipeline config JSON.
+
+Return ONLY valid JSON, no markdown:
+{
+  "name": "string",
+  "icon": "single emoji",
+  "color": "#hexcolor",
+  "interval_min": number (15/30/60/120/240),
+  "confidence_threshold": number (75-95),
+  "dry_run": true,
+  "agents": [
+    {"type":"detection","name":"string","enabled":true,"checks":[{"name":"string","sql":"SELECT COUNT(*) FROM table WHERE condition","pass_condition":"rows = 0","severity":"critical"}]}
+  ],
+  "safe_actions": [
+    {"id":"a1","name":"string","enabled":false,"confidence":85,"check_sql":"","fix_sql":"UPDATE ...","rollback_sql":"","description":"string"}
+  ],
+  "summary": "One sentence describing what this pipeline monitors"
+}
+
+Rules: always dry_run true, include detection+diagnosis agents minimum, use real SQL (mws.report, mws.orders, public.tbl_amzn_campaign_report), safe_actions must be conservative and reversible.`,
+                messages:[{role:"user",content:nlBuilderText}],
+                max_tokens:900,temperature:0.3
+              })
+            });
+            const d = await r.json();
+            const text = (d?.content?.[0]?.text||"{}").replace(/```json|```/g,"").trim();
+            setNlBuilderResult(JSON.parse(text));
+          } catch(e){ setNlBuilderResult({error:"Couldn't parse — try being more specific about what to monitor."}); }
+          setNlBuilderLoading(false);
+        };
+
+        const applyPipeline = () => {
+          if (!nlBuilderResult||nlBuilderResult.error) return;
+          const AP_AGENT_COLORS2 = {detection:"#3B82F6",diagnosis:"#8B5CF6",remediation:"#10B981",verification:"#F59E0B",reporter:"#6366F1",alerter:"#EF4444"};
+          const AP_AGENT_ICONS2  = {detection:"🔍",diagnosis:"💡",remediation:"🔧",verification:"✅",reporter:"📊",alerter:"🚨"};
+          const newP = {
+            ...nlBuilderResult,
+            id:`pipe_${Date.now()}`,trigger:"schedule",slack_channel:"",enabled:false,
+            agents:(nlBuilderResult.agents||[]).map((a,i)=>({
+              ...a,
+              id:`${a.type}_${Date.now()}_${i}`,
+              system_prompt:AP_AGENT_TEMPLATES.find(t=>t.type===a.type)?.system_prompt||"",
+              color:AP_AGENT_COLORS2[a.type]||T.accent,
+              icon:AP_AGENT_ICONS2[a.type]||"🤖",
+              checks:(a.checks||[]).map((c,j)=>({...c,id:`c_${j}`})),
+            })),
+          };
+          delete newP.summary; delete newP.error;
+          setPipelines(p=>[...p,newP]);
+          setActivePipe(newP.id);
+          setView("pipelines");
+          setShowNlBuilder(false);
+          setNlBuilderText(""); setNlBuilderResult(null);
+        };
+
+        return (
+          <div style={{position:"fixed",inset:0,background:"rgba(0,0,0,0.6)",zIndex:400,
+            backdropFilter:"blur(4px)",display:"flex",alignItems:"center",justifyContent:"center"}}
+            onClick={e=>{if(e.target===e.currentTarget){setShowNlBuilder(false);setNlBuilderResult(null);}}}>
+            <div style={{background:T.surface,borderRadius:16,width:"min(680px,94vw)",
+              maxHeight:"90vh",display:"flex",flexDirection:"column",
+              border:`1px solid ${T.border}`,boxShadow:"0 24px 80px rgba(0,0,0,0.3)",overflow:"hidden"}}>
+
+              {/* Header */}
+              <div style={{padding:"20px 24px",borderBottom:`1px solid ${T.border}`,
+                display:"flex",alignItems:"center",gap:12,flexShrink:0}}>
+                <div style={{width:38,height:38,borderRadius:10,flexShrink:0,
+                  background:`linear-gradient(135deg,${T.accent}25,${T.purple}25)`,
+                  border:`1px solid ${T.accent}30`,
+                  display:"flex",alignItems:"center",justifyContent:"center",fontSize:18}}>✦</div>
+                <div style={{flex:1}}>
+                  <div style={{fontSize:15,fontWeight:700,color:T.text}}>Build Pipeline with AI</div>
+                  <div style={{fontSize:11,color:T.muted}}>Describe what to monitor — AI generates the full config</div>
+                </div>
+                <button onClick={()=>{setShowNlBuilder(false);setNlBuilderResult(null);}}
+                  style={{background:"none",border:"none",cursor:"pointer",color:T.muted,fontSize:22}}>×</button>
+              </div>
+
+              {/* Body */}
+              <div style={{flex:1,overflowY:"auto",padding:"20px 24px",display:"flex",flexDirection:"column",gap:16}}>
+                {/* Example prompts */}
+                <div style={{display:"flex",gap:6,flexWrap:"wrap"}}>
+                  {[
+                    "Monitor ads spend data every 30 min and alert if campaign ROI drops",
+                    "Check orders table for stuck pending rows and auto-fix daily",
+                    "Detect data freshness issues in mws.report and notify Slack",
+                  ].map(ex=>(
+                    <button key={ex} onClick={()=>setNlBuilderText(ex)}
+                      style={{fontSize:10,padding:"4px 10px",borderRadius:99,cursor:"pointer",
+                        border:`1px solid ${T.accent}30`,background:`${T.accent}06`,
+                        color:T.accent,fontFamily:"inherit",textAlign:"left"}}>
+                      {ex}
+                    </button>
+                  ))}
+                </div>
+
+                {/* NL input */}
+                <div>
+                  <textarea value={nlBuilderText} onChange={e=>setNlBuilderText(e.target.value)}
+                    onKeyDown={e=>{if(e.key==="Enter"&&e.metaKey)buildPipeline();}}
+                    placeholder='e.g. "Monitor my ads campaign data every hour. Alert if spend data is more than 2 hours stale. Auto-fix by rerunning the ingestion job if confidence is above 90%."'
+                    rows={4}
+                    style={{width:"100%",padding:"12px 14px",borderRadius:10,fontSize:12,
+                      border:`1px solid ${T.border}`,background:T.bg,color:T.text,
+                      fontFamily:"inherit",outline:"none",resize:"vertical",boxSizing:"border-box",lineHeight:1.6}}
+                    onFocus={e=>e.target.style.borderColor=T.accent}
+                    onBlur={e=>e.target.style.borderColor=T.border}/>
+                  <div style={{fontSize:10,color:T.dim,marginTop:4}}>⌘+Enter to generate</div>
+                </div>
+
+                <Btn onClick={buildPipeline} disabled={!nlBuilderText.trim()||nlBuilderLoading}
+                  style={{background:`linear-gradient(135deg,${T.accent},${T.purple})`,color:"white",border:"none",alignSelf:"flex-start"}}>
+                  {nlBuilderLoading?<><Spinner size={11} color="white"/> Generating…</>:<>✦ Generate Pipeline</>}
+                </Btn>
+
+                {/* Result preview */}
+                {nlBuilderResult&&(nlBuilderResult.error?(
+                  <div style={{padding:"12px 14px",borderRadius:9,background:`${T.red}08`,
+                    border:`1px solid ${T.red}20`,fontSize:12,color:T.red}}>
+                    ⚠ {nlBuilderResult.error}
+                  </div>
+                ):(
+                  <div style={{background:T.card,borderRadius:12,border:`1px solid ${T.accent}30`,overflow:"hidden"}}>
+                    <div style={{padding:"12px 16px",borderBottom:`1px solid ${T.border}`,
+                      background:`${T.accent}06`,display:"flex",alignItems:"center",gap:10}}>
+                      <span style={{fontSize:20}}>{nlBuilderResult.icon||"🔄"}</span>
+                      <div style={{flex:1}}>
+                        <div style={{fontSize:13,fontWeight:700,color:T.text}}>{nlBuilderResult.name}</div>
+                        <div style={{fontSize:10,color:T.muted,marginTop:2}}>{nlBuilderResult.summary}</div>
+                      </div>
+                      <div style={{display:"flex",gap:6,fontSize:9}}>
+                        <span style={{padding:"2px 8px",borderRadius:99,background:`${T.cyan}15`,color:T.cyan,fontWeight:700}}>DRY RUN</span>
+                        <span style={{padding:"2px 8px",borderRadius:99,background:T.border,color:T.muted}}>every {nlBuilderResult.interval_min}m</span>
+                      </div>
+                    </div>
+                    <div style={{padding:"12px 16px",display:"flex",flexDirection:"column",gap:10}}>
+                      <div>
+                        <div style={{fontSize:10,fontWeight:700,color:T.muted,textTransform:"uppercase",letterSpacing:"0.06em",marginBottom:6}}>
+                          Agents ({(nlBuilderResult.agents||[]).length})
+                        </div>
+                        <div style={{display:"flex",gap:5,flexWrap:"wrap"}}>
+                          {(nlBuilderResult.agents||[]).map((ag,i)=>(
+                            <span key={i} style={{fontSize:10,padding:"3px 10px",borderRadius:99,
+                              background:`${AP_AGENT_COLORS[ag.type]||T.accent}15`,
+                              color:AP_AGENT_COLORS[ag.type]||T.accent,fontWeight:600}}>
+                              {AP_AGENT_ICONS[ag.type]||"🤖"} {ag.name}
+                              {ag.checks?.length>0&&<span style={{opacity:0.7}}> · {ag.checks.length} check{ag.checks.length!==1?"s":""}</span>}
+                            </span>
+                          ))}
+                        </div>
+                      </div>
+                      {(nlBuilderResult.safe_actions||[]).length>0&&(
+                        <div>
+                          <div style={{fontSize:10,fontWeight:700,color:T.muted,textTransform:"uppercase",letterSpacing:"0.06em",marginBottom:6}}>
+                            Safe Actions ({nlBuilderResult.safe_actions.length})
+                          </div>
+                          <div style={{display:"flex",flexDirection:"column",gap:4}}>
+                            {nlBuilderResult.safe_actions.map((sa,i)=>(
+                              <div key={i} style={{display:"flex",alignItems:"center",gap:8,fontSize:11,color:T.text2}}>
+                                <span style={{fontSize:12}}>🔧</span>
+                                <span style={{flex:1}}>{sa.name}</span>
+                                <span style={{fontSize:10,fontWeight:700,
+                                  color:sa.confidence>=90?T.green:sa.confidence>=70?T.orange:T.red}}>
+                                  {sa.confidence}%
+                                </span>
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      )}
+                      <div style={{fontSize:10,color:T.dim,padding:"6px 0",borderTop:`1px solid ${T.border}`}}>
+                        ✦ Starts in dry-run mode — review and enable when ready. Confidence threshold: {nlBuilderResult.confidence_threshold}%
+                      </div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+
+              {/* Footer */}
+              {nlBuilderResult&&!nlBuilderResult.error&&(
+                <div style={{padding:"14px 24px",borderTop:`1px solid ${T.border}`,
+                  display:"flex",gap:8,justifyContent:"flex-end",flexShrink:0}}>
+                  <Btn variant="muted" onClick={()=>setNlBuilderResult(null)}>Regenerate</Btn>
+                  <Btn onClick={applyPipeline}
+                    style={{background:`linear-gradient(135deg,${T.accent},${T.purple})`,color:"white",border:"none"}}>
+                    <Plus size={11}/> Add Pipeline
+                  </Btn>
+                </div>
+              )}
+            </div>
+          </div>
+        );
+      })()}
     </div>
   );
 }
 
 
+// ── PipelineRunsTab — merges Dataflows + Scheduler ───────────────────────────
+function PipelineRunsTab({ onNavigate }) {
+  const T = useT();
+  const [sub, setSub] = React.useState("dataflows"); // dataflows | scheduler
+  const SUBS = [
+    { id:"dataflows", label:"Dataflows",  icon:"🗂" },
+    { id:"scheduler", label:"Schedules",  icon:"🕐" },
+  ];
+  return (
+    <div style={{ display:"flex", flexDirection:"column", minHeight:"100%" }}>
+      {/* Sub-tab bar */}
+      <div style={{ padding:"10px 20px 0", borderBottom:`1px solid ${T.border}`,
+        background:T.surface, display:"flex", gap:0, flexShrink:0 }}>
+        {SUBS.map(s=>(
+          <button key={s.id} onClick={()=>setSub(s.id)}
+            style={{ padding:"8px 20px", border:"none", cursor:"pointer", fontSize:12,
+              fontWeight:sub===s.id?700:400, fontFamily:"inherit",
+              color:sub===s.id?T.accent:T.muted,
+              borderBottom:sub===s.id?`2px solid ${T.accent}`:"2px solid transparent",
+              background:"transparent", transition:"all 0.12s" }}>
+            {s.icon} {s.label}
+          </button>
+        ))}
+      </div>
+      <div style={{ flex:1, overflow:"hidden", display:"flex", flexDirection:"column" }}>
+        {sub==="dataflows" && <DataflowsTab onNavigate={onNavigate}/>}
+        {sub==="scheduler" && <SchedulerTab onNavigate={onNavigate}/>}
+      </div>
+    </div>
+  );
+}
+
+// ── ReportingTab — merges Daily Brief + Results ───────────────────────────────
+function ReportingTab({ onNavigate, proactiveAlerts, setProactiveAlerts, onIssueFound, TC }) {
+  const T = useT();
+  const [sub, setSub] = React.useState("brief"); // brief | results
+  const SUBS = [
+    { id:"brief",   label:"Daily Brief", icon:"⚡" },
+    { id:"results", label:"Results",     icon:"📊" },
+  ];
+  return (
+    <div style={{ display:"flex", flexDirection:"column", minHeight:"100%" }}>
+      {/* Sub-tab bar */}
+      <div style={{ padding:"10px 20px 0", borderBottom:`1px solid ${T.border}`,
+        background:T.surface, display:"flex", gap:0, flexShrink:0 }}>
+        {SUBS.map(s=>(
+          <button key={s.id} onClick={()=>setSub(s.id)}
+            style={{ padding:"8px 20px", border:"none", cursor:"pointer", fontSize:12,
+              fontWeight:sub===s.id?700:400, fontFamily:"inherit",
+              color:sub===s.id?T.accent:T.muted,
+              borderBottom:sub===s.id?`2px solid ${T.accent}`:"2px solid transparent",
+              background:"transparent", transition:"all 0.12s" }}>
+            {s.icon} {s.label}
+          </button>
+        ))}
+      </div>
+      <div style={{ flex:1, overflow:"hidden", display:"flex", flexDirection:"column" }}>
+        {sub==="brief" && (
+          <>
+            {proactiveAlerts.length > 0 && (
+              <div style={{ padding:"8px 20px", background:`${TC.red}08`,
+                borderBottom:`1px solid ${TC.red}20`,
+                display:"flex", gap:10, alignItems:"center", flexWrap:"wrap" }}>
+                <span style={{ fontSize:14 }}>🚨</span>
+                <span style={{ fontSize:11, fontWeight:700, color:TC.red }}>
+                  ✨ {proactiveAlerts.length} anomal{proactiveAlerts.length===1?"y":"ies"} detected today
+                </span>
+                <div style={{ display:"flex", gap:8, flex:1, flexWrap:"wrap" }}>
+                  {proactiveAlerts.map((a,i)=>(
+                    <span key={a.label||i} style={{ fontSize:10, padding:"2px 8px", borderRadius:4,
+                      background:`${TC.red}10`, color:TC.red, border:`1px solid ${TC.red}20` }}>
+                      {a.direction} {a.label}: {a.pct}% {a.direction==="↑"?"above":"below"} avg
+                    </span>
+                  ))}
+                </div>
+                <button onClick={()=>setProactiveAlerts([])}
+                  style={{ background:"none", border:"none", cursor:"pointer",
+                    color:TC.dim, fontSize:16 }}>×</button>
+              </div>
+            )}
+            <AiBriefPanel/>
+            <MorningBriefTab onNavigate={onNavigate} onIssueFound={onIssueFound}/>
+          </>
+        )}
+        {sub==="results" && <ResultsTab onNavigate={onNavigate}/>}
+      </div>
+    </div>
+  );
+}
+
 export default function WiziAgentApp() {
   const [themeKey,  setThemeKey]  = useLocal("wz_theme", "light");
-  const [activeTab, setActiveTab] = useLocal("wz_tab",   "brief");
+  const [activeTab, setActiveTab] = useLocal("wz_tab",   "autopilot");
 
   // ── Keyboard shortcuts ────────────────────────────────────────────────────
   // Inject global CSS once — never re-runs
@@ -20744,40 +22306,14 @@ export default function WiziAgentApp() {
             </div>
           )}
 
-          {activeTab==="brief"     && <ErrorBoundary key="brief"><>
-            {proactiveAlerts.length > 0 && (
-              <div style={{ padding:"8px 20px", background:`${TC.red}08`,
-                borderBottom:`1px solid ${TC.red}20`,
-                display:"flex", gap:10, alignItems:"center", flexWrap:"wrap" }}>
-                <span style={{ fontSize:14 }}>🚨</span>
-                <span style={{ fontSize:11, fontWeight:700, color:TC.red }}>
-                  ✨ {proactiveAlerts.length} anomal{proactiveAlerts.length===1?"y":"ies"} detected today
-                </span>
-                <div style={{ display:"flex", gap:8, flex:1, flexWrap:"wrap" }}>
-                  {proactiveAlerts.map((a,i)=>(
-                    <span key={a.label||i} style={{ fontSize:10, padding:"2px 8px", borderRadius:4,
-                      background:`${TC.red}10`, color:TC.red, border:`1px solid ${TC.red}20` }}>
-                      {a.direction} {a.label}: {a.pct}% {a.direction==="↑"?"above":"below"} avg
-                    </span>
-                  ))}
-                </div>
-                <button onClick={()=>setProactiveAlerts([])}
-                  style={{ background:"none", border:"none", cursor:"pointer",
-                    color:TC.dim, fontSize:16 }}>×</button>
-              </div>
-            )}
-            <AiBriefPanel/>
-            <MorningBriefTab onNavigate={navigateTo} onIssueFound={setIssues}/>
-          </></ErrorBoundary>}
-          {activeTab==="triage"    && <ErrorBoundary key="triage"><TriageTab initialIssues={issues}/></ErrorBoundary>}
-          {activeTab==="workflows" && <ErrorBoundary key="workflows"><WorkflowsTab navigateTo={navigateTo}/></ErrorBoundary>}
-          {activeTab==="dataflows" && <ErrorBoundary key="dataflows"><DataflowsTab onNavigate={navigateTo}/></ErrorBoundary>}
-          {activeTab==="config"    && <ErrorBoundary key="config"><ConfigureTab/></ErrorBoundary>}
-          {activeTab==="query"     && <ErrorBoundary key="query"><QueryTab/></ErrorBoundary>}
-          {activeTab==="results"   && <ErrorBoundary key="results"><ResultsTab onNavigate={navigateTo}/></ErrorBoundary>}
-          {activeTab==="scheduler" && <ErrorBoundary key="scheduler"><SchedulerTab onNavigate={navigateTo}/></ErrorBoundary>}
-          {activeTab==="demo"      && <ErrorBoundary key="demo"><DemoValidationTab/></ErrorBoundary>}
-          {activeTab==="autopilot" && <ErrorBoundary key="autopilot"><AutoPilotTab onNavigate={navigateTo}/></ErrorBoundary>}
+          {activeTab==="reporting" && <ErrorBoundary key="reporting"><ReportingTab onNavigate={navigateTo} proactiveAlerts={proactiveAlerts} setProactiveAlerts={setProactiveAlerts} onIssueFound={setIssues} TC={TC}/></ErrorBoundary>}
+          {activeTab==="triage"       && <ErrorBoundary key="triage"><TriageTab initialIssues={issues}/></ErrorBoundary>}
+          {activeTab==="workflows"    && <ErrorBoundary key="workflows"><WorkflowsTab navigateTo={navigateTo}/></ErrorBoundary>}
+          {activeTab==="pipeline-runs"&& <ErrorBoundary key="pipeline-runs"><PipelineRunsTab onNavigate={navigateTo}/></ErrorBoundary>}
+          {activeTab==="config"       && <ErrorBoundary key="config"><ConfigureTab/></ErrorBoundary>}
+          {activeTab==="query"        && <ErrorBoundary key="query"><QueryTab/></ErrorBoundary>}
+          {activeTab==="demo"         && <ErrorBoundary key="demo"><DemoValidationTab/></ErrorBoundary>}
+          {activeTab==="autopilot"    && <ErrorBoundary key="autopilot"><AutoPilotTab onNavigate={navigateTo}/></ErrorBoundary>}
         </main>
         </ThemeCtx.Provider>
       </div>

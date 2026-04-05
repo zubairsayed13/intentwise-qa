@@ -493,14 +493,15 @@ const GLOBAL_CSS = `
 
 // ─── Nav items ────────────────────────────────────────────────────────────────
 const NAV = [
-  { id:"autopilot",     label:"Auto-Pilot",        icon:Bot,           shortcut:"A" },
-  { id:"triage",        label:"Triage & Monitor",  icon:AlertTriangle, shortcut:"3" },
-  { id:"workflows",     label:"Workflows",         icon:GitBranch,     shortcut:"4" },
-  { id:"pipeline-runs", label:"Pipeline Runs",     icon:Layers,        shortcut:"5" },
-  { id:"reporting",     label:"Reporting",         icon:BarChart2,     shortcut:"R" },
-  { id:"query",         label:"Data Explorer",     icon:Database,      shortcut:"8" },
-  { id:"config",        label:"Configure",         icon:Settings,      shortcut:"7" },
-  { id:"demo",          label:"Demo Validation",   icon:Shield,        shortcut:"D" },
+  { id:"health",      label:"System Health",     icon:Activity,      shortcut:"H" },
+  { id:"autopilot",   label:"Auto-Pilot",        icon:Bot,           shortcut:"A" },
+  { id:"triage",      label:"Triage & Monitor",  icon:AlertTriangle, shortcut:"3" },
+  { id:"workflows",   label:"Workflows",         icon:GitBranch,     shortcut:"4" },
+  { id:"pipeline-runs",label:"Pipeline Runs",    icon:Layers,        shortcut:"5" },
+  { id:"reporting",   label:"Reporting",         icon:BarChart2,     shortcut:"R" },
+  { id:"query",       label:"Data Explorer",     icon:Database,      shortcut:"8" },
+  { id:"config",      label:"Configure",         icon:Settings,      shortcut:"7" },
+  { id:"demo",        label:"Demo Validation",   icon:Shield,        shortcut:"D" },
 ];
 
 // ─── Sidebar ──────────────────────────────────────────────────────────────────
@@ -2879,6 +2880,11 @@ function TriageTab({ initialIssues }) {
       const durationMs = Date.now() - fixStart;
       addLog(`✓ Fixed: before ${data.before} → after ${data.after}`, "success");
       recordFixOutcome(issue.fix_action, "success"); // Upgrade 6: record outcome
+      auditLog("fix_applied", {
+        fix_action: issue.fix_action, table:"mws.report",
+        rows_affected: data.rows_affected, before:data.before, after:data.after,
+        source:"triage", user:"me"
+      });
       try { const c=JSON.parse(localStorage.getItem("wz_onboarding")||"{}"); localStorage.setItem("wz_onboarding",JSON.stringify({...c,triage:true})); } catch {}
       setFixHistory(p => [...p, {
         action: issue.fix_action, table:"mws.report",
@@ -2890,6 +2896,7 @@ function TriageTab({ initialIssues }) {
     } catch(e) {
       addLog(`Fix failed: ${e.message}`, "error");
       recordFixOutcome(issue.fix_action, "failure"); // Upgrade 6: record failure
+      auditLog("fix_failed", { fix_action: issue.fix_action, table:"mws.report", error:e.message, source:"triage" });
     }
     setFixing(p => ({...p,[issue.id]:false}));
   };
@@ -10058,11 +10065,19 @@ function NotifProvider({ children }) {
     return id;
   }, []);
 
-  const dismiss = React.useCallback((id) => setItems(p => p.filter(i => i.id !== id)), []);
-  const markRead = React.useCallback((id) => setItems(p => p.map(i => i.id===id?{...i,read:true}:i)), []);
+  const dismiss   = React.useCallback((id) => setItems(p => p.filter(i => i.id !== id)), []);
+  const markRead  = React.useCallback((id) => setItems(p => p.map(i => i.id===id?{...i,read:true}:i)), []);
   const markAllRead = React.useCallback(() => setItems(p => p.map(i => ({...i,read:true}))), []);
-  const clearAll = React.useCallback(() => setItems([]), []);
-  const unread = items.filter(i => !i.read).length;
+  const clearAll  = React.useCallback(() => setItems([]), []);
+  const acknowledge = React.useCallback((id, by="me") => setItems(p => p.map(i =>
+    i.id===id?{...i,read:true,acked:true,ackedBy:by,ackedAt:new Date().toISOString()}:i
+  )), []);
+  const snooze = React.useCallback((id, mins=30) => {
+    const until = new Date(Date.now()+mins*60*1000).toISOString();
+    setItems(p => p.map(i => i.id===id?{...i,snoozed:true,snoozeUntil:until}:i));
+    setTimeout(()=>setItems(p=>p.map(i=>i.id===id?{...i,snoozed:false,snoozeUntil:null}:i)), mins*60*1000);
+  }, []);
+  const unread = items.filter(i => !i.read && !i.snoozed).length;
 
   const TYPE_STYLE = {
     success: { bg:"#10B981", icon:"✓" },
@@ -10073,7 +10088,7 @@ function NotifProvider({ children }) {
   };
 
   return (
-    <NotifCtx.Provider value={{ add, items, unread, drawer, setDrawer, markRead, markAllRead, clearAll, dismiss }}>
+    <NotifCtx.Provider value={{ add, items, unread, drawer, setDrawer, markRead, markAllRead, clearAll, dismiss, acknowledge, snooze }}>
       {children}
 
       {/* Toast stack — bottom-right */}
@@ -10161,24 +10176,25 @@ function NotifProvider({ children }) {
                   <div style={{ fontSize:13, fontWeight:600, color:T.text2 }}>All caught up</div>
                   <div style={{ fontSize:11, marginTop:4, color:T.muted }}>No notifications yet</div>
                 </div>
-              ) : items.map(item => {
+              ) : items.filter(i=>!i.snoozed).map(item => {
                 const s = TYPE_STYLE[item.type] || TYPE_STYLE.info;
                 return (
                   <div key={item.id} onClick={()=>markRead(item.id)}
                     style={{ padding:"12px 20px", borderBottom:`1px solid ${T.border}`,
                       display:"flex", gap:10, cursor:"pointer",
-                      background: item.read ? "transparent" : `${T.accent}06`,
+                      background: item.acked ? `${T.green}04` : item.read ? "transparent" : `${T.accent}06`,
                       transition:"background 0.1s" }}
                     onMouseEnter={e=>e.currentTarget.style.background=`${T.accent}08`}
-                    onMouseLeave={e=>e.currentTarget.style.background=item.read?"transparent":`${T.accent}06`}>
+                    onMouseLeave={e=>e.currentTarget.style.background=item.acked?`${T.green}04`:item.read?"transparent":`${T.accent}06`}>
                     <div style={{ width:22, height:22, borderRadius:6, flexShrink:0,
-                      background:s.bg, display:"flex", alignItems:"center",
+                      background:item.acked?T.green:s.bg, display:"flex", alignItems:"center",
                       justifyContent:"center", fontSize:11, fontWeight:700,
-                      color:"white", marginTop:2 }}>{s.icon}</div>
+                      color:"white", marginTop:2 }}>{item.acked?"✓":s.icon}</div>
                     <div style={{ flex:1, minWidth:0 }}>
                       <div style={{ fontSize:12, color:T.text, lineHeight:1.4 }}>{item.msg}</div>
-                      <div style={{ fontSize:10, color:T.dim, marginTop:3 }}>
-                        {new Date(item.ts).toLocaleTimeString()}
+                      <div style={{ fontSize:10, color:T.dim, marginTop:3, display:"flex", gap:8 }}>
+                        <span>{new Date(item.ts).toLocaleTimeString()}</span>
+                        {item.acked&&<span style={{color:T.green,fontWeight:600}}>✓ Acknowledged {item.ackedAt?new Date(item.ackedAt).toLocaleTimeString():""}</span>}
                       </div>
                       {item.action && (
                         <button onClick={(e)=>{e.stopPropagation();item.action();}}
@@ -10187,8 +10203,31 @@ function NotifProvider({ children }) {
                           {item.actionLabel||"View →"}
                         </button>
                       )}
+                      {/* Ack + Snooze buttons */}
+                      {!item.acked&&(
+                        <div style={{display:"flex",gap:5,marginTop:5}}>
+                          <button onClick={(e)=>{e.stopPropagation();acknowledge(item.id);}}
+                            style={{fontSize:9,padding:"2px 8px",borderRadius:5,cursor:"pointer",
+                              border:`1px solid ${T.green}30`,background:`${T.green}08`,
+                              color:T.green,fontWeight:600}}>
+                            ✓ Ack
+                          </button>
+                          <button onClick={(e)=>{e.stopPropagation();snooze(item.id,30);}}
+                            style={{fontSize:9,padding:"2px 8px",borderRadius:5,cursor:"pointer",
+                              border:`1px solid ${T.border}`,background:"none",
+                              color:T.muted}}>
+                            ⏱ 30m
+                          </button>
+                          <button onClick={(e)=>{e.stopPropagation();snooze(item.id,120);}}
+                            style={{fontSize:9,padding:"2px 8px",borderRadius:5,cursor:"pointer",
+                              border:`1px solid ${T.border}`,background:"none",
+                              color:T.muted}}>
+                            ⏱ 2h
+                          </button>
+                        </div>
+                      )}
                     </div>
-                    {!item.read && (
+                    {!item.read && !item.acked && (
                       <div style={{ width:7, height:7, borderRadius:"50%",
                         background:"#6366F1", flexShrink:0, marginTop:6 }}/>
                     )}
@@ -10333,6 +10372,10 @@ function WorkflowsTab({ navigateTo }) {
   const [runHistory, setHistory] = useLocal("wz_wf_runhistory_v1", []); // persisted run history
   const [running,    setRunning] = React.useState({}); // {wf_id: bool}
   const [liveRun,    setLiveRun] = React.useState(null); // latest run result being shown
+  const [showNlWf,   setShowNlWf]   = React.useState(false);
+  const [nlWfText,   setNlWfText]   = React.useState("");
+  const [nlWfLoading,setNlWfLoading]= React.useState(false);
+  const [nlWfResult, setNlWfResult] = React.useState(null);
 
   // Load workflows + history from backend
   const load = async (seed=false) => {
@@ -10416,6 +10459,22 @@ function WorkflowsTab({ navigateTo }) {
 
   const { add: addNotif } = useNotif();
   const runWf = async (wf) => {
+    // ── Dependency enforcement: skip if any dep failed last run ──────────────
+    const deps = wf.depends_on || [];
+    if (deps.length) {
+      const lastRunByDep = {};
+      for (const r of [...runHistory].reverse()) {
+        if (deps.includes(r.workflow_id) && !lastRunByDep[r.workflow_id]) {
+          lastRunByDep[r.workflow_id] = r;
+        }
+      }
+      const failedDeps = deps.filter(id => (lastRunByDep[id]?.failed || 0) > 0);
+      if (failedDeps.length) {
+        const names = failedDeps.map(id => workflows.find(w=>w.id===id)?.name || id).join(", ");
+        addNotif(`"${wf.name}" skipped — dependency failed: ${names}`, "error", {persistent:true});
+        return;
+      }
+    }
     // Navigate to detail immediately — show loading state there
     setDetail(wf);
     setLiveRun(null);
@@ -10437,6 +10496,47 @@ function WorkflowsTab({ navigateTo }) {
           });
           // ⚡ Signal event-driven pipelines
           window.dispatchEvent(new CustomEvent("wz_failure_detected", { detail:{ source:"workflow", name:wf.name, failed } }));
+          // ⚡ Auto-Severity Classifier — re-classify check severities based on actual impact
+          (async()=>{
+            try {
+              const failedChecks = (data.check_results||[]).filter(c=>!c.passed);
+              if (!failedChecks.length) return;
+              const ctx = failedChecks.map(c=>`"${c.name}": ${c.row_count||0} rows affected, current severity: ${c.severity||"high"}`).join("; ");
+              const r = await fetch(`${API}/api/ai/chat`,{
+                method:"POST",headers:{"Content-Type":"application/json"},
+                body:JSON.stringify({
+                  system:`You are a data quality severity classifier. Given failed checks with row counts, return a JSON object mapping check name to recommended severity.
+Return ONLY JSON: {"check_name": "critical|high|medium|low"}
+Rules: critical=data loss/corruption risk, high=significant business impact, medium=noticeable issue, low=informational. Scale with row count.`,
+                  messages:[{role:"user",content:`Workflow: "${wf.name}". Failed: ${ctx}.`}],
+                  max_tokens:150,temperature:0.1
+                })
+              });
+              const d = await r.json();
+              const text = (d?.content?.[0]?.text||"{}").replace(/```json|```/g,"").trim();
+              const reclassified = JSON.parse(text);
+              // Update workflow checks with reclassified severities
+              const updatedChecks = (wf.checks||[]).map(chk=>{
+                const newSev = reclassified[chk.name];
+                if (!newSev||newSev===chk.severity) return chk;
+                return {...chk, severity:newSev, _reclassified:true};
+              });
+              const hasChanges = updatedChecks.some(c=>c._reclassified);
+              if (hasChanges) {
+                const updatedWf = {...wf, checks:updatedChecks.map(c=>{const {_reclassified,...rest}=c;return rest;})};
+                await fetch(`${API}/api/custom-workflows/save/v2`,{
+                  method:"POST",headers:{"Content-Type":"application/json"},
+                  body:JSON.stringify(updatedWf)
+                });
+                setWfs(p=>p.map(w=>w.id===wf.id?updatedWf:w));
+                addNotif(`✦ Auto-reclassified ${updatedChecks.filter(c=>c._reclassified).length} check severities in "${wf.name}"`, "info");
+                auditLog("severity_reclassified", {
+                  workflow: wf.name, count: updatedChecks.filter(c=>c._reclassified).length,
+                  source:"workflows"
+                });
+              }
+            } catch(e){}
+          })();
         } else {
           addNotif(`${wf.name}: all checks passed ✓`, "success");
         }
@@ -10468,6 +10568,7 @@ function WorkflowsTab({ navigateTo }) {
   const [showAiAssistant, setShowAiAssistant] = React.useState(false);
   const [showTemplateLib, setShowTemplateLib] = React.useState(false);
   const [activatingTpl,   setActivatingTpl]   = React.useState(null);
+  const [previewTpl,      setPreviewTpl]       = React.useState(null); // template being previewed
 
   // Seed built-in workflows into backend on first load if they don't exist yet
   const BUILTIN_SEEDS = [
@@ -10646,6 +10747,7 @@ Respond with ONLY this JSON array (no other text, no backticks):
       <WorkflowBuilder
         initial={editingWf}
         dbSchema={dbSchema}
+        workflows={workflows}
         onSave={saveWf}
         onCancel={()=>{ setView("list"); setEditing(null); setSaveError(null); }}
       />
@@ -10736,10 +10838,16 @@ Respond with ONLY this JSON array (no other text, no backticks):
             style={{ border:`1px solid ${T.accent}30`, color:T.accent }}>
             🤖 AI Assistant
           </Btn>
-          <Btn onClick={()=>{ setEditing(null); setView("builder"); }}
-            style={{ background:`linear-gradient(135deg,${T.accent},${T.purple})`, color:"white", border:"none" }}>
-            <Plus size={12}/> New Workflow
-          </Btn>
+          <div style={{display:"flex",gap:6}}>
+            <Btn onClick={()=>{ setEditing(null); setView("builder"); }}
+              variant="ghost" size="sm">
+              <Plus size={12}/> Blank
+            </Btn>
+            <Btn onClick={()=>setShowNlWf(true)}
+              style={{ background:`linear-gradient(135deg,${T.accent},${T.purple})`, color:"white", border:"none" }}>
+              ✦ Build with AI
+            </Btn>
+          </div>
         </div>
       </div>
 
@@ -10787,6 +10895,50 @@ Respond with ONLY this JSON array (no other text, no backticks):
                 color:"#92400E", cursor:"pointer", fontFamily:"inherit", fontWeight:600, flexShrink:0}}>
               Investigate →
             </button>
+          </div>
+        );
+      })()}
+
+      {/* ── Duplicate Check Detector ──────────────────────────────────────── */}
+      {(()=>{
+        if (workflows.length < 2) return null;
+        const dupes = [];
+        for (let i=0; i<workflows.length; i++) {
+          for (let j=i+1; j<workflows.length; j++) {
+            const a = workflows[i]; const b = workflows[j];
+            const aChecks = (a.checks||[]).map(c=>c.sql?.toLowerCase().replace(/\s+/g," ").trim());
+            const bChecks = (b.checks||[]).map(c=>c.sql?.toLowerCase().replace(/\s+/g," ").trim());
+            const overlap = (a.checks||[]).filter((c,ci)=>{
+              const aSql = aChecks[ci];
+              return bChecks.some(bSql=>{
+                if (!aSql||!bSql) return false;
+                // Check significant SQL overlap (shared 6-word substring)
+                const aWords = aSql.split(" ").filter(w=>w.length>3);
+                return aWords.filter(w=>bSql.includes(w)).length >= 4;
+              });
+            });
+            if (overlap.length>0) dupes.push({a:a.name,b:b.name,checks:overlap.map(c=>c.name),aId:a.id,bId:b.id});
+          }
+        }
+        if (!dupes.length) return null;
+        return (
+          <div style={{marginBottom:16,padding:"10px 14px",borderRadius:10,
+            background:`${T.orange}06`,border:`1px solid ${T.orange}25`,
+            display:"flex",gap:10,alignItems:"flex-start"}}>
+            <span style={{fontSize:16,flexShrink:0}}>🔁</span>
+            <div style={{flex:1}}>
+              <div style={{fontSize:12,fontWeight:700,color:T.orange,marginBottom:4}}>
+                Duplicate checks detected across workflows
+              </div>
+              {dupes.slice(0,3).map((d,i)=>(
+                <div key={i} style={{fontSize:11,color:T.text2,marginBottom:2}}>
+                  <span style={{fontWeight:600}}>{d.a}</span> &amp; <span style={{fontWeight:600}}>{d.b}</span>
+                  <span style={{color:T.muted}}> share: {d.checks.join(", ")}</span>
+                </div>
+              ))}
+              {dupes.length>3&&<div style={{fontSize:10,color:T.dim}}>+{dupes.length-3} more overlaps</div>}
+              <div style={{fontSize:10,color:T.muted,marginTop:4}}>Consider consolidating to reduce redundant runs.</div>
+            </div>
           </div>
         );
       })()}
@@ -10866,7 +11018,12 @@ Respond with ONLY this JSON array (no other text, no backticks):
                         </div>
                         {isActive
                           ? <Badge label="Active" color={tpl.color}/>
-                          : <Btn size="sm" onClick={async()=>{
+                          : <div style={{display:"flex",gap:6,alignItems:"center"}}>
+                            <Btn size="sm" variant="ghost" onClick={()=>setPreviewTpl(tpl)}
+                              style={{fontSize:10,color:tpl.color,borderColor:tpl.color+"40"}}>
+                              Preview
+                            </Btn>
+                            <Btn size="sm" onClick={async()=>{
                               setActivatingTpl(tpl.id);
                               // Create workflow from template
                               const wf = {
@@ -10893,6 +11050,7 @@ Respond with ONLY this JSON array (no other text, no backticks):
                             {isActivating?<Spinner size={9} color="white"/>:null}
                             {isActivating?"Adding…":"＋ Add Workflow"}
                           </Btn>
+                          </div>
                         }
                       </div>
                     );
@@ -11198,15 +11356,29 @@ Respond with ONLY this JSON array (no other text, no backticks):
                     </div>
                     {wf.desc && <div style={{ fontSize:11, color:T.muted, marginBottom:8 }}>{wf.desc}</div>}
 
-                    {/* Check pills */}
+                    {/* Check pills with health scores */}
                     <div style={{ display:"flex", gap:5, flexWrap:"wrap", marginBottom:8 }}>
-                      {(wf.checks||[]).slice(0,6).map(chk=>(
-                        <span key={chk.id||chk.name} style={{ fontSize:10, padding:"2px 8px",
-                          borderRadius:4, background:`${T.accent}08`,
-                          border:`1px solid ${T.accent}20`, color:T.accent }}>
-                          {chk.name}
-                        </span>
-                      ))}
+                      {(wf.checks||[]).slice(0,6).map(chk=>{
+                        // Compute per-check pass rate from runHistory
+                        const chkRuns = wfRuns.slice(0,20).filter(r=>(r.check_results||[]).some(c=>c.name===chk.name));
+                        const chkPass = chkRuns.filter(r=>(r.check_results||[]).find(c=>c.name===chk.name)?.passed).length;
+                        const chkRate = chkRuns.length>0?Math.round(chkPass/chkRuns.length*100):null;
+                        const hColor = chkRate===null?T.dim:chkRate>=80?T.green:chkRate>=50?T.orange:T.red;
+                        return (
+                          <span key={chk.id||chk.name}
+                            title={chkRate!==null?`${chkRate}% pass rate (last ${chkRuns.length} runs)`:"No run data"}
+                            style={{ fontSize:10, padding:"2px 8px",
+                              borderRadius:4, background:`${T.accent}08`,
+                              border:`1px solid ${T.accent}20`, color:T.accent,
+                              display:"flex", alignItems:"center", gap:4 }}>
+                            {chkRate!==null&&(
+                              <div style={{width:6,height:6,borderRadius:"50%",
+                                background:hColor,flexShrink:0}}/>
+                            )}
+                            {chk.name}
+                          </span>
+                        );
+                      })}
                       {(wf.checks||[]).length > 6 && (
                         <span style={{ fontSize:10, color:T.dim }}>+{wf.checks.length-6} more</span>
                       )}
@@ -11321,6 +11493,357 @@ Respond with ONLY this JSON array (no other text, no backticks):
         />
       </div>
     )}
+
+    {/* ── NL Workflow Builder Modal ──────────────────────────────────────── */}
+    {showNlWf&&(()=>{
+      const buildWf = async () => {
+        if (!nlWfText.trim()||nlWfLoading) return;
+        setNlWfLoading(true); setNlWfResult(null);
+        try {
+          const r = await fetch(`${API}/api/ai/chat`,{
+            method:"POST",headers:{"Content-Type":"application/json"},
+            body:JSON.stringify({
+              system:`You are a senior data engineer building SQL workflow configs for an ecommerce analytics platform.
+Given a plain-English description, generate a workflow JSON.
+
+Return ONLY valid JSON, no markdown:
+{
+  "name": "string",
+  "desc": "string",
+  "schedule": "every 30 min | every 1 hour | daily | every 4 hours",
+  "checks": [
+    {
+      "name": "string",
+      "sql": "SELECT ... FROM table WHERE condition LIMIT 100",
+      "pass_condition": "rows = 0 | rows > 0 | value > N",
+      "severity": "critical | high | medium | low",
+      "explanation": "one sentence why this matters"
+    }
+  ],
+  "summary": "one sentence describing the workflow"
+}
+
+Schema: mws.report(status,download_date,report_type,copy_status,tries), mws.orders(amazon_order_id,asin,status,purchase_date,item_price,quantity), mws.inventory(asin,available,reserved,snapshot_date), mws.sales_and_traffic_by_date(sale_date,ordered_revenue,ordered_units,sessions), public.tbl_amzn_campaign_report(profile_id,report_date,impressions,clicks,spend,sales), public.tbl_amzn_keyword_report(profile_id,report_date,keyword_text,impressions,clicks,spend).
+
+Rules: 3-6 checks, SELECT only, use real columns, never invent columns.`,
+              messages:[{role:"user",content:nlWfText}],
+              max_tokens:900,temperature:0.3
+            })
+          });
+          const d = await r.json();
+          const text = (d?.content?.[0]?.text||"{}").replace(/```json|```/g,"").trim();
+          setNlWfResult(JSON.parse(text));
+        } catch(e){ setNlWfResult({error:"Couldn't parse — try being more specific."}); }
+        setNlWfLoading(false);
+      };
+
+      const applyWf = () => {
+        if (!nlWfResult||nlWfResult.error) return;
+        const wf = {
+          ...nlWfResult,
+          id:`wf_${Date.now().toString(36)}`,
+          enabled:true,
+          checks:(nlWfResult.checks||[]).map((c,i)=>({...c,id:`c_${i}`})),
+        };
+        delete wf.summary; delete wf.error;
+        setEditing(wf);
+        setView("builder");
+        setShowNlWf(false);
+        setNlWfText(""); setNlWfResult(null);
+      };
+
+      return (
+        <div style={{position:"fixed",inset:0,background:"rgba(0,0,0,0.6)",zIndex:400,
+          backdropFilter:"blur(4px)",display:"flex",alignItems:"center",justifyContent:"center"}}
+          onClick={e=>{if(e.target===e.currentTarget){setShowNlWf(false);setNlWfResult(null);}}}>
+          <div style={{background:T.surface,borderRadius:16,width:"min(660px,94vw)",
+            maxHeight:"90vh",display:"flex",flexDirection:"column",
+            border:`1px solid ${T.border}`,boxShadow:"0 24px 80px rgba(0,0,0,0.3)",overflow:"hidden"}}>
+
+            {/* Header */}
+            <div style={{padding:"20px 24px",borderBottom:`1px solid ${T.border}`,
+              display:"flex",alignItems:"center",gap:12,flexShrink:0}}>
+              <div style={{width:38,height:38,borderRadius:10,flexShrink:0,
+                background:`linear-gradient(135deg,${T.accent}25,${T.purple}25)`,
+                border:`1px solid ${T.accent}30`,
+                display:"flex",alignItems:"center",justifyContent:"center",fontSize:18}}>✦</div>
+              <div style={{flex:1}}>
+                <div style={{fontSize:15,fontWeight:700,color:T.text}}>Build Workflow with AI</div>
+                <div style={{fontSize:11,color:T.muted}}>Describe what to monitor — AI generates checks + SQL</div>
+              </div>
+              <button onClick={()=>{setShowNlWf(false);setNlWfResult(null);}}
+                style={{background:"none",border:"none",cursor:"pointer",color:T.muted,fontSize:22}}>×</button>
+            </div>
+
+            {/* Body */}
+            <div style={{flex:1,overflowY:"auto",padding:"20px 24px",display:"flex",flexDirection:"column",gap:16}}>
+              {/* Example prompts */}
+              <div style={{display:"flex",gap:6,flexWrap:"wrap"}}>
+                {[
+                  "Monitor ads spend and alert if daily spend drops by more than 20%",
+                  "Check orders table for stuck pending rows and data freshness daily",
+                  "Detect missing or duplicate ASINs across inventory and orders",
+                ].map(ex=>(
+                  <button key={ex} onClick={()=>setNlWfText(ex)}
+                    style={{fontSize:10,padding:"4px 10px",borderRadius:99,cursor:"pointer",
+                      border:`1px solid ${T.accent}30`,background:`${T.accent}06`,
+                      color:T.accent,fontFamily:"inherit",textAlign:"left"}}>
+                    {ex}
+                  </button>
+                ))}
+              </div>
+
+              {/* Input */}
+              <div>
+                <textarea value={nlWfText} onChange={e=>setNlWfText(e.target.value)}
+                  onKeyDown={e=>{if(e.key==="Enter"&&e.metaKey)buildWf();}}
+                  placeholder='e.g. "Monitor my Amazon Ads data for spend anomalies and freshness issues. Alert if campaign data is more than 2 hours stale."'
+                  rows={4}
+                  style={{width:"100%",padding:"12px 14px",borderRadius:10,fontSize:12,
+                    border:`1px solid ${T.border}`,background:T.bg,color:T.text,
+                    fontFamily:"inherit",outline:"none",resize:"vertical",
+                    boxSizing:"border-box",lineHeight:1.6}}
+                  onFocus={e=>e.target.style.borderColor=T.accent}
+                  onBlur={e=>e.target.style.borderColor=T.border}/>
+                <div style={{fontSize:10,color:T.dim,marginTop:4}}>⌘+Enter to generate</div>
+              </div>
+
+              <Btn onClick={buildWf} disabled={!nlWfText.trim()||nlWfLoading}
+                style={{background:`linear-gradient(135deg,${T.accent},${T.purple})`,
+                  color:"white",border:"none",alignSelf:"flex-start"}}>
+                {nlWfLoading?<><Spinner size={11} color="white"/> Generating…</>:<>✦ Generate Workflow</>}
+              </Btn>
+
+              {/* Result preview */}
+              {nlWfResult&&(nlWfResult.error?(
+                <div style={{padding:"12px 14px",borderRadius:9,background:`${T.red}08`,
+                  border:`1px solid ${T.red}20`,fontSize:12,color:T.red}}>
+                  ⚠ {nlWfResult.error}
+                </div>
+              ):(
+                <div style={{background:T.card,borderRadius:12,border:`1px solid ${T.accent}30`,overflow:"hidden"}}>
+                  <div style={{padding:"12px 16px",borderBottom:`1px solid ${T.border}`,
+                    background:`${T.accent}06`,display:"flex",alignItems:"center",gap:10}}>
+                    <div style={{flex:1}}>
+                      <div style={{fontSize:13,fontWeight:700,color:T.text}}>{nlWfResult.name}</div>
+                      <div style={{fontSize:10,color:T.muted,marginTop:2}}>{nlWfResult.summary}</div>
+                    </div>
+                    <span style={{fontSize:9,padding:"2px 8px",borderRadius:99,
+                      background:`${T.border}`,color:T.muted}}>{nlWfResult.schedule}</span>
+                  </div>
+                  <div style={{padding:"12px 16px",display:"flex",flexDirection:"column",gap:8}}>
+                    <div style={{fontSize:10,fontWeight:700,color:T.muted,textTransform:"uppercase",
+                      letterSpacing:"0.06em",marginBottom:2}}>
+                      {(nlWfResult.checks||[]).length} Checks
+                    </div>
+                    {(nlWfResult.checks||[]).map((chk,i)=>{
+                      const sevColor = chk.severity==="critical"?T.red:chk.severity==="high"?T.orange:chk.severity==="medium"?"#F59E0B":T.muted;
+                      return (
+                        <div key={i} style={{padding:"8px 10px",borderRadius:8,
+                          background:T.surface,border:`1px solid ${sevColor}25`}}>
+                          <div style={{display:"flex",alignItems:"center",gap:6,marginBottom:4}}>
+                            <span style={{fontSize:9,padding:"1px 6px",borderRadius:99,
+                              background:`${sevColor}15`,color:sevColor,fontWeight:700}}>
+                              {chk.severity}
+                            </span>
+                            <span style={{fontSize:11,fontWeight:600,color:T.text}}>{chk.name}</span>
+                          </div>
+                          {chk.explanation&&(
+                            <div style={{fontSize:10,color:T.muted}}>{chk.explanation}</div>
+                          )}
+                          <div style={{fontSize:10,color:T.dim,fontFamily:"monospace",marginTop:4,
+                            overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>
+                            {chk.sql?.slice(0,80)}…
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              ))}
+            </div>
+
+            {/* Footer */}
+            {nlWfResult&&!nlWfResult.error&&(
+              <div style={{padding:"14px 24px",borderTop:`1px solid ${T.border}`,
+                display:"flex",gap:8,justifyContent:"flex-end",flexShrink:0}}>
+                <Btn variant="muted" onClick={()=>setNlWfResult(null)}>Regenerate</Btn>
+                <Btn onClick={applyWf}
+                  style={{background:`linear-gradient(135deg,${T.accent},${T.purple})`,
+                    color:"white",border:"none"}}>
+                  <Plus size={11}/> Open in Editor
+                </Btn>
+              </div>
+            )}
+          </div>
+        </div>
+      );
+    })()}
+
+      {/* ── Template Preview Modal ───────────────────────────────────────── */}
+      {previewTpl && (
+        <div style={{ position:"fixed", inset:0, background:"rgba(0,0,0,0.6)",
+          zIndex:3000, display:"flex", alignItems:"center", justifyContent:"center",
+          padding:"24px" }}
+          onClick={()=>setPreviewTpl(null)}>
+          <div style={{ background:"var(--card,#1a1a2e)", border:`1px solid ${previewTpl.color}40`,
+            borderRadius:16, width:560, maxHeight:"82vh", display:"flex", flexDirection:"column",
+            boxShadow:"0 32px 80px rgba(0,0,0,0.45)", overflow:"hidden" }}
+            onClick={e=>e.stopPropagation()}>
+
+            {/* Header */}
+            <div style={{ padding:"20px 24px", borderBottom:`1px solid ${previewTpl.color}25`,
+              background:`${previewTpl.color}08`, flexShrink:0 }}>
+              <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between" }}>
+                <div style={{ display:"flex", alignItems:"center", gap:12 }}>
+                  <span style={{ fontSize:28 }}>{previewTpl.icon}</span>
+                  <div>
+                    <div style={{ fontSize:15, fontWeight:800, color:T.text }}>{previewTpl.name}</div>
+                    <div style={{ fontSize:11, color:T.muted, marginTop:2 }}>{previewTpl.desc}</div>
+                  </div>
+                </div>
+                <button onClick={()=>setPreviewTpl(null)}
+                  style={{ background:"none", border:"none", cursor:"pointer",
+                    fontSize:20, color:T.muted, lineHeight:1, padding:"4px" }}>×</button>
+              </div>
+              {/* Tags */}
+              <div style={{ display:"flex", gap:5, flexWrap:"wrap", marginTop:12 }}>
+                {previewTpl.tags.map(tag=>(
+                  <span key={tag} style={{ fontSize:9, padding:"2px 8px", borderRadius:99,
+                    background:`${previewTpl.color}18`, color:previewTpl.color, fontWeight:700 }}>
+                    {tag}
+                  </span>
+                ))}
+              </div>
+            </div>
+
+            {/* Body */}
+            <div style={{ overflowY:"auto", flex:1, padding:"20px 24px",
+              display:"flex", flexDirection:"column", gap:18 }}>
+
+              {/* Stats row */}
+              <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr 1fr", gap:10 }}>
+                {[
+                  { label:"Phases",        value:previewTpl.phases.length,            icon:"📋" },
+                  { label:"Approval Gates",value:previewTpl.gates.length,             icon:"🔒" },
+                  { label:"SQL Checks",    value:previewTpl.detection_checks.length,  icon:"🔍" },
+                ].map(s=>(
+                  <div key={s.label} style={{ padding:"12px 14px", borderRadius:10,
+                    background:T.surface, border:`1px solid ${T.border}`,
+                    textAlign:"center" }}>
+                    <div style={{ fontSize:18, marginBottom:4 }}>{s.icon}</div>
+                    <div style={{ fontSize:20, fontWeight:800, color:previewTpl.color }}>{s.value}</div>
+                    <div style={{ fontSize:10, color:T.muted, marginTop:2 }}>{s.label}</div>
+                  </div>
+                ))}
+              </div>
+
+              {/* Phases */}
+              <div>
+                <div style={{ fontSize:11, fontWeight:700, color:T.muted,
+                  textTransform:"uppercase", letterSpacing:"0.07em", marginBottom:8 }}>
+                  Pipeline Phases
+                </div>
+                <div style={{ display:"flex", flexWrap:"wrap", gap:6 }}>
+                  {previewTpl.phases.map((ph,i)=>(
+                    <div key={i} style={{ display:"flex", alignItems:"center", gap:5 }}>
+                      <span style={{ fontSize:10, padding:"4px 10px", borderRadius:99,
+                        background:`${previewTpl.color}12`, color:previewTpl.color,
+                        fontWeight:600, border:`1px solid ${previewTpl.color}25` }}>
+                        {i+1}. {ph}
+                      </span>
+                      {i<previewTpl.phases.length-1 && (
+                        <span style={{ fontSize:10, color:T.dim }}>→</span>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+              {/* Gates */}
+              <div>
+                <div style={{ fontSize:11, fontWeight:700, color:T.muted,
+                  textTransform:"uppercase", letterSpacing:"0.07em", marginBottom:8 }}>
+                  🔒 Approval Gates
+                </div>
+                <div style={{ display:"flex", flexDirection:"column", gap:5 }}>
+                  {previewTpl.gates.map((g,i)=>(
+                    <div key={i} style={{ padding:"7px 12px", borderRadius:8,
+                      background:`${T.orange}08`, border:`1px solid ${T.orange}25`,
+                      fontSize:11, color:T.orange, fontWeight:600 }}>
+                      Gate {i+1}: {g}
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+              {/* Checks */}
+              <div>
+                <div style={{ fontSize:11, fontWeight:700, color:T.muted,
+                  textTransform:"uppercase", letterSpacing:"0.07em", marginBottom:8 }}>
+                  🔍 SQL Checks
+                </div>
+                <div style={{ display:"flex", flexDirection:"column", gap:6 }}>
+                  {previewTpl.detection_checks.map((chk,i)=>{
+                    const sevColor = chk.severity==="critical"?T.red:chk.severity==="high"?T.orange:chk.severity==="medium"?"#F59E0B":T.muted;
+                    return (
+                      <div key={i} style={{ padding:"10px 12px", borderRadius:9,
+                        background:T.surface, border:`1px solid ${sevColor}25` }}>
+                        <div style={{ display:"flex", alignItems:"center", gap:6, marginBottom:5 }}>
+                          <span style={{ fontSize:9, padding:"1px 7px", borderRadius:99,
+                            background:`${sevColor}18`, color:sevColor, fontWeight:700,
+                            textTransform:"uppercase" }}>{chk.severity}</span>
+                          <span style={{ fontSize:11, fontWeight:700, color:T.text }}>{chk.name}</span>
+                        </div>
+                        <div style={{ fontSize:10, color:T.dim, fontFamily:"monospace",
+                          background:`${T.border}30`, padding:"5px 8px", borderRadius:6,
+                          overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>
+                          {chk.sql}
+                        </div>
+                        <div style={{ fontSize:9, color:T.muted, marginTop:4 }}>
+                          Pass when: {chk.pass_condition}
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            </div>
+
+            {/* Footer */}
+            <div style={{ padding:"14px 24px", borderTop:`1px solid ${T.border}`,
+              display:"flex", gap:8, justifyContent:"flex-end", flexShrink:0,
+              background:T.surface }}>
+              <Btn variant="ghost" onClick={()=>setPreviewTpl(null)}>Cancel</Btn>
+              <Btn
+                disabled={!!activatingTpl}
+                onClick={async()=>{
+                  const tpl = previewTpl;
+                  setActivatingTpl(tpl.id);
+                  setPreviewTpl(null);
+                  const wf = {
+                    id: tpl.id, name: tpl.name, desc: tpl.desc,
+                    schedule:"daily", enabled:true,
+                    checks: tpl.detection_checks.map((c,i)=>({...c, id:`${tpl.id}_c${i}`})),
+                    tables:[], db_key:"default", slack_channel:"",
+                    builtin_type:"template", template_id:tpl.id, color:tpl.color,
+                  };
+                  await fetch(`${API}/api/custom-workflows/save/v2`,{
+                    method:"POST", headers:{"Content-Type":"application/json"},
+                    body:JSON.stringify(wf)
+                  }).catch(()=>{});
+                  setWfs(p=>[...p.filter(w=>w.id!==tpl.id), wf]);
+                  setActivatingTpl(null);
+                  setShowTemplateLib(false);
+                  addNotif(`✓ "${tpl.name}" added to your workflows`, "success");
+                }}
+                style={{ background:previewTpl.color, color:"white", border:"none" }}>
+                {activatingTpl?<><Spinner size={11} color="white"/> Adding…</>:<>＋ Add Workflow</>}
+              </Btn>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -11464,6 +11987,39 @@ function RunDetail({ run, T, dur, fmt }) {
   const [expanded,     setExpanded]     = React.useState({});
   const [explainTexts, setExplainTexts] = React.useState({});
   const [explainLoad,  setExplainLoad]  = React.useState({});
+  const [runSummary,   setRunSummary]   = React.useState(null); // {text, loading}
+
+  // Auto-generate run summary for failed runs
+  React.useEffect(()=>{
+    const failedChecks = (run.check_results||[]).filter(c=>!c.passed);
+    if (!failedChecks.length) return; // skip clean runs
+    setRunSummary({text:null,loading:true});
+    (async()=>{
+      try {
+        const failCtx = failedChecks.map(c=>`"${c.name}" (${c.row_count||0} rows, ${c.severity||"?"})`).join(", ");
+        const passCtx = (run.check_results||[]).filter(c=>c.passed).map(c=>c.name).join(", ")||"none";
+        const r = await fetch(`${API}/api/ai/chat`,{
+          method:"POST",headers:{"Content-Type":"application/json"},
+          body:JSON.stringify({
+            system:`You are a data ops analyst. After a workflow run, write a 2-3 sentence plain-English summary.
+Cover: what failed and why it likely happened, whether the passing checks give any useful context, and the urgency level.
+Be specific — mention check names and row counts. No bullet points. No markdown.`,
+            messages:[{role:"user",content:
+              `Workflow: "${run.workflow_name||"Unknown"}". ` +
+              `Failed checks (${failedChecks.length}): ${failCtx}. ` +
+              `Passed checks: ${passCtx}. ` +
+              `Run time: ${run.started_at?.slice(0,16)||"unknown"}. ` +
+              `Duration: ${run.duration_ms?Math.round(run.duration_ms/1000)+"s":"unknown"}.`
+            }],
+            max_tokens:120,temperature:0.2
+          })
+        });
+        const d = await r.json();
+        const text = d?.content?.[0]?.text?.trim()||"";
+        setRunSummary({text:text||null,loading:false});
+      } catch(e){ setRunSummary({text:null,loading:false}); }
+    })();
+  }, [run.run_id]);
 
   const explainCheck = async (chk) => {
     if (chk.passed || explainTexts[chk.id||chk.name]) return;
@@ -11526,6 +12082,23 @@ function RunDetail({ run, T, dur, fmt }) {
               background:failCount===0?T.green:`linear-gradient(90deg,${T.green},${T.orange})`,
               borderRadius:99, transition:"width 0.8s cubic-bezier(0.4,0,0.2,1)" }}/>
           </div>
+        </div>
+      )}
+
+      {/* ── AI Run Summary ──────────────────────────────────────────────── */}
+      {runSummary&&(
+        <div style={{marginBottom:16,padding:"10px 14px",borderRadius:9,
+          background:runSummary.loading?`${T.accent}05`:`${T.accent}07`,
+          border:`1px solid ${T.accent}20`,display:"flex",alignItems:"flex-start",gap:9}}>
+          <span style={{fontSize:13,flexShrink:0}}>✦</span>
+          {runSummary.loading?(
+            <div style={{display:"flex",alignItems:"center",gap:7}}>
+              <Spinner size={10} color={T.accent}/>
+              <span style={{fontSize:11,color:T.muted,fontStyle:"italic"}}>AI analysing run results…</span>
+            </div>
+          ):(
+            <span style={{fontSize:11,color:T.text,lineHeight:1.6}}>{runSummary.text}</span>
+          )}
         </div>
       )}
 
@@ -12067,7 +12640,7 @@ Example: {"reply":"Created a workflow with 2 checks for mws.report","actions":[{
 
 
 // ── WorkflowBuilder — create / edit workflow with SQL checks ─────────────────
-function WorkflowBuilder({ initial, dbSchema: dbSchemaProp, onSave, onCancel }) {
+function WorkflowBuilder({ initial, dbSchema: dbSchemaProp, workflows: allWorkflows=[], onSave, onCancel }) {
   const T = useT();
   const schemaFromHook = useSchema();
   const dbSchema = dbSchemaProp || schemaFromHook;
@@ -12080,10 +12653,14 @@ function WorkflowBuilder({ initial, dbSchema: dbSchemaProp, onSave, onCancel }) 
   const [editing,   setEditingCk] = React.useState(null); // check id being edited
   const [aiLoading, setAiLoad]    = React.useState(false);
   const [aiDesc,    setAiDesc]    = React.useState("");
+  const [smartSuggestions, setSmartSuggestions] = React.useState(null); // [{name,sql,severity,reason}] | null
+  const [suggestLoading,   setSuggestLoading]   = React.useState(false);
   const [testResult,setTestResult]= React.useState(null);
   const [testing,   setTesting]   = React.useState(false);
   const [sources,   setSources]   = React.useState([{id:"default",name:"Default (Redshift)",type:"redshift"}]);
   const [dryRunning, setDryRunning] = React.useState(false);
+  const [selectedChkIds, setSelectedChkIds] = React.useState(new Set()); // bulk selection
+  const [showDepModal,   setShowDepModal]   = React.useState(false); // dependency picker
   const [dryResults, setDryResults] = React.useState(null); // {passed, failed, results:[]}
 
   // Load configured data sources
@@ -12113,6 +12690,34 @@ function WorkflowBuilder({ initial, dbSchema: dbSchemaProp, onSave, onCancel }) 
 
   // AI check generator
   const aiGenCheck = async () => {
+
+  // ── Smart Check Suggestions — auto-detect gaps on open ──────────────────
+  React.useEffect(()=>{
+    if (!initial?.checks?.length) return; // only for existing workflows
+    setSuggestLoading(true);
+    (async()=>{
+      try {
+        const existingChecks = (initial.checks||[]).map(c=>c.name).join(", ");
+        const r = await fetch(`${API}/api/ai/chat`,{
+          method:"POST",headers:{"Content-Type":"application/json"},
+          body:JSON.stringify({
+            system:`You are a senior data engineer reviewing a workflow's existing checks for gaps.
+Given what's already being monitored, suggest 2-3 complementary checks that are NOT already covered.
+Return ONLY a JSON array, no markdown:
+[{"name":"string","sql":"SELECT ... LIMIT 50","pass_condition":"rows = 0","severity":"critical|high|medium","reason":"one sentence why this gap matters"}]
+Use only: mws.report, mws.orders, mws.inventory, mws.sales_and_traffic_by_date, public.tbl_amzn_campaign_report, public.tbl_amzn_keyword_report.`,
+            messages:[{role:"user",content:`Workflow: "${initial.name}". Existing checks: ${existingChecks}. What important data quality gaps are missing?`}],
+            max_tokens:500,temperature:0.3
+          })
+        });
+        const d = await r.json();
+        const text = (d?.content?.[0]?.text||"[]").replace(/```json|```/g,"").trim();
+        const suggestions = JSON.parse(text);
+        if (Array.isArray(suggestions)&&suggestions.length) setSmartSuggestions(suggestions);
+      } catch(e){}
+      setSuggestLoading(false);
+    })();
+  }, [initial?.id]);
     if (!aiDesc.trim()) return;
     setAiLoad(true);
     try {
@@ -12308,6 +12913,46 @@ No markdown, no backticks.`,
                 Enabled (run on schedule)
               </label>
             </div>
+
+            {/* Dependencies */}
+            <div>
+              <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:4}}>
+                <label style={{fontSize:11,fontWeight:600,color:T.text2}}>
+                  🔗 Depends On (optional)
+                </label>
+                <button onClick={()=>setShowDepModal(true)}
+                  style={{fontSize:10,color:T.accent,background:"none",border:`1px solid ${T.accent}25`,
+                    borderRadius:5,padding:"2px 8px",cursor:"pointer",fontFamily:"inherit"}}>
+                  + Add dependency
+                </button>
+              </div>
+              {(wf.depends_on||[]).length===0?(
+                <div style={{fontSize:10,color:T.dim}}>
+                  No dependencies — runs independently on schedule
+                </div>
+              ):(
+                <div style={{display:"flex",gap:5,flexWrap:"wrap"}}>
+                  {(wf.depends_on||[]).map(depId=>{
+                    const depWf = (typeof workflows!=="undefined"?workflows:[]).find(w=>w.id===depId);
+                    return (
+                      <span key={depId} style={{fontSize:10,padding:"2px 8px",borderRadius:5,
+                        background:`${T.accent}10`,border:`1px solid ${T.accent}20`,
+                        color:T.accent,display:"flex",alignItems:"center",gap:4}}>
+                        ⚙ {depWf?.name||depId}
+                        <button onClick={()=>field("depends_on",(wf.depends_on||[]).filter(id=>id!==depId))}
+                          style={{background:"none",border:"none",cursor:"pointer",
+                            color:T.muted,fontSize:12,lineHeight:1,padding:0}}>×</button>
+                      </span>
+                    );
+                  })}
+                </div>
+              )}
+              {(wf.depends_on||[]).length>0&&(
+                <div style={{fontSize:9,color:T.orange,marginTop:4}}>
+                  ⚠ This workflow will be skipped if any dependency failed in the last run
+                </div>
+              )}
+            </div>
           </div>
         </Card>
 
@@ -12319,6 +12964,40 @@ No markdown, no backticks.`,
               SQL Checks ({wf.checks.length})
             </div>
           </div>
+
+          {/* Bulk check operations toolbar */}
+          {wf.checks.length > 1 && (
+            <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:8,
+              padding:'6px 10px',borderRadius:8,background:`${T.border}20`,
+              border:`1px solid ${T.border}`}}>
+              <input type='checkbox'
+                checked={selectedChkIds.size===wf.checks.length&&wf.checks.length>0}
+                onChange={()=>setSelectedChkIds(s=>s.size===wf.checks.length?new Set():new Set(wf.checks.map(c=>c.id)))}
+                style={{cursor:'pointer',accentColor:T.accent}}/>
+              <span style={{fontSize:10,color:T.muted}}>
+                {selectedChkIds.size>0?`${selectedChkIds.size} selected`:'Select all'}
+              </span>
+              {selectedChkIds.size>0&&(
+                <>
+                  {['critical','high','medium','low'].map(sev=>(
+                    <button key={sev} onClick={()=>{
+                      setWf(p=>({...p,checks:p.checks.map(c=>selectedChkIds.has(c.id)?{...c,severity:sev}:c)}));
+                      setSelectedChkIds(new Set());
+                    }} style={{fontSize:9,padding:'2px 8px',borderRadius:5,cursor:'pointer',
+                      border:`1px solid ${T.border}`,background:'none',color:T.text,
+                      fontFamily:'inherit'}}>{sev}</button>
+                  ))}
+                  <span style={{fontSize:9,color:T.dim}}>Set severity →</span>
+                  <button onClick={()=>{
+                    setWf(p=>({...p,checks:p.checks.filter(c=>!selectedChkIds.has(c.id))}));
+                    setSelectedChkIds(new Set());
+                  }} style={{fontSize:9,padding:'2px 8px',borderRadius:5,cursor:'pointer',
+                    border:`1px solid ${T.red}30`,background:`${T.red}08`,
+                    color:T.red,marginLeft:'auto'}}>🗑 Delete selected</button>
+                </>
+              )}
+            </div>
+          )}
 
           {/* Existing checks — inline editable */}
           {wf.checks.length > 0 && (
@@ -12333,6 +13012,11 @@ No markdown, no backticks.`,
                     {/* Collapsed row */}
                     {!isEditing && (
                       <div style={{ display:"flex", alignItems:"center", gap:8, padding:"9px 12px" }}>
+                        <input type="checkbox"
+                          checked={selectedChkIds.has(chk.id)}
+                          onChange={()=>setSelectedChkIds(s=>{const n=new Set(s);n.has(chk.id)?n.delete(chk.id):n.add(chk.id);return n;})}
+                          onClick={e=>e.stopPropagation()}
+                          style={{cursor:"pointer",accentColor:T.accent,flexShrink:0}}/>
                         <div style={{ width:6, height:6, borderRadius:"50%", flexShrink:0,
                           background: SEV_COLOR[chk.severity]||T.muted }}/>
                         <div style={{ flex:1, minWidth:0 }}>
@@ -12442,12 +13126,71 @@ No markdown, no backticks.`,
             </div>
           )}
 
+          {/* Smart Check Suggestions */}
+          {(suggestLoading||(smartSuggestions&&smartSuggestions.length>0))&&(
+            <div style={{padding:"12px 14px",borderRadius:8,marginBottom:12,
+              background:`${T.green}05`,border:`1px solid ${T.green}20`}}>
+              <div style={{fontSize:11,fontWeight:600,color:T.green,marginBottom:8,
+                display:"flex",alignItems:"center",gap:5}}>
+                🧠 Smart Suggestions
+                {suggestLoading&&<Spinner size={9} color={T.green}/>}
+                {!suggestLoading&&<span style={{fontSize:9,color:T.muted,fontWeight:400}}>— gaps detected in your checks</span>}
+              </div>
+              {suggestLoading&&!smartSuggestions&&(
+                <div style={{fontSize:11,color:T.muted,fontStyle:"italic"}}>Analysing your checks for gaps…</div>
+              )}
+              {(smartSuggestions||[]).map((s,i)=>{
+                const sevColor = s.severity==="critical"?T.red:s.severity==="high"?T.orange:"#F59E0B";
+                return (
+                  <div key={i} style={{marginBottom:8,padding:"8px 10px",borderRadius:7,
+                    background:T.surface,border:`1px solid ${T.border}`}}>
+                    <div style={{display:"flex",alignItems:"center",gap:6,marginBottom:3}}>
+                      <span style={{fontSize:9,padding:"1px 6px",borderRadius:99,
+                        background:`${sevColor}15`,color:sevColor,fontWeight:700}}>
+                        {s.severity}
+                      </span>
+                      <span style={{fontSize:11,fontWeight:600,color:T.text}}>{s.name}</span>
+                      <button
+                        onClick={()=>{
+                          setDraft({name:s.name,sql:s.sql,pass_condition:s.pass_condition||"rows = 0",severity:s.severity,source_id:"default"});
+                          setSmartSuggestions(p=>p.filter((_,j)=>j!==i));
+                        }}
+                        style={{marginLeft:"auto",fontSize:9,padding:"2px 8px",borderRadius:6,
+                          border:`1px solid ${T.green}30`,background:`${T.green}08`,
+                          color:T.green,cursor:"pointer",fontWeight:600,flexShrink:0}}>
+                        + Add
+                      </button>
+                    </div>
+                    <div style={{fontSize:10,color:T.muted}}>{s.reason}</div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+
           {/* AI check generator */}
           <div style={{ padding:"12px 14px", borderRadius:8, marginBottom:12,
             background:`${T.purple}05`, border:`1px solid ${T.purple}20` }}>
             <div style={{ fontSize:11, fontWeight:600, color:T.purple, marginBottom:8,
               display:"flex", alignItems:"center", gap:5 }}>
               <Zap size={11}/> AI Check Generator
+            </div>
+            {/* Example prompt chips */}
+            <div style={{display:"flex",gap:5,flexWrap:"wrap",marginBottom:8}}>
+              {[
+                "Orders stuck in pending > 4 hours",
+                "Campaign spend with no sales today",
+                "Data freshness — report not updated in 2h",
+                "Duplicate order IDs",
+                "Negative or zero item prices",
+              ].map(ex=>(
+                <button key={ex} onClick={()=>setAiDesc(ex)}
+                  style={{fontSize:9,padding:"2px 8px",borderRadius:99,cursor:"pointer",
+                    border:`1px solid ${T.purple}25`,background:`${T.purple}08`,
+                    color:T.purple,fontFamily:"inherit"}}>
+                  {ex}
+                </button>
+              ))}
             </div>
             <div style={{ display:"flex", gap:8 }}>
               <input value={aiDesc} onChange={e=>setAiDesc(e.target.value)}
@@ -12597,6 +13340,71 @@ No markdown, no backticks.`,
           </div>
         </Card>
       </div>
+
+      {/* ── Dependency Picker Modal ─────────────────────────────────────── */}
+      {showDepModal && (
+        <div style={{ position:"fixed", inset:0, background:"rgba(0,0,0,0.55)",
+          zIndex:2000, display:"flex", alignItems:"center", justifyContent:"center" }}
+          onClick={()=>setShowDepModal(false)}>
+          <div style={{ background:T.card, border:`1px solid ${T.border}`, borderRadius:14,
+            padding:"24px 26px", width:460, maxHeight:"70vh", display:"flex",
+            flexDirection:"column", boxShadow:"0 24px 64px rgba(0,0,0,0.35)" }}
+            onClick={e=>e.stopPropagation()}>
+            <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom:16 }}>
+              <div style={{ fontSize:14, fontWeight:700, color:T.text }}>🔗 Add Dependencies</div>
+              <button onClick={()=>setShowDepModal(false)}
+                style={{ background:"none", border:"none", cursor:"pointer",
+                  fontSize:18, color:T.muted, lineHeight:1 }}>×</button>
+            </div>
+            <div style={{ fontSize:11, color:T.muted, marginBottom:14, lineHeight:1.5 }}>
+              This workflow will be skipped if any selected dependency failed in its last run.
+            </div>
+            <div style={{ overflowY:"auto", flex:1, display:"flex", flexDirection:"column", gap:6 }}>
+              {allWorkflows.filter(w=>w.id!==wf.id).length===0 ? (
+                <div style={{ fontSize:11, color:T.dim, textAlign:"center", padding:"20px 0" }}>
+                  No other workflows available yet
+                </div>
+              ) : allWorkflows.filter(w=>w.id!==wf.id).map(w=>{
+                const isSelected = (wf.depends_on||[]).includes(w.id);
+                return (
+                  <label key={w.id} style={{ display:"flex", alignItems:"center", gap:10,
+                    padding:"10px 12px", borderRadius:8, cursor:"pointer",
+                    border:`1px solid ${isSelected ? T.accent+"40" : T.border}`,
+                    background:isSelected?`${T.accent}08`:T.surface,
+                    transition:"all 0.15s" }}>
+                    <input type="checkbox" checked={isSelected}
+                      onChange={()=>{
+                        const cur = wf.depends_on||[];
+                        field("depends_on", isSelected ? cur.filter(id=>id!==w.id) : [...cur, w.id]);
+                      }}
+                      style={{ accentColor:T.accent, cursor:"pointer" }}/>
+                    <div style={{ flex:1, minWidth:0 }}>
+                      <div style={{ fontSize:12, fontWeight:600, color:T.text,
+                        whiteSpace:"nowrap", overflow:"hidden", textOverflow:"ellipsis" }}>
+                        ⚙ {w.name}
+                      </div>
+                      {w.desc && (
+                        <div style={{ fontSize:10, color:T.muted, marginTop:2,
+                          whiteSpace:"nowrap", overflow:"hidden", textOverflow:"ellipsis" }}>
+                          {w.desc}
+                        </div>
+                      )}
+                    </div>
+                    {isSelected && (
+                      <span style={{ fontSize:9, padding:"2px 7px", borderRadius:99,
+                        background:`${T.accent}15`, color:T.accent, fontWeight:600,
+                        flexShrink:0 }}>dep</span>
+                    )}
+                  </label>
+                );
+              })}
+            </div>
+            <div style={{ marginTop:16, display:"flex", justifyContent:"flex-end", gap:8 }}>
+              <Btn variant="ghost" size="sm" onClick={()=>setShowDepModal(false)}>Done</Btn>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -19971,6 +20779,11 @@ Keep the whole report under 120 words. Be reassuring but honest.`,
                 log(agent.name,`✅ Fixed: ${action.name} (${action.confidence}%)`,"success");
                 fixResults.push({issue,action,success:true});
                 setAgentDecisions(p=>({...p,[pid]:[...(p[pid]||[]),{agent:agent.name,issue:issue.name,action:action.name,confidence:action.confidence,status:"applied"}]}));
+                auditLog("fix_applied", {
+                  fix_action: action.name, sql: action.fix_sql?.slice(0,200),
+                  pipeline: pipeline.name, check: issue.name,
+                  confidence: action.confidence, source:"autopilot"
+                });
                 const slackUrl = pipeline.slack_channel || (globalSlack?localStorage.getItem("wz_slack")||"":"");
                 if (slackUrl) fetch(slackUrl,{method:"POST",headers:{"Content-Type":"application/json"},
                   body:JSON.stringify({text:`🤖 *${pipeline.name}* auto-fixed: *${action.name}*`})}).catch(()=>{});
@@ -20005,6 +20818,10 @@ Keep the whole report under 120 words. Be reassuring but honest.`,
                 const rbData = await rb.json();
                 if (!rbData.error) {
                   log(agent.name,`↩ Rollback applied: ${fix.action.name}`,"warn");
+                  auditLog("fix_rolled_back", {
+                    fix_action: fix.action.name, sql: fix.action.rollback_sql?.slice(0,200),
+                    pipeline: pipeline.name, check: fix.issue.name, source:"autopilot"
+                  });
                   // Record rollback in agentDecisions
                   setAgentDecisions(p=>({...p,[pid]:[...(p[pid]||[]),
                     {agent:agent.name,issue:fix.issue.name,action:`↩ Rollback: ${fix.action.name}`,
@@ -21909,6 +22726,246 @@ Rules: always dry_run true, include detection+diagnosis agents minimum, use real
 }
 
 
+// ── Audit Log helpers ────────────────────────────────────────────────────────
+const AUDIT_KEY = "wz_audit_log_v1";
+function auditLog(action, details={}) {
+  try {
+    const log = JSON.parse(localStorage.getItem(AUDIT_KEY)||"[]");
+    log.unshift({ id:`a_${Date.now().toString(36)}`, ts:new Date().toISOString(), action, ...details });
+    localStorage.setItem(AUDIT_KEY, JSON.stringify(log.slice(0,500)));
+  } catch(e) {}
+}
+function useAuditLog() {
+  const [log, setLog] = React.useState(()=>{
+    try { return JSON.parse(localStorage.getItem(AUDIT_KEY)||"[]"); } catch(e) { return []; }
+  });
+  const refresh = () => {
+    try { setLog(JSON.parse(localStorage.getItem(AUDIT_KEY)||"[]")); } catch(e) {}
+  };
+  return { log, refresh };
+}
+
+// ── SystemHealthTab — global cross-tab health dashboard ──────────────────────
+function SystemHealthTab({ onNavigate }) {
+  const T = useT();
+  const { items: notifItems, acknowledge, snooze } = React.useContext(NotifCtx);
+  const { log: auditEntries, refresh: refreshAudit } = useAuditLog();
+  const [wfHistory, setWfHistory] = React.useState([]);
+  const [apHistory, setApHistory] = React.useState([]);
+  const [triageIssues, setTriageIssues] = React.useState([]);
+
+  React.useEffect(()=>{
+    // Load workflow run history
+    try { const h = JSON.parse(localStorage.getItem("wz_wf_runhistory_v1")||"[]"); setWfHistory(h); } catch(e){}
+    // Load autopilot scan history
+    try { const h = JSON.parse(localStorage.getItem("wz_ap_history_v2")||"[]"); setApHistory(h); } catch(e){}
+    // Load triage pending issues
+    try { const i = JSON.parse(sessionStorage.getItem("wz_pendingIssues")||"[]"); setTriageIssues(i); } catch(e){}
+    refreshAudit();
+  }, []);
+
+  // Compute signals
+  const now = Date.now();
+  const last24h = (arr) => arr.filter(h=>h.ts&&(now-new Date(h.ts).getTime())<86400000);
+  const wfFails    = wfHistory.filter(r=>r.status!=="clean"&&r.started_at&&(now-new Date(r.started_at).getTime())<86400000);
+  const wfPasses   = wfHistory.filter(r=>r.status==="clean"&&r.started_at&&(now-new Date(r.started_at).getTime())<86400000);
+  const apFails    = last24h(apHistory).filter(h=>(h.issues?.length||0)>0);
+  const apFixes    = last24h(apHistory).reduce((s,h)=>s+(h.fixes?.length||0),0);
+  const openAlerts = notifItems.filter(i=>!i.read&&!i.snoozed&&!i.acked&&i.persistent);
+  const overallStatus = (wfFails.length>3||apFails.length>5||triageIssues.filter(i=>i.severity==="critical").length>0)?"critical"
+    :(wfFails.length>0||apFails.length>0||triageIssues.length>0)?"warning":"healthy";
+  const statusColor = overallStatus==="critical"?T.red:overallStatus==="warning"?T.orange:T.green;
+  const statusLabel = overallStatus==="critical"?"🔴 Critical":overallStatus==="warning"?"🟡 Warning":"🟢 Healthy";
+
+  const SEV_CLR = {critical:T.red,high:T.orange,medium:"#F59E0B",low:T.muted};
+
+  return (
+    <div style={{padding:"28px 32px",maxWidth:1100}}>
+      {/* Header */}
+      <div style={{marginBottom:24}}>
+        <div style={{fontSize:24,fontWeight:800,color:T.text,letterSpacing:"-0.03em",marginBottom:4}}>
+          System Health
+        </div>
+        <div style={{fontSize:13,color:T.muted}}>Cross-tab view of everything on fire right now</div>
+      </div>
+
+      {/* Overall status banner */}
+      <div style={{padding:"14px 20px",borderRadius:12,marginBottom:20,
+        background:`${statusColor}10`,border:`1px solid ${statusColor}30`,
+        display:"flex",alignItems:"center",gap:12}}>
+        <div style={{fontSize:28}}>{statusLabel.split(" ")[0]}</div>
+        <div>
+          <div style={{fontSize:15,fontWeight:700,color:statusColor}}>
+            {overallStatus==="healthy"?"All systems healthy":"Attention required"}
+          </div>
+          <div style={{fontSize:11,color:T.muted,marginTop:2}}>
+            {wfFails.length} workflow failures · {apFails.length} pipeline issues · {triageIssues.length} triage alerts · {openAlerts.length} unacknowledged notifications (last 24h)
+          </div>
+        </div>
+        <div style={{marginLeft:"auto",fontSize:10,color:T.dim}}>
+          Updated {new Date().toLocaleTimeString([],{hour:"2-digit",minute:"2-digit"})}
+        </div>
+      </div>
+
+      {/* KPI row */}
+      <div style={{display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:12,marginBottom:24}}>
+        {[
+          {label:"WF Failures (24h)",value:wfFails.length,color:wfFails.length>0?T.red:T.green,icon:"⚙",tab:"workflows"},
+          {label:"Pipeline Issues (24h)",value:apFails.length,color:apFails.length>0?T.orange:T.green,icon:"⚡",tab:"autopilot"},
+          {label:"Auto-Fixes (24h)",value:apFixes,color:T.green,icon:"🔧",tab:"autopilot"},
+          {label:"Triage Open",value:triageIssues.length,color:triageIssues.length>0?T.orange:T.green,icon:"⚠",tab:"triage"},
+        ].map(k=>(
+          <div key={k.label} onClick={()=>onNavigate(k.tab)}
+            style={{padding:"14px 16px",borderRadius:10,background:T.card,
+              border:`1px solid ${k.color}25`,cursor:"pointer",transition:"all 0.1s"}}
+            onMouseEnter={e=>e.currentTarget.style.borderColor=k.color}
+            onMouseLeave={e=>e.currentTarget.style.borderColor=`${k.color}25`}>
+            <div style={{fontSize:18,marginBottom:4}}>{k.icon}</div>
+            <div style={{fontSize:26,fontWeight:800,color:k.color,letterSpacing:"-0.02em"}}>{k.value}</div>
+            <div style={{fontSize:10,color:T.muted}}>{k.label}</div>
+          </div>
+        ))}
+      </div>
+
+      <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:16,marginBottom:20}}>
+        {/* Open Alerts needing acknowledgement */}
+        <div style={{background:T.card,borderRadius:12,border:`1px solid ${T.border}`,overflow:"hidden"}}>
+          <div style={{padding:"12px 16px",borderBottom:`1px solid ${T.border}`,
+            display:"flex",alignItems:"center",gap:8}}>
+            <span style={{fontSize:13}}>🔔</span>
+            <div style={{fontSize:12,fontWeight:700,color:T.text}}>Unacknowledged Alerts</div>
+            <span style={{fontSize:9,padding:"2px 8px",borderRadius:99,marginLeft:"auto",
+              background:openAlerts.length>0?`${T.red}15`:`${T.green}15`,
+              color:openAlerts.length>0?T.red:T.green,fontWeight:700}}>
+              {openAlerts.length}
+            </span>
+          </div>
+          <div style={{maxHeight:240,overflowY:"auto"}}>
+            {openAlerts.length===0?(
+              <div style={{padding:"24px 16px",textAlign:"center",color:T.muted,fontSize:11}}>
+                ✅ All alerts acknowledged
+              </div>
+            ):openAlerts.slice(0,8).map(item=>(
+              <div key={item.id} style={{padding:"9px 16px",borderBottom:`1px solid ${T.border}15`,
+                display:"flex",alignItems:"center",gap:8}}>
+                <div style={{flex:1,minWidth:0}}>
+                  <div style={{fontSize:11,color:T.text,overflow:"hidden",
+                    textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{item.msg}</div>
+                  <div style={{fontSize:9,color:T.dim,marginTop:1}}>
+                    {new Date(item.ts).toLocaleTimeString([],{hour:"2-digit",minute:"2-digit"})}
+                  </div>
+                </div>
+                <button onClick={()=>acknowledge(item.id)}
+                  style={{fontSize:9,padding:"2px 8px",borderRadius:5,cursor:"pointer",
+                    border:`1px solid ${T.green}30`,background:`${T.green}08`,
+                    color:T.green,fontWeight:600,flexShrink:0}}>
+                  ✓ Ack
+                </button>
+                <button onClick={()=>snooze(item.id,30)}
+                  style={{fontSize:9,padding:"2px 8px",borderRadius:5,cursor:"pointer",
+                    border:`1px solid ${T.border}`,background:"none",color:T.muted,flexShrink:0}}>
+                  ⏱ 30m
+                </button>
+              </div>
+            ))}
+          </div>
+        </div>
+
+        {/* Triage Issues */}
+        <div style={{background:T.card,borderRadius:12,border:`1px solid ${T.border}`,overflow:"hidden"}}>
+          <div style={{padding:"12px 16px",borderBottom:`1px solid ${T.border}`,
+            display:"flex",alignItems:"center",gap:8}}>
+            <span style={{fontSize:13}}>⚠️</span>
+            <div style={{fontSize:12,fontWeight:700,color:T.text}}>Triage Issues</div>
+            <button onClick={()=>onNavigate("triage")}
+              style={{marginLeft:"auto",fontSize:9,padding:"2px 8px",borderRadius:5,
+                border:`1px solid ${T.accent}30`,background:`${T.accent}08`,
+                color:T.accent,cursor:"pointer"}}>
+              Open Triage →
+            </button>
+          </div>
+          <div style={{maxHeight:240,overflowY:"auto"}}>
+            {triageIssues.length===0?(
+              <div style={{padding:"24px 16px",textAlign:"center",color:T.muted,fontSize:11}}>
+                ✅ No open triage issues
+              </div>
+            ):triageIssues.map((issue,i)=>(
+              <div key={i} style={{padding:"9px 16px",borderBottom:`1px solid ${T.border}15`,
+                display:"flex",alignItems:"center",gap:8}}>
+                <div style={{width:7,height:7,borderRadius:"50%",flexShrink:0,
+                  background:SEV_CLR[issue.severity]||T.muted}}/>
+                <div style={{flex:1,minWidth:0}}>
+                  <div style={{fontSize:11,color:T.text,overflow:"hidden",
+                    textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{issue.title||issue.name}</div>
+                  <div style={{fontSize:9,color:T.muted,marginTop:1}}>
+                    {issue.count?.toLocaleString()||0} rows · {issue.severity}
+                  </div>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      </div>
+
+      {/* Fix Audit Trail */}
+      <div style={{background:T.card,borderRadius:12,border:`1px solid ${T.border}`,overflow:"hidden"}}>
+        <div style={{padding:"12px 16px",borderBottom:`1px solid ${T.border}`,
+          display:"flex",alignItems:"center",gap:8}}>
+          <span style={{fontSize:13}}>📋</span>
+          <div style={{fontSize:12,fontWeight:700,color:T.text}}>Fix Audit Trail</div>
+          <span style={{fontSize:9,color:T.dim,marginLeft:"auto"}}>{auditEntries.length} entries</span>
+          {auditEntries.length>0&&(
+            <button onClick={()=>{localStorage.removeItem(AUDIT_KEY);refreshAudit();}}
+              style={{fontSize:9,padding:"2px 8px",borderRadius:5,cursor:"pointer",
+                border:`1px solid ${T.border}`,background:"none",color:T.muted}}>
+              Clear
+            </button>
+          )}
+        </div>
+        {auditEntries.length===0?(
+          <div style={{padding:"24px 16px",textAlign:"center",color:T.muted,fontSize:11}}>
+            No fixes recorded yet. Fix actions from Triage and AutoPilot appear here.
+          </div>
+        ):(
+          <div style={{maxHeight:320,overflowY:"auto"}}>
+            {auditEntries.slice(0,50).map((entry,i)=>(
+              <div key={entry.id||i} style={{padding:"9px 16px",
+                borderBottom:`1px solid ${T.border}15`,
+                display:"flex",alignItems:"flex-start",gap:10}}>
+                <div style={{fontSize:16,flexShrink:0}}>
+                  {entry.action==="fix_applied"?"🔧":entry.action==="fix_rolled_back"?"↩":entry.action==="fix_skipped"?"⏭":"📝"}
+                </div>
+                <div style={{flex:1,minWidth:0}}>
+                  <div style={{fontSize:11,fontWeight:600,color:T.text}}>
+                    {entry.action?.replace(/_/g," ")}
+                    {entry.fix_action&&<span style={{color:T.muted,fontWeight:400}}> — {entry.fix_action}</span>}
+                  </div>
+                  <div style={{fontSize:10,color:T.muted,marginTop:1,display:"flex",gap:8,flexWrap:"wrap"}}>
+                    {entry.table&&<span>📄 {entry.table}</span>}
+                    {entry.rows_affected!=null&&<span>{entry.rows_affected} rows</span>}
+                    {entry.workflow&&<span>⚙ {entry.workflow}</span>}
+                    {entry.pipeline&&<span>⚡ {entry.pipeline}</span>}
+                    {entry.user&&<span>👤 {entry.user}</span>}
+                  </div>
+                  {entry.sql&&(
+                    <div style={{fontSize:9,color:T.dim,fontFamily:"monospace",marginTop:3,
+                      overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>
+                      {entry.sql.slice(0,80)}
+                    </div>
+                  )}
+                </div>
+                <div style={{fontSize:9,color:T.dim,fontFamily:"monospace",flexShrink:0}}>
+                  {new Date(entry.ts).toLocaleString([],{month:"short",day:"numeric",hour:"2-digit",minute:"2-digit"})}
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
 // ── PipelineRunsTab — merges Dataflows + Scheduler ───────────────────────────
 function PipelineRunsTab({ onNavigate }) {
   const T = useT();
@@ -22001,7 +23058,7 @@ function ReportingTab({ onNavigate, proactiveAlerts, setProactiveAlerts, onIssue
 
 export default function WiziAgentApp() {
   const [themeKey,  setThemeKey]  = useLocal("wz_theme", "light");
-  const [activeTab, setActiveTab] = useLocal("wz_tab",   "autopilot");
+  const [activeTab, setActiveTab] = useLocal("wz_tab",   "health");
 
   // ── Keyboard shortcuts ────────────────────────────────────────────────────
   // Inject global CSS once — never re-runs
@@ -22310,6 +23367,7 @@ export default function WiziAgentApp() {
           {activeTab==="triage"       && <ErrorBoundary key="triage"><TriageTab initialIssues={issues}/></ErrorBoundary>}
           {activeTab==="workflows"    && <ErrorBoundary key="workflows"><WorkflowsTab navigateTo={navigateTo}/></ErrorBoundary>}
           {activeTab==="pipeline-runs"&& <ErrorBoundary key="pipeline-runs"><PipelineRunsTab onNavigate={navigateTo}/></ErrorBoundary>}
+          {activeTab==="health"       && <ErrorBoundary key="health"><SystemHealthTab onNavigate={navigateTo}/></ErrorBoundary>}
           {activeTab==="config"       && <ErrorBoundary key="config"><ConfigureTab/></ErrorBoundary>}
           {activeTab==="query"        && <ErrorBoundary key="query"><QueryTab/></ErrorBoundary>}
           {activeTab==="demo"         && <ErrorBoundary key="demo"><DemoValidationTab/></ErrorBoundary>}

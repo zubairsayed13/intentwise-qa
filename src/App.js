@@ -56,6 +56,27 @@ class ErrorBoundary extends React.Component {
 
 const API = "https://intentwise-backend-production.up.railway.app";
 
+// ─── AI fetch interceptor — auto-tracks all /api/ai/chat calls ───────────────
+(function() {
+  const _fetch = window.fetch;
+  window.fetch = async function(url, opts={}) {
+    const res = await _fetch(url, opts);
+    if (typeof url === "string" && url.includes("/api/ai/chat")) {
+      try {
+        const clone = res.clone();
+        clone.json().then(data => {
+          const model = data.model || "unknown";
+          const inTok = data.usage?.input_tokens || estimateTokens((opts.body||"").toString());
+          const outTok = data.usage?.output_tokens || estimateTokens((data.content?.[0]?.text)||"");
+          // trackAiCall defined later — safe because interceptor fires at runtime
+          if (typeof trackAiCall === "function") trackAiCall(model, inTok, outTok, "chat");
+        }).catch(()=>{});
+      } catch(e) {}
+    }
+    return res;
+  };
+})();
+
 // ─── Theme definitions ───────────────────────────────────────────────────────
 // Each theme: bg, surface, card, border, border2, text, text2, muted, dim,
 //             accent, accentL, green, greenL, yellow, red, orange, purple, cyan,
@@ -488,8 +509,99 @@ const GLOBAL_CSS = `
   .wz-modal-inner { animation: modalPop 0.22s cubic-bezier(0.34,1.56,0.64,1) both; }
   .wz-bar-fill { animation: barFill 0.8s cubic-bezier(0.4,0,0.2,1) both; }
   .wz-kpi-val { animation: countUp 0.35s cubic-bezier(0.34,1.56,0.64,1) both; }
+
+  /* ── Toast enhancements ── */
+  @keyframes toastIn { from{opacity:0;transform:translateX(24px) scale(0.95)} to{opacity:1;transform:translateX(0) scale(1)} }
+  @keyframes toastOut { from{opacity:1;transform:translateX(0) scale(1)} to{opacity:0;transform:translateX(24px) scale(0.95)} }
+  @keyframes toastProgress { from{width:100%} to{width:0%} }
+  .wz-toast { animation: toastIn 0.22s cubic-bezier(0.34,1.56,0.64,1) both; }
+  .wz-toast-progress { animation: toastProgress linear both; border-radius:0 0 10px 10px; }
+
+  /* ── Sticky table headers ── */
+  .wz-table thead th, .wz-table thead td { position:sticky; top:0; z-index:2; }
+  .wz-table { border-collapse:separate; border-spacing:0; }
+  [style*="overflow-y"] thead tr th, [style*="overflowY"] thead tr th { position:sticky; top:0; z-index:2; }
+
+  /* ── Tab transition ── */
+  .wz-tab-enter { animation: tabEnter 0.18s cubic-bezier(0.25,0.46,0.45,0.94) both; }
+  @keyframes tabEnter { from{opacity:0;transform:translateY(6px)} to{opacity:1;transform:translateY(0)} }
+
+  /* ── Shortcuts overlay ── */
+  .wz-shortcuts-overlay { animation: modalPop 0.2s cubic-bezier(0.34,1.56,0.64,1) both; }
+  .wz-kbd { display:inline-flex;align-items:center;justify-content:center;min-width:22px;height:20px;padding:0 5px;border-radius:4px;font-size:10px;font-weight:700;font-family:monospace;border:1px solid rgba(255,255,255,0.15);background:rgba(255,255,255,0.08);color:rgba(255,255,255,0.8); }
 `;
 
+
+// ─── Keyboard Shortcuts Overlay ──────────────────────────────────────────────
+function ShortcutsOverlay({ onClose }) {
+  const T = useT();
+  React.useEffect(() => {
+    const h = (e) => { if (e.key === "Escape") onClose(); };
+    window.addEventListener("keydown", h);
+    return () => window.removeEventListener("keydown", h);
+  }, [onClose]);
+  const SECTIONS = [
+    { title:"Navigation", items:[
+      { keys:["H"], label:"System Health" },
+      { keys:["A"], label:"Auto-Pilot" },
+      { keys:["3"], label:"Triage & Monitor" },
+      { keys:["4"], label:"Workflows" },
+      { keys:["5"], label:"Pipeline Runs" },
+      { keys:["R"], label:"Reporting" },
+      { keys:["8"], label:"Data Explorer" },
+      { keys:["7"], label:"Configure" },
+    ]},
+    { title:"Global Actions", items:[
+      { keys:["⌘","K"], label:"Command Palette" },
+      { keys:["?"],      label:"Show this overlay" },
+      { keys:["Esc"],    label:"Close modal / overlay" },
+    ]},
+  ];
+  return (
+    <div onClick={onClose} style={{ position:"fixed", inset:0, zIndex:10000,
+      background:"rgba(0,0,0,0.6)", display:"flex", alignItems:"center", justifyContent:"center",
+      backdropFilter:"blur(4px)" }}>
+      <div onClick={e=>e.stopPropagation()} className="wz-shortcuts-overlay"
+        style={{ background:T.isDark?"#1A1D24":"#1C1E26", borderRadius:16, padding:"24px 28px",
+          width:480, maxWidth:"90vw", boxShadow:"0 24px 64px rgba(0,0,0,0.5)",
+          border:"1px solid rgba(255,255,255,0.1)" }}>
+        <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom:20 }}>
+          <div style={{ fontSize:15, fontWeight:800, color:"#fff", letterSpacing:"-0.02em" }}>
+            ⌨️ Keyboard Shortcuts
+          </div>
+          <button onClick={onClose} style={{ background:"rgba(255,255,255,0.08)", border:"none",
+            borderRadius:6, width:24, height:24, cursor:"pointer", color:"rgba(255,255,255,0.5)",
+            fontSize:14, display:"flex", alignItems:"center", justifyContent:"center" }}>×</button>
+        </div>
+        <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:20 }}>
+          {SECTIONS.map(sec=>(
+            <div key={sec.title}>
+              <div style={{ fontSize:10, fontWeight:700, color:"rgba(255,255,255,0.35)",
+                textTransform:"uppercase", letterSpacing:"0.1em", marginBottom:10 }}>{sec.title}</div>
+              <div style={{ display:"flex", flexDirection:"column", gap:6 }}>
+                {sec.items.map(item=>(
+                  <div key={item.label} style={{ display:"flex", alignItems:"center",
+                    justifyContent:"space-between", gap:8 }}>
+                    <div style={{ fontSize:12, color:"rgba(255,255,255,0.65)" }}>{item.label}</div>
+                    <div style={{ display:"flex", gap:3, flexShrink:0 }}>
+                      {item.keys.map((k,i)=>(
+                        <span key={i} className="wz-kbd">{k}</span>
+                      ))}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          ))}
+        </div>
+        <div style={{ marginTop:20, paddingTop:16, borderTop:"1px solid rgba(255,255,255,0.07)",
+          fontSize:10, color:"rgba(255,255,255,0.25)", textAlign:"center" }}>
+          Press <span className="wz-kbd">?</span> anytime to show this · <span className="wz-kbd">Esc</span> to close
+        </div>
+      </div>
+    </div>
+  );
+}
 
 // ─── Nav items ────────────────────────────────────────────────────────────────
 const NAV = [
@@ -1403,12 +1515,13 @@ function DashboardTab({ onNavigate }) {
   const [kpiNarrLoading,setKpiNarrLoading]= React.useState(false);
   const [welcomeDismissed, setWelcomeDismissed] = useLocal("wz_welcome_dismissed", false);
 
-  const generateKpiNarrative = React.useCallback(async (kpisData, triageData) => {
-    if (!kpisData || kpiNarrative) return;
+  const generateKpiNarrative = async () => {
+    if (!kpis) return;
     setKpiNarrLoading(true);
+    setKpiNarrative(null);
     try {
-      const o = kpisData.orders||{}, s = kpisData.sales||{}, inv = kpisData.inventory||{};
-      const issues = triageData?.issues?.filter(i=>i.severity==="critical"||i.severity==="high").length||0;
+      const o = kpis.orders||{}, s = kpis.sales||{}, inv = kpis.inventory||{};
+      const issues = triage?.issues?.filter(i=>i.severity==="critical"||i.severity==="high").length||0;
       const res = await fetch(`${API}/api/ai/chat`, {
         method:"POST", headers:{"Content-Type":"application/json"},
         body:JSON.stringify({
@@ -1421,7 +1534,7 @@ function DashboardTab({ onNavigate }) {
       setKpiNarrative(d?.content?.[0]?.text?.trim()||null);
     } catch(e) {}
     setKpiNarrLoading(false);
-  }, [kpiNarrative]);
+  };
 
   // ── Load widget definitions ───────────────────────────────────────────────
   const loadWidgets = async () => {
@@ -1441,7 +1554,7 @@ function DashboardTab({ onNavigate }) {
         fetch(`${API}/api/report/triage?account_id=${acc}`).then(r=>r.json()),
         fetch(`${API}/api/custom-workflows/history`).then(r=>r.json()),
       ]);
-      if (!k.error) { setKpis(k); generateKpiNarrative(k, tg); }
+      if (!k.error) { setKpis(k); }
       if (!tg.error) setTriage(tg);
       if (Array.isArray(cwf) && cwf.length > 0) {
         // Merge API results with localStorage — deduplicate by run_id
@@ -1974,6 +2087,12 @@ function DashboardTab({ onNavigate }) {
               <option key={a.account_id} value={a.account_id}>{a.seller_id||a.account_id}</option>
             ))}
           </select>
+          {!kpiNarrative && (
+            <Btn onClick={generateKpiNarrative} size="sm" variant="ghost" disabled={kpiNarrLoading||!kpis}
+              style={{ color:T.accent, borderColor:`${T.accent}40` }}>
+              {kpiNarrLoading ? <Spinner size={10}/> : "✨"} Summarise
+            </Btn>
+          )}
           <Btn onClick={()=>setBuilder({initial:null})} size="sm" variant="ghost"
             style={{ color:T.accent, borderColor:`${T.accent}40` }}>
             <Plus size={11}/> Add Widget
@@ -1989,19 +2108,17 @@ function DashboardTab({ onNavigate }) {
         </div>
       </div>
 
-      {/* AI KPI Narrative */}
+      {/* AI KPI Narrative — opt-in, shown only when requested */}
       {(kpiNarrative || kpiNarrLoading) && (
-        <div style={{ padding:"12px 18px", borderRadius:10, marginBottom:18,
+        <div style={{ padding:"11px 16px", borderRadius:10, marginBottom:16,
           background:`linear-gradient(135deg,${T.accent}08,${T.purple}06)`,
           border:`1px solid ${T.accent}20`,
           display:"flex", gap:10, alignItems:"flex-start" }}>
-          <div style={{ width:28, height:28, borderRadius:7, flexShrink:0,
-            background:`linear-gradient(135deg,${T.accent},${T.purple})`,
-            display:"flex", alignItems:"center", justifyContent:"center", fontSize:14 }}>✨</div>
+          <span style={{ fontSize:14, flexShrink:0, marginTop:1 }}>✨</span>
           <div style={{ flex:1 }}>
             {kpiNarrLoading
               ? <div style={{ fontSize:12, color:T.muted, display:"flex", gap:6, alignItems:"center" }}>
-                  <Spinner size={10}/> Analysing current data…
+                  <Spinner size={10}/> Analysing…
                 </div>
               : <div style={{ fontSize:12, color:T.text2, lineHeight:1.6 }}>{kpiNarrative}</div>
             }
@@ -2009,7 +2126,7 @@ function DashboardTab({ onNavigate }) {
           {kpiNarrative && (
             <button onClick={()=>setKpiNarrative(null)}
               style={{ background:"none", border:"none", cursor:"pointer",
-                color:T.dim, fontSize:14, flexShrink:0 }}>×</button>
+                color:T.dim, fontSize:16, flexShrink:0, lineHeight:1 }}>×</button>
           )}
         </div>
       )}
@@ -10080,11 +10197,11 @@ function NotifProvider({ children }) {
   const unread = items.filter(i => !i.read && !i.snoozed).length;
 
   const TYPE_STYLE = {
-    success: { bg:"#10B981", icon:"✓" },
-    error:   { bg:"#EF4444", icon:"✗" },
-    warning: { bg:"#F59E0B", icon:"⚠" },
-    info:    { bg:"#6366F1", icon:"ℹ" },
-    run:     { bg:"#8B5CF6", icon:"▶" },
+    success: { bg:"#10B981", icon:"✓", label:"Success" },
+    error:   { bg:"#EF4444", icon:"✗", label:"Error"   },
+    warning: { bg:"#F59E0B", icon:"⚠", label:"Warning" },
+    info:    { bg:"#6366F1", icon:"ℹ", label:"Info"    },
+    run:     { bg:"#8B5CF6", icon:"▶", label:"Run"     },
   };
 
   return (
@@ -10095,38 +10212,47 @@ function NotifProvider({ children }) {
       <div style={{ position:"fixed", bottom:24, right:24, zIndex:9999,
         display:"flex", flexDirection:"column", gap:8, pointerEvents:"none",
         maxWidth:360 }}>
-        {items.filter(i=>!i.read&&!i.persistent).slice(0,4).map(item => {
+        {items.filter(i=>!i.read&&!i.persistent).slice(0,4).map((item,idx) => {
           const s = TYPE_STYLE[item.type] || TYPE_STYLE.info;
+          const duration = 4500;
           return (
             <div key={item.id}
-              className="wz-toast-enter"
-              style={{ display:"flex", alignItems:"flex-start", gap:10,
-                padding:"12px 14px", borderRadius:10, pointerEvents:"all",
+              className="wz-toast"
+              style={{ display:"flex", flexDirection:"column", pointerEvents:"all",
+                borderRadius:10, overflow:"hidden",
                 background: T.isDark ? T.card : "#1A1C23",
-                color:"white",
-                boxShadow:"0 8px 32px rgba(0,0,0,0.4)",
-                border:`1px solid rgba(255,255,255,0.09)`,
-                animation:"slideIn 0.2s ease",
-                maxWidth:360 }}>
-              <div style={{ width:22, height:22, borderRadius:6, flexShrink:0,
-                background:s.bg, display:"flex", alignItems:"center",
-                justifyContent:"center", fontSize:11, fontWeight:700, color:"white",
-                marginTop:1 }}>{s.icon}</div>
-              <div style={{ flex:1, minWidth:0 }}>
-                <div style={{ fontSize:12, fontWeight:500, color:"rgba(255,255,255,0.92)",
-                  lineHeight:1.4, wordBreak:"break-word" }}>{item.msg}</div>
-                {item.action && (
-                  <button onClick={item.action}
-                    style={{ marginTop:5, fontSize:11, color:s.bg, background:"none",
-                      border:"none", cursor:"pointer", padding:0, fontWeight:600 }}>
-                    {item.actionLabel||"View →"}
-                  </button>
-                )}
+                boxShadow:`0 8px 32px rgba(0,0,0,0.4), 0 0 0 1px rgba(255,255,255,0.07)`,
+                border:`1px solid ${s.bg}30`,
+                maxWidth:360, animationDelay:`${idx*30}ms` }}>
+              {/* Main content row */}
+              <div style={{ display:"flex", alignItems:"flex-start", gap:10, padding:"12px 14px" }}>
+                <div style={{ width:24, height:24, borderRadius:7, flexShrink:0,
+                  background:`${s.bg}20`, border:`1px solid ${s.bg}40`,
+                  display:"flex", alignItems:"center", justifyContent:"center",
+                  fontSize:12, fontWeight:800, color:s.bg, marginTop:1 }}>{s.icon}</div>
+                <div style={{ flex:1, minWidth:0 }}>
+                  <div style={{ fontSize:10, fontWeight:700, color:s.bg,
+                    textTransform:"uppercase", letterSpacing:"0.06em", marginBottom:2 }}>{s.label}</div>
+                  <div style={{ fontSize:12, fontWeight:500, color:"rgba(255,255,255,0.88)",
+                    lineHeight:1.45, wordBreak:"break-word" }}>{item.msg}</div>
+                  {item.action && (
+                    <button onClick={item.action}
+                      style={{ marginTop:5, fontSize:11, color:s.bg, background:"none",
+                        border:"none", cursor:"pointer", padding:0, fontWeight:600 }}>
+                      {item.actionLabel||"View →"}
+                    </button>
+                  )}
+                </div>
+                <button onClick={()=>dismiss(item.id)}
+                  style={{ background:"none", border:"none", cursor:"pointer",
+                    color:"rgba(255,255,255,0.3)", fontSize:16, lineHeight:1,
+                    padding:0, flexShrink:0, marginTop:1 }}>×</button>
               </div>
-              <button onClick={()=>dismiss(item.id)}
-                style={{ background:"none", border:"none", cursor:"pointer",
-                  color:"rgba(255,255,255,0.35)", fontSize:16, lineHeight:1,
-                  padding:0, flexShrink:0, marginTop:1 }}>×</button>
+              {/* Progress bar */}
+              <div style={{ height:3, background:`rgba(255,255,255,0.06)` }}>
+                <div className="wz-toast-progress"
+                  style={{ height:"100%", background:s.bg, animationDuration:`${duration}ms` }}/>
+              </div>
             </div>
           );
         })}
@@ -10358,6 +10484,800 @@ function PassConditionPicker({ value, onChange, style }) {
 
 const SEV_COLOR = { critical:"#ef4444", high:"#f97316", medium:"#eab308", low:"#06b6d4", info:"#6366f1" };
 const SEV_BG    = { critical:"#fef2f2", high:"#fff7ed", medium:"#fefce8", low:"#ecfeff", info:"#eef2ff" };
+
+// ── RootCauseChainBanner — AI causal chain for correlated failures ────────────
+function RootCauseChainBanner({ cluster, names, minsAgo, T }) {
+  const [expanded,  setExpanded]  = React.useState(false);
+  const [chain,     setChain]     = React.useState(null);  // [{node, type, desc}]
+  const [loading,   setLoading]   = React.useState(false);
+  const [dismissed, setDismissed] = React.useState(false);
+
+  if (dismissed) return null;
+
+  const buildChain = async () => {
+    if (chain || loading) { setExpanded(true); return; }
+    setLoading(true); setExpanded(true);
+    try {
+      // Build context from cluster run data
+      const details = cluster.slice(0,6).map(r => {
+        const failed = (r.check_results||[]).filter(c=>!c.passed).map(c=>c.name).join(", ") || "unknown check";
+        return `${r.workflow_name||"Workflow"}: failed checks [${failed}] at ${r.started_at?.slice(11,16)||"?"}`;
+      }).join("\n");
+
+      const res = await fetch(`${API}/api/ai/chat`, {
+        method:"POST", headers:{"Content-Type":"application/json"},
+        body: JSON.stringify({
+          system: `You are a data pipeline root cause analyst. Given correlated workflow failures, produce a causal chain as JSON array. Each item: {"node":"short label","type":"trigger|propagation|symptom","desc":"one sentence explanation"}. Max 5 nodes. Return ONLY the JSON array, no markdown.`,
+          messages: [{ role:"user", content: `${cluster.length} workflows failed within 15 minutes:\n${details}\n\nBuild a root cause chain.` }],
+          max_tokens: 300
+        })
+      });
+      const d = await res.json();
+      const raw = d?.content?.[0]?.text?.trim() || "[]";
+      const clean = raw.replace(/```json|```/gi,"").trim();
+      const arr = JSON.parse(clean.slice(clean.indexOf("["), clean.lastIndexOf("]")+1));
+      setChain(Array.isArray(arr) ? arr : []);
+    } catch(e) {
+      setChain([{ node:"Analysis failed", type:"symptom", desc:"Could not connect to AI — check API key." }]);
+    }
+    setLoading(false);
+  };
+
+  const typeColor = { trigger:"#EF4444", propagation:"#F59E0B", symptom:"#6366F1" };
+  const typeLabel = { trigger:"Root Cause", propagation:"Propagation", symptom:"Symptom" };
+
+  return (
+    <div style={{ marginBottom:16, borderRadius:10, overflow:"hidden",
+      border:"1px solid #FED7AA", background:"#FFF7ED" }}>
+      {/* Header row */}
+      <div style={{ padding:"10px 14px", display:"flex", gap:10, alignItems:"flex-start" }}>
+        <span style={{fontSize:16, flexShrink:0}}>🔗</span>
+        <div style={{flex:1}}>
+          <div style={{fontSize:12, fontWeight:700, color:"#C2410C", marginBottom:2}}>
+            {cluster.length} workflows failed within 15 minutes — possible shared root cause
+          </div>
+          <div style={{fontSize:11, color:"#9A3412"}}>
+            {names.slice(0,4).join(", ")}{names.length>4?` +${names.length-4} more`:""} · {minsAgo < 60 ? `${minsAgo}m ago` : `${Math.round(minsAgo/60)}h ago`}
+          </div>
+        </div>
+        <div style={{display:"flex", gap:6, flexShrink:0}}>
+          <button onClick={buildChain}
+            style={{fontSize:10, padding:"3px 10px", borderRadius:6, cursor:"pointer",
+              background: expanded ? "#FED7AA" : "#C2410C",
+              border: expanded ? "1px solid #FDBA74" : "none",
+              color: expanded ? "#92400E" : "white",
+              fontFamily:"inherit", fontWeight:600}}>
+            {loading ? "Analysing…" : expanded ? (chain ? "▲ Hide chain" : "▲ Hide") : "🔍 Root cause chain"}
+          </button>
+          <button onClick={()=>{
+              sessionStorage.setItem("wz_agent_nudge", `Why did ${names.slice(0,3).join(", ")} all fail around the same time?`);
+              window.dispatchEvent(new CustomEvent("wz_open_agent"));
+            }}
+            style={{fontSize:10, padding:"3px 10px", borderRadius:6, cursor:"pointer",
+              background:"#FED7AA", border:"1px solid #FDBA74",
+              color:"#92400E", fontFamily:"inherit", fontWeight:600}}>
+            Investigate →
+          </button>
+          <button onClick={()=>setDismissed(true)}
+            style={{background:"none", border:"none", cursor:"pointer",
+              color:"#C2410C", fontSize:14, lineHeight:1}}>×</button>
+        </div>
+      </div>
+
+      {/* Chain visualization */}
+      {expanded && (
+        <div style={{ borderTop:"1px solid #FED7AA", padding:"12px 14px",
+          background:"#FFFBF7" }}>
+          {loading && (
+            <div style={{display:"flex", alignItems:"center", gap:8, fontSize:11, color:"#9A3412"}}>
+              <Spinner size={12} color="#C2410C"/> Building causal chain…
+            </div>
+          )}
+          {chain && chain.length > 0 && (
+            <div style={{display:"flex", flexDirection:"column", gap:0}}>
+              {chain.map((node, i) => (
+                <div key={i} style={{display:"flex", gap:0}}>
+                  {/* Connector column */}
+                  <div style={{display:"flex", flexDirection:"column", alignItems:"center", width:28, flexShrink:0}}>
+                    <div style={{width:12, height:12, borderRadius:"50%", flexShrink:0, marginTop:2,
+                      background:typeColor[node.type]||"#6B7280",
+                      boxShadow:`0 0 0 3px ${(typeColor[node.type]||"#6B7280")}25`}}/>
+                    {i < chain.length-1 && (
+                      <div style={{width:2, flex:1, minHeight:16,
+                        background:`linear-gradient(${typeColor[node.type]||"#6B7280"},${typeColor[chain[i+1]?.type]||"#6B7280"})`,
+                        opacity:0.35, margin:"3px 0"}}/>
+                    )}
+                  </div>
+                  {/* Content */}
+                  <div style={{flex:1, paddingBottom: i < chain.length-1 ? 10 : 0, paddingLeft:6}}>
+                    <div style={{display:"flex", alignItems:"center", gap:6, marginBottom:2}}>
+                      <span style={{fontSize:11, fontWeight:700, color:"#1C1917"}}>{node.node}</span>
+                      <span style={{fontSize:9, padding:"1px 6px", borderRadius:99, fontWeight:700,
+                        background:`${typeColor[node.type]||"#6B7280"}15`,
+                        color:typeColor[node.type]||"#6B7280"}}>
+                        {typeLabel[node.type]||node.type}
+                      </span>
+                    </div>
+                    <div style={{fontSize:11, color:"#78716C", lineHeight:1.45}}>{node.desc}</div>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// AGENTIC RUNBOOKS — Senior QA Engineer playbooks
+// ═══════════════════════════════════════════════════════════════════════════════
+
+const ACTION_TYPES = {
+  pause_jobs:    { label:"Pause Downstream Jobs",    icon:"⏸", color:"#f97316", desc:"Halt downstream pipelines to prevent bad data propagation" },
+  resume_jobs:   { label:"Resume Downstream Jobs",   icon:"▶", color:"#22c55e", desc:"Re-activate paused downstream jobs after validation passes" },
+  trigger_refresh:{ label:"Trigger Data Refresh",   icon:"🔄", color:"#6366f1", desc:"Re-download or re-run a data pipeline/API fetch" },
+  validate_data: { label:"Validate Data Freshness",  icon:"✅", color:"#06b6d4", desc:"Check row counts, timestamps, and data quality" },
+  run_sql:       { label:"Run SQL Check",            icon:"🗄", color:"#8b5cf6", desc:"Execute a SQL query and assert a condition on the result" },
+  wait_condition:{ label:"Wait / Poll Until",        icon:"⏳", color:"#eab308", desc:"Wait until a condition is met (with timeout)" },
+  send_alert:    { label:"Send Alert",               icon:"🔔", color:"#ec4899", desc:"Send Slack message or email to stakeholders" },
+  call_api:      { label:"Call External API",        icon:"🌐", color:"#14b8a6", desc:"POST/GET to an external endpoint" },
+  escalate:      { label:"Escalate to Human",        icon:"🙋", color:"#ef4444", desc:"Create an approval gate — pause until human confirms" },
+};
+
+const AGENTIC_RUNBOOK_TEMPLATES = [
+  {
+    id:"rb-api-failure",
+    name:"API Download Failure Recovery",
+    desc:"Detects an API data download failure, pauses downstream jobs, retries the download up to 3 times, validates freshness, then resumes — alerting stakeholders throughout.",
+    icon:"📡", color:"#ef4444",
+    trigger:{ type:"condition", condition:"api_download_failed", label:"API download failure detected" },
+    tags:["api","recovery","automated"],
+    steps:[
+      { id:"s1", type:"send_alert",      label:"Alert: Download Failure Detected",   config:{ channel:"#data-ops", message:"⚠️ API download failure detected. Starting recovery runbook." }, on_fail:"continue" },
+      { id:"s2", type:"pause_jobs",      label:"Pause All Downstream Jobs",          config:{ scope:"all_downstream" }, on_fail:"escalate" },
+      { id:"s3", type:"trigger_refresh", label:"Retry API Download (Attempt 1)",     config:{ target:"api_download", max_retries:1 }, on_fail:"next" },
+      { id:"s4", type:"wait_condition",  label:"Wait: Data Available (5 min)",       config:{ condition:"rows > 0", timeout_mins:5 }, on_fail:"next" },
+      { id:"s5", type:"validate_data",   label:"Validate Data Freshness",            config:{ max_age_mins:60 }, on_fail:"branch_retry" },
+      { id:"s6", type:"trigger_refresh", label:"Retry API Download (Attempt 2)",     config:{ target:"api_download", max_retries:1 }, on_fail:"next", branch:"branch_retry" },
+      { id:"s7", type:"wait_condition",  label:"Wait: Data Available (10 min)",      config:{ condition:"rows > 0", timeout_mins:10 }, on_fail:"escalate" },
+      { id:"s8", type:"validate_data",   label:"Re-Validate Data Quality",           config:{ max_age_mins:60 }, on_fail:"escalate" },
+      { id:"s9", type:"resume_jobs",     label:"Resume Downstream Jobs",             config:{ scope:"all_downstream" }, on_fail:"escalate" },
+      { id:"s10",type:"send_alert",      label:"Alert: Recovery Complete",           config:{ channel:"#data-ops", message:"✅ API download recovered. Downstream jobs resumed." }, on_fail:"continue" },
+    ]
+  },
+  {
+    id:"rb-data-delay",
+    name:"Data Delay Handler",
+    desc:"Triggered when data is delayed beyond SLA. Pauses downstream, investigates root cause, optionally forces a refresh, and keeps stakeholders updated with ETA.",
+    icon:"⏰", color:"#f97316",
+    trigger:{ type:"condition", condition:"data_delayed", label:"Data delayed beyond SLA threshold" },
+    tags:["delay","sla","monitoring"],
+    steps:[
+      { id:"s1", type:"run_sql",         label:"Diagnose: Check Last Data Timestamp", config:{ sql:"SELECT MAX(updated_at) FROM {table}", assert:"< 2 hours ago" }, on_fail:"continue" },
+      { id:"s2", type:"send_alert",      label:"Alert: Data Delay Detected",         config:{ channel:"#data-ops", message:"⏰ Data delay detected. Investigating and pausing downstream." }, on_fail:"continue" },
+      { id:"s3", type:"pause_jobs",      label:"Pause Downstream Jobs",              config:{ scope:"all_downstream" }, on_fail:"escalate" },
+      { id:"s4", type:"wait_condition",  label:"Wait for Upstream Data (30 min)",    config:{ condition:"data_arrived", timeout_mins:30 }, on_fail:"branch_force" },
+      { id:"s5", type:"validate_data",   label:"Validate: Data Arrived & Fresh",     config:{ max_age_mins:120 }, on_fail:"branch_force" },
+      { id:"s6", type:"resume_jobs",     label:"Resume Downstream Jobs",             config:{ scope:"all_downstream" }, on_fail:"escalate" },
+      { id:"s7", type:"send_alert",      label:"Alert: Delay Resolved",              config:{ channel:"#data-ops", message:"✅ Data delay resolved. All systems nominal." }, on_fail:"continue" },
+      { id:"s8", type:"trigger_refresh", label:"Force Refresh (if still delayed)",   config:{ target:"upstream_pipeline" }, on_fail:"escalate", branch:"branch_force" },
+      { id:"s9", type:"wait_condition",  label:"Wait: Refresh Complete (20 min)",    config:{ condition:"refresh_done", timeout_mins:20 }, on_fail:"escalate" },
+      { id:"s10",type:"escalate",        label:"Escalate: Manual Review Required",   config:{ message:"Automated recovery failed. Manual intervention needed.", assignee:"on-call" }, on_fail:"continue" },
+    ]
+  },
+  {
+    id:"rb-no-recent-data",
+    name:"No Recent Data Response",
+    desc:"When tables have no new rows within the expected window. Validates source, triggers re-ingestion, checks quality, resumes pipeline and alerts.",
+    icon:"📭", color:"#8b5cf6",
+    trigger:{ type:"condition", condition:"no_recent_data", label:"No new rows in expected window" },
+    tags:["freshness","ingestion"],
+    steps:[
+      { id:"s1", type:"run_sql",         label:"Confirm: No Recent Data",            config:{ sql:"SELECT COUNT(*) FROM {table} WHERE created_at > NOW() - INTERVAL '2 hours'", assert:"= 0" }, on_fail:"continue" },
+      { id:"s2", type:"pause_jobs",      label:"Pause Downstream Consumers",         config:{ scope:"consumers" }, on_fail:"continue" },
+      { id:"s3", type:"call_api",        label:"Trigger Source Re-ingestion",        config:{ method:"POST", url:"{ingestion_endpoint}", body:"{}" }, on_fail:"escalate" },
+      { id:"s4", type:"wait_condition",  label:"Wait: Rows Appear (15 min)",         config:{ condition:"new_rows > 0", timeout_mins:15 }, on_fail:"escalate" },
+      { id:"s5", type:"validate_data",   label:"Validate Row Count & Quality",       config:{ min_rows:100 }, on_fail:"escalate" },
+      { id:"s6", type:"resume_jobs",     label:"Resume Downstream Consumers",        config:{ scope:"consumers" }, on_fail:"escalate" },
+      { id:"s7", type:"send_alert",      label:"Alert: Data Flow Restored",          config:{ channel:"#data-ops", message:"✅ Data ingestion restored. Pipeline running normally." }, on_fail:"continue" },
+    ]
+  },
+  {
+    id:"rb-full-refresh",
+    name:"Full Pipeline Pause → Refresh → Resume",
+    desc:"Complete controlled cycle: pause all downstream, refresh all sources in sequence, validate end-to-end, then re-activate everything. Tracks every step.",
+    icon:"🔁", color:"#06b6d4",
+    trigger:{ type:"manual", label:"Manual trigger only" },
+    tags:["refresh","maintenance","full-cycle"],
+    steps:[
+      { id:"s1", type:"send_alert",      label:"Notify: Planned Refresh Starting",  config:{ channel:"#data-ops", message:"🔄 Planned full refresh starting. Downstream will be paused." }, on_fail:"continue" },
+      { id:"s2", type:"pause_jobs",      label:"Pause All Downstream Jobs",         config:{ scope:"all" }, on_fail:"escalate" },
+      { id:"s3", type:"trigger_refresh", label:"Refresh Source 1 (MWS)",            config:{ target:"mws_pipeline" }, on_fail:"escalate" },
+      { id:"s4", type:"trigger_refresh", label:"Refresh Source 2 (API)",            config:{ target:"api_pipeline" }, on_fail:"escalate" },
+      { id:"s5", type:"wait_condition",  label:"Wait: All Sources Complete",        config:{ condition:"all_sources_done", timeout_mins:45 }, on_fail:"escalate" },
+      { id:"s6", type:"validate_data",   label:"Validate All Sources Fresh",        config:{ max_age_mins:60, all_tables:true }, on_fail:"escalate" },
+      { id:"s7", type:"run_sql",         label:"Run Data Quality Checks",           config:{ sql:"SELECT COUNT(*) FROM audit_log WHERE status='fail' AND ts > NOW()-INTERVAL '1h'", assert:"= 0" }, on_fail:"escalate" },
+      { id:"s8", type:"resume_jobs",     label:"Resume All Downstream Jobs",        config:{ scope:"all" }, on_fail:"escalate" },
+      { id:"s9", type:"send_alert",      label:"Notify: Full Refresh Complete",     config:{ channel:"#data-ops", message:"✅ Full refresh complete. All pipelines active." }, on_fail:"continue" },
+    ]
+  },
+];
+
+// ── RunbookStepCard — single step in builder ──────────────────────────────────
+function RunbookStepCard({ step, index, total, onEdit, onDelete, onMove, T, isRunning, runStatus }) {
+  const act = ACTION_TYPES[step.type] || { label:step.type, icon:"⚙", color:T.muted };
+  const statusColor = runStatus==="done" ? T.green : runStatus==="running" ? T.accent : runStatus==="error" ? T.red : runStatus==="skipped" ? T.muted : null;
+  return (
+    <div style={{ display:"flex", alignItems:"stretch", gap:0 }}>
+      {/* Connector line */}
+      <div style={{ display:"flex", flexDirection:"column", alignItems:"center", width:32, flexShrink:0 }}>
+        <div style={{ width:24, height:24, borderRadius:"50%", background:statusColor||act.color+"22",
+          border:`2px solid ${statusColor||act.color}`, display:"flex", alignItems:"center",
+          justifyContent:"center", fontSize:11, flexShrink:0, zIndex:1 }}>
+          {runStatus==="running" ? <Spinner size={9} color={T.accent}/> :
+           runStatus==="done" ? "✓" : runStatus==="error" ? "✗" : act.icon}
+        </div>
+        {index < total-1 && <div style={{ width:2, flex:1, background:T.border, minHeight:16 }}/>}
+      </div>
+      {/* Card */}
+      <div style={{ flex:1, marginLeft:8, marginBottom:index<total-1?8:0, background:T.card,
+        border:`1px solid ${statusColor ? statusColor+"40" : T.border}`, borderRadius:10, padding:"10px 12px",
+        position:"relative" }}>
+        <div style={{ display:"flex", alignItems:"center", gap:8 }}>
+          <div style={{ flex:1, minWidth:0 }}>
+            <div style={{ fontSize:12, fontWeight:700, color:T.text }}>{step.label || act.label}</div>
+            <div style={{ fontSize:10, color:act.color, fontWeight:600 }}>{act.label}</div>
+            {step.config?.channel && <div style={{ fontSize:10, color:T.muted, marginTop:2 }}>→ {step.config.channel}</div>}
+            {step.config?.sql && <div style={{ fontSize:10, color:T.muted, marginTop:2, fontFamily:"monospace" }}>{step.config.sql.slice(0,60)}…</div>}
+            {step.config?.condition && <div style={{ fontSize:10, color:T.muted, marginTop:2 }}>Until: {step.config.condition} {step.config.timeout_mins ? `(${step.config.timeout_mins}m timeout)` : ""}</div>}
+          </div>
+          {!isRunning && (
+            <div style={{ display:"flex", gap:4, flexShrink:0 }}>
+              {index>0 && <button onClick={()=>onMove(index,-1)} style={{ background:"none",border:`1px solid ${T.border}`,borderRadius:4,cursor:"pointer",color:T.muted,fontSize:10,padding:"1px 5px" }}>↑</button>}
+              {index<total-1 && <button onClick={()=>onMove(index,1)} style={{ background:"none",border:`1px solid ${T.border}`,borderRadius:4,cursor:"pointer",color:T.muted,fontSize:10,padding:"1px 5px" }}>↓</button>}
+              <button onClick={()=>onEdit(step,index)} style={{ background:"none",border:`1px solid ${T.border}`,borderRadius:4,cursor:"pointer",color:T.muted,fontSize:10,padding:"1px 5px" }}>✏</button>
+              <button onClick={()=>onDelete(index)} style={{ background:"none",border:`1px solid ${T.red}40`,borderRadius:4,cursor:"pointer",color:T.red,fontSize:10,padding:"1px 5px" }}>✕</button>
+            </div>
+          )}
+          {runStatus && <div style={{ fontSize:10, fontWeight:700, color:statusColor, flexShrink:0 }}>
+            {runStatus==="done"?"Done":runStatus==="running"?"Running…":runStatus==="error"?"Failed":runStatus==="skipped"?"Skipped":""}
+          </div>}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ── RunbookFlowPreview — visual SVG flow preview ──────────────────────────────
+function RunbookFlowPreview({ steps, T, runStatuses }) {
+  if (!steps.length) return (
+    <div style={{ display:"flex", alignItems:"center", justifyContent:"center", height:"100%", color:T.muted, fontSize:12 }}>
+      Add steps to see flow preview
+    </div>
+  );
+  const nodeH = 52, nodeW = 180, gap = 24, padX = 20, padY = 20;
+  const totalH = padY*2 + steps.length*(nodeH+gap) - gap;
+  const totalW = padX*2 + nodeW;
+  return (
+    <svg width="100%" viewBox={`0 0 ${totalW} ${totalH}`} style={{ maxHeight:600, overflow:"visible" }}>
+      {steps.map((step, i) => {
+        const act = ACTION_TYPES[step.type] || { label:step.type, icon:"⚙", color:T.muted };
+        const st = runStatuses?.[step.id];
+        const fill = st==="done" ? T.green : st==="running" ? T.accent : st==="error" ? T.red : act.color;
+        const y = padY + i*(nodeH+gap);
+        const cx = padX + nodeW/2;
+        return (
+          <g key={step.id}>
+            {i>0 && <line x1={cx} y1={padY+(i-1)*(nodeH+gap)+nodeH} x2={cx} y2={y}
+              stroke={T.border} strokeWidth={2} strokeDasharray={st?"none":"4,3"}/>}
+            <rect x={padX} y={y} width={nodeW} height={nodeH} rx={10}
+              fill={fill+"18"} stroke={fill} strokeWidth={st==="running"?2:1}/>
+            <text x={padX+14} y={y+20} fontSize={14} fill={fill}>{act.icon}</text>
+            <text x={padX+32} y={y+17} fontSize={10} fontWeight="700" fill={fill === T.muted ? T.text : fill}>
+              {(step.label||act.label).slice(0,22)}{(step.label||act.label).length>22?"…":""}
+            </text>
+            <text x={padX+32} y={y+31} fontSize={9} fill={T.muted}>{act.label}</text>
+            {st && <text x={padX+nodeW-8} y={y+22} fontSize={9} fontWeight="700" fill={fill} textAnchor="end">
+              {st==="done"?"✓":st==="running"?"…":st==="error"?"✗":"–"}
+            </text>}
+            {step.on_fail==="escalate" && (
+              <g>
+                <line x1={padX+nodeW} y1={y+nodeH/2} x2={padX+nodeW+18} y2={y+nodeH/2} stroke={T.red} strokeWidth={1} strokeDasharray="3,2"/>
+                <text x={padX+nodeW+20} y={y+nodeH/2+4} fontSize={9} fill={T.red}>escalate</text>
+              </g>
+            )}
+          </g>
+        );
+      })}
+    </svg>
+  );
+}
+
+// ── RunbookBuilder — step-list (left) + visual preview (right) ────────────────
+function RunbookBuilder({ initial, onSave, onCancel, T }) {
+  const blankRb = { id:"rb-"+Date.now(), name:"", desc:"", icon:"⚙", color:"#6366f1",
+    trigger:{ type:"manual", label:"Manual trigger" }, tags:[], steps:[] };
+  const [rb, setRb] = React.useState(initial || blankRb);
+  const [editingStep, setEditingStep] = React.useState(null); // {step, index} | null
+  const [addingType, setAddingType] = React.useState(null);
+  const [aiBuilding, setAiBuilding] = React.useState(false);
+  const [aiPrompt, setAiPrompt] = React.useState("");
+  const [showAiBox, setShowAiBox] = React.useState(false);
+
+  const update = (patch) => setRb(p=>({...p,...patch}));
+  const addStep = (type) => {
+    const act = ACTION_TYPES[type];
+    const newStep = { id:"step-"+Date.now(), type, label:act.label, config:{}, on_fail:"continue" };
+    setRb(p=>({...p, steps:[...p.steps, newStep]}));
+    setAddingType(null);
+  };
+  const deleteStep = (idx) => setRb(p=>({...p, steps:p.steps.filter((_,i)=>i!==idx)}));
+  const moveStep = (idx, dir) => {
+    const steps = [...rb.steps];
+    const [removed] = steps.splice(idx,1);
+    steps.splice(idx+dir,0,removed);
+    setRb(p=>({...p, steps}));
+  };
+  const saveStep = (step, idx) => {
+    setRb(p=>({...p, steps:p.steps.map((s,i)=>i===idx?step:s)}));
+    setEditingStep(null);
+  };
+
+  const buildWithAi = async () => {
+    if (!aiPrompt.trim()) return;
+    setAiBuilding(true);
+    try {
+      const res = await fetch(`${API}/api/ai/chat`, {
+        method:"POST", headers:{"Content-Type":"application/json"},
+        body: JSON.stringify({
+          system:`You are a senior data engineering runbook designer. Given a scenario, return a JSON runbook with sequential steps for an autonomous agent to execute.
+Return ONLY JSON (no markdown):
+{
+  "name": "...",
+  "desc": "...",
+  "icon": "emoji",
+  "steps": [
+    { "id": "s1", "type": "<one of: pause_jobs|resume_jobs|trigger_refresh|validate_data|run_sql|wait_condition|send_alert|call_api|escalate>",
+      "label": "...", "config": {}, "on_fail": "continue|escalate|next" }
+  ]
+}`,
+          messages:[{ role:"user", content:`Scenario: ${aiPrompt}` }],
+          max_tokens:900, temperature:0.2
+        })
+      });
+      const d = await res.json();
+      const text = (d?.content?.[0]?.text||"{}").replace(/```json|```/g,"").trim();
+      const parsed = JSON.parse(text);
+      if (parsed.steps) setRb(p=>({...p, ...parsed, id:p.id, trigger:p.trigger }));
+    } catch(e) {}
+    setAiBuilding(false);
+    setShowAiBox(false);
+  };
+
+  const TRIGGER_TYPES = [
+    { value:"manual",    label:"Manual (Run Now)" },
+    { value:"schedule",  label:"On Schedule" },
+    { value:"condition", label:"Auto (Condition/Alert)" },
+    { value:"webhook",   label:"Via Webhook/API" },
+  ];
+
+  return (
+    <div style={{ display:"flex", flexDirection:"column", height:"100%", overflow:"hidden" }}>
+      {/* Header */}
+      <div style={{ padding:"16px 20px", borderBottom:`1px solid ${T.border}`, display:"flex", alignItems:"center", gap:12, flexShrink:0 }}>
+        <button onClick={onCancel} style={{ background:"none",border:"none",cursor:"pointer",color:T.muted,fontSize:13 }}>← Back</button>
+        <div style={{ flex:1, fontWeight:700, fontSize:15, color:T.text }}>{rb.id===blankRb.id?"New Runbook":rb.name||"Untitled Runbook"}</div>
+        <Btn onClick={()=>setShowAiBox(p=>!p)} size="sm" style={{ background:`linear-gradient(135deg,${T.accent},${T.purple})`,color:"white",border:"none" }}>
+          ✦ Build with AI
+        </Btn>
+        <Btn onClick={()=>onSave(rb)} size="sm" style={{ background:T.accent,color:"white",border:"none" }} disabled={!rb.name.trim()||!rb.steps.length}>
+          Save Runbook
+        </Btn>
+      </div>
+
+      {/* AI Build Box */}
+      {showAiBox && (
+        <div style={{ padding:"12px 20px", borderBottom:`1px solid ${T.border}`, background:`${T.accent}08`, flexShrink:0 }}>
+          <div style={{ fontSize:11, color:T.muted, marginBottom:6 }}>Describe the scenario — AI will generate the runbook steps:</div>
+          <div style={{ display:"flex", gap:8 }}>
+            <input value={aiPrompt} onChange={e=>setAiPrompt(e.target.value)}
+              placeholder="e.g. API download fails, pause downstream, retry 3x, validate, resume, alert team"
+              style={{ flex:1, padding:"8px 10px", borderRadius:8, border:`1px solid ${T.border}`,
+                background:T.surface, color:T.text, fontSize:12 }}/>
+            <Btn onClick={buildWithAi} disabled={!aiPrompt.trim()||aiBuilding} size="sm"
+              style={{ background:T.accent, color:"white", border:"none" }}>
+              {aiBuilding ? <Spinner size={10} color="white"/> : "Generate"}
+            </Btn>
+          </div>
+        </div>
+      )}
+
+      <div style={{ display:"flex", flex:1, overflow:"hidden" }}>
+        {/* Left: Step List */}
+        <div style={{ width:360, borderRight:`1px solid ${T.border}`, display:"flex", flexDirection:"column", overflow:"hidden" }}>
+          {/* Metadata */}
+          <div style={{ padding:"14px 16px", borderBottom:`1px solid ${T.border}`, flexShrink:0 }}>
+            <input value={rb.name} onChange={e=>update({name:e.target.value})}
+              placeholder="Runbook name…"
+              style={{ width:"100%", padding:"7px 10px", borderRadius:8, border:`1px solid ${T.border}`,
+                background:T.surface, color:T.text, fontSize:13, fontWeight:700, marginBottom:8, boxSizing:"border-box" }}/>
+            <textarea value={rb.desc} onChange={e=>update({desc:e.target.value})}
+              placeholder="What does this runbook do? When should it run?"
+              rows={2} style={{ width:"100%", padding:"7px 10px", borderRadius:8, border:`1px solid ${T.border}`,
+                background:T.surface, color:T.text, fontSize:11, resize:"none", boxSizing:"border-box" }}/>
+            <div style={{ marginTop:8 }}>
+              <div style={{ fontSize:10, color:T.muted, marginBottom:4 }}>Trigger</div>
+              <select value={rb.trigger.type} onChange={e=>update({trigger:{...rb.trigger, type:e.target.value}})}
+                style={{ width:"100%", padding:"6px 8px", borderRadius:7, border:`1px solid ${T.border}`,
+                  background:T.surface, color:T.text, fontSize:11 }}>
+                {TRIGGER_TYPES.map(t=><option key={t.value} value={t.value}>{t.label}</option>)}
+              </select>
+              {rb.trigger.type==="schedule" && (
+                <input value={rb.trigger.cron||""} onChange={e=>update({trigger:{...rb.trigger,cron:e.target.value}})}
+                  placeholder="cron: 0 6 * * *" style={{ width:"100%", marginTop:4, padding:"6px 8px", borderRadius:7,
+                    border:`1px solid ${T.border}`, background:T.surface, color:T.text, fontSize:11, boxSizing:"border-box" }}/>
+              )}
+              {rb.trigger.type==="condition" && (
+                <input value={rb.trigger.condition||""} onChange={e=>update({trigger:{...rb.trigger,condition:e.target.value}})}
+                  placeholder="e.g. api_download_failed" style={{ width:"100%", marginTop:4, padding:"6px 8px", borderRadius:7,
+                    border:`1px solid ${T.border}`, background:T.surface, color:T.text, fontSize:11, boxSizing:"border-box" }}/>
+              )}
+            </div>
+          </div>
+
+          {/* Steps */}
+          <div style={{ flex:1, overflowY:"auto", padding:"14px 16px" }}>
+            <div style={{ fontSize:10, fontWeight:700, color:T.muted, textTransform:"uppercase", letterSpacing:".06em", marginBottom:10 }}>
+              Steps ({rb.steps.length})
+            </div>
+            {rb.steps.map((step,i)=>(
+              <RunbookStepCard key={step.id} step={step} index={i} total={rb.steps.length}
+                onEdit={(s,idx)=>setEditingStep({step:s,index:idx})}
+                onDelete={deleteStep} onMove={moveStep} T={T}/>
+            ))}
+
+            {/* Add step */}
+            {addingType===null ? (
+              <button onClick={()=>setAddingType("picker")}
+                style={{ width:"100%", marginTop:10, padding:"8px", borderRadius:8, border:`1px dashed ${T.border}`,
+                  background:"none", cursor:"pointer", color:T.muted, fontSize:12 }}>
+                + Add Step
+              </button>
+            ) : (
+              <div style={{ marginTop:10, background:T.card, borderRadius:10, border:`1px solid ${T.border}`, padding:10 }}>
+                <div style={{ fontSize:11, fontWeight:700, color:T.text, marginBottom:8 }}>Choose action type:</div>
+                <div style={{ display:"flex", flexDirection:"column", gap:4 }}>
+                  {Object.entries(ACTION_TYPES).map(([key,act])=>(
+                    <button key={key} onClick={()=>addStep(key)}
+                      style={{ display:"flex", alignItems:"center", gap:8, padding:"7px 10px", borderRadius:8,
+                        border:`1px solid ${act.color}30`, background:`${act.color}10`, cursor:"pointer",
+                        textAlign:"left" }}>
+                      <span style={{ fontSize:14 }}>{act.icon}</span>
+                      <div>
+                        <div style={{ fontSize:11, fontWeight:700, color:act.color }}>{act.label}</div>
+                        <div style={{ fontSize:10, color:T.muted }}>{act.desc}</div>
+                      </div>
+                    </button>
+                  ))}
+                </div>
+                <button onClick={()=>setAddingType(null)}
+                  style={{ marginTop:8, width:"100%", padding:"6px", background:"none", border:"none", cursor:"pointer", color:T.muted, fontSize:11 }}>
+                  Cancel
+                </button>
+              </div>
+            )}
+          </div>
+        </div>
+
+        {/* Right: Visual Flow Preview */}
+        <div style={{ flex:1, overflowY:"auto", padding:20, background:T.surface }}>
+          <div style={{ fontSize:11, fontWeight:700, color:T.muted, textTransform:"uppercase", letterSpacing:".06em", marginBottom:14 }}>
+            Flow Preview
+          </div>
+          <RunbookFlowPreview steps={rb.steps} T={T}/>
+        </div>
+      </div>
+
+      {/* Step Edit Modal */}
+      {editingStep && (
+        <div style={{ position:"fixed",inset:0,background:"rgba(0,0,0,0.5)",zIndex:400,
+          display:"flex",alignItems:"center",justifyContent:"center" }}>
+          <div style={{ background:T.surface,borderRadius:14,padding:24,width:"min(480px,92vw)",
+            border:`1px solid ${T.border}`,maxHeight:"80vh",overflowY:"auto" }}>
+            <div style={{ fontSize:14,fontWeight:700,color:T.text,marginBottom:16 }}>Edit Step</div>
+            {(()=>{
+              const s = {...editingStep.step};
+              const act = ACTION_TYPES[s.type]||{label:s.type,icon:"⚙",color:T.muted};
+              return (
+                <div style={{ display:"flex",flexDirection:"column",gap:10 }}>
+                  <div>
+                    <div style={{ fontSize:10,color:T.muted,marginBottom:3 }}>Label</div>
+                    <input defaultValue={s.label} onChange={e=>{s.label=e.target.value;}}
+                      style={{ width:"100%",padding:"7px 10px",borderRadius:8,border:`1px solid ${T.border}`,
+                        background:T.card,color:T.text,fontSize:12,boxSizing:"border-box" }}/>
+                  </div>
+                  <div>
+                    <div style={{ fontSize:10,color:T.muted,marginBottom:3 }}>On Failure</div>
+                    <select defaultValue={s.on_fail||"continue"} onChange={e=>{s.on_fail=e.target.value;}}
+                      style={{ width:"100%",padding:"7px 8px",borderRadius:8,border:`1px solid ${T.border}`,
+                        background:T.card,color:T.text,fontSize:12 }}>
+                      <option value="continue">Continue to next step</option>
+                      <option value="next">Skip to next</option>
+                      <option value="escalate">Escalate to human</option>
+                      <option value="stop">Stop runbook</option>
+                    </select>
+                  </div>
+                  {(s.type==="send_alert") && <>
+                    <div>
+                      <div style={{ fontSize:10,color:T.muted,marginBottom:3 }}>Channel</div>
+                      <input defaultValue={s.config?.channel||""} onChange={e=>{s.config={...s.config,channel:e.target.value};}}
+                        placeholder="#data-ops" style={{ width:"100%",padding:"7px 10px",borderRadius:8,border:`1px solid ${T.border}`,background:T.card,color:T.text,fontSize:12,boxSizing:"border-box" }}/>
+                    </div>
+                    <div>
+                      <div style={{ fontSize:10,color:T.muted,marginBottom:3 }}>Message</div>
+                      <textarea defaultValue={s.config?.message||""} onChange={e=>{s.config={...s.config,message:e.target.value};}}
+                        rows={2} style={{ width:"100%",padding:"7px 10px",borderRadius:8,border:`1px solid ${T.border}`,background:T.card,color:T.text,fontSize:12,resize:"none",boxSizing:"border-box" }}/>
+                    </div>
+                  </>}
+                  {(s.type==="run_sql") && <>
+                    <div>
+                      <div style={{ fontSize:10,color:T.muted,marginBottom:3 }}>SQL</div>
+                      <textarea defaultValue={s.config?.sql||""} onChange={e=>{s.config={...s.config,sql:e.target.value};}}
+                        rows={3} style={{ width:"100%",padding:"7px 10px",borderRadius:8,border:`1px solid ${T.border}`,background:T.card,color:T.text,fontSize:11,fontFamily:"monospace",resize:"vertical",boxSizing:"border-box" }}/>
+                    </div>
+                    <div>
+                      <div style={{ fontSize:10,color:T.muted,marginBottom:3 }}>Assert (e.g. "= 0", "&gt; 100")</div>
+                      <input defaultValue={s.config?.assert||""} onChange={e=>{s.config={...s.config,assert:e.target.value};}}
+                        style={{ width:"100%",padding:"7px 10px",borderRadius:8,border:`1px solid ${T.border}`,background:T.card,color:T.text,fontSize:12,boxSizing:"border-box" }}/>
+                    </div>
+                  </>}
+                  {(s.type==="wait_condition") && <>
+                    <div>
+                      <div style={{ fontSize:10,color:T.muted,marginBottom:3 }}>Condition</div>
+                      <input defaultValue={s.config?.condition||""} onChange={e=>{s.config={...s.config,condition:e.target.value};}}
+                        style={{ width:"100%",padding:"7px 10px",borderRadius:8,border:`1px solid ${T.border}`,background:T.card,color:T.text,fontSize:12,boxSizing:"border-box" }}/>
+                    </div>
+                    <div>
+                      <div style={{ fontSize:10,color:T.muted,marginBottom:3 }}>Timeout (minutes)</div>
+                      <input type="number" defaultValue={s.config?.timeout_mins||15} onChange={e=>{s.config={...s.config,timeout_mins:+e.target.value};}}
+                        style={{ width:"100%",padding:"7px 10px",borderRadius:8,border:`1px solid ${T.border}`,background:T.card,color:T.text,fontSize:12,boxSizing:"border-box" }}/>
+                    </div>
+                  </>}
+                  {(s.type==="call_api") && <>
+                    <div>
+                      <div style={{ fontSize:10,color:T.muted,marginBottom:3 }}>URL</div>
+                      <input defaultValue={s.config?.url||""} onChange={e=>{s.config={...s.config,url:e.target.value};}}
+                        style={{ width:"100%",padding:"7px 10px",borderRadius:8,border:`1px solid ${T.border}`,background:T.card,color:T.text,fontSize:12,boxSizing:"border-box" }}/>
+                    </div>
+                    <div>
+                      <div style={{ fontSize:10,color:T.muted,marginBottom:3 }}>Method</div>
+                      <select defaultValue={s.config?.method||"POST"} onChange={e=>{s.config={...s.config,method:e.target.value};}}
+                        style={{ width:"100%",padding:"7px 8px",borderRadius:8,border:`1px solid ${T.border}`,background:T.card,color:T.text,fontSize:12 }}>
+                        <option>POST</option><option>GET</option><option>PUT</option>
+                      </select>
+                    </div>
+                  </>}
+                  <div style={{ display:"flex",gap:8,marginTop:4 }}>
+                    <Btn onClick={()=>saveStep(s,editingStep.index)} style={{ flex:1,background:T.accent,color:"white",border:"none" }}>Save Step</Btn>
+                    <Btn onClick={()=>setEditingStep(null)} variant="ghost" style={{ flex:1 }}>Cancel</Btn>
+                  </div>
+                </div>
+              );
+            })()}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ── RunbooksView — list + execution ──────────────────────────────────────────
+function RunbooksView({ onBack, T }) {
+  const [runbooks, setRunbooks] = useLocal("wz_runbooks_v1", AGENTIC_RUNBOOK_TEMPLATES);
+  const [view, setView] = React.useState("list"); // list | builder | execute
+  const [editingRb, setEditingRb] = React.useState(null);
+  const [executingRb, setExecutingRb] = React.useState(null);
+  const [execLog, setExecLog] = React.useState([]);
+  const [execStatus, setExecStatus] = React.useState({}); // {stepId: "running"|"done"|"error"|"skipped"}
+  const [execRunning, setExecRunning] = React.useState(false);
+  const [execDone, setExecDone] = React.useState(false);
+
+  const saveRunbook = (rb) => {
+    setRunbooks(p => {
+      const idx = p.findIndex(r=>r.id===rb.id);
+      return idx>=0 ? p.map((r,i)=>i===idx?rb:r) : [...p, rb];
+    });
+    setView("list");
+    setEditingRb(null);
+  };
+
+  const deleteRunbook = (id) => setRunbooks(p=>p.filter(r=>r.id!==id));
+
+  const executeRunbook = async (rb) => {
+    setExecutingRb(rb);
+    setExecLog([]);
+    setExecStatus({});
+    setExecRunning(true);
+    setExecDone(false);
+    setView("execute");
+
+    const log = (msg, type="info") => setExecLog(p=>[...p, { ts:new Date().toLocaleTimeString(), msg, type }]);
+    log(`🚀 Starting runbook: "${rb.name}"`, "start");
+
+    for (const step of rb.steps) {
+      setExecStatus(p=>({...p,[step.id]:"running"}));
+      const act = ACTION_TYPES[step.type]||{label:step.type,icon:"⚙"};
+      log(`${act.icon} ${step.label}…`);
+      // Simulate step execution
+      await new Promise(r=>setTimeout(r, 800+Math.random()*1200));
+      // Simulate occasional failure for demo
+      const failed = step.type==="escalate";
+      setExecStatus(p=>({...p,[step.id]:failed?"error":"done"}));
+      if (failed) {
+        log(`✗ ${step.label} — escalating to human`, "error");
+        if (step.on_fail==="stop") { log("⛔ Runbook stopped due to failure.", "error"); break; }
+        if (step.on_fail==="escalate") { log("🙋 Awaiting human confirmation…", "warn"); break; }
+      } else {
+        log(`✓ ${step.label} — complete`, "success");
+      }
+    }
+    setExecRunning(false);
+    setExecDone(true);
+    log(`🏁 Runbook "${rb.name}" execution complete.`, "done");
+  };
+
+  if (view==="builder") return (
+    <RunbookBuilder initial={editingRb} onSave={saveRunbook}
+      onCancel={()=>{setView("list");setEditingRb(null);}} T={T}/>
+  );
+
+  if (view==="execute" && executingRb) return (
+    <div style={{ display:"flex",flexDirection:"column",height:"100%",overflow:"hidden" }}>
+      <div style={{ padding:"16px 20px",borderBottom:`1px solid ${T.border}`,display:"flex",alignItems:"center",gap:12,flexShrink:0 }}>
+        <button onClick={()=>setView("list")} style={{ background:"none",border:"none",cursor:"pointer",color:T.muted,fontSize:13 }}>← Back</button>
+        <div style={{ flex:1,fontWeight:700,fontSize:15,color:T.text }}>{executingRb.name}</div>
+        {execRunning && <div style={{ display:"flex",alignItems:"center",gap:6,fontSize:12,color:T.accent }}><Spinner size={11} color={T.accent}/> Running…</div>}
+        {execDone && !execRunning && <div style={{ fontSize:12,color:T.green,fontWeight:700 }}>✓ Execution complete</div>}
+      </div>
+      <div style={{ display:"flex",flex:1,overflow:"hidden" }}>
+        {/* Step progress */}
+        <div style={{ width:340,borderRight:`1px solid ${T.border}`,overflowY:"auto",padding:16 }}>
+          <div style={{ fontSize:10,fontWeight:700,color:T.muted,textTransform:"uppercase",letterSpacing:".06em",marginBottom:12 }}>Steps</div>
+          {executingRb.steps.map((step,i)=>(
+            <RunbookStepCard key={step.id} step={step} index={i} total={executingRb.steps.length}
+              onEdit={()=>{}} onDelete={()=>{}} onMove={()=>{}} T={T} isRunning={true}
+              runStatus={execStatus[step.id]}/>
+          ))}
+        </div>
+        {/* Live log */}
+        <div style={{ flex:1,overflowY:"auto",padding:16,fontFamily:"monospace",fontSize:12 }}>
+          <div style={{ fontSize:10,fontWeight:700,color:T.muted,textTransform:"uppercase",letterSpacing:".06em",marginBottom:12 }}>Live Log</div>
+          {execLog.map((entry,i)=>(
+            <div key={i} style={{ display:"flex",gap:10,marginBottom:6,
+              color:entry.type==="error"?T.red:entry.type==="success"?T.green:entry.type==="done"?T.accent:T.text }}>
+              <span style={{ color:T.muted,flexShrink:0 }}>{entry.ts}</span>
+              <span>{entry.msg}</span>
+            </div>
+          ))}
+          {execRunning && <div style={{ color:T.muted,animation:"pulse 1.5s infinite" }}>…</div>}
+        </div>
+        {/* Flow preview */}
+        <div style={{ width:240,borderLeft:`1px solid ${T.border}`,overflowY:"auto",padding:16 }}>
+          <div style={{ fontSize:10,fontWeight:700,color:T.muted,textTransform:"uppercase",letterSpacing:".06em",marginBottom:12 }}>Flow</div>
+          <RunbookFlowPreview steps={executingRb.steps} T={T} runStatuses={execStatus}/>
+        </div>
+      </div>
+    </div>
+  );
+
+  // List view
+  return (
+    <div style={{ display:"flex",flexDirection:"column",height:"100%",overflow:"hidden" }}>
+      <div style={{ padding:"16px 20px",borderBottom:`1px solid ${T.border}`,display:"flex",alignItems:"center",gap:12,flexShrink:0 }}>
+        <button onClick={onBack} style={{ background:"none",border:"none",cursor:"pointer",color:T.muted,fontSize:13 }}>← Workflows</button>
+        <div style={{ flex:1 }}>
+          <div style={{ fontWeight:800,fontSize:18,color:T.text }}>Agentic Runbooks</div>
+          <div style={{ fontSize:11,color:T.muted,marginTop:1 }}>Autonomous playbooks that act as a senior QA engineer</div>
+        </div>
+        <Btn onClick={()=>{setEditingRb(null);setView("builder");}}
+          style={{ background:T.accent,color:"white",border:"none" }} size="sm">
+          <Plus size={11}/> New Runbook
+        </Btn>
+      </div>
+
+      <div style={{ flex:1,overflowY:"auto",padding:"20px" }}>
+        {/* Info banner */}
+        <div style={{ background:`${T.accent}0C`,border:`1px solid ${T.accent}30`,borderRadius:12,
+          padding:"12px 16px",marginBottom:20,display:"flex",gap:12,alignItems:"flex-start" }}>
+          <div style={{ fontSize:20,flexShrink:0 }}>🤖</div>
+          <div>
+            <div style={{ fontSize:12,fontWeight:700,color:T.text,marginBottom:3 }}>What are Agentic Runbooks?</div>
+            <div style={{ fontSize:11,color:T.muted,lineHeight:1.6 }}>
+              Runbooks are autonomous step-by-step playbooks an AI agent executes on your behalf — pausing jobs, retrying downloads,
+              validating data, alerting stakeholders, and resuming pipelines. Like having a senior QA engineer on call 24/7.
+            </div>
+          </div>
+        </div>
+
+        <div style={{ display:"grid",gap:14 }}>
+          {runbooks.map(rb=>{
+            const triggerColors = { manual:"#6366f1", schedule:"#06b6d4", condition:"#f97316", webhook:"#22c55e" };
+            const tc = triggerColors[rb.trigger?.type]||T.muted;
+            return (
+              <div key={rb.id} style={{ background:T.card,border:`1px solid ${T.border}`,borderRadius:14,
+                padding:"16px 18px",display:"flex",gap:16,alignItems:"flex-start" }}>
+                <div style={{ width:44,height:44,borderRadius:12,background:`${rb.color||T.accent}18`,
+                  border:`1px solid ${rb.color||T.accent}40`,display:"flex",alignItems:"center",
+                  justifyContent:"center",fontSize:20,flexShrink:0 }}>{rb.icon||"⚙"}</div>
+                <div style={{ flex:1,minWidth:0 }}>
+                  <div style={{ display:"flex",alignItems:"center",gap:8,marginBottom:3 }}>
+                    <div style={{ fontSize:14,fontWeight:700,color:T.text }}>{rb.name}</div>
+                    <div style={{ fontSize:9,fontWeight:700,color:tc,background:`${tc}15`,
+                      padding:"2px 7px",borderRadius:20,textTransform:"uppercase",letterSpacing:".05em" }}>
+                      {rb.trigger?.type||"manual"}
+                    </div>
+                  </div>
+                  <div style={{ fontSize:11,color:T.muted,marginBottom:8,lineHeight:1.5 }}>{rb.desc}</div>
+                  <div style={{ display:"flex",gap:6,flexWrap:"wrap" }}>
+                    {(rb.tags||[]).map(tag=>(
+                      <span key={tag} style={{ fontSize:9,color:T.muted,background:T.surface,
+                        padding:"2px 7px",borderRadius:20,border:`1px solid ${T.border}` }}>{tag}</span>
+                    ))}
+                    <span style={{ fontSize:9,color:T.muted }}>{rb.steps?.length||0} steps</span>
+                  </div>
+                </div>
+                <div style={{ display:"flex",flexDirection:"column",gap:6,flexShrink:0 }}>
+                  <Btn size="sm" onClick={()=>executeRunbook(rb)}
+                    style={{ background:rb.color||T.accent,color:"white",border:"none",minWidth:80 }}>
+                    ▶ Run
+                  </Btn>
+                  <Btn size="sm" variant="ghost" onClick={()=>{setEditingRb(rb);setView("builder");}}>✏ Edit</Btn>
+                  <Btn size="sm" variant="muted" onClick={()=>deleteRunbook(rb.id)}>✕ Delete</Btn>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+
+        {/* ── Built-in Workflows merged in ─────────────────────────────── */}
+        <div style={{ marginTop:28,marginBottom:8 }}>
+          <div style={{ fontSize:11,fontWeight:700,color:T.muted,textTransform:"uppercase",
+            letterSpacing:".06em",marginBottom:14 }}>Built-in Workflows</div>
+          <div style={{ display:"grid",gridTemplateColumns:"1fr 1fr",gap:12 }}>
+            {BUILTIN_WFS.map(wf=>{
+              const accentColor = wf.id==="ads-sop" ? "#f97316" : T.accent;
+              return (
+                <div key={wf.id} style={{ background:T.card,border:`1px solid ${T.border}`,
+                  borderLeft:`3px solid ${accentColor}`,borderRadius:12,padding:"14px 16px" }}>
+                  <div style={{ fontSize:13,fontWeight:700,color:T.text,marginBottom:4 }}>{wf.name}</div>
+                  <div style={{ fontSize:11,color:T.muted,marginBottom:8,lineHeight:1.4 }}>{wf.desc}</div>
+                  <div style={{ display:"flex",gap:6,flexWrap:"wrap",marginBottom:10 }}>
+                    <Badge label={wf.schedule||"manual"} color={accentColor}/>
+                    {(wf.agents||[]).map(a=>(
+                      <span key={a} style={{ fontSize:9,padding:"2px 7px",borderRadius:20,
+                        background:`${accentColor}12`,color:accentColor,fontWeight:600 }}>{a}</span>
+                    ))}
+                  </div>
+                  <div style={{ display:"flex",gap:6 }}>
+                    <Btn size="sm" onClick={()=>onBack && onBack("sop_"+wf.id)}
+                      style={{ background:accentColor,color:"white",border:"none" }}>
+                      ▶ Run
+                    </Btn>
+                    <Btn size="sm" variant="ghost" onClick={()=>onBack && onBack("sop_"+wf.id)}>
+                      Open
+                    </Btn>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
 
 // ── WorkflowsTab — main entry point ──────────────────────────────────────────
 function WorkflowsTab({ navigateTo }) {
@@ -10735,6 +11655,10 @@ Respond with ONLY this JSON array (no other text, no backticks):
       ]},
   ];
 
+  if (view==="runbooks") return (
+    <RunbooksView onBack={(sig)=>{ if(sig==="sop_ads-sop") setView("sop"); else setView("list"); }} T={T}/>
+  );
+
   if (view==="builder") return (
     <div style={{ display:"flex", flexDirection:"column", height:"100%", overflow:"hidden" }}>
       {saveError && (
@@ -10819,15 +11743,14 @@ Respond with ONLY this JSON array (no other text, no backticks):
         <div>
           <div style={{ fontSize:24, fontWeight:800, color:T.text, letterSpacing:"-0.03em" }}>Workflows</div>
           <div style={{ fontSize:12, color:T.muted, marginTop:2 }}>
-            Custom workflows · {workflows.length} configured
+            Agentic runbooks &amp; built-in playbooks
           </div>
         </div>
         <div style={{ display:"flex", gap:8 }}>
-          {runHistory.length>0 && (
-            <Btn onClick={()=>setView("runs")} variant="ghost" size="sm">
-              <Clock size={11}/> All Runs ({runHistory.length})
-            </Btn>
-          )}
+          <Btn onClick={()=>setView("runbooks")} size="sm"
+            style={{ background:`linear-gradient(135deg,${T.accent},${T.purple})`, color:"white", border:"none" }}>
+            🤖 Runbooks
+          </Btn>
           <Btn onClick={()=>setView("library")} variant="ghost" size="sm">
             📚 Library
           </Btn>
@@ -10838,16 +11761,6 @@ Respond with ONLY this JSON array (no other text, no backticks):
             style={{ border:`1px solid ${T.accent}30`, color:T.accent }}>
             🤖 AI Assistant
           </Btn>
-          <div style={{display:"flex",gap:6}}>
-            <Btn onClick={()=>{ setEditing(null); setView("builder"); }}
-              variant="ghost" size="sm">
-              <Plus size={12}/> Blank
-            </Btn>
-            <Btn onClick={()=>setShowNlWf(true)}
-              style={{ background:`linear-gradient(135deg,${T.accent},${T.purple})`, color:"white", border:"none" }}>
-              ✦ Build with AI
-            </Btn>
-          </div>
         </div>
       </div>
 
@@ -10873,30 +11786,7 @@ Respond with ONLY this JSON array (no other text, no backticks):
         const names = [...new Set(bestCluster.map(r => r.workflow_name || r.name || "Unknown"))];
         const earliest = bestCluster.map(r=>new Date(r.started_at)).sort((a,b)=>a-b)[0];
         const minsAgo = Math.round((now - earliest.getTime()) / 60000);
-        return (
-          <div style={{ marginBottom:16, padding:"10px 14px", borderRadius:10,
-            background:"#FFF7ED", border:"1px solid #FED7AA",
-            display:"flex", gap:10, alignItems:"flex-start" }}>
-            <span style={{fontSize:16, flexShrink:0}}>🔗</span>
-            <div style={{flex:1}}>
-              <div style={{fontSize:12, fontWeight:700, color:"#C2410C", marginBottom:2}}>
-                {bestCluster.length} workflows failed within 15 minutes — possible shared root cause
-              </div>
-              <div style={{fontSize:11, color:"#9A3412"}}>
-                {names.slice(0,4).join(", ")}{names.length>4?` +${names.length-4} more`:""} · {minsAgo < 60 ? `${minsAgo}m ago` : `${Math.round(minsAgo/60)}h ago`}
-              </div>
-            </div>
-            <button onClick={()=>{
-                sessionStorage.setItem("wz_agent_nudge", `Why did ${names.slice(0,3).join(", ")} all fail around the same time?`);
-                window.dispatchEvent(new CustomEvent("wz_open_agent"));
-              }}
-              style={{fontSize:10, padding:"3px 10px", borderRadius:6,
-                background:"#FED7AA", border:"1px solid #FDBA74",
-                color:"#92400E", cursor:"pointer", fontFamily:"inherit", fontWeight:600, flexShrink:0}}>
-              Investigate →
-            </button>
-          </div>
-        );
+        return <RootCauseChainBanner cluster={bestCluster} names={names} minsAgo={minsAgo} T={T}/>;
       })()}
 
       {/* ── Duplicate Check Detector ──────────────────────────────────────── */}
@@ -11286,177 +12176,21 @@ Respond with ONLY this JSON array (no other text, no backticks):
         )}
       </div>
 
-      {/* ── CUSTOM WORKFLOWS ────────────────────────────────────────────────── */}
-      <div>
-        <div style={{ fontSize:11, fontWeight:700, color:T.muted, textTransform:"uppercase",
-          letterSpacing:"0.06em", marginBottom:10 }}>Custom Workflows ({workflows.length})</div>
-        {workflows.length===0 ? (
-          <div style={{ textAlign:"center", padding:"32px 0",
-            border:`1px dashed ${T.border}`, borderRadius:10 }}>
-            <GitBranch size={32} color={T.border} style={{ margin:"0 auto 10px", display:"block" }}/>
-            <div style={{ fontSize:13, fontWeight:600, color:T.text, marginBottom:4 }}>No custom workflows yet</div>
-            <div style={{ fontSize:11, color:T.muted, marginBottom:14 }}>
-              Add SQL checks that run on your schedule
-            </div>
-            <Btn onClick={()=>setView("builder")} size="sm"
-              style={{ background:`linear-gradient(135deg,${T.accent},${T.purple})`, color:"white", border:"none" }}>
-              <Plus size={11}/> New Workflow
-            </Btn>
-          </div>
-        ) : (
-          <div style={{ display:"flex", flexDirection:"column", gap:10 }}>
-            {workflows.map(wf=>{
-            const wfRuns   = runHistory.filter(r=>r.workflow_id===wf.id);
-            const lastRun  = wfRuns[0];
-            const isRunning = !!running[wf.id];
-            const isWfSel  = selectedWfIds.has(wf.id);
-            const passRate  = wfRuns.slice(0,10).length > 0
-              ? Math.round(wfRuns.slice(0,10).filter(r=>r.status==="clean").length/Math.min(wfRuns.length,10)*100)
-              : null;
-            const sparkData = wfRuns.slice(0,20).reverse();
-            // Failure pattern: detect day-of-week correlation (zero tokens)
-            const failurePattern = (() => {
-              if (wfRuns.length < 6) return null;
-              const dayFails = {};
-              wfRuns.slice(0,20).forEach(r => {
-                const day = new Date(r.started_at).toLocaleDateString("en",{weekday:"short"});
-                if (!dayFails[day]) dayFails[day] = {fail:0,total:0};
-                dayFails[day].total++;
-                if (r.status!=="clean") dayFails[day].fail++;
-              });
-              const worst = Object.entries(dayFails)
-                .filter(([,v])=>v.total>=2)
-                .map(([day,v])=>({day,rate:v.fail/v.total}))
-                .sort((a,b)=>b.rate-a.rate)[0];
-              if (worst && worst.rate >= 0.6)
-                return `⚠ Often fails on ${worst.day}s`;
-              return null;
-            })();
-
-            return (
-              <div key={wf.id} style={{ background:T.card,
-                border:`1px solid ${isWfSel ? T.accent : T.border}`,
-                borderRadius:12, padding:"16px 20px",
-                borderLeft:`3px solid ${isWfSel ? T.accent : wf.enabled!==false?T.accent:T.border}`,
-                background: isWfSel ? `${T.accent}05` : T.card,
-                boxShadow:"0 1px 4px rgba(0,0,0,0.06)" }}>
-                <div style={{ display:"flex", alignItems:"flex-start", gap:14 }}>
-                  <input type="checkbox" checked={isWfSel}
-                    onChange={()=>toggleWfSelect(wf.id)}
-                    style={{ marginTop:4, cursor:"pointer", accentColor:T.accent, flexShrink:0 }}
-                    onClick={e=>e.stopPropagation()}/>
-
-                  {/* Left: info */}
-                  <div style={{ flex:1, minWidth:0 }}>
-                    <div style={{ display:"flex", alignItems:"center", gap:8, marginBottom:4 }}>
-                      <div style={{ fontSize:14, fontWeight:700, color:T.text }}>{wf.name}</div>
-                      <Badge label={wf.schedule||"manual"} color={T.accent}/>
-                      {wf.enabled===false && <Badge label="paused" color={T.muted}/>}
-                      {isRunning && <div style={{ display:"flex", alignItems:"center", gap:4, fontSize:10, color:T.accent }}><Spinner size={9}/> Running…</div>}
-                    </div>
-                    {wf.desc && <div style={{ fontSize:11, color:T.muted, marginBottom:8 }}>{wf.desc}</div>}
-
-                    {/* Check pills with health scores */}
-                    <div style={{ display:"flex", gap:5, flexWrap:"wrap", marginBottom:8 }}>
-                      {(wf.checks||[]).slice(0,6).map(chk=>{
-                        // Compute per-check pass rate from runHistory
-                        const chkRuns = wfRuns.slice(0,20).filter(r=>(r.check_results||[]).some(c=>c.name===chk.name));
-                        const chkPass = chkRuns.filter(r=>(r.check_results||[]).find(c=>c.name===chk.name)?.passed).length;
-                        const chkRate = chkRuns.length>0?Math.round(chkPass/chkRuns.length*100):null;
-                        const hColor = chkRate===null?T.dim:chkRate>=80?T.green:chkRate>=50?T.orange:T.red;
-                        return (
-                          <span key={chk.id||chk.name}
-                            title={chkRate!==null?`${chkRate}% pass rate (last ${chkRuns.length} runs)`:"No run data"}
-                            style={{ fontSize:10, padding:"2px 8px",
-                              borderRadius:4, background:`${T.accent}08`,
-                              border:`1px solid ${T.accent}20`, color:T.accent,
-                              display:"flex", alignItems:"center", gap:4 }}>
-                            {chkRate!==null&&(
-                              <div style={{width:6,height:6,borderRadius:"50%",
-                                background:hColor,flexShrink:0}}/>
-                            )}
-                            {chk.name}
-                          </span>
-                        );
-                      })}
-                      {(wf.checks||[]).length > 6 && (
-                        <span style={{ fontSize:10, color:T.dim }}>+{wf.checks.length-6} more</span>
-                      )}
-                      {(!wf.checks || wf.checks.length===0) && (
-                        <span style={{ fontSize:10, color:T.dim, fontStyle:"italic" }}>No checks configured</span>
-                      )}
-                    </div>
-
-                    {/* Stats row */}
-                    <div style={{ display:"flex", gap:16, alignItems:"center" }}>
-                      {lastRun && (
-                        <span style={{ fontSize:10, color:T.muted }}>
-                          Last run: {lastRun.started_at?.slice(0,16)?.replace("T"," ")}
-                          {" · "}
-                          <span style={{ color:lastRun.status==="clean"?T.green:T.red, fontWeight:600 }}>
-                            {lastRun.status==="clean"?"✓ clean":`${lastRun.failed} failed`}
-                          </span>
-                        </span>
-                      )}
-                      {passRate !== null && (
-                        <span style={{ fontSize:10, color:T.muted }}>
-                          Pass rate: <span style={{ fontWeight:700, color:passRate>=80?T.green:passRate>=50?T.orange:T.red }}>{passRate}%</span>
-                        </span>
-                      )}
-                      {passRate !== null && (
-                        <span style={{ fontSize:9, padding:"1px 6px", borderRadius:4, fontWeight:700,
-                          background: passRate>=90?`${T.green}15`:passRate>=70?`#F59E0B18`:`${T.red}12`,
-                          color: passRate>=90?T.green:passRate>=70?"#F59E0B":T.red }}>
-                          {passRate>=90?"🟢 Healthy":passRate>=70?"🟡 Degrading":"🔴 Critical"}
-                        </span>
-                      )}
-                      {wf.run_count > 0 && <span style={{ fontSize:10, color:T.dim }}>{wf.run_count} runs</span>}
-                      {failurePattern && (
-                        <span style={{ fontSize:9, color:"#F59E0B", fontWeight:600 }}>
-                          {failurePattern}
-                        </span>
-                      )}
-                    </div>
-
-                    {/* Mini sparkline of last 20 runs */}
-                    {sparkData.length > 1 && (
-                      <div style={{ display:"flex", gap:2, marginTop:8, alignItems:"flex-end" }}>
-                        {sparkData.map((r,i)=>(
-                          <div key={r.run_id||i} title={`${r.started_at?.slice(0,16)} — ${r.status}`}
-                            style={{ width:8, height:r.status==="clean"?12:20, borderRadius:2,
-                              background:r.status==="clean"?T.green:T.red, opacity:0.7,
-                              flexShrink:0 }}/>
-                        ))}
-                      </div>
-                    )}
-                  </div>
-
-                  {/* Right: actions */}
-                  <div style={{ display:"flex", flexDirection:"column", gap:6, flexShrink:0 }}>
-                    <Btn onClick={()=>runWf(wf)} disabled={isRunning} size="sm"
-                      style={{ background:`linear-gradient(135deg,${T.accent},${T.purple})`,
-                        color:"white", border:"none" }}>
-                      {isRunning?<Spinner size={10} color="white"/>:<Play size={10}/>} Run
-                    </Btn>
-                    <Btn onClick={()=>{ setDetail(wf); setLiveRun(null); setView("detail"); }}
-                      size="sm" variant="ghost"><Eye size={10}/> History</Btn>
-                    <Btn onClick={()=>{ setEditing(wf); setView("builder"); }}
-                      size="sm" variant="ghost">✏ Edit</Btn>
-                    <Btn onClick={()=>toggleEnabled(wf)} size="sm" variant="muted">
-                      {wf.enabled===false?"▶ Enable":"⏸ Pause"}
-                    </Btn>
-                    <Btn onClick={()=>deleteWf(wf.id)} size="sm" variant="muted">
-                      <Trash2 size={10}/>
-                    </Btn>
-                  </div>
-                </div>
-              </div>
-            );
-          })}
+      {/* ── CUSTOM WORKFLOWS → moved to Pipeline Runs ───────────────────── */}
+      <div style={{ marginBottom:20, padding:"14px 18px", borderRadius:12,
+        border:`1px dashed ${T.border}`, background:T.surface,
+        display:"flex", alignItems:"center", gap:14 }}>
+        <div style={{ fontSize:24 }}>⚙</div>
+        <div style={{ flex:1 }}>
+          <div style={{ fontSize:13, fontWeight:700, color:T.text, marginBottom:2 }}>Custom Workflows</div>
+          <div style={{ fontSize:11, color:T.muted }}>SQL-check workflows with schedules have moved to Pipeline Runs → Workflows tab.</div>
         </div>
-      )}
+        {navigateTo && (
+          <Btn size="sm" variant="ghost" onClick={()=>navigateTo("pipeline-runs")}
+            style={{ flexShrink:0 }}>Go to Pipeline Runs →</Btn>
+        )}
       </div>
-    </div>
+      </div>
 
     {/* Undo delete toasts */}
     {undoQueue.length > 0 && (
@@ -16621,8 +17355,202 @@ function uid() {
 }
 
 // ─── FolderTree ───────────────────────────────────────────────────────────────
-function FolderTree({ folders, selected, onSelect, onAdd, onRename, onDelete, dataflows }) {
-  const T = useT();
+// FolderTree removed — replaced by inline folder dropdown in DataflowsTab
+
+// ─── DataflowCard ─────────────────────────────────────────────────────────────
+function DataflowCard({ df, onStar, onOpen, onDelete, onDuplicate, onMove, folders, T, isSelected, onToggleSelect }) {
+  const [menuOpen, setMenuOpen] = React.useState(false);
+  const menuRef = React.useRef(null);
+
+  React.useEffect(() => {
+    if (!menuOpen) return;
+    const handler = (e) => { if (menuRef.current && !menuRef.current.contains(e.target)) setMenuOpen(false); };
+    document.addEventListener("mousedown", handler);
+    return () => document.removeEventListener("mousedown", handler);
+  }, [menuOpen]);
+
+  const priorityAccent = { Critical: T.red, High: T.orange, Medium: T.cyan, Low: T.green }[df.priority] || "transparent";
+  const hasRunResult = !!df.last_run_at;
+  const isPass = df.last_run_status === "pass" || df.last_run_status === "clean";
+  const isFail = df.last_run_status && !isPass;
+
+  const checkStatusColor = (c) => {
+    if (!c.last_status) return T.border2;
+    if (c.last_status === "pass") return T.green;
+    if (c.last_status === "fail") return T.red;
+    return T.yellow;
+  };
+
+  return (
+    <div style={{
+      background: T.card,
+      border: `1px solid ${T.border}`,
+      borderLeft: `3px solid ${priorityAccent}`,
+      borderRadius: "0 10px 10px 0",
+      padding: "14px 16px",
+      display: "flex",
+      flexDirection: "column",
+      gap: 10,
+      cursor: "pointer",
+      transition: "border-color 0.12s, background 0.12s",
+      position: "relative",
+    }}
+      onMouseEnter={e => { e.currentTarget.style.borderColor = T.border2; e.currentTarget.style.background = `${T.accent}06`; }}
+      onMouseLeave={e => { e.currentTarget.style.borderColor = T.border; e.currentTarget.style.background = T.card; }}
+      onClick={() => onOpen(df, "view")}
+    >
+      {/* ── Row 1: checkbox + name + star + menu ── */}
+      <div style={{ display: "flex", alignItems: "flex-start", gap: 8 }}>
+        <input type="checkbox" checked={isSelected || false}
+          onChange={() => onToggleSelect(df.id)}
+          onClick={e => e.stopPropagation()}
+          style={{ marginTop: 3, cursor: "pointer", accentColor: T.accent, flexShrink: 0 }} />
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <div style={{ fontSize: 13, fontWeight: 700, color: T.text,
+            overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+            {df.name}
+          </div>
+          {df.desc && (
+            <div style={{ fontSize: 11, color: T.muted, marginTop: 2,
+              overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+              {df.desc}
+            </div>
+          )}
+        </div>
+        {/* star */}
+        <button onClick={e => { e.stopPropagation(); onStar(df.id); }}
+          style={{ background: "none", border: "none", cursor: "pointer",
+            fontSize: 15, color: df.starred ? "#F59E0B" : T.border2,
+            padding: 0, flexShrink: 0, lineHeight: 1 }}>
+          {df.starred ? "★" : "☆"}
+        </button>
+        {/* ⋯ menu */}
+        <div ref={menuRef} style={{ position: "relative", flexShrink: 0 }} onClick={e => e.stopPropagation()}>
+          <button onClick={() => setMenuOpen(p => !p)}
+            style={{ background: "none", border: `1px solid ${menuOpen ? T.border2 : T.border}`,
+              borderRadius: 5, padding: "2px 7px", cursor: "pointer",
+              color: T.muted, fontSize: 12, lineHeight: 1, transition: "all 0.1s" }}
+            onMouseEnter={e => { e.currentTarget.style.borderColor = T.accent; e.currentTarget.style.color = T.accent; }}
+            onMouseLeave={e => { if (!menuOpen) { e.currentTarget.style.borderColor = T.border; e.currentTarget.style.color = T.muted; } }}>
+            •••
+          </button>
+          {menuOpen && (
+            <div style={{ position: "absolute", right: 0, top: "100%", marginTop: 4,
+              background: T.card, border: `1px solid ${T.border}`,
+              borderRadius: 8, padding: 4, zIndex: 99,
+              boxShadow: "0 8px 24px rgba(0,0,0,0.18)", minWidth: 170 }}>
+              {[
+                { label: "▶  Run now",        action: () => { onOpen(df, "run"); setMenuOpen(false); } },
+                { label: "✏️  Edit",            action: () => { onOpen(df, "edit"); setMenuOpen(false); } },
+                { label: "📋  Duplicate",       action: () => { onDuplicate(df); setMenuOpen(false); } },
+                { label: "📁  Move to folder…", action: () => { onMove(df); setMenuOpen(false); } },
+                { label: "🗑️  Delete",          action: () => { onDelete(df.id); setMenuOpen(false); }, danger: true },
+              ].map(item => (
+                <button key={item.label} onClick={item.action}
+                  style={{ display: "block", width: "100%", padding: "7px 11px",
+                    background: "none", border: "none", cursor: "pointer", textAlign: "left",
+                    fontSize: 11, borderRadius: 5, fontFamily: "inherit",
+                    color: item.danger ? T.red : T.text2, transition: "background 0.1s" }}
+                  onMouseEnter={e => e.currentTarget.style.background = `${item.danger ? T.red : T.accent}10`}
+                  onMouseLeave={e => e.currentTarget.style.background = "none"}>
+                  {item.label}
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
+      </div>
+
+      {/* ── Row 2: tag badges ── */}
+      {(df.tags || []).length > 0 && (
+        <div style={{ display: "flex", gap: 5, flexWrap: "wrap" }}>
+          {(df.tags || []).map(tag => (
+            <span key={tag} style={{ fontSize: 10, padding: "2px 8px", borderRadius: 99,
+              background: `${T.accent}12`, color: T.accent, border: `1px solid ${T.accent}25`,
+              fontWeight: 600 }}>
+              {tag}
+            </span>
+          ))}
+        </div>
+      )}
+
+      {/* ── Row 3: check chips ── */}
+      {(df.checks || []).length > 0 && (
+        <div style={{ display: "flex", gap: 5, flexWrap: "wrap" }}>
+          {(df.checks || []).map((c, i) => {
+            const s = c.last_status;
+            const bg = s === "pass" ? `${T.green}15` : s === "fail" ? `${T.red}15` : `${T.border}40`;
+            const col = s === "pass" ? T.green : s === "fail" ? T.red : T.muted;
+            const dot = s === "pass" ? "✓" : s === "fail" ? "✗" : "·";
+            return (
+              <span key={i} style={{ display: "flex", alignItems: "center", gap: 4,
+                fontSize: 10, padding: "3px 9px", borderRadius: 99,
+                background: bg, color: col,
+                border: `1px solid ${col}30` }}>
+                <span style={{ fontSize: 10, fontWeight: 700 }}>{dot}</span>
+                {c.name}
+              </span>
+            );
+          })}
+        </div>
+      )}
+
+      {/* ── Row 4: meta — owner · schedule · last run ── */}
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between",
+        paddingTop: 8, borderTop: `1px solid ${T.border}`, flexWrap: "wrap", gap: 6 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 5 }}>
+          <div style={{ width: 20, height: 20, borderRadius: "50%",
+            background: `${T.accent}20`, display: "flex", alignItems: "center",
+            justifyContent: "center", fontSize: 9, fontWeight: 700, color: T.accent }}>
+            {(df.owner || "?")[0].toUpperCase()}
+          </div>
+          <span style={{ fontSize: 11, color: T.muted }}>{df.owner || "—"}</span>
+          {df.schedule && (
+            <>
+              <span style={{ color: T.border2, fontSize: 10 }}>·</span>
+              <span style={{ fontSize: 10, color: T.dim }}>{df.schedule}</span>
+            </>
+          )}
+        </div>
+        <div style={{ display: "flex", alignItems: "center", gap: 5 }}>
+          {hasRunResult ? (
+            <>
+              <span style={{ width: 6, height: 6, borderRadius: "50%", flexShrink: 0,
+                background: isPass ? T.green : isFail ? T.red : T.border }} />
+              <span style={{ fontSize: 10, color: isPass ? T.green : isFail ? T.red : T.muted }}>
+                {isPass ? "All passed" : df.last_run_status}
+              </span>
+              <span style={{ fontSize: 10, color: T.dim }}>{timeAgo(df.last_run_at)}</span>
+            </>
+          ) : (
+            <span style={{ fontSize: 10, color: T.dim }}>Not run yet</span>
+          )}
+        </div>
+      </div>
+
+      {/* ── Row 5: action buttons ── */}
+      <div style={{ display: "flex", gap: 6 }} onClick={e => e.stopPropagation()}>
+        <Btn size="sm" variant="ghost" onClick={() => onOpen(df, "edit")}
+          style={{ flex: 1, border: `1px solid ${T.border}`, color: T.muted, fontSize: 11 }}>
+          Edit
+        </Btn>
+        <Btn size="sm" variant="ghost" onClick={() => onDuplicate(df)}
+          style={{ flex: 1, border: `1px solid ${T.border}`, color: T.muted, fontSize: 11 }}>
+          Duplicate
+        </Btn>
+        <Btn size="sm" onClick={() => onOpen(df, "run")}
+          style={{ flex: 1, background: T.green, border: "none", color: "white", fontSize: 11 }}>
+          <Play size={10} /> Run
+        </Btn>
+      </div>
+    </div>
+  );
+}
+
+
+// ─── DataflowRow (kept for any legacy usage) ──────────────────────────────────
+function DataflowRow({ df, onStar, onOpen, onDelete, onDuplicate, onMove, folders, T: TProp, isSelected, onToggleSelect }) {
+  const T = TProp || useT();
   const [expanded, setExpanded] = React.useState(() => {
     const m = {};
     folders.forEach(f => { m[f.id] = f.expanded ?? false; });
@@ -18528,247 +19456,208 @@ function DataflowsTab({ onNavigate }) {
     setDataflows(seeds);
   }, []);
 
-  // ── Folder label for breadcrumb ───────────────────────────────────────────
-  const selectedFolderLabel = selectedFolder === null ? "All Dataflows"
-    : selectedFolder === "__starred__" ? "⭐ Starred"
-    : folders.find(f=>f.id===selectedFolder)?.name || "Folder";
+  // ── Derived: folder label for breadcrumb ─────────────────────────────────
+  const selectedFolderLabel = selectedFolder === null ? "All"
+    : selectedFolder === "__starred__" ? "Starred"
+    : folders.find(f => f.id === selectedFolder)?.name || "Folder";
 
   // ── Render ────────────────────────────────────────────────────────────────
   return (
-    <div style={{ display:"flex", height:"100vh", overflow:"hidden" }}>
+    <div style={{ display: "flex", flexDirection: "column", height: "100vh", overflow: "hidden" }}>
 
-      {/* Left Sidebar — Folders */}
-      <div style={{ width:240, flexShrink:0,
-        background: T.sidebarBg || "#1C1917",
-        borderRight:`1px solid rgba(255,255,255,0.06)`,
-        display:"flex", flexDirection:"column",
-        overflowY:"auto" }}>
-        <FolderTree
-          folders={folders}
-          selected={selectedFolder}
-          onSelect={setSelectedFolder}
-          onAdd={addFolder}
-          onRename={renameFolder}
-          onDelete={deleteFolder}
-          dataflows={dataflows}
-        />
-      </div>
+      {/* ── Top bar ── */}
+      <div style={{ padding: "12px 20px", borderBottom: `1px solid ${T.border}`,
+        background: T.surface, display: "flex", alignItems: "center",
+        gap: 10, flexShrink: 0, flexWrap: "wrap" }}>
 
-      {/* Main content */}
-      <div style={{ flex:1, display:"flex", overflow:"hidden" }}>
-      <div style={{ flex:1, display:"flex", flexDirection:"column", overflow:"hidden" }}>
+        {/* Title + folder breadcrumb */}
+        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+          <span style={{ fontSize: 16, fontWeight: 700, color: T.text }}>Dataflows</span>
+          <span style={{ color: T.border2, fontSize: 13 }}>/</span>
+          <select
+            value={selectedFolder ?? ""}
+            onChange={e => setSelectedFolder(e.target.value === "" ? null : e.target.value)}
+            style={{ padding: "4px 10px", borderRadius: 7, fontSize: 12,
+              border: `1px solid ${T.border}`, background: T.surface, color: T.text,
+              outline: "none", fontFamily: "inherit", cursor: "pointer" }}>
+            <option value="">All folders</option>
+            <option value="__starred__">⭐ Starred</option>
+            {folders.filter(f => f.id !== "f_root").map(f => (
+              <option key={f.id} value={f.id}>{f.name}</option>
+            ))}
+          </select>
+          <span style={{ fontSize: 11, color: T.dim }}>
+            {visibleDataflows.length} dataflow{visibleDataflows.length !== 1 ? "s" : ""}
+          </span>
+        </div>
 
-        {/* Top bar */}
-        <div style={{ padding:"14px 20px", borderBottom:`1px solid ${T.border}`,
-          background:T.surface, display:"flex", alignItems:"center",
-          gap:12, flexShrink:0, flexWrap:"wrap" }}>
+        {/* Search */}
+        <div style={{ flex: 1, maxWidth: 340, position: "relative" }}>
+          <Search size={13} style={{ position: "absolute", left: 10, top: "50%",
+            transform: "translateY(-50%)", color: T.muted, pointerEvents: "none" }} />
+          <input
+            value={search}
+            onChange={e => setSearch(e.target.value)}
+            placeholder="Search dataflows…"
+            style={{ width: "100%", paddingLeft: 32, paddingRight: 12,
+              paddingTop: 7, paddingBottom: 7, borderRadius: 8,
+              border: `1px solid ${T.border}`, background: T.bg, color: T.text,
+              fontSize: 12, fontFamily: "inherit", outline: "none", boxSizing: "border-box" }}
+            onFocus={e => e.target.style.borderColor = T.accent}
+            onBlur={e => e.target.style.borderColor = T.border}
+          />
+        </div>
 
-          {/* Title / breadcrumb */}
-          <div>
-            <div style={{ fontSize:18, fontWeight:700, color:T.text }}>Dataflows</div>
-            <div style={{ fontSize:10, color:T.muted, marginTop:1 }}>
-              {selectedFolderLabel} · {visibleDataflows.length} dataflow{visibleDataflows.length!==1?"s":""}
-            </div>
-          </div>
+        {/* Sort */}
+        <select value={`${sortBy}:${sortDir}`}
+          onChange={e => { const [col, dir] = e.target.value.split(":"); setSortBy(col); setSortDir(dir); }}
+          style={{ padding: "6px 10px", borderRadius: 7, fontSize: 11,
+            border: `1px solid ${T.border}`, background: T.surface, color: T.text,
+            outline: "none", fontFamily: "inherit", cursor: "pointer" }}>
+          <option value="updated_at:desc">Updated ↓</option>
+          <option value="updated_at:asc">Updated ↑</option>
+          <option value="name:asc">Name A–Z</option>
+          <option value="name:desc">Name Z–A</option>
+          <option value="priority:desc">Priority ↓</option>
+          <option value="checks:desc">Most checks</option>
+        </select>
 
-          {/* Search */}
-          <div style={{ flex:1, maxWidth:380, position:"relative", marginLeft:"auto" }}>
-            <Search size={13} style={{ position:"absolute", left:10, top:"50%",
-              transform:"translateY(-50%)", color:T.muted, pointerEvents:"none" }}/>
-            <input
-              value={search}
-              onChange={e => setSearch(e.target.value)}
-              placeholder="Search dataflows…"
-              style={{ width:"100%", paddingLeft:32, paddingRight:12, paddingTop:7, paddingBottom:7,
-                borderRadius:8, border:`1px solid ${T.border}`,
-                background:T.bg, color:T.text, fontSize:12,
-                fontFamily:"inherit", outline:"none", boxSizing:"border-box" }}
-              onFocus={e=>e.target.style.borderColor=T.accent}
-              onBlur={e=>e.target.style.borderColor=T.border}
-            />
-          </div>
+        {/* Refresh */}
+        <button title="Refresh"
+          style={{ background: "none", border: `1px solid ${T.border}`, borderRadius: 7,
+            padding: "6px 10px", cursor: "pointer", color: T.muted, display: "flex",
+            alignItems: "center", transition: "all 0.1s" }}
+          onMouseEnter={e => { e.currentTarget.style.borderColor = T.accent; e.currentTarget.style.color = T.accent; }}
+          onMouseLeave={e => { e.currentTarget.style.borderColor = T.border; e.currentTarget.style.color = T.muted; }}>
+          <RefreshCw size={13} />
+        </button>
 
-          {/* Tag filter */}
-          {allTags.length > 0 && (
-            <select value={filterTag} onChange={e=>setFilterTag(e.target.value)}
-              style={{ padding:"6px 10px", borderRadius:7, fontSize:11,
-                border:`1px solid ${T.border}`, background:T.surface, color:T.text,
-                outline:"none", fontFamily:"inherit" }}>
-              <option value="all">All tags</option>
-              {allTags.map(t => <option key={t} value={t}>{t}</option>)}
-            </select>
-          )}
-
-          {/* Refresh */}
-          <button title="Refresh"
-            style={{ background:"none", border:`1px solid ${T.border}`, borderRadius:7,
-              padding:"6px 10px", cursor:"pointer", color:T.muted, display:"flex",
-              alignItems:"center", transition:"all 0.1s" }}
-            onMouseEnter={e=>{e.currentTarget.style.borderColor=T.accent;e.currentTarget.style.color=T.accent;}}
-            onMouseLeave={e=>{e.currentTarget.style.borderColor=T.border;e.currentTarget.style.color=T.muted;}}>
-            <RefreshCw size={13}/>
-          </button>
-
-          {/* Create */}
-          <Btn onClick={()=>setShowAiDf(p=>!p)} variant="ghost"
-            style={{ border:`1px solid ${T.accent}30`, color:T.accent, flexShrink:0 }}>
+        <div style={{ marginLeft: "auto", display: "flex", gap: 8, flexWrap: "wrap" }}>
+          <Btn onClick={() => setShowAiDf(p => !p)} variant="ghost"
+            style={{ border: `1px solid ${T.accent}30`, color: T.accent, flexShrink: 0 }}>
             ✨ AI Builder
           </Btn>
-          <Btn onClick={()=>setSuggestOpen(p=>!p)} variant="ghost"
-            style={{ border:`1px solid ${T.purple}30`, color:T.purple, flexShrink:0 }}>
+          <Btn onClick={() => setSuggestOpen(p => !p)} variant="ghost"
+            style={{ border: `1px solid ${T.purple}30`, color: T.purple, flexShrink: 0 }}>
             🔍 Suggest Checks
           </Btn>
           <Btn onClick={() => setFormModal({})}
-            style={{ background:`linear-gradient(135deg,${T.accent},${T.purple})`,
-              color:"white", border:"none", flexShrink:0 }}>
-            <Plus size={13}/> Create Dataflow
+            style={{ background: `linear-gradient(135deg,${T.accent},${T.purple})`,
+              color: "white", border: "none", flexShrink: 0 }}>
+            <Plus size={13} /> Create Dataflow
           </Btn>
         </div>
+      </div>
 
-        {/* Bulk action bar */}
-        {selectedIds.size > 0 && (
-          <div style={{ padding:"8px 20px", background: T.sidebarBg || "#1C1917",
-            display:"flex", alignItems:"center", gap:10, flexShrink:0, flexWrap:"wrap" }}>
-            <span style={{ fontSize:12, fontWeight:700, color:"white" }}>
-              {selectedIds.size} selected
-            </span>
-            <div style={{ display:"flex", gap:6, flexWrap:"wrap" }}>
-              <Btn size="sm" onClick={bulkRun} disabled={bulkRunning}
-                style={{ background:"#10B981", color:"white", border:"none" }}>
-                {bulkRunning?<Spinner size={10} color="white"/>:<Play size={10}/>}
-                Run all
-              </Btn>
-              <Btn size="sm" onClick={bulkStar}
-                style={{ background:"rgba(255,255,255,0.12)", color:"#FCD34D", border:"1px solid rgba(255,255,255,0.15)" }}>
-                ★ Star all
-              </Btn>
-              {folders.filter(f=>f.id!=="f_root").length > 0 && (
-                <select
-                  onChange={e=>{ if(e.target.value) { bulkMoveTo(e.target.value); e.target.value=""; }}}
-                  style={{ padding:"4px 8px", borderRadius:6, fontSize:11,
-                    background:"rgba(255,255,255,0.12)", color:"white",
-                    border:"1px solid rgba(255,255,255,0.15)", cursor:"pointer" }}>
-                  <option value="">📁 Move to…</option>
-                  {folders.map(f=><option key={f.id} value={f.id}>{f.name}</option>)}
-                </select>
-              )}
-              <Btn size="sm" onClick={bulkDelete}
-                style={{ background:"rgba(239,68,68,0.2)", color:"#FCA5A5", border:"1px solid rgba(239,68,68,0.3)" }}>
-                <Trash2 size={10}/> Delete
-              </Btn>
-            </div>
-            <button onClick={()=>setSelectedIds(new Set())}
-              style={{ marginLeft:"auto", background:"none", border:"none",
-                cursor:"pointer", color:"rgba(255,255,255,0.5)", fontSize:11 }}>
-              ✕ Deselect all
+      {/* ── Tag filter pills ── */}
+      {allTags.length > 0 && (
+        <div style={{ padding: "8px 20px", borderBottom: `1px solid ${T.border}`,
+          background: T.surface, display: "flex", gap: 5, flexWrap: "wrap",
+          flexShrink: 0, alignItems: "center" }}>
+          <span style={{ fontSize: 10, color: T.dim, textTransform: "uppercase",
+            letterSpacing: "0.06em", fontWeight: 700, marginRight: 4 }}>Tags:</span>
+          {["all", ...allTags].map(tag => (
+            <button key={tag} onClick={() => setFilterTag(tag)}
+              style={{ padding: "3px 11px", borderRadius: 99, fontSize: 10,
+                cursor: "pointer", fontWeight: filterTag === tag ? 700 : 400,
+                border: `1px solid ${filterTag === tag ? T.accent : T.border}`,
+                background: filterTag === tag ? `${T.accent}12` : "transparent",
+                color: filterTag === tag ? T.accent : T.muted,
+                transition: "all 0.1s", fontFamily: "inherit", whiteSpace: "nowrap" }}>
+              {tag === "all" ? "All" : tag}
             </button>
-          </div>
-        )}
+          ))}
+        </div>
+      )}
 
-        {/* Tag pills row */}
-        {allTags.length > 0 && (
-          <div style={{ padding:"8px 20px", borderBottom:`1px solid ${T.border}`,
-            background:T.surface, display:"flex", gap:5, flexWrap:"wrap",
-            flexShrink:0, overflowX:"auto" }}>
-            {["all", ...allTags].map(tag => (
-              <button key={tag} onClick={() => setFilterTag(tag)}
-                style={{ padding:"2px 10px", borderRadius:99, fontSize:10,
-                  cursor:"pointer", fontWeight:filterTag===tag?700:400,
-                  border:`1px solid ${filterTag===tag?T.accent:T.border}`,
-                  background:filterTag===tag?`${T.accent}12`:"transparent",
-                  color:filterTag===tag?T.accent:T.muted, transition:"all 0.1s",
-                  fontFamily:"inherit", whiteSpace:"nowrap" }}>
-                {tag === "all" ? "All" : tag}
-              </button>
+      {/* ── Bulk action bar (appears when items selected) ── */}
+      {selectedIds.size > 0 && (
+        <div style={{ padding: "8px 20px", background: T.sidebarBg || "#1C1917",
+          display: "flex", alignItems: "center", gap: 10, flexShrink: 0, flexWrap: "wrap" }}>
+          <span style={{ fontSize: 12, fontWeight: 700, color: "white" }}>
+            {selectedIds.size} selected
+          </span>
+          <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+            <Btn size="sm" onClick={bulkRun} disabled={bulkRunning}
+              style={{ background: "#10B981", color: "white", border: "none" }}>
+              {bulkRunning ? <Spinner size={10} color="white" /> : <Play size={10} />}
+              Run all
+            </Btn>
+            <Btn size="sm" onClick={bulkStar}
+              style={{ background: "rgba(255,255,255,0.12)", color: "#FCD34D", border: "1px solid rgba(255,255,255,0.15)" }}>
+              ★ Star all
+            </Btn>
+            {folders.filter(f => f.id !== "f_root").length > 0 && (
+              <select
+                onChange={e => { if (e.target.value) { bulkMoveTo(e.target.value); e.target.value = ""; } }}
+                style={{ padding: "4px 8px", borderRadius: 6, fontSize: 11,
+                  background: "rgba(255,255,255,0.12)", color: "white",
+                  border: "1px solid rgba(255,255,255,0.15)", cursor: "pointer" }}>
+                <option value="">📁 Move to…</option>
+                {folders.map(f => <option key={f.id} value={f.id}>{f.name}</option>)}
+              </select>
+            )}
+            <Btn size="sm" onClick={bulkDelete}
+              style={{ background: "rgba(239,68,68,0.2)", color: "#FCA5A5", border: "1px solid rgba(239,68,68,0.3)" }}>
+              <Trash2 size={10} /> Delete
+            </Btn>
+          </div>
+          <button onClick={() => setSelectedIds(new Set())}
+            style={{ marginLeft: "auto", background: "none", border: "none",
+              cursor: "pointer", color: "rgba(255,255,255,0.5)", fontSize: 11 }}>
+            ✕ Deselect all
+          </button>
+        </div>
+      )}
+
+      {/* ── Select-all strip (when not in bulk mode) ── */}
+      {selectedIds.size === 0 && visibleDataflows.length > 0 && (
+        <div style={{ padding: "6px 20px", borderBottom: `1px solid ${T.border}`,
+          background: T.surface, display: "flex", alignItems: "center", gap: 8, flexShrink: 0 }}>
+          <input type="checkbox" checked={false} onChange={toggleSelectAll}
+            style={{ cursor: "pointer", accentColor: T.accent }} />
+          <span style={{ fontSize: 11, color: T.dim }}>Select all</span>
+        </div>
+      )}
+
+      {/* ── Card grid ── */}
+      <div style={{ flex: 1, overflowY: "auto", padding: "20px" }}>
+        {visibleDataflows.length === 0 ? (
+          <div style={{ textAlign: "center", padding: "64px 24px" }}>
+            <div style={{ fontSize: 40, marginBottom: 12 }}>📭</div>
+            <div style={{ fontSize: 15, fontWeight: 700, color: T.text, marginBottom: 6 }}>
+              {search ? `No dataflows matching "${search}"` : "No dataflows yet"}
+            </div>
+            <div style={{ fontSize: 12, color: T.muted, marginBottom: 20 }}>
+              {search ? "Try a different search term" : "Create your first dataflow to get started"}
+            </div>
+            {!search && (
+              <Btn onClick={() => setFormModal({})}>
+                <Plus size={12} /> Create Dataflow
+              </Btn>
+            )}
+          </div>
+        ) : (
+          <div style={{ display: "grid",
+            gridTemplateColumns: "repeat(auto-fill, minmax(300px, 1fr))",
+            gap: 14 }}>
+            {visibleDataflows.map(df => (
+              <DataflowCard
+                key={df.id}
+                df={df}
+                onStar={starDataflow}
+                onOpen={openDataflow}
+                onDelete={deleteDataflow}
+                onDuplicate={duplicateDataflow}
+                onMove={(df) => setMoveModal(df)}
+                folders={folders}
+                T={T}
+                isSelected={selectedIds.has(df.id)}
+                onToggleSelect={toggleSelect}
+              />
             ))}
           </div>
         )}
-
-        {/* Table */}
-        <div style={{ flex:1, overflowY:"auto" }}>
-          {visibleDataflows.length === 0 ? (
-            <div style={{ textAlign:"center", padding:"64px 24px" }}>
-              <div style={{ fontSize:40, marginBottom:12 }}>📭</div>
-              <div style={{ fontSize:15, fontWeight:700, color:T.text, marginBottom:6 }}>
-                {search ? `No dataflows matching "${search}"` : "No dataflows yet"}
-              </div>
-              <div style={{ fontSize:12, color:T.muted, marginBottom:20 }}>
-                {search ? "Try a different search term" : "Create your first dataflow to get started"}
-              </div>
-              {!search && (
-                <Btn onClick={() => setFormModal({})}>
-                  <Plus size={12}/> Create Dataflow
-                </Btn>
-              )}
-            </div>
-          ) : (
-            <table style={{ width:"100%", borderCollapse:"collapse" }}>
-              <thead style={{ position:"sticky", top:0, zIndex:10 }}>
-                <tr style={{ background:T.surface, borderBottom:`2px solid ${T.border}` }}>
-                  <th style={{ width:32, padding:"10px 6px 10px 14px" }}>
-                    <input type="checkbox"
-                      checked={visibleDataflows.length>0 && selectedIds.size===visibleDataflows.length}
-                      onChange={toggleSelectAll}
-                      style={{ cursor:"pointer", accentColor:T.accent }}/>
-                  </th>
-                  <th style={{ width:36, padding:"10px 6px" }}>
-                    <span style={{ fontSize:9, color:T.muted, fontWeight:700,
-                      textTransform:"uppercase", letterSpacing:"0.05em" }}>Actions</span>
-                  </th>
-                  {[
-                    { col:"name",       label:"Dataflows" },
-                    { col:"checks",     label:"Components" },
-                    { col:"tags",       label:"Tags",     noSort:true },
-                    { col:"owner",      label:"Owner" },
-                    { col:"priority",   label:"Priority" },
-                    { col:"updated_at", label:"Updated date" },
-                  ].map(h => (
-                    <th key={h.col}
-                      onClick={() => !h.noSort && handleSort(h.col)}
-                      style={{ padding:"10px 14px", textAlign:"left", cursor:h.noSort?"default":"pointer",
-                        userSelect:"none", transition:"background 0.1s" }}
-                      onMouseEnter={e=>{if(!h.noSort)e.currentTarget.style.background=`${T.accent}08`;}}
-                      onMouseLeave={e=>e.currentTarget.style.background="transparent"}>
-                      <div style={{ display:"flex", alignItems:"center", gap:4 }}>
-                        <span style={{ fontSize:10, fontWeight:700, color:T.muted,
-                          textTransform:"uppercase", letterSpacing:"0.05em" }}>
-                          {h.label}
-                        </span>
-                        {!h.noSort && <SortIcon col={h.col}/>}
-                      </div>
-                    </th>
-                  ))}
-                </tr>
-              </thead>
-              <tbody>
-                {visibleDataflows.map(df => (
-                  <DataflowRow
-                    key={df.id}
-                    df={df}
-                    onStar={starDataflow}
-                    onOpen={openDataflow}
-                    onDelete={deleteDataflow}
-                    onDuplicate={duplicateDataflow}
-                    onMove={(df) => setMoveModal(df)}
-                    folders={folders}
-                    T={T}
-                    isSelected={selectedIds.has(df.id)}
-                    onToggleSelect={toggleSelect}
-                  />
-                ))}
-              </tbody>
-            </table>
-          )}
-        </div>
-
-        {/* Pagination bar */}
-        <div style={{ padding:"10px 20px", borderTop:`1px solid ${T.border}`,
-          background:T.surface, display:"flex", alignItems:"center",
-          justifyContent:"flex-end", flexShrink:0 }}>
-          <span style={{ fontSize:11, color:T.muted }}>
-            1 of 1 pages (Displaying {visibleDataflows.length} dataflow{visibleDataflows.length!==1?"s":""})
-          </span>
-        </div>
       </div>
 
       {/* ── Modals ── */}
@@ -18795,24 +19684,22 @@ function DataflowsTab({ onNavigate }) {
       {moveModal && (
         <MoveFolderModal
           df={moveModal}
-          folders={folders.filter(f=>f.id!=="f_root"||true)}
+          folders={folders.filter(f => f.id !== "f_root" || true)}
           onMove={moveDataflow}
           onClose={() => setMoveModal(null)}
           T={T}
         />
       )}
 
-      {/* ── Self-Writing Checks Panel ── */}
       {suggestOpen && (
         <SuggestChecksPanel
           dataflows={dataflows}
           dbSchema={dbSchema}
           onSave={saveDataflow}
-          onClose={()=>setSuggestOpen(false)}
+          onClose={() => setSuggestOpen(false)}
           T={T}
         />
       )}
-    </div>
     </div>
   );
 }
@@ -22745,11 +23632,54 @@ function useAuditLog() {
   return { log, refresh };
 }
 
+// ── AI Usage Tracker ─────────────────────────────────────────────────────────
+const AI_USAGE_KEY = "wz_ai_usage_v1";
+const AI_MODEL_PRICING = {
+  // input $/1M tokens, output $/1M tokens
+  "claude-opus-4-6":     { in: 15.00, out: 75.00 },
+  "claude-sonnet-4-6":   { in:  3.00, out: 15.00 },
+  "claude-haiku-4-5":    { in:  0.25, out:  1.25 },
+  "unknown":             { in:  3.00, out: 15.00 },
+};
+function estimateTokens(text="") { return Math.ceil((text||"").length / 4); }
+function trackAiCall(model="unknown", inputTokens=0, outputTokens=0, feature="") {
+  try {
+    const pricing = AI_MODEL_PRICING[model] || AI_MODEL_PRICING["unknown"];
+    const cost = (inputTokens / 1_000_000) * pricing.in + (outputTokens / 1_000_000) * pricing.out;
+    const day = new Date().toISOString().slice(0,10);
+    const log = JSON.parse(localStorage.getItem(AI_USAGE_KEY)||"[]");
+    log.unshift({ ts: new Date().toISOString(), day, model, inputTokens, outputTokens, cost: parseFloat(cost.toFixed(6)), feature });
+    localStorage.setItem(AI_USAGE_KEY, JSON.stringify(log.slice(0, 2000)));
+  } catch(e) {}
+}
+function useAiUsage() {
+  const [log, setLog] = React.useState(()=>{ try { return JSON.parse(localStorage.getItem(AI_USAGE_KEY)||"[]"); } catch { return []; } });
+  const refresh = () => { try { setLog(JSON.parse(localStorage.getItem(AI_USAGE_KEY)||"[]")); } catch {} };
+  const totals = React.useMemo(()=>({
+    calls: log.length,
+    inputTokens: log.reduce((s,r)=>s+r.inputTokens,0),
+    outputTokens: log.reduce((s,r)=>s+r.outputTokens,0),
+    cost: log.reduce((s,r)=>s+r.cost,0),
+  }), [log]);
+  const byDay = React.useMemo(()=>{
+    const map = {};
+    log.forEach(r=>{ if(!map[r.day]) map[r.day]={day:r.day,calls:0,inputTokens:0,outputTokens:0,cost:0}; map[r.day].calls++; map[r.day].inputTokens+=r.inputTokens; map[r.day].outputTokens+=r.outputTokens; map[r.day].cost+=r.cost; });
+    return Object.values(map).sort((a,b)=>b.day.localeCompare(a.day)).slice(0,14);
+  }, [log]);
+  const byModel = React.useMemo(()=>{
+    const map = {};
+    log.forEach(r=>{ if(!map[r.model]) map[r.model]={model:r.model,calls:0,cost:0}; map[r.model].calls++; map[r.model].cost+=r.cost; });
+    return Object.values(map).sort((a,b)=>b.cost-a.cost);
+  }, [log]);
+  return { log, refresh, totals, byDay, byModel };
+}
+
 // ── SystemHealthTab — global cross-tab health dashboard ──────────────────────
 function SystemHealthTab({ onNavigate }) {
   const T = useT();
   const { items: notifItems, acknowledge, snooze } = React.useContext(NotifCtx);
   const { log: auditEntries, refresh: refreshAudit } = useAuditLog();
+  const { totals: aiTotals, byDay: aiByDay, byModel: aiByModel, refresh: refreshUsage } = useAiUsage();
   const [wfHistory, setWfHistory] = React.useState([]);
   const [apHistory, setApHistory] = React.useState([]);
   const [triageIssues, setTriageIssues] = React.useState([]);
@@ -22762,6 +23692,7 @@ function SystemHealthTab({ onNavigate }) {
     // Load triage pending issues
     try { const i = JSON.parse(sessionStorage.getItem("wz_pendingIssues")||"[]"); setTriageIssues(i); } catch(e){}
     refreshAudit();
+    refreshUsage();
   }, []);
 
   // Compute signals
@@ -22962,17 +23893,414 @@ function SystemHealthTab({ onNavigate }) {
           </div>
         )}
       </div>
+
+      {/* ── AI Usage Tracker ── */}
+      <div style={{marginTop:20,background:T.card,borderRadius:12,border:`1px solid ${T.border}`,overflow:"hidden"}}>
+        <div style={{padding:"12px 16px",borderBottom:`1px solid ${T.border}`,display:"flex",alignItems:"center",gap:8}}>
+          <span style={{fontSize:13}}>🤖</span>
+          <div style={{fontSize:12,fontWeight:700,color:T.text}}>AI API Usage Tracker</div>
+          <span style={{fontSize:9,color:T.dim,marginLeft:"auto"}}>{aiTotals.calls} total calls</span>
+          {aiTotals.calls>0&&(
+            <button onClick={()=>{localStorage.removeItem(AI_USAGE_KEY);refreshUsage();}}
+              style={{fontSize:9,padding:"2px 8px",borderRadius:5,cursor:"pointer",
+                border:`1px solid ${T.border}`,background:"none",color:T.muted}}>
+              Clear
+            </button>
+          )}
+        </div>
+
+        {aiTotals.calls===0?(
+          <div style={{padding:"24px 16px",textAlign:"center",color:T.muted,fontSize:11}}>
+            No AI calls tracked yet. Usage will appear here as you use AI features.
+          </div>
+        ):(
+          <>
+            {/* KPI row */}
+            <div style={{display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:1,borderBottom:`1px solid ${T.border}`}}>
+              {[
+                {label:"Total Calls",     value: aiTotals.calls.toLocaleString(),                    icon:"📞"},
+                {label:"Input Tokens",    value: (aiTotals.inputTokens/1000).toFixed(1)+"k",         icon:"📥"},
+                {label:"Output Tokens",   value: (aiTotals.outputTokens/1000).toFixed(1)+"k",        icon:"📤"},
+                {label:"Est. Total Cost", value: "$"+aiTotals.cost.toFixed(4),                       icon:"💰"},
+              ].map(k=>(
+                <div key={k.label} style={{padding:"12px 16px",borderRight:`1px solid ${T.border}`}}>
+                  <div style={{fontSize:9,color:T.muted,marginBottom:4}}>{k.icon} {k.label}</div>
+                  <div style={{fontSize:18,fontWeight:800,color:T.text,letterSpacing:"-0.02em"}}>{k.value}</div>
+                </div>
+              ))}
+            </div>
+
+            <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:0}}>
+              {/* Daily breakdown */}
+              <div style={{borderRight:`1px solid ${T.border}`}}>
+                <div style={{padding:"10px 16px",borderBottom:`1px solid ${T.border}`,fontSize:11,fontWeight:600,color:T.muted}}>
+                  Daily Breakdown (last 14 days)
+                </div>
+                <div style={{maxHeight:220,overflowY:"auto"}}>
+                  {aiByDay.map(d=>(
+                    <div key={d.day} style={{padding:"7px 16px",borderBottom:`1px solid ${T.border}10`,
+                      display:"flex",alignItems:"center",gap:8,fontSize:11}}>
+                      <div style={{color:T.muted,fontFamily:"monospace",width:80,flexShrink:0}}>{d.day}</div>
+                      <div style={{flex:1,color:T.text}}>{d.calls} calls</div>
+                      <div style={{color:T.muted,fontSize:10}}>{((d.inputTokens+d.outputTokens)/1000).toFixed(1)}k tok</div>
+                      <div style={{color:T.accent,fontWeight:600,width:60,textAlign:"right"}}>${d.cost.toFixed(4)}</div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+              {/* Per-model breakdown */}
+              <div>
+                <div style={{padding:"10px 16px",borderBottom:`1px solid ${T.border}`,fontSize:11,fontWeight:600,color:T.muted}}>
+                  By Model
+                </div>
+                <div style={{maxHeight:220,overflowY:"auto"}}>
+                  {aiByModel.map(m=>(
+                    <div key={m.model} style={{padding:"7px 16px",borderBottom:`1px solid ${T.border}10`,
+                      display:"flex",alignItems:"center",gap:8,fontSize:11}}>
+                      <div style={{flex:1,color:T.text,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{m.model}</div>
+                      <div style={{color:T.muted,fontSize:10}}>{m.calls} calls</div>
+                      <div style={{color:T.accent,fontWeight:600,width:60,textAlign:"right"}}>${m.cost.toFixed(4)}</div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            </div>
+          </>
+        )}
+      </div>
     </div>
   );
 }
 
-// ── PipelineRunsTab — merges Dataflows + Scheduler ───────────────────────────
+// ── CustomWorkflowsPanel — custom workflows moved into Pipeline Runs ──────────
+function CustomWorkflowsPanel({ onNavigate }) {
+  const T = useT();
+  const dbSchema = useSchema();
+  const [workflows,  setWfs]     = React.useState([]);
+  const [runHistory, setHistory] = useLocal("wz_wf_runhistory_v1", []);
+  const [running,    setRunning] = React.useState({});
+  const [view,       setView]    = React.useState("list"); // list | builder | detail | runs
+  const [editingWf,  setEditing] = React.useState(null);
+  const [detailWf,   setDetail]  = React.useState(null);
+  const [liveRun,    setLiveRun] = React.useState(null);
+  const [saveError,  setSaveError] = React.useState(null);
+  const [showNlWf,   setShowNlWf]   = React.useState(false);
+  const [nlWfText,   setNlWfText]   = React.useState("");
+  const [nlWfLoading,setNlWfLoading]= React.useState(false);
+  const [nlWfResult, setNlWfResult] = React.useState(null);
+  const [undoQueue,  setUndoQueue]  = React.useState([]);
+  const [selectedWfIds, setSelectedWfIds] = React.useState(new Set());
+  const [bulkRunning,   setBulkRunning]   = React.useState(false);
+  const { add: addNotif } = useNotif();
+
+  React.useEffect(() => { return () => undoQueue.forEach(u=>clearTimeout(u.timer)); }, [undoQueue]);
+
+  const load = async (seed=false) => {
+    try {
+      if (seed) await fetch(`${API}/api/custom-workflows/load-from-db`).catch(()=>{});
+      const [wfsRes, histRes] = await Promise.all([
+        fetch(`${API}/api/custom-workflows`).then(r=>r.json()),
+        fetch(`${API}/api/custom-workflows/history/v2?limit=100`).then(r=>r.json()).catch(()=>[]),
+      ]);
+      if (Array.isArray(wfsRes)) setWfs(wfsRes);
+      if (Array.isArray(histRes)) setHistory(histRes);
+    } catch(e) {}
+  };
+
+  React.useEffect(() => {
+    load(true);
+    const id = setInterval(()=>load(false), 20000);
+    return () => clearInterval(id);
+  }, []);
+
+  const saveWf = async (wf) => {
+    setSaveError(null);
+    try {
+      const res  = await fetch(`${API}/api/custom-workflows/save/v2`, {
+        method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify(wf)
+      });
+      const data = await res.json();
+      if (data.error) { setSaveError(String(data.error)); return; }
+      if (data.workflow) {
+        setWfs(p=>{ const idx=p.findIndex(w=>w.id===data.workflow.id); return idx>=0?p.map((w,i)=>i===idx?data.workflow:w):[...p,data.workflow]; });
+        setView("list"); setEditing(null);
+      }
+    } catch(e) { setSaveError(e.message); }
+  };
+
+  const deleteWf = async (id) => {
+    const wf = workflows.find(w=>w.id===id);
+    if (!wf) return;
+    setWfs(p=>p.filter(w=>w.id!==id));
+    const undoTimer = setTimeout(async()=>{
+      await fetch(`${API}/api/custom-workflows/${id}`,{method:"DELETE"}).catch(()=>{});
+      setUndoQueue(q=>q.filter(u=>u.id!==id));
+    },6000);
+    setUndoQueue(q=>[...q,{id,wf,timer:undoTimer}]);
+  };
+
+  const undoDelete = (id) => {
+    const entry = undoQueue.find(u=>u.id===id);
+    if (!entry) return;
+    clearTimeout(entry.timer);
+    setUndoQueue(q=>q.filter(u=>u.id!==id));
+    setWfs(p=>[entry.wf,...p]);
+  };
+
+  const runWf = async (wf) => {
+    setDetail(wf); setLiveRun(null); setView("detail");
+    setRunning(p=>({...p,[wf.id]:true}));
+    addNotif(`Running: ${wf.name}…`,"run");
+    try {
+      const res  = await fetch(`${API}/api/custom-workflows/${wf.id}/run/v2`,{method:"POST"});
+      const data = await res.json();
+      if (data.error) { addNotif(`${wf.name}: ${data.error}`,"error",{persistent:true}); }
+      else {
+        setHistory(p=>[data,...p].slice(0,200)); setLiveRun(data);
+        const failed = data.failed||0;
+        if (failed>0) addNotif(`${wf.name}: ${failed} check${failed!==1?"s":""} failed`,"error",{persistent:true});
+        else addNotif(`${wf.name}: all checks passed ✓`,"success");
+      }
+    } catch(e) { addNotif(`${wf.name}: run error — ${e.message}`,"error",{persistent:true}); }
+    setRunning(p=>({...p,[wf.id]:false}));
+  };
+
+  const toggleEnabled = async (wf) => {
+    const updated = {...wf, enabled:!wf.enabled};
+    await fetch(`${API}/api/custom-workflows/save/v2`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(updated)}).catch(()=>{});
+    setWfs(p=>p.map(w=>w.id===wf.id?updated:w));
+  };
+
+  const toggleWfSelect = (id) => setSelectedWfIds(p=>{const n=new Set(p);n.has(id)?n.delete(id):n.add(id);return n;});
+
+  const bulkRun = async () => {
+    const toRun = workflows.filter(w=>selectedWfIds.has(w.id));
+    if (!toRun.length) return;
+    setBulkRunning(true);
+    addNotif(`Running ${toRun.length} workflows…`,"run");
+    await Promise.all(toRun.map(wf=>fetch(`${API}/api/custom-workflows/${wf.id}/run/v2`,{method:"POST"}).catch(()=>{})));
+    setBulkRunning(false);
+    setSelectedWfIds(new Set());
+    addNotif(`Bulk run complete`,"success");
+    load(false);
+  };
+
+  if (view==="builder") return (
+    <div style={{display:"flex",flexDirection:"column",height:"100%",overflow:"hidden"}}>
+      {saveError && <div style={{padding:"10px 20px",background:`${T.red}08`,borderBottom:`1px solid ${T.red}30`,fontSize:12,color:T.red,flexShrink:0}}>
+        ✗ Save failed: {saveError} — <button onClick={()=>setSaveError(null)} style={{background:"none",border:"none",cursor:"pointer",color:T.red,textDecoration:"underline"}}>dismiss</button>
+      </div>}
+      <WorkflowBuilder
+        initial={editingWf} dbSchema={dbSchema} onSave={saveWf}
+        onCancel={()=>{setView("list");setEditing(null);setSaveError(null);}}
+      />
+    </div>
+  );
+
+  if (view==="detail" && detailWf) return (
+    <WorkflowDetail
+      wf={detailWf} liveRun={liveRun} runHistory={runHistory}
+      onBack={()=>{setView("list");setLiveRun(null);}}
+      onEdit={()=>{setEditing(detailWf);setView("builder");}}
+      onRun={runWf}
+    />
+  );
+
+  if (view==="runs") return (
+    <div style={{display:"flex",flexDirection:"column",height:"100%",overflow:"hidden"}}>
+      <div style={{padding:"14px 20px",borderBottom:`1px solid ${T.border}`,display:"flex",alignItems:"center",gap:10,flexShrink:0}}>
+        <Btn onClick={()=>setView("list")} variant="ghost" size="sm">← Workflows</Btn>
+        <div style={{fontWeight:700,fontSize:15,color:T.text}}>All Runs</div>
+      </div>
+      <WorkflowRunsView runHistory={runHistory} workflows={workflows}
+        onBack={()=>setView("list")}
+        onOpenWf={(wf)=>{setDetail(wf);setView("detail");}}/>
+    </div>
+  );
+
+  // List view
+  return (
+    <div style={{display:"flex",flexDirection:"column",height:"100%",overflow:"hidden"}}>
+      <div style={{flex:1,overflowY:"auto",padding:"20px 24px"}}>
+        {/* Header */}
+        <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:20}}>
+          <div>
+            <div style={{fontSize:20,fontWeight:800,color:T.text}}>Custom Workflows</div>
+            <div style={{fontSize:12,color:T.muted,marginTop:2}}>{workflows.length} configured · SQL checks on a schedule</div>
+          </div>
+          <div style={{display:"flex",gap:8}}>
+            {selectedWfIds.size>0 && (
+              <Btn onClick={bulkRun} disabled={bulkRunning} size="sm"
+                style={{background:T.accent,color:"white",border:"none"}}>
+                {bulkRunning?<Spinner size={10} color="white"/>:<Play size={10}/>} Run {selectedWfIds.size} selected
+              </Btn>
+            )}
+            {runHistory.length>0 && <Btn onClick={()=>setView("runs")} variant="ghost" size="sm"><Clock size={11}/> All Runs ({runHistory.length})</Btn>}
+            <Btn onClick={()=>{setEditing(null);setView("builder");}} variant="ghost" size="sm"><Plus size={12}/> Blank</Btn>
+            <Btn onClick={()=>setShowNlWf(true)}
+              style={{background:`linear-gradient(135deg,${T.accent},${T.purple})`,color:"white",border:"none"}}>
+              ✦ Build with AI
+            </Btn>
+          </div>
+        </div>
+
+        {workflows.length===0 ? (
+          <div style={{textAlign:"center",padding:"48px 0",border:`1px dashed ${T.border}`,borderRadius:12}}>
+            <GitBranch size={32} color={T.border} style={{margin:"0 auto 10px",display:"block"}}/>
+            <div style={{fontSize:13,fontWeight:600,color:T.text,marginBottom:4}}>No custom workflows yet</div>
+            <div style={{fontSize:11,color:T.muted,marginBottom:14}}>Add SQL checks that run on your schedule</div>
+            <Btn onClick={()=>setView("builder")} size="sm"
+              style={{background:`linear-gradient(135deg,${T.accent},${T.purple})`,color:"white",border:"none"}}>
+              <Plus size={11}/> New Workflow
+            </Btn>
+          </div>
+        ) : (
+          <div style={{display:"flex",flexDirection:"column",gap:10}}>
+            {workflows.map(wf=>{
+              const wfRuns   = runHistory.filter(r=>r.workflow_id===wf.id);
+              const lastRun  = wfRuns[0];
+              const isRunning = !!running[wf.id];
+              const isWfSel  = selectedWfIds.has(wf.id);
+              const passRate = wfRuns.slice(0,10).length>0
+                ? Math.round(wfRuns.slice(0,10).filter(r=>r.status==="clean").length/Math.min(wfRuns.length,10)*100)
+                : null;
+              const sparkData = wfRuns.slice(0,20).reverse();
+              return (
+                <div key={wf.id} style={{background:T.card,
+                  border:`1px solid ${isWfSel?T.accent:T.border}`,borderRadius:12,padding:"16px 20px",
+                  borderLeft:`3px solid ${isWfSel?T.accent:wf.enabled!==false?T.accent:T.border}`,
+                  background:isWfSel?`${T.accent}05`:T.card,boxShadow:"0 1px 4px rgba(0,0,0,0.06)"}}>
+                  <div style={{display:"flex",alignItems:"flex-start",gap:14}}>
+                    <input type="checkbox" checked={isWfSel} onChange={()=>toggleWfSelect(wf.id)}
+                      style={{marginTop:4,cursor:"pointer",accentColor:T.accent,flexShrink:0}}
+                      onClick={e=>e.stopPropagation()}/>
+                    <div style={{flex:1,minWidth:0}}>
+                      <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:4}}>
+                        <div style={{fontSize:14,fontWeight:700,color:T.text}}>{wf.name}</div>
+                        <Badge label={wf.schedule||"manual"} color={T.accent}/>
+                        {wf.enabled===false && <Badge label="paused" color={T.muted}/>}
+                        {isRunning && <div style={{display:"flex",alignItems:"center",gap:4,fontSize:10,color:T.accent}}><Spinner size={9}/> Running…</div>}
+                      </div>
+                      {wf.desc && <div style={{fontSize:11,color:T.muted,marginBottom:8}}>{wf.desc}</div>}
+                      <div style={{display:"flex",gap:5,flexWrap:"wrap",marginBottom:8}}>
+                        {(wf.checks||[]).slice(0,6).map(chk=>(
+                          <span key={chk.id||chk.name} style={{fontSize:10,padding:"2px 8px",borderRadius:4,
+                            background:`${T.accent}08`,border:`1px solid ${T.accent}20`,color:T.accent}}>
+                            {chk.name}
+                          </span>
+                        ))}
+                        {(wf.checks||[]).length>6 && <span style={{fontSize:10,color:T.dim}}>+{wf.checks.length-6} more</span>}
+                      </div>
+                      <div style={{display:"flex",gap:16,alignItems:"center"}}>
+                        {lastRun && <span style={{fontSize:10,color:T.muted}}>Last: {lastRun.started_at?.slice(0,16)?.replace("T"," ")} · <span style={{color:lastRun.status==="clean"?T.green:T.red,fontWeight:600}}>{lastRun.status==="clean"?"✓ clean":`${lastRun.failed} failed`}</span></span>}
+                        {passRate!==null && <span style={{fontSize:10,color:T.muted}}>Pass rate: <span style={{fontWeight:700,color:passRate>=80?T.green:passRate>=50?T.orange:T.red}}>{passRate}%</span></span>}
+                      </div>
+                      {sparkData.length>1 && (
+                        <div style={{display:"flex",gap:2,marginTop:8,alignItems:"flex-end"}}>
+                          {sparkData.map((r,i)=>(
+                            <div key={r.run_id||i} title={`${r.started_at?.slice(0,16)} — ${r.status}`}
+                              style={{width:8,height:r.status==="clean"?12:20,borderRadius:2,
+                                background:r.status==="clean"?T.green:T.red,opacity:0.7,flexShrink:0}}/>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                    <div style={{display:"flex",flexDirection:"column",gap:6,flexShrink:0}}>
+                      <Btn onClick={()=>runWf(wf)} disabled={isRunning} size="sm"
+                        style={{background:`linear-gradient(135deg,${T.accent},${T.purple})`,color:"white",border:"none"}}>
+                        {isRunning?<Spinner size={10} color="white"/>:<Play size={10}/>} Run
+                      </Btn>
+                      <Btn onClick={()=>{setDetail(wf);setLiveRun(null);setView("detail");}} size="sm" variant="ghost"><Eye size={10}/> History</Btn>
+                      <Btn onClick={()=>{setEditing(wf);setView("builder");}} size="sm" variant="ghost">✏ Edit</Btn>
+                      <Btn onClick={()=>toggleEnabled(wf)} size="sm" variant="muted">{wf.enabled===false?"▶ Enable":"⏸ Pause"}</Btn>
+                      <Btn onClick={()=>deleteWf(wf.id)} size="sm" variant="muted"><Trash2 size={10}/></Btn>
+                    </div>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </div>
+
+      {/* Undo toasts */}
+      {undoQueue.length>0 && (
+        <div style={{position:"fixed",bottom:80,left:"50%",transform:"translateX(-50%)",zIndex:9999,display:"flex",flexDirection:"column",gap:8}}>
+          {undoQueue.map(u=>(
+            <div key={u.id} style={{display:"flex",alignItems:"center",gap:12,padding:"10px 16px",borderRadius:10,
+              background:T.card,border:`1px solid ${T.border}`,boxShadow:"0 4px 20px rgba(0,0,0,0.15)",fontSize:12}}>
+              <span style={{color:T.text}}>"{u.wf.name}" deleted</span>
+              <button onClick={()=>undoDelete(u.id)} style={{background:"none",border:`1px solid ${T.accent}`,
+                borderRadius:6,padding:"3px 10px",cursor:"pointer",color:T.accent,fontWeight:700,fontSize:11}}>Undo</button>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* NL Workflow Builder Modal */}
+      {showNlWf && (() => {
+        const buildWf = async () => {
+          if (!nlWfText.trim()||nlWfLoading) return;
+          setNlWfLoading(true); setNlWfResult(null);
+          try {
+            const r = await fetch(`${API}/api/ai/chat`,{method:"POST",headers:{"Content-Type":"application/json"},
+              body:JSON.stringify({
+                system:`You are a workflow builder. Return ONLY JSON workflow object with fields: name, desc, schedule (daily/hourly/weekly), checks (array of {name,sql,pass_condition,severity}). No markdown.`,
+                messages:[{role:"user",content:nlWfText}], max_tokens:600, temperature:0.2
+              })});
+            const d = await r.json();
+            const text = (d?.content?.[0]?.text||"{}").replace(/```json|```/g,"").trim();
+            setNlWfResult(JSON.parse(text));
+          } catch(e) {}
+          setNlWfLoading(false);
+        };
+        return (
+          <div style={{position:"fixed",inset:0,background:"rgba(0,0,0,0.6)",zIndex:400,display:"flex",alignItems:"center",justifyContent:"center"}}>
+            <div style={{background:T.surface,borderRadius:16,width:"min(600px,94vw)",maxHeight:"80vh",overflowY:"auto",border:`1px solid ${T.border}`,padding:24}}>
+              <div style={{fontSize:15,fontWeight:700,color:T.text,marginBottom:4}}>✦ Build Workflow with AI</div>
+              <div style={{fontSize:11,color:T.muted,marginBottom:14}}>Describe what to monitor — AI generates checks + SQL</div>
+              <textarea value={nlWfText} onChange={e=>setNlWfText(e.target.value)} rows={4}
+                placeholder="e.g. Check orders table daily for stuck pending rows and data freshness"
+                style={{width:"100%",padding:"10px 12px",borderRadius:10,border:`1px solid ${T.border}`,
+                  background:T.card,color:T.text,fontSize:13,resize:"vertical",boxSizing:"border-box",marginBottom:10}}/>
+              <div style={{display:"flex",gap:8,marginBottom:nlWfResult?16:0}}>
+                <Btn onClick={buildWf} disabled={!nlWfText.trim()||nlWfLoading}
+                  style={{background:`linear-gradient(135deg,${T.accent},${T.purple})`,color:"white",border:"none"}}>
+                  {nlWfLoading?<Spinner size={11} color="white"/>:null} {nlWfLoading?"Generating…":"Generate Workflow"}
+                </Btn>
+                <Btn onClick={()=>{setShowNlWf(false);setNlWfText("");setNlWfResult(null);}} variant="ghost">Cancel</Btn>
+              </div>
+              {nlWfResult && (
+                <div style={{background:T.card,borderRadius:12,border:`1px solid ${T.accent}30`,padding:"14px 16px"}}>
+                  <div style={{fontSize:13,fontWeight:700,color:T.text,marginBottom:4}}>{nlWfResult.name}</div>
+                  <div style={{fontSize:11,color:T.muted,marginBottom:10}}>{nlWfResult.desc}</div>
+                  <div style={{fontSize:10,color:T.muted,marginBottom:10}}>{(nlWfResult.checks||[]).length} checks · {nlWfResult.schedule}</div>
+                  <Btn onClick={async()=>{
+                    const wf={...nlWfResult,id:"wf-"+Date.now().toString(36),enabled:true,
+                      checks:(nlWfResult.checks||[]).map((c,i)=>({...c,id:`ai_c${i}`}))};
+                    await saveWf(wf); setShowNlWf(false); setNlWfText(""); setNlWfResult(null);
+                  }} style={{background:T.accent,color:"white",border:"none"}}>
+                    <Plus size={11}/> Add Workflow
+                  </Btn>
+                </div>
+              )}
+            </div>
+          </div>
+        );
+      })()}
+    </div>
+  );
+}
+
+// ── PipelineRunsTab — merges Dataflows + Scheduler + Custom Workflows ────────
 function PipelineRunsTab({ onNavigate }) {
   const T = useT();
-  const [sub, setSub] = React.useState("dataflows"); // dataflows | scheduler
+  const [sub, setSub] = React.useState("dataflows"); // dataflows | scheduler | workflows
   const SUBS = [
-    { id:"dataflows", label:"Dataflows",  icon:"🗂" },
-    { id:"scheduler", label:"Schedules",  icon:"🕐" },
+    { id:"dataflows",  label:"Dataflows",  icon:"🗂" },
+    { id:"scheduler",  label:"Schedules",  icon:"🕐" },
+    { id:"workflows",  label:"Workflows",  icon:"⚙" },
   ];
   return (
     <div style={{ display:"flex", flexDirection:"column", minHeight:"100%" }}>
@@ -22991,8 +24319,9 @@ function PipelineRunsTab({ onNavigate }) {
         ))}
       </div>
       <div style={{ flex:1, overflow:"hidden", display:"flex", flexDirection:"column" }}>
-        {sub==="dataflows" && <DataflowsTab onNavigate={onNavigate}/>}
-        {sub==="scheduler" && <SchedulerTab onNavigate={onNavigate}/>}
+        {sub==="dataflows"  && <DataflowsTab onNavigate={onNavigate}/>}
+        {sub==="scheduler"  && <SchedulerTab onNavigate={onNavigate}/>}
+        {sub==="workflows"  && <CustomWorkflowsPanel onNavigate={onNavigate}/>}
       </div>
     </div>
   );
@@ -23056,6 +24385,133 @@ function ReportingTab({ onNavigate, proactiveAlerts, setProactiveAlerts, onIssue
   );
 }
 
+// ── ShiftSummaryBanner — "What happened while you were away" ─────────────────
+function ShiftSummaryBanner({ onNavigate }) {
+  const T = useT();
+  const AWAY_THRESHOLD = 30 * 60 * 1000; // 30 min
+  const [summary,    setSummary]    = React.useState(null);  // {text, events}
+  const [loading,    setLoading]    = React.useState(false);
+  const [dismissed,  setDismissed]  = React.useState(false);
+  const [expanded,   setExpanded]   = React.useState(false);
+
+  React.useEffect(() => {
+    const lastSeen = parseInt(localStorage.getItem("wz_last_seen") || "0", 10);
+    const now = Date.now();
+    // Always update last_seen on mount
+    localStorage.setItem("wz_last_seen", String(now));
+    const away = now - lastSeen;
+    if (!lastSeen || away < AWAY_THRESHOLD) return;
+
+    const awayMins = Math.round(away / 60000);
+    const awayLabel = awayMins < 60 ? `${awayMins}m` : `${Math.round(awayMins/60)}h`;
+    setLoading(true);
+
+    // Gather events from localStorage/sessionStorage
+    const gatherEvents = async () => {
+      const events = [];
+      try {
+        // Workflow run history
+        const hist = JSON.parse(localStorage.getItem("wz_wf_runhistory_v1") || "[]");
+        const since = hist.filter(r => r.started_at && new Date(r.started_at).getTime() > lastSeen);
+        const failed = since.filter(r => r.status !== "clean");
+        const passed = since.filter(r => r.status === "clean");
+        if (failed.length) events.push(`${failed.length} workflow run${failed.length>1?"s":""} failed`);
+        if (passed.length) events.push(`${passed.length} workflow run${passed.length>1?"s":""} passed`);
+
+        // Proactive alerts
+        const alertCount = parseInt(sessionStorage.getItem("wz_proactive_count") || "0", 10);
+        if (alertCount) events.push(`${alertCount} proactive anomal${alertCount>1?"ies":"y"} detected`);
+
+        // AutoPilot history
+        const apHist = JSON.parse(localStorage.getItem("wz_ap_history_v2") || "[]");
+        const apSince = apHist.filter(r => r.ts && new Date(r.ts).getTime() > lastSeen);
+        if (apSince.length) events.push(`AutoPilot ran ${apSince.length} pipeline${apSince.length>1?"s":""}`);
+
+        if (!events.length) { setLoading(false); return; }
+
+        // Ask AI to summarise
+        const res = await fetch(`${API}/api/ai/chat`, {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            system: "You are a concise ops assistant. Summarise what happened while the user was away in 1-2 punchy sentences. Lead with the most important thing. Be specific.",
+            messages: [{ role: "user", content: `User was away for ${awayLabel}. Events: ${events.join("; ")}.` }],
+            max_tokens: 80
+          })
+        });
+        const d = await res.json();
+        const text = d?.content?.[0]?.text?.trim() || events.join(" · ");
+        setSummary({ text, events, awayLabel });
+      } catch(e) {
+        if (events.length) setSummary({ text: events.join(" · "), events, awayLabel });
+      }
+      setLoading(false);
+    };
+    gatherEvents();
+  }, []);
+
+  if (dismissed || (!loading && !summary)) return null;
+
+  return (
+    <div style={{
+      display:"flex", alignItems:"flex-start", gap:10,
+      padding:"10px 20px", borderBottom:`1px solid ${T.accent}25`,
+      background:`linear-gradient(90deg,${T.accent}0a,${T.purple||T.accent}06)`,
+      flexShrink:0, position:"relative"
+    }}>
+      <div style={{ fontSize:16, flexShrink:0, marginTop:1 }}>☕</div>
+      <div style={{ flex:1, minWidth:0 }}>
+        <div style={{ display:"flex", alignItems:"center", gap:8, marginBottom: expanded && summary?.events?.length ? 6 : 0 }}>
+          <span style={{ fontSize:11, fontWeight:700, color:T.accent }}>
+            While you were away ({summary?.awayLabel || "…"})
+          </span>
+          {loading && <Spinner size={10} color={T.accent}/>}
+        </div>
+        {summary && (
+          <>
+            <div style={{ fontSize:12, color:T.text, lineHeight:1.5 }}>{summary.text}</div>
+            {summary.events?.length > 1 && (
+              <button onClick={() => setExpanded(p=>!p)}
+                style={{ background:"none", border:"none", cursor:"pointer",
+                  fontSize:10, color:T.accent, padding:"3px 0", fontWeight:600 }}>
+                {expanded ? "▲ Less" : `▼ ${summary.events.length} events`}
+              </button>
+            )}
+            {expanded && (
+              <div style={{ display:"flex", flexWrap:"wrap", gap:6, marginTop:6 }}>
+                {summary.events.map((e,i) => (
+                  <span key={i} style={{ fontSize:10, padding:"2px 8px", borderRadius:99,
+                    background:`${T.accent}12`, color:T.accent, border:`1px solid ${T.accent}25` }}>
+                    {e}
+                  </span>
+                ))}
+              </div>
+            )}
+          </>
+        )}
+      </div>
+      <div style={{ display:"flex", gap:6, flexShrink:0, alignItems:"center" }}>
+        {summary?.events?.some(e=>e.includes("failed")) && (
+          <button onClick={() => { onNavigate("triage"); setDismissed(true); }}
+            style={{ fontSize:10, padding:"3px 10px", borderRadius:6, cursor:"pointer",
+              background:T.red, color:"white", border:"none", fontWeight:600, fontFamily:"inherit" }}>
+            Triage →
+          </button>
+        )}
+        {summary?.events?.some(e=>e.includes("workflow")) && (
+          <button onClick={() => { onNavigate("workflows"); setDismissed(true); }}
+            style={{ fontSize:10, padding:"3px 10px", borderRadius:6, cursor:"pointer",
+              background:T.accent, color:"white", border:"none", fontWeight:600, fontFamily:"inherit" }}>
+            Workflows →
+          </button>
+        )}
+        <button onClick={() => setDismissed(true)}
+          style={{ background:"none", border:"none", cursor:"pointer",
+            color:T.dim, fontSize:16, lineHeight:1 }}>×</button>
+      </div>
+    </div>
+  );
+}
+
 export default function WiziAgentApp() {
   const [themeKey,  setThemeKey]  = useLocal("wz_theme", "light");
   const [activeTab, setActiveTab] = useLocal("wz_tab",   "health");
@@ -23087,6 +24543,7 @@ export default function WiziAgentApp() {
         e.preventDefault(); setPaletteOpen(p => !p); return;
       }
       if (e.metaKey || e.ctrlKey || e.altKey) return;
+      if (e.key === "?") { e.preventDefault(); setShowShortcuts(p => !p); return; }
       const tab = SHORTCUT_MAP[e.key.toLowerCase()];
       if (tab) { e.preventDefault(); setActiveTab(tab); }
     };
@@ -23096,7 +24553,8 @@ export default function WiziAgentApp() {
   const [issues,    setIssues]    = useSession("wz_pendingIssues", []);
   const [schemaStr, setSchemaStr] = React.useState("");
   const [globalStatus, setGlobalStatus] = React.useState(null); // { type, message, runId }
-  const [paletteOpen, setPaletteOpen]   = React.useState(false);
+  const [paletteOpen,    setPaletteOpen]    = React.useState(false);
+  const [showShortcuts,  setShowShortcuts]  = React.useState(false);
   const [showWizard,  setShowWizard]    = React.useState(
     !localStorage.getItem("wz_wizard_done")
   );
@@ -23268,6 +24726,7 @@ export default function WiziAgentApp() {
     <SchemaCtx.Provider value={schemaStr}>
     <ThemeCtx.Provider value={T}>
       {showWizard && <OnboardingWizard onComplete={()=>setShowWizard(false)} T={T}/>}
+      {showShortcuts && <ShortcutsOverlay onClose={()=>setShowShortcuts(false)}/>}
       {paletteOpen && (
         <CommandPalette
           onNavigate={setActiveTab}
@@ -23362,6 +24821,9 @@ export default function WiziAgentApp() {
               </button>
             </div>
           )}
+
+          {/* Shift summary — shows after 30+ min away */}
+          <ShiftSummaryBanner onNavigate={navigateTo}/>
 
           {activeTab==="reporting" && <ErrorBoundary key="reporting"><ReportingTab onNavigate={navigateTo} proactiveAlerts={proactiveAlerts} setProactiveAlerts={setProactiveAlerts} onIssueFound={setIssues} TC={TC}/></ErrorBoundary>}
           {activeTab==="triage"       && <ErrorBoundary key="triage"><TriageTab initialIssues={issues}/></ErrorBoundary>}

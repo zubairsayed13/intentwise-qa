@@ -9167,7 +9167,8 @@ function SopGatePanel({ gateNum, token, decision, label, checks = [], gateTimeou
   // Per-gate timeout: use specific override if set, else fall back to global
   const effectiveTimeout = (perGateTimeouts && perGateTimeouts[gateNum]) || gateTimeout;
 
-  const isPending  = decision === "pending";
+  // Use useMemo so Vite doesn't create a TDZ when renaming this variable
+  const isPending = React.useMemo(() => decision === "pending", [decision]);
 
   React.useEffect(() => {
     if (!isPending) return;
@@ -9496,6 +9497,34 @@ function AdsSopTab() {
   const runStartRef = React.useRef(null); // track run start time for adaptive polling
   const [elapsedMin, setElapsedMin] = React.useState(0);
 
+  const pollState = React.useCallback(async (rid) => {
+    try {
+      const res  = await fetch(`${API}/api/workflow/ads-sop/${rid}`);
+      const data = await res.json();
+      if (data.error) return;
+      // Merge: preserve any optimistic gate decisions already set locally
+      // (backend may lag behind optimistic UI update)
+      setResult(prev => {
+        if (!prev) return data;
+        const merged = {...data};
+        for (let i = 1; i <= 5; i++) {
+          const key = `gate${i}_decision`;
+          // Keep local decision if already approved/rejected and backend still says pending
+          if (prev[key] && prev[key] !== "pending" && data[key] === "pending") {
+            merged[key] = prev[key];
+          }
+        }
+        return merged;
+      });
+      // Stop polling on terminal states
+      const terminal = ["complete","stopped","error","complete_no_issues","finalizing"];
+      if (terminal.includes(data.status)) {
+        setRunning(false);
+        if (pollRef.current) { clearTimeout(pollRef.current); clearInterval(pollRef.current); pollRef.current = null; }
+      }
+    } catch(e) {}
+  }, []);
+
   // Adaptive poll interval: 8s for first 5min, 20s up to 20min, 45s after
   const getAdaptiveInterval = React.useCallback(() => {
     if (!runStartRef.current) return 8000;
@@ -9663,34 +9692,6 @@ function AdsSopTab() {
     } catch(e) {}
     setHistLoading(false);
   };
-
-  const pollState = React.useCallback(async (rid) => {
-    try {
-      const res  = await fetch(`${API}/api/workflow/ads-sop/${rid}`);
-      const data = await res.json();
-      if (data.error) return;
-      // Merge: preserve any optimistic gate decisions already set locally
-      // (backend may lag behind optimistic UI update)
-      setResult(prev => {
-        if (!prev) return data;
-        const merged = {...data};
-        for (let i = 1; i <= 5; i++) {
-          const key = `gate${i}_decision`;
-          // Keep local decision if already approved/rejected and backend still says pending
-          if (prev[key] && prev[key] !== "pending" && data[key] === "pending") {
-            merged[key] = prev[key];
-          }
-        }
-        return merged;
-      });
-      // Stop polling on terminal states
-      const terminal = ["complete","stopped","error","complete_no_issues","finalizing"];
-      if (terminal.includes(data.status)) {
-        setRunning(false);
-        if (pollRef.current) { clearTimeout(pollRef.current); clearInterval(pollRef.current); pollRef.current = null; }
-      }
-    } catch(e) {}
-  }, []);
 
   // On mount — check if there is an in-progress SOP run
   React.useEffect(() => {
@@ -12679,7 +12680,7 @@ function RunbooksView({ onBack, T: TProp, onWorkflowCreated }) {
 
 
 // ── WorkflowDependencyGraph — SVG DAG of workflow dependencies ───────────────
-function WorkflowDependencyGraph({ workflows, runHistory, T, onOpen }) {
+function WorkflowDependencyGraph({ workflows = [], runHistory = [], T, onOpen }) {
   if (!workflows.length) return null;
   // Only render if at least one workflow has depends_on
   const hasAnyDeps = workflows.some(w => (w.depends_on||[]).length > 0);
@@ -17231,7 +17232,7 @@ function FloatingAssistant({ currentRun, currentTab, onNavigate }) {
   const [thinkingText, setThinking] = React.useState("Thinking…");
   const [size,        setSize]       = React.useState("normal"); // normal | large
   const [wiziThemeKey,setWiziTheme]  = useLocal("wz_wizi_theme", "sand");
-  const WZ = WIZI_THEMES[wiziThemeKey] || WIZI_THEMES.sand;
+  const WZ = React.useMemo(() => WIZI_THEMES[wiziThemeKey] || WIZI_THEMES.sand, [wiziThemeKey]);
   const bottomRef = React.useRef(null);
   const inputRef  = React.useRef(null);
   const liveChips = useLiveChips(currentTab, currentRun);

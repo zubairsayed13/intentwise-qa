@@ -9388,10 +9388,7 @@ function SopChecklist({ title, items, icon, type, T }) {
 }
 
 function SopValidationTable({ results, T, historyData }) {
-  if (!results?.length) return null;
-  const allPass = results.every(r=>r.status==="PASS");
-
-  // Build per-table sparklines from historyData
+  // ALL hooks before any early return
   const tableHistory = React.useMemo(() => {
     const map = {};
     (historyData||[]).forEach(run => {
@@ -9403,6 +9400,9 @@ function SopValidationTable({ results, T, historyData }) {
     });
     return map;
   }, [historyData]);
+
+  if (!results?.length) return null;
+  const allPass = results.every(r=>r.status==="PASS");
 
   return (
     <Card style={{ padding:"14px 18px", marginBottom:10,

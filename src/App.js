@@ -9159,21 +9159,25 @@ function SopConfigPanel({ config, setConfig, onSave, saving, msg, onClose, T }) 
 
 // ─── AdsSopTab sub-components ───────────────────────────────────────────────
 function SopGatePanel({ gateNum, token, decision, label, checks = [], gateTimeout, perGateTimeouts = {}, submitGate, submitting, running, T }) {
-  // ALL hooks at top — no exceptions, no conditionals
-  const [elapsed,     setElapsed]     = React.useState(0);
-  const [aiAdvice,    setAiAdvice]    = React.useState(null);
-  const [aiAdviceLoad,setAiAdviceLoad]= React.useState(false);
+  // ALL hooks at top — unconditional, no exceptions
+  const [elapsed,      setElapsed]      = React.useState(0);
+  const [aiAdvice,     setAiAdvice]     = React.useState(null);
+  const [aiAdviceLoad, setAiAdviceLoad] = React.useState(false);
 
-  // Per-gate timeout: use specific override if set, else fall back to global
-  const effectiveTimeout = (perGateTimeouts && perGateTimeouts[gateNum]) || gateTimeout;
-
-  // Use useMemo so Vite doesn't create a TDZ when renaming this variable
-  const isPending = React.useMemo(() => decision === "pending", [decision]);
+  const isPending      = React.useMemo(() => decision === "pending",       [decision]);
+  const isApproved     = React.useMemo(() => decision === "approved",      [decision]);
+  const isAutoApproved = React.useMemo(() => decision === "auto-approved", [decision]);
+  const isRejected     = React.useMemo(() => decision === "rejected",      [decision]);
+  const isTimeout      = React.useMemo(() => decision === "timeout",       [decision]);
+  const effectiveTimeout = React.useMemo(
+    () => (perGateTimeouts && perGateTimeouts[gateNum]) || gateTimeout,
+    [perGateTimeouts, gateNum, gateTimeout]
+  );
 
   React.useEffect(() => {
     if (!isPending) return;
-    const id = setInterval(()=>setElapsed(p=>p+1), 60000);
-    return ()=>clearInterval(id);
+    const id = setInterval(() => setElapsed(p => p + 1), 60000);
+    return () => clearInterval(id);
   }, [isPending]);
 
   React.useEffect(() => {
@@ -9182,11 +9186,11 @@ function SopGatePanel({ gateNum, token, decision, label, checks = [], gateTimeou
       setAiAdviceLoad(true);
       try {
         const res = await fetch(`${API}/api/ai/chat`, {
-          method:"POST", headers:{"Content-Type":"application/json"},
-          body:JSON.stringify({
-            system:"You are a data pipeline operations assistant. Given a gate status, give a ONE sentence recommendation: safe to approve, needs investigation, or reject. Be direct and specific.",
-            messages:[{role:"user", content:`Gate ${gateNum} "${label}" is awaiting approval. Checks: ${JSON.stringify((checks||[]).map(c=>({name:c.name,passed:c.passed,rows:c.row_count})))}. Time elapsed: ${elapsed} min.`}],
-            max_tokens:60
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            system: "You are a data pipeline operations assistant. Given a gate status, give a ONE sentence recommendation: safe to approve, needs investigation, or reject. Be direct and specific.",
+            messages: [{ role: "user", content: `Gate ${gateNum} "${label}" is awaiting approval. Checks: ${JSON.stringify((checks || []).map(c => ({ name: c.name, passed: c.passed, rows: c.row_count })))}. Time elapsed: ${elapsed} min.` }],
+            max_tokens: 60
           })
         });
         const d = await res.json();
@@ -9197,15 +9201,14 @@ function SopGatePanel({ gateNum, token, decision, label, checks = [], gateTimeou
     return () => clearTimeout(timer);
   }, [isPending]);
 
-  // Derived values — safe after hooks
-  const isApproved = decision === "approved";
-  const isRejected = decision === "rejected";
-  const isTimeout  = decision === "timeout";
+  // All derived values after hooks
   const busy = submitting?.[token];
+  const pct = Math.min((elapsed / Number(effectiveTimeout)) * 100, 100);
+  const remaining = Math.max(Number(effectiveTimeout) - elapsed, 0);
 
   // Early returns AFTER all hooks
   if (decision === "skipped") return null;
-  if (!token && !isPending && !isApproved && !isRejected && !isTimeout && !isAutoApproved) {
+  if (!token && !isPending && !isApproved && !isAutoApproved && !isRejected && !isTimeout) {
     return (
       <Card style={{ padding:"12px 18px", marginBottom:10,
         borderColor:`${T.border}`, background:T.surface, opacity:0.6 }}>
@@ -9223,27 +9226,26 @@ function SopGatePanel({ gateNum, token, decision, label, checks = [], gateTimeou
     );
   }
 
-  const isAutoApproved = decision === "auto-approved";
-  const pct = Math.min((elapsed / Number(effectiveTimeout)) * 100, 100);
-  const remaining = Math.max(Number(effectiveTimeout) - elapsed, 0);
+  const activeColor = isPending ? T.yellow : (isApproved || isAutoApproved) ? T.green : isTimeout ? T.orange : T.red;
 
   return (
     <Card style={{ padding:"14px 18px", marginBottom:10,
-      borderColor: isPending?`${T.yellow}50`:isApproved||isAutoApproved?`${T.green}40`:isTimeout?`${T.orange}40`:`${T.red}40`,
-      background:  isPending?`${T.yellow}06`:isApproved||isAutoApproved?`${T.green}06`:isTimeout?`${T.orange}06`:`${T.red}06` }}>
+      borderColor:`${activeColor}40`,
+      background:`${activeColor}06` }}>
       <div style={{ display:"flex", alignItems:"center", gap:12 }}>
         <div style={{ width:32, height:32, borderRadius:8, flexShrink:0,
-          background: isPending?`${T.yellow}15`:isApproved||isAutoApproved?`${T.green}15`:isTimeout?`${T.orange}15`:`${T.red}15`,
+          background:`${activeColor}15`,
           display:"flex", alignItems:"center", justifyContent:"center",
-          fontSize:14, fontWeight:800,
-          color: isPending?T.yellow:isApproved||isAutoApproved?T.green:isTimeout?T.orange:T.red }}>
-          {isPending?<Spinner size={14}/>:gateNum}
+          fontSize:14, fontWeight:800, color:activeColor }}>
+          {isPending ? <Spinner size={14}/> : gateNum}
         </div>
         <div style={{ flex:1 }}>
-          <div style={{ fontSize:12, fontWeight:700,
-            color: isPending?T.yellow:isApproved||isAutoApproved?T.green:isTimeout?T.orange:T.red }}>
+          <div style={{ fontSize:12, fontWeight:700, color:activeColor }}>
             🔒 Gate {gateNum}: {label}
-            {isApproved&&" ✓"}{isAutoApproved&&" ⚡ Auto-approved"}{isRejected&&" — stopped"}{isTimeout&&" — timed out, force-proceeded"}
+            {isApproved && " ✓"}
+            {isAutoApproved && " ⚡ Auto-approved"}
+            {isRejected && " — stopped"}
+            {isTimeout && " — timed out, force-proceeded"}
           </div>
           {isPending && (
             <>
@@ -9266,7 +9268,7 @@ function SopGatePanel({ gateNum, token, decision, label, checks = [], gateTimeou
               )}
               <div style={{ height:3, background:T.border, borderRadius:99, marginTop:5 }}>
                 <div style={{ height:"100%", borderRadius:99, width:`${pct}%`,
-                  background:pct>80?T.orange:T.yellow, transition:"width 0.5s" }}/>
+                  background:pct > 80 ? T.orange : T.yellow, transition:"width 0.5s" }}/>
               </div>
             </>
           )}
@@ -9282,38 +9284,25 @@ function SopGatePanel({ gateNum, token, decision, label, checks = [], gateTimeou
               Approving: <strong style={{color:T.text}}>{label}</strong>
             </div>
             <div style={{ display:"flex", gap:5 }}>
-              <Btn onClick={()=>submitGate(token,"approve")} variant="success" size="sm" disabled={busy}>
-                {busy?<Spinner size={10} color="white"/>:<Check size={10}/>} Approve
+              <Btn onClick={() => submitGate(token, "approve")} variant="success" size="sm" disabled={busy}>
+                {busy ? <Spinner size={10} color="white"/> : <Check size={10}/>} Approve
               </Btn>
-              <Btn onClick={()=>submitGate(token,"reject")} variant="danger" size="sm" disabled={busy}>
+              <Btn onClick={() => submitGate(token, "reject")} variant="danger" size="sm" disabled={busy}>
                 <X size={10}/> Reject
               </Btn>
             </div>
-            <Btn onClick={()=>submitGate(token,"force")} variant="ghost" size="sm"
+            <Btn onClick={() => submitGate(token, "force")} variant="ghost" size="sm"
               style={{ fontSize:10, color:T.orange, borderColor:`${T.orange}30` }}>
               ⚡ Force Proceed
             </Btn>
           </div>
         )}
-        {isApproved && <Badge label="approved" color={T.green}/>}
+        {isApproved     && <Badge label="approved"         color={T.green}/>}
         {isAutoApproved && <Badge label="⚡ auto-approved" color={T.green}/>}
-        {isRejected && <Badge label="rejected" color={T.red}/>}
+        {isRejected     && <Badge label="rejected"         color={T.red}/>}
         {isTimeout && (
           <div style={{ display:"flex", alignItems:"center", gap:6 }}>
             <Badge label="timed out" color={T.orange}/>
-            <Btn size="sm" variant="ghost"
-              style={{ fontSize:10, color:T.orange, borderColor:`${T.orange}30` }}
-              onClick={async ()=>{
-                try {
-                  await fetch(`${API}/api/workflow/sop-gate/extend`,{
-                    method:"POST", headers:{"Content-Type":"application/json"},
-                    body:JSON.stringify({token, extend_minutes:30})
-                  });
-                  setResult(p=>p?{...p,[`gate${gateNum}_decision`]:"pending"}:p);
-                } catch(e){}
-              }}>
-              +30m Extend
-            </Btn>
           </div>
         )}
       </div>
@@ -9497,6 +9486,8 @@ function AdsSopTab() {
   const runStartRef = React.useRef(null); // track run start time for adaptive polling
   const [elapsedMin, setElapsedMin] = React.useState(0);
 
+  const [result,     setResult]    = useSession("wz_sopResult", null);
+
   const pollState = React.useCallback(async (rid) => {
     try {
       const res  = await fetch(`${API}/api/workflow/ads-sop/${rid}`);
@@ -9544,7 +9535,6 @@ function AdsSopTab() {
     };
     pollRef.current = setTimeout(tick, getAdaptiveInterval());
   }, [pollState, getAdaptiveInterval]);
-  const [result,     setResult]    = useSession("wz_sopResult", null);
   const [gateInputs, setGateInputs]= React.useState({});  // token → decision in flight
   const [submitting, setSubmitting]= React.useState({});
   const [showConfig, setShowConfig]= React.useState(false);

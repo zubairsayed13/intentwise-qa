@@ -9158,7 +9158,7 @@ function SopConfigPanel({ config, setConfig, onSave, saving, msg, onClose, T }) 
 
 
 // ─── AdsSopTab sub-components ───────────────────────────────────────────────
-function SopGatePanel({ gateNum, token, decision, label, checks, gateTimeout, perGateTimeouts, submitGate, submitting, running, T }) {
+function SopGatePanel({ gateNum, token, decision, label, checks = [], gateTimeout, perGateTimeouts = {}, submitGate, submitting, running, T }) {
   // ALL hooks at top — no exceptions, no conditionals
   const [elapsed,     setElapsed]     = React.useState(0);
   const [aiAdvice,    setAiAdvice]    = React.useState(null);
@@ -9320,7 +9320,7 @@ function SopGatePanel({ gateNum, token, decision, label, checks, gateTimeout, pe
   );
 }
 
-function SopChecklist({ title, items, icon, type, T }) {
+function SopChecklist({ title, items = [], icon, type, T }) {
   const [checked, setChecked] = React.useState({});
   if (!items?.length) return null;
   // Auto-check items that were triggered by the backend
@@ -9497,15 +9497,15 @@ function AdsSopTab() {
   const [elapsedMin, setElapsedMin] = React.useState(0);
 
   // Adaptive poll interval: 8s for first 5min, 20s up to 20min, 45s after
-  const getAdaptiveInterval = () => {
+  const getAdaptiveInterval = React.useCallback(() => {
     if (!runStartRef.current) return 8000;
     const elapsed = (Date.now() - runStartRef.current) / 1000;
     if (elapsed < 300)  return 8000;   // < 5 min
     if (elapsed < 1200) return 20000;  // < 20 min
     return 45000;                       // > 20 min
-  };
+  }, []);
 
-  const startAdaptivePoll = (rid) => {
+  const startAdaptivePoll = React.useCallback((rid) => {
     if (pollRef.current) { clearTimeout(pollRef.current); clearInterval(pollRef.current); pollRef.current = null; }
     const tick = () => {
       pollState(rid);
@@ -9514,7 +9514,7 @@ function AdsSopTab() {
       pollRef.current = setTimeout(tick, getAdaptiveInterval());
     };
     pollRef.current = setTimeout(tick, getAdaptiveInterval());
-  };
+  }, [pollState, getAdaptiveInterval]);
   const [result,     setResult]    = useSession("wz_sopResult", null);
   const [gateInputs, setGateInputs]= React.useState({});  // token → decision in flight
   const [submitting, setSubmitting]= React.useState({});
@@ -9790,7 +9790,7 @@ function AdsSopTab() {
       } catch(e) {}
     } catch(e) { addNotif?.(`Gate submit failed: ${e.message}`, "error"); }
     setSubmitting(p => ({...p,[token]:false}));
-  }, [runId, addNotif, startAdaptivePoll]);
+  }, [runId, addNotif, startAdaptivePoll, setResult, setSubmitting]);
 
   // ── Auto-approve gate if all checks pass and feature is enabled ─────────────
   const tryAutoApprove = React.useCallback(async (token, gateNum, checks) => {
@@ -14650,7 +14650,7 @@ Create a remediation runbook.`}],
 }
 
 // ── WorkflowDetail — runs history + drill-down for one workflow ───────────────
-function WorkflowDetail({ wf, history, liveRun, onBack, onEdit, onRun, running }) {
+function WorkflowDetail({ wf, history = [], liveRun, onBack, onEdit, onRun, running }) {
   const T = useT();
   const [selectedRun, setSelectedRun] = React.useState(liveRun || history[0] || null);
   const [compareRun,  setCompareRun]  = React.useState(null);
@@ -15109,7 +15109,7 @@ Be specific — mention check names and row counts. No bullet points. No markdow
 }
 
 // ── AllRunsView — cross-workflow run history ───────────────────────────────────
-function AllRunsView({ history, workflows, onBack, onOpenWf }) { // onOpenWf(wf, run?)
+function AllRunsView({ history = [], workflows = [], onBack, onOpenWf }) { // onOpenWf(wf, run?)
   const T = useT();
   const [filter, setFilter] = React.useState("all"); // all | failed | clean
   const [search, setSearch] = React.useState("");
@@ -26118,12 +26118,16 @@ function CustomWorkflowsPanel({ onNavigate }) {
   );
 
   if (view==="detail" && detailWf) return (
-    <WorkflowDetail
-      wf={detailWf} liveRun={liveRun} runHistory={runHistory}
-      onBack={()=>{setView("list");setLiveRun(null);}}
-      onEdit={()=>{setEditing(detailWf);setView("builder");}}
-      onRun={runWf}
-    />
+    <div style={{display:"flex",flexDirection:"column",height:"100%",overflow:"hidden"}}>
+      <WorkflowDetail
+        wf={detailWf} liveRun={liveRun}
+        history={(runHistory||[]).filter(r=>r.workflow_id===detailWf.id).slice(0,10)}
+        onBack={()=>{setView("list");setLiveRun(null);}}
+        onEdit={()=>{setEditing(detailWf);setView("builder");}}
+        onRun={()=>runWf(detailWf)}
+        running={!!running[detailWf.id]}
+      />
+    </div>
   );
 
   if (view==="runs") return (
@@ -26132,9 +26136,9 @@ function CustomWorkflowsPanel({ onNavigate }) {
         <Btn onClick={()=>setView("list")} variant="ghost" size="sm">← Workflows</Btn>
         <div style={{fontWeight:700,fontSize:15,color:T.text}}>All Runs</div>
       </div>
-      <WorkflowRunsView runHistory={runHistory} workflows={workflows}
+      <AllRunsView history={runHistory} workflows={workflows}
         onBack={()=>setView("list")}
-        onOpenWf={(wf)=>{setDetail(wf);setView("detail");}}/>
+        onOpenWf={(wf)=>{setDetail(wf);setLiveRun(null);setView("detail");}}/>
     </div>
   );
 

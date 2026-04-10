@@ -9743,7 +9743,7 @@ function AdsSopTab() {
   };
 
   // ── Submit gate decision ───────────────────────────────────────────────────
-  const submitGate = async (token, decision) => {
+  const submitGate = React.useCallback(async (token, decision) => {
     if (!token) return;
     setSubmitting(p => ({...p,[token]:true}));
     // Pause polling to prevent overwriting the optimistic update
@@ -9790,7 +9790,7 @@ function AdsSopTab() {
       } catch(e) {}
     } catch(e) { addNotif?.(`Gate submit failed: ${e.message}`, "error"); }
     setSubmitting(p => ({...p,[token]:false}));
-  };
+  }, [runId, addNotif, startAdaptivePoll]);
 
   // ── Auto-approve gate if all checks pass and feature is enabled ─────────────
   const tryAutoApprove = React.useCallback(async (token, gateNum, checks) => {
@@ -9802,7 +9802,7 @@ function AdsSopTab() {
     addNotif?.(`⚡ Gate ${gateNum} auto-approved — all checks clean`, "success");
     await submitGate(token, "approve");
     return true;
-  }, [autoApproveOnClean, submitGate]);
+  }, [autoApproveOnClean, submitGate, addNotif]);
 
   // ── Severity routing: returns "halt" | "warn" | "log" ───────────────────────
   const checkSeverityAction = (checks) => {

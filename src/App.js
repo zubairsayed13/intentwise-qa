@@ -1264,18 +1264,40 @@ function WidgetBuilder({ initial, onSave, onCancel }) {
 Available tables: ${dbSchema ? dbSchema.split(";").map(t=>t.split("(")[0].trim()).filter(Boolean).slice(0,30).join(", ") : "mws.report, mws.orders, mws.inventory, mws.sales_and_traffic_by_date"}
 Return ONLY a JSON object (no markdown): {"sql":"SELECT ...","title":"Widget title","x_col":"col1","y_col":"col2","type":"bar|line|area|donut|kpi"}
 Rules: SELECT only, include column aliases, max 2-3 columns, GROUP BY if aggregating`,
-          messages:[{role:"user",content:aiDesc}], max_tokens:300
+          messages:[{role:"user",content:aiDesc}], max_tokens:300,
+          temperature:0.2
         })
       });
       const data = await res.json();
       const text = data.content?.[0]?.text || "{}";
       const obj  = JSON.parse(text.replace(/```json|```/g,"").trim());
-      if (obj.sql)   field("sql",   obj.sql);
-      if (obj.title) field("title", obj.title);
-      if (obj.x_col) field("x_col", obj.x_col);
-      if (obj.y_col) field("y_col", obj.y_col);
-      if (obj.type)  field("type",  obj.type);
+      const updates = {};
+      if (obj.sql)   updates.sql   = obj.sql;
+      if (obj.title) updates.title = obj.title;
+      if (obj.x_col) updates.x_col = obj.x_col;
+      if (obj.y_col) updates.y_col = obj.y_col;
+      if (obj.type)  updates.type  = obj.type;
+      setW(p=>({...p,...updates}));
       setAi("");
+      // Auto-test the SQL immediately after AI generates it
+      if (obj.sql) {
+        setTesting(true); setTestResult(null);
+        try {
+          const tr = await fetch(`${API}/api/query?sql=${encodeURIComponent(obj.sql+" LIMIT 5")}`);
+          const td = await tr.json();
+          setTestResult(td);
+          if (td.columns?.length>=1&&!obj.x_col) setW(p=>({...p,x_col:td.columns[0]}));
+          if (td.columns?.length>=2&&!obj.y_col) setW(p=>({...p,y_col:td.columns[1]}));
+          // Smart chart type from column names if AI didn't specify
+          if (!obj.type&&td.columns?.length) {
+            const cols=td.columns.map(c=>c.toLowerCase());
+            const hasDate=cols.some(c=>c.includes("date")||c.includes("day")||c.includes("month")||c.includes("week"));
+            const isSingle=td.rows?.length===1;
+            setW(p=>({...p,type:isSingle?"kpi":hasDate?"line":"bar"}));
+          }
+        } catch(e){ setTestResult({error:e.message}); }
+        setTesting(false);
+      }
     } catch(e) { console.error(e); }
     setAiLoading(false);
   };
@@ -1514,14 +1536,21 @@ function DashboardTab({ onNavigate }) {
   const [kpiNarrative,setKpiNarrative]= React.useState(null);
   const [kpiNarrLoading,setKpiNarrLoading]= React.useState(false);
   const [welcomeDismissed, setWelcomeDismissed] = useLocal("wz_welcome_dismissed", false);
+  const [whatChanged,    setWhatChanged]    = React.useState(null);
+  const [showAssistant,  setShowAssistant]  = React.useState(false);
+  const [assistantMsgs,  setAssistantMsgs]  = React.useState([]);
+  const [assistantInput, setAssistantInput] = React.useState("");
+  const [assistantLoading,setAssistantLoading]=React.useState(false);
+  const [widgetAnomaly,  setWidgetAnomaly]  = React.useState({});
+  const prevWDataRef = React.useRef({});
+  const assistantEndRef = React.useRef(null);
 
-  const generateKpiNarrative = async () => {
-    if (!kpis) return;
+  const generateKpiNarrative = React.useCallback(async (kpisData, triageData) => {
+    if (!kpisData || kpiNarrative) return;
     setKpiNarrLoading(true);
-    setKpiNarrative(null);
     try {
-      const o = kpis.orders||{}, s = kpis.sales||{}, inv = kpis.inventory||{};
-      const issues = triage?.issues?.filter(i=>i.severity==="critical"||i.severity==="high").length||0;
+      const o = kpisData.orders||{}, s = kpisData.sales||{}, inv = kpisData.inventory||{};
+      const issues = triageData?.issues?.filter(i=>i.severity==="critical"||i.severity==="high").length||0;
       const res = await fetch(`${API}/api/ai/chat`, {
         method:"POST", headers:{"Content-Type":"application/json"},
         body:JSON.stringify({
@@ -1534,7 +1563,80 @@ function DashboardTab({ onNavigate }) {
       setKpiNarrative(d?.content?.[0]?.text?.trim()||null);
     } catch(e) {}
     setKpiNarrLoading(false);
+  }, [kpiNarrative]);
+
+  // ── "What changed?" ────────────────────────────────────────────────────────
+  const generateWhatChanged = async () => {
+    if (!kpis) return;
+    setWhatChanged({text:null, loading:true});
+    try {
+      const prev = (()=>{try{return JSON.parse(localStorage.getItem("wz_dash_prev_kpis")||"{}");}catch{return {};}})();
+      const o=kpis.orders||{}, inv=kpis.inventory||{}, prevO=prev.orders||{}, prevInv=prev.inventory||{};
+      const deltas = [];
+      if (prevO.revenue&&o.revenue) { const p=Math.round((o.revenue-prevO.revenue)/prevO.revenue*100); if(Math.abs(p)>=5) deltas.push(`Revenue ${p>0?"+":""}${p}% vs last session`); }
+      if (prevO.total&&o.total)     { const d=o.total-prevO.total; if(Math.abs(d)>=1) deltas.push(`Orders ${d>0?"+":""}${d} vs last session`); }
+      if (prevInv.out_of_stock!==undefined&&inv.out_of_stock!==undefined) { const d=inv.out_of_stock-prevInv.out_of_stock; if(d!==0) deltas.push(`OOS SKUs ${d>0?"+":""}${d}`); }
+      if (!deltas.length&&!prev.orders) { setWhatChanged({text:null,loading:false}); return; }
+      const r = await fetch(`${API}/api/ai/chat`, {
+        method:"POST", headers:{"Content-Type":"application/json"},
+        body: JSON.stringify({
+          system:"You are a concise ecommerce ops assistant. Write ONE sentence starting with 'Since your last visit,' highlighting the most important change. Be specific. No markdown.",
+          messages:[{role:"user", content:deltas.length?deltas.join(". "):"No significant changes detected."}],
+          max_tokens:60, temperature:0.2
+        })
+      });
+      const d = await r.json();
+      setWhatChanged({text:d?.content?.[0]?.text?.trim()||null, loading:false});
+    } catch(e) { setWhatChanged({text:null, loading:false}); }
   };
+
+  // ── Dashboard AI assistant ────────────────────────────────────────────────
+  const sendAssistant = async () => {
+    if (!assistantInput.trim()||assistantLoading) return;
+    const msg = assistantInput.trim();
+    setAssistantInput("");
+    setAssistantMsgs(p=>[...p,{role:"user",text:msg}]);
+    setAssistantLoading(true);
+    try {
+      const o=kpis?.orders||{}, inv=kpis?.inventory||{};
+      const openIssues=(triage?.issues||[]).filter(i=>i.count>0).map(i=>`${i.id}:${i.count}`).join(",")||"none";
+      const wfSummary=cwfHistory.slice(0,5).map(r=>`${r.workflow_name||"?"}:${r.status||"?"}`).join(";")||"no runs";
+      const ctx=`Orders:${o.total||0}, Revenue:$${Math.round(o.revenue||0).toLocaleString()}, OOS:${inv.out_of_stock||0}. Issues:${openIssues}. Workflows:${wfSummary}.`;
+      const history=assistantMsgs.slice(-6).map(m=>({role:m.role==="user"?"user":"assistant",content:m.text}));
+      const r = await fetch(`${API}/api/ai/chat`, {
+        method:"POST", headers:{"Content-Type":"application/json"},
+        body: JSON.stringify({
+          system:"You are a dashboard assistant for an Amazon Seller analytics platform. Answer using the provided KPI/issue context. Be specific with numbers. Max 3 sentences. No markdown.",
+          messages:[...history,{role:"user",content:`Context: ${ctx}
+
+Question: ${msg}`}],
+          max_tokens:150, temperature:0.3
+        })
+      });
+      const d = await r.json();
+      setAssistantMsgs(p=>[...p,{role:"assistant",text:d?.content?.[0]?.text?.trim()||"Sorry, couldn't respond."}]);
+    } catch(e) { setAssistantMsgs(p=>[...p,{role:"assistant",text:"Error — try again."}]); }
+    setAssistantLoading(false);
+    setTimeout(()=>assistantEndRef.current?.scrollIntoView({behavior:"smooth"}),80);
+  };
+
+  // ── Widget anomaly detection ─────────────────────────────────────────────
+  React.useEffect(()=>{
+    const anomalies = {};
+    Object.entries(wData).forEach(([wid, data])=>{
+      if (!data?.rows?.length) return;
+      const prev = prevWDataRef.current[wid];
+      if (!prev?.rows?.length) return;
+      const w = widgets.find(x=>x.id===wid);
+      if (!w?.y_col) return;
+      const cur=Number(data.rows[0][w.y_col]), prv=Number(prev.rows[0][w.y_col]);
+      if (isNaN(cur)||isNaN(prv)||prv===0) return;
+      const delta=Math.round(((cur-prv)/Math.abs(prv))*100);
+      if (Math.abs(delta)>=20) anomalies[wid]={delta,direction:delta>0?"up":"down",label:`${delta>0?"+":""}${delta}% vs previous`};
+    });
+    setWidgetAnomaly(anomalies);
+    prevWDataRef.current = {...wData};
+  }, [JSON.stringify(Object.keys(wData).sort().map(k=>wData[k]?.rows?.[0]))]);
 
   // ── Load widget definitions ───────────────────────────────────────────────
   const loadWidgets = async () => {
@@ -1554,7 +1656,11 @@ function DashboardTab({ onNavigate }) {
         fetch(`${API}/api/report/triage?account_id=${acc}`).then(r=>r.json()),
         fetch(`${API}/api/custom-workflows/history`).then(r=>r.json()),
       ]);
-      if (!k.error) { setKpis(k); }
+      if (!k.error) {
+        setKpis(k);
+        generateKpiNarrative(k, tg);
+        localStorage.setItem("wz_dash_prev_kpis", JSON.stringify(k));
+      }
       if (!tg.error) setTriage(tg);
       if (Array.isArray(cwf) && cwf.length > 0) {
         // Merge API results with localStorage — deduplicate by run_id
@@ -1752,13 +1858,32 @@ function DashboardTab({ onNavigate }) {
                   animation:"pulse 1.5s infinite" }}/>
               : <span key={val} className="wz-kpi-val">{val}</span>}
           </div>
-          {trend && (
-            <div style={{ fontSize:10, color:trend.color, fontWeight:600,
-              display:"flex", alignItems:"center", gap:3, marginTop:6 }}>
+          {trend&&(
+            <div style={{fontSize:10,color:trend.color,fontWeight:600,
+              display:"flex",alignItems:"center",gap:3,marginTop:6}}>
               <span>{trend.dir}</span>
               <span>{trend.pct}% vs prev</span>
             </div>
           )}
+          {(()=>{
+            if (!healthHist||healthHist.length<5) return null;
+            if (!w.kpi_key?.includes("revenue")&&!w.kpi_key?.includes("orders")) return null;
+            const scores=healthHist.slice(-7).map(h=>h.score).filter(Boolean);
+            if (scores.length<3) return null;
+            const avg=scores.reduce((s,v)=>s+v,0)/scores.length;
+            const latest=scores[scores.length-1];
+            const delta=Math.round(((latest-avg)/avg)*100);
+            if (Math.abs(delta)<15) return null;
+            return (
+              <div style={{fontSize:9,marginTop:4,padding:"2px 6px",borderRadius:99,
+                display:"inline-flex",alignItems:"center",gap:3,
+                background:delta>0?`${T.green}12`:`${T.red}12`,
+                color:delta>0?T.green:T.red,fontWeight:700,
+                border:`1px solid ${delta>0?T.green:T.red}20`}}>
+                {delta>0?"↑":"↓"} {Math.abs(delta)}% vs 7-day avg
+              </div>
+            );
+          })()}
         </div>
       );
     }
@@ -2068,6 +2193,36 @@ function DashboardTab({ onNavigate }) {
         </div>
       )}
 
+      {/* ── Cross-tab status strip ─────────────────────────────────────────── */}
+      {(()=>{
+        const apHistory = (()=>{ try{return JSON.parse(localStorage.getItem("wz_ap_history_v2")||"[]");}catch{return [];} })();
+        const apLast = apHistory[0];
+        const apIssues = apLast?(apLast.issues?.length||0):null;
+        const wfLast = cwfHistory[0];
+        const wfAge = wfLast?.started_at?Math.round((Date.now()-new Date(wfLast.started_at).getTime())/60000):null;
+        const briefAge = (()=>{ const t=localStorage.getItem("wz_briefTs"); return t?Math.round((Date.now()-new Date(t).getTime())/3600000):null; })();
+        const strips = [
+          apIssues!==null&&{label:"AutoPilot",value:apIssues===0?"✓ Clean":`${apIssues} issue${apIssues!==1?"s":""}`,color:apIssues===0?T.green:T.red,nav:"autopilot"},
+          wfAge!==null&&{label:"Last Workflow",value:wfAge<60?`${wfAge}m ago`:`${Math.round(wfAge/60)}h ago`,color:wfLast?.status==="clean"?T.green:T.orange,nav:"workflows"},
+          briefAge!==null&&{label:"Daily Brief",value:briefAge<2?"Recent":`${briefAge}h ago`,color:briefAge>12?T.orange:T.green,nav:"brief"},
+        ].filter(Boolean);
+        if (!strips.length) return null;
+        return (
+          <div style={{display:"flex",gap:6,marginBottom:14,flexWrap:"wrap"}}>
+            {strips.map((s,i)=>(
+              <button key={i} onClick={()=>onNavigate&&onNavigate(s.nav)}
+                style={{display:"flex",alignItems:"center",gap:6,padding:"5px 10px",borderRadius:7,
+                  background:T.card,border:`1px solid ${s.color}30`,cursor:"pointer",
+                  fontSize:10,color:T.muted,transition:"all .15s"}}>
+                <div style={{width:6,height:6,borderRadius:"50%",background:s.color,flexShrink:0}}/>
+                <span style={{color:T.muted}}>{s.label}:</span>
+                <span style={{fontWeight:700,color:s.color}}>{s.value}</span>
+              </button>
+            ))}
+          </div>
+        );
+      })()}
+
       {/* Header */}
       <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom:20 }}>
         <div>
@@ -2087,19 +2242,28 @@ function DashboardTab({ onNavigate }) {
               <option key={a.account_id} value={a.account_id}>{a.seller_id||a.account_id}</option>
             ))}
           </select>
-          {!kpiNarrative && (
-            <Btn onClick={generateKpiNarrative} size="sm" variant="ghost" disabled={kpiNarrLoading||!kpis}
-              style={{ color:T.accent, borderColor:`${T.accent}40` }}>
-              {kpiNarrLoading ? <Spinner size={10}/> : "✨"} Summarise
+          {!kpiNarrative&&(
+            <Btn onClick={()=>generateKpiNarrative(kpis,triage)} size="sm" variant="ghost"
+              disabled={kpiNarrLoading||!kpis} style={{color:T.accent,borderColor:`${T.accent}40`}}>
+              {kpiNarrLoading?<Spinner size={10}/>:"✨"} Summarise
             </Btn>
           )}
+          <Btn onClick={generateWhatChanged} size="sm" variant="ghost"
+            disabled={!kpis||whatChanged?.loading}
+            style={{color:T.purple,borderColor:`${T.purple}30`}}>
+            {whatChanged?.loading?<Spinner size={10}/>:"↔"} What changed?
+          </Btn>
+          <Btn onClick={()=>setShowAssistant(p=>!p)} size="sm" variant="ghost"
+            style={{color:showAssistant?T.accent:T.muted,borderColor:showAssistant?`${T.accent}40`:T.border}}>
+            💬 Ask AI
+          </Btn>
           <Btn onClick={()=>setBuilder({initial:null})} size="sm" variant="ghost"
-            style={{ color:T.accent, borderColor:`${T.accent}40` }}>
+            style={{color:T.accent,borderColor:`${T.accent}40`}}>
             <Plus size={11}/> Add Widget
           </Btn>
           <Btn onClick={()=>setEditMode(p=>!p)} size="sm"
             variant={editMode?"muted":"ghost"}
-            style={{ color:editMode?T.orange:T.muted }}>
+            style={{color:editMode?T.orange:T.muted}}>
             {editMode?"✓ Done":"✏ Edit"}
           </Btn>
           <Btn onClick={()=>{ loadBase(accountId); runAllCustom(widgets); }} size="sm" variant="ghost" disabled={loading}>
@@ -2108,17 +2272,19 @@ function DashboardTab({ onNavigate }) {
         </div>
       </div>
 
-      {/* AI KPI Narrative — opt-in, shown only when requested */}
+      {/* AI KPI Narrative */}
       {(kpiNarrative || kpiNarrLoading) && (
-        <div style={{ padding:"11px 16px", borderRadius:10, marginBottom:16,
+        <div style={{ padding:"12px 18px", borderRadius:10, marginBottom:18,
           background:`linear-gradient(135deg,${T.accent}08,${T.purple}06)`,
           border:`1px solid ${T.accent}20`,
           display:"flex", gap:10, alignItems:"flex-start" }}>
-          <span style={{ fontSize:14, flexShrink:0, marginTop:1 }}>✨</span>
+          <div style={{ width:28, height:28, borderRadius:7, flexShrink:0,
+            background:`linear-gradient(135deg,${T.accent},${T.purple})`,
+            display:"flex", alignItems:"center", justifyContent:"center", fontSize:14 }}>✨</div>
           <div style={{ flex:1 }}>
             {kpiNarrLoading
               ? <div style={{ fontSize:12, color:T.muted, display:"flex", gap:6, alignItems:"center" }}>
-                  <Spinner size={10}/> Analysing…
+                  <Spinner size={10}/> Analysing current data…
                 </div>
               : <div style={{ fontSize:12, color:T.text2, lineHeight:1.6 }}>{kpiNarrative}</div>
             }
@@ -2126,13 +2292,74 @@ function DashboardTab({ onNavigate }) {
           {kpiNarrative && (
             <button onClick={()=>setKpiNarrative(null)}
               style={{ background:"none", border:"none", cursor:"pointer",
-                color:T.dim, fontSize:16, flexShrink:0, lineHeight:1 }}>×</button>
+                color:T.dim, fontSize:14, flexShrink:0 }}>×</button>
           )}
         </div>
       )}
 
-      {/* Widget grid */}
-      <div style={{ display:"grid", gridTemplateColumns:"repeat(4, 1fr)", gap:14 }}>
+      {/* What changed banner */}
+      {whatChanged?.text&&(
+        <div style={{padding:"10px 16px",borderRadius:9,marginBottom:16,
+          background:`${T.purple}08`,border:`1px solid ${T.purple}25`,
+          display:"flex",alignItems:"flex-start",gap:9}}>
+          <span style={{fontSize:14,flexShrink:0}}>↔</span>
+          <div style={{flex:1,fontSize:12,color:T.text,lineHeight:1.6}}>{whatChanged.text}</div>
+          <button onClick={()=>setWhatChanged(null)}
+            style={{background:"none",border:"none",cursor:"pointer",color:T.dim,fontSize:14}}>×</button>
+        </div>
+      )}
+
+      {/* Open issues feed */}
+      {(()=>{
+        const openIssues=(triage?.issues||[]).filter(i=>i.count>0);
+        if (!openIssues.length) return null;
+        const sevColor=s=>s==="critical"?T.red:s==="high"?T.orange:"#eab308";
+        return (
+          <div style={{marginBottom:16,borderRadius:10,overflow:"hidden",
+            border:`1px solid ${T.red}30`,background:T.card}}>
+            <div style={{padding:"10px 16px",borderBottom:`1px solid ${T.border}`,
+              background:`${T.red}06`,display:"flex",alignItems:"center",gap:8}}>
+              <span style={{fontSize:13}}>🔴</span>
+              <div style={{fontSize:12,fontWeight:700,color:T.red}}>Open Issues</div>
+              <span style={{fontSize:9,padding:"2px 7px",borderRadius:99,
+                background:`${T.red}15`,color:T.red,fontWeight:700,marginLeft:"auto"}}>
+                {openIssues.length} active
+              </span>
+            </div>
+            <div style={{display:"flex",flexWrap:"wrap"}}>
+              {openIssues.slice(0,6).map((issue,i)=>(
+                <div key={i} style={{display:"flex",alignItems:"center",gap:10,
+                  padding:"9px 16px",flex:"1 1 300px",
+                  borderBottom:i<openIssues.length-1?`1px solid ${T.border}15`:"none",
+                  borderRight:i%2===0?`1px solid ${T.border}15`:"none"}}>
+                  <div style={{width:7,height:7,borderRadius:"50%",flexShrink:0,
+                    background:sevColor(issue.severity),
+                    boxShadow:`0 0 0 3px ${sevColor(issue.severity)}20`}}/>
+                  <div style={{flex:1,minWidth:0}}>
+                    <div style={{fontSize:11,fontWeight:600,color:T.text,
+                      overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>
+                      {issue.id||issue.name||"Unknown check"}
+                    </div>
+                    <div style={{fontSize:9,color:T.muted,marginTop:1}}>
+                      {issue.count} row{issue.count!==1?"s":""} · {issue.severity}
+                    </div>
+                  </div>
+                  <button onClick={()=>onNavigate&&onNavigate("triage")}
+                    style={{fontSize:9,padding:"3px 8px",borderRadius:6,
+                      border:`1px solid ${T.accent}30`,background:`${T.accent}08`,
+                      color:T.accent,cursor:"pointer",flexShrink:0}}>
+                    Fix →
+                  </button>
+                </div>
+              ))}
+            </div>
+          </div>
+        );
+      })()}
+
+      {/* Widget grid + AI assistant drawer */}
+      <div style={{display:"flex",gap:14}}>
+        <div style={{flex:1,display:"grid",gridTemplateColumns:"repeat(4, 1fr)",gap:14}}>
         {widgets.map((w, idx) => {
           const span    = SIZE_SPAN[w.size] || 2;
           const height  = HEIGHT[w.size] || 220;
@@ -2189,8 +2416,17 @@ function DashboardTab({ onNavigate }) {
                 </div>
 
                 {/* Widget content */}
-                <div style={{ flex:1, minHeight:0 }}>
+                <div style={{ flex:1, minHeight:0, position:"relative" }}>
                   {renderWidgetContent(w, data)}
+                  {widgetAnomaly[w.id]&&!editMode&&(
+                    <div style={{position:"absolute",top:0,right:0,
+                      fontSize:9,fontWeight:700,padding:"2px 7px",borderRadius:99,
+                      background:widgetAnomaly[w.id].direction==="up"?`${T.green}15`:`${T.red}15`,
+                      color:widgetAnomaly[w.id].direction==="up"?T.green:T.red,
+                      border:`1px solid ${widgetAnomaly[w.id].direction==="up"?T.green:T.red}30`}}>
+                      {widgetAnomaly[w.id].label}
+                    </div>
+                  )}
                 </div>
 
                 {/* Accent bar at bottom */}
@@ -2201,20 +2437,80 @@ function DashboardTab({ onNavigate }) {
             </div>
           );
         })}
-      </div>
 
-      {widgets.length === 0 && (
-        <div style={{ textAlign:"center", padding:"60px 0" }}>
-          <BarChart2 size={40} color={T.border} style={{ margin:"0 auto 12px", display:"block" }}/>
-          <div style={{ fontSize:16, fontWeight:700, color:T.text, marginBottom:6 }}>No widgets yet</div>
-          <div style={{ fontSize:13, color:T.muted, marginBottom:16 }}>
-            Add a widget to start building your dashboard
-          </div>
-          <Btn onClick={()=>setBuilder({initial:null})} size="sm">
-            <Plus size={11}/> Add Widget
-          </Btn>
+          {widgets.length===0&&(
+            <div style={{textAlign:"center",padding:"60px 0",gridColumn:"span 4"}}>
+              <BarChart2 size={40} color={T.border} style={{margin:"0 auto 12px",display:"block"}}/>
+              <div style={{fontSize:16,fontWeight:700,color:T.text,marginBottom:6}}>No widgets yet</div>
+              <div style={{fontSize:13,color:T.muted,marginBottom:16}}>
+                Describe what you want to see and AI will write the SQL
+              </div>
+              <div style={{display:"flex",gap:8,justifyContent:"center"}}>
+                <Btn onClick={()=>setBuilder({initial:null})} size="sm"><Plus size={11}/> Add Widget</Btn>
+                <Btn onClick={()=>{setBuilder({initial:null});}} size="sm" variant="ghost"
+                  style={{color:T.purple,borderColor:`${T.purple}40`}}>✦ Build with AI</Btn>
+              </div>
+            </div>
+          )}
         </div>
-      )}
+
+        {/* AI Assistant Drawer */}
+        {showAssistant&&(
+          <div style={{width:290,flexShrink:0,display:"flex",flexDirection:"column",
+            background:T.card,borderRadius:12,border:`1px solid ${T.border}`,
+            height:"fit-content",maxHeight:500,alignSelf:"flex-start",
+            position:"sticky",top:0}}>
+            <div style={{padding:"11px 14px",borderBottom:`1px solid ${T.border}`,
+              display:"flex",alignItems:"center",gap:8,flexShrink:0}}>
+              <span style={{fontSize:14}}>💬</span>
+              <div style={{flex:1,fontSize:12,fontWeight:700,color:T.text}}>Ask AI</div>
+              <button onClick={()=>setShowAssistant(false)}
+                style={{background:"none",border:"none",cursor:"pointer",color:T.muted,fontSize:16}}>×</button>
+            </div>
+            <div style={{flex:1,overflowY:"auto",padding:"10px 12px",minHeight:0}}>
+              {assistantMsgs.length===0&&(
+                <div style={{fontSize:10,color:T.muted,lineHeight:1.8}}>
+                  Ask questions about your data:<br/>
+                  <span style={{color:T.accent}}>· "Why are orders down?"</span><br/>
+                  <span style={{color:T.accent}}>· "What's causing out-of-stock issues?"</span><br/>
+                  <span style={{color:T.accent}}>· "When did revenue last drop?"</span>
+                </div>
+              )}
+              {assistantMsgs.map((m,i)=>(
+                <div key={i} style={{marginBottom:8,display:"flex",
+                  flexDirection:m.role==="user"?"row-reverse":"row",gap:6,alignItems:"flex-start"}}>
+                  <div style={{maxWidth:"90%",padding:"7px 9px",borderRadius:8,fontSize:11,lineHeight:1.5,
+                    background:m.role==="user"?T.accent:T.surface,
+                    color:m.role==="user"?"white":T.text,
+                    border:m.role==="user"?"none":`1px solid ${T.border}`}}>
+                    {m.text}
+                  </div>
+                </div>
+              ))}
+              {assistantLoading&&(
+                <div style={{display:"flex",gap:5,alignItems:"center",color:T.muted,fontSize:10}}>
+                  <Spinner size={8}/> Thinking…
+                </div>
+              )}
+              <div ref={assistantEndRef}/>
+            </div>
+            <div style={{padding:"8px 10px",borderTop:`1px solid ${T.border}`,flexShrink:0}}>
+              <div style={{display:"flex",gap:6}}>
+                <input value={assistantInput} onChange={e=>setAssistantInput(e.target.value)}
+                  onKeyDown={e=>e.key==="Enter"&&!e.shiftKey&&sendAssistant()}
+                  placeholder="Ask about your data…"
+                  style={{flex:1,padding:"6px 8px",borderRadius:7,
+                    border:`1px solid ${T.border}`,background:T.surface,
+                    color:T.text,fontSize:10,outline:"none"}}/>
+                <button onClick={sendAssistant}
+                  disabled={!assistantInput.trim()||assistantLoading}
+                  style={{padding:"6px 10px",borderRadius:7,background:T.accent,
+                    color:"white",border:"none",cursor:"pointer",fontSize:11}}>↑</button>
+              </div>
+            </div>
+          </div>
+        )}
+      </div>
     </div>
   );
 }
@@ -4914,7 +5210,8 @@ function MonitorTab() {
                         body:JSON.stringify({
                           system:`Generate 3 data quality check SQL queries for ${tbl}. Columns: ${schCols}. Return JSON array: [{"name":"...","sql":"SELECT ...","pass_condition":"rows = 0","severity":"high"}]. No markdown.`,
                           messages:[{role:"user", content:`Generate 3 checks for ${tbl}`}],
-                          max_tokens:400
+                          max_tokens:400,
+          temperature:0.2
                         })
                       });
                       const d = await res.json();
@@ -6919,7 +7216,8 @@ ${dbSchema ? "DATABASE SCHEMA:\n" + dbSchema : "Known tables: mws.report, mws.or
 mws.report status: pending|processed|failed. copy_status: REPLICATED|NOT_REPLICATED|NULL.
 Return ONLY valid Redshift SQL, no explanation, no markdown, no backticks.`,
           messages:[{ role:"user", content:aiInput }],
-          max_tokens:400
+          max_tokens:400,
+          temperature:0.2
         })
       });
       const data = await res.json();
@@ -10705,89 +11003,99 @@ const AGENTIC_RUNBOOK_TEMPLATES = [
   },
 ];
 
-// ── RunbookStepCard — single step in builder ──────────────────────────────────
-function RunbookStepCard({ step, index, total, onEdit, onDelete, onMove, T, isRunning, runStatus }) {
+// ── RunbookStepCard ───────────────────────────────────────────────────────────
+function RunbookStepCard({ step, index, total, onEdit, onDelete, onMove, T, isRunning, runStatus, suggestion, onAcceptSuggestion }) {
   const act = ACTION_TYPES[step.type] || { label:step.type, icon:"⚙", color:T.muted };
-  const statusColor = runStatus==="done" ? T.green : runStatus==="running" ? T.accent : runStatus==="error" ? T.red : runStatus==="skipped" ? T.muted : null;
+  const statusColor = runStatus==="done"?T.green:runStatus==="running"?T.accent:runStatus==="error"?T.red:runStatus==="skipped"?T.muted:null;
   return (
-    <div style={{ display:"flex", alignItems:"stretch", gap:0 }}>
-      {/* Connector line */}
-      <div style={{ display:"flex", flexDirection:"column", alignItems:"center", width:32, flexShrink:0 }}>
-        <div style={{ width:24, height:24, borderRadius:"50%", background:statusColor||act.color+"22",
+    <div style={{ display:"flex", alignItems:"stretch", gap:0, marginBottom: index<total-1?0:0 }}>
+      <div style={{ display:"flex", flexDirection:"column", alignItems:"center", width:28, flexShrink:0 }}>
+        <div style={{ width:22, height:22, borderRadius:"50%", background:statusColor||act.color+"22",
           border:`2px solid ${statusColor||act.color}`, display:"flex", alignItems:"center",
-          justifyContent:"center", fontSize:11, flexShrink:0, zIndex:1 }}>
-          {runStatus==="running" ? <Spinner size={9} color={T.accent}/> :
-           runStatus==="done" ? "✓" : runStatus==="error" ? "✗" : act.icon}
+          justifyContent:"center", fontSize:10, flexShrink:0, zIndex:1 }}>
+          {runStatus==="running"?<Spinner size={8} color={T.accent}/>:runStatus==="done"?"✓":runStatus==="error"?"✗":act.icon}
         </div>
-        {index < total-1 && <div style={{ width:2, flex:1, background:T.border, minHeight:16 }}/>}
+        {index<total-1 && <div style={{ width:2, flex:1, background:T.border, minHeight:14 }}/>}
       </div>
-      {/* Card */}
-      <div style={{ flex:1, marginLeft:8, marginBottom:index<total-1?8:0, background:T.card,
-        border:`1px solid ${statusColor ? statusColor+"40" : T.border}`, borderRadius:10, padding:"10px 12px",
-        position:"relative" }}>
-        <div style={{ display:"flex", alignItems:"center", gap:8 }}>
-          <div style={{ flex:1, minWidth:0 }}>
-            <div style={{ fontSize:12, fontWeight:700, color:T.text }}>{step.label || act.label}</div>
-            <div style={{ fontSize:10, color:act.color, fontWeight:600 }}>{act.label}</div>
-            {step.config?.channel && <div style={{ fontSize:10, color:T.muted, marginTop:2 }}>→ {step.config.channel}</div>}
-            {step.config?.sql && <div style={{ fontSize:10, color:T.muted, marginTop:2, fontFamily:"monospace" }}>{step.config.sql.slice(0,60)}…</div>}
-            {step.config?.condition && <div style={{ fontSize:10, color:T.muted, marginTop:2 }}>Until: {step.config.condition} {step.config.timeout_mins ? `(${step.config.timeout_mins}m timeout)` : ""}</div>}
-          </div>
-          {!isRunning && (
-            <div style={{ display:"flex", gap:4, flexShrink:0 }}>
-              {index>0 && <button onClick={()=>onMove(index,-1)} style={{ background:"none",border:`1px solid ${T.border}`,borderRadius:4,cursor:"pointer",color:T.muted,fontSize:10,padding:"1px 5px" }}>↑</button>}
-              {index<total-1 && <button onClick={()=>onMove(index,1)} style={{ background:"none",border:`1px solid ${T.border}`,borderRadius:4,cursor:"pointer",color:T.muted,fontSize:10,padding:"1px 5px" }}>↓</button>}
-              <button onClick={()=>onEdit(step,index)} style={{ background:"none",border:`1px solid ${T.border}`,borderRadius:4,cursor:"pointer",color:T.muted,fontSize:10,padding:"1px 5px" }}>✏</button>
-              <button onClick={()=>onDelete(index)} style={{ background:"none",border:`1px solid ${T.red}40`,borderRadius:4,cursor:"pointer",color:T.red,fontSize:10,padding:"1px 5px" }}>✕</button>
+      <div style={{ flex:1, marginLeft:8, marginBottom:index<total-1?8:0 }}>
+        <div style={{ background:T.card, border:`1px solid ${statusColor?statusColor+"40":T.border}`,
+          borderRadius:9, padding:"8px 11px", position:"relative" }}>
+          <div style={{ display:"flex", alignItems:"center", gap:6 }}>
+            <div style={{ flex:1, minWidth:0 }}>
+              <div style={{ fontSize:11, fontWeight:700, color:T.text, marginBottom:1 }}>{step.label||act.label}</div>
+              <div style={{ fontSize:9, color:act.color, fontWeight:600 }}>{act.label}</div>
+              {step.config?.channel && <div style={{ fontSize:9, color:T.muted, marginTop:1 }}>→ {step.config.channel}</div>}
+              {step.config?.sql && <div style={{ fontSize:9, color:T.muted, marginTop:1, fontFamily:"monospace" }}>{step.config.sql.slice(0,55)}…</div>}
+              {step.config?.condition && <div style={{ fontSize:9, color:T.muted, marginTop:1 }}>Until: {step.config.condition}</div>}
+              {step.config?.url && <div style={{ fontSize:9, color:T.muted, marginTop:1, fontFamily:"monospace" }}>{step.config.url.slice(0,45)}</div>}
+              {step.config?.scope && <div style={{ fontSize:9, color:T.muted, marginTop:1 }}>Scope: {step.config.scope}</div>}
+              {step.on_fail&&step.on_fail!=="continue" && <div style={{ fontSize:9, color:T.orange, marginTop:1 }}>on fail → {step.on_fail}</div>}
             </div>
-          )}
-          {runStatus && <div style={{ fontSize:10, fontWeight:700, color:statusColor, flexShrink:0 }}>
-            {runStatus==="done"?"Done":runStatus==="running"?"Running…":runStatus==="error"?"Failed":runStatus==="skipped"?"Skipped":""}
-          </div>}
+            {!isRunning && (
+              <div style={{ display:"flex", gap:3, flexShrink:0 }}>
+                {index>0 && <button onClick={()=>onMove(index,-1)} style={{ background:"none",border:`1px solid ${T.border}`,borderRadius:4,cursor:"pointer",color:T.muted,fontSize:9,padding:"1px 4px" }}>↑</button>}
+                {index<total-1 && <button onClick={()=>onMove(index,1)} style={{ background:"none",border:`1px solid ${T.border}`,borderRadius:4,cursor:"pointer",color:T.muted,fontSize:9,padding:"1px 4px" }}>↓</button>}
+                <button onClick={()=>onEdit(step,index)} style={{ background:"none",border:`1px solid ${T.border}`,borderRadius:4,cursor:"pointer",color:T.muted,fontSize:9,padding:"1px 4px" }}>✏</button>
+                <button onClick={()=>onDelete(index)} style={{ background:"none",border:`1px solid ${T.red}40`,borderRadius:4,cursor:"pointer",color:T.red,fontSize:9,padding:"1px 4px" }}>✕</button>
+              </div>
+            )}
+            {runStatus && <div style={{ fontSize:9, fontWeight:700, color:statusColor, flexShrink:0 }}>
+              {runStatus==="done"?"Done":runStatus==="running"?"…":runStatus==="error"?"Failed":runStatus==="skipped"?"Skip":""}
+            </div>}
+          </div>
         </div>
+        {/* AI next-step suggestion chip */}
+        {suggestion && (
+          <div style={{ marginTop:4, padding:"5px 10px", borderRadius:7, background:`${T.accent}10`,
+            border:`1px solid ${T.accent}30`, display:"flex", alignItems:"center", gap:7 }}>
+            <span style={{ fontSize:9, color:T.accent }}>✦</span>
+            <span style={{ fontSize:10, color:T.muted, flex:1 }}>Next: <strong style={{ color:T.text }}>{suggestion.label}</strong></span>
+            <button onClick={()=>onAcceptSuggestion(suggestion)}
+              style={{ fontSize:9, padding:"2px 8px", borderRadius:5, background:T.accent, color:"white", border:"none", cursor:"pointer" }}>
+              + Add
+            </button>
+          </div>
+        )}
       </div>
     </div>
   );
 }
 
-// ── RunbookFlowPreview — visual SVG flow preview ──────────────────────────────
+// ── RunbookFlowPreview — visual SVG flow ──────────────────────────────────────
 function RunbookFlowPreview({ steps, T, runStatuses }) {
   if (!steps.length) return (
     <div style={{ display:"flex", alignItems:"center", justifyContent:"center", height:"100%", color:T.muted, fontSize:12 }}>
-      Add steps to see flow preview
+      Add steps to see flow
     </div>
   );
-  const nodeH = 52, nodeW = 180, gap = 24, padX = 20, padY = 20;
+  const nodeH=46, nodeW=170, gap=20, padX=16, padY=16;
   const totalH = padY*2 + steps.length*(nodeH+gap) - gap;
-  const totalW = padX*2 + nodeW;
   return (
-    <svg width="100%" viewBox={`0 0 ${totalW} ${totalH}`} style={{ maxHeight:600, overflow:"visible" }}>
-      {steps.map((step, i) => {
-        const act = ACTION_TYPES[step.type] || { label:step.type, icon:"⚙", color:T.muted };
+    <svg width="100%" viewBox={`0 0 ${padX*2+nodeW} ${totalH}`} style={{ maxHeight:520, overflow:"visible" }}>
+      {steps.map((step,i) => {
+        const act = ACTION_TYPES[step.type]||{label:step.type,icon:"⚙",color:T.muted};
         const st = runStatuses?.[step.id];
-        const fill = st==="done" ? T.green : st==="running" ? T.accent : st==="error" ? T.red : act.color;
+        const fill = st==="done"?T.green:st==="running"?T.accent:st==="error"?T.red:act.color;
         const y = padY + i*(nodeH+gap);
         const cx = padX + nodeW/2;
         return (
           <g key={step.id}>
-            {i>0 && <line x1={cx} y1={padY+(i-1)*(nodeH+gap)+nodeH} x2={cx} y2={y}
-              stroke={T.border} strokeWidth={2} strokeDasharray={st?"none":"4,3"}/>}
-            <rect x={padX} y={y} width={nodeW} height={nodeH} rx={10}
-              fill={fill+"18"} stroke={fill} strokeWidth={st==="running"?2:1}/>
-            <text x={padX+14} y={y+20} fontSize={14} fill={fill}>{act.icon}</text>
-            <text x={padX+32} y={y+17} fontSize={10} fontWeight="700" fill={fill === T.muted ? T.text : fill}>
-              {(step.label||act.label).slice(0,22)}{(step.label||act.label).length>22?"…":""}
+            {i>0 && <line x1={cx} y1={padY+(i-1)*(nodeH+gap)+nodeH} x2={cx} y2={y} stroke={T.border} strokeWidth={2} strokeDasharray={st?"none":"4,3"}/>}
+            <rect x={padX} y={y} width={nodeW} height={nodeH} rx={8} fill={fill+"15"} stroke={fill} strokeWidth={st==="running"?2:1}/>
+            <text x={padX+11} y={y+18} fontSize={13} fill={fill}>{act.icon}</text>
+            <text x={padX+28} y={y+16} fontSize={9} fontWeight="700" fill={fill===T.muted?T.text:fill}>
+              {(step.label||act.label).slice(0,20)}{(step.label||act.label).length>20?"…":""}
             </text>
-            <text x={padX+32} y={y+31} fontSize={9} fill={T.muted}>{act.label}</text>
-            {st && <text x={padX+nodeW-8} y={y+22} fontSize={9} fontWeight="700" fill={fill} textAnchor="end">
-              {st==="done"?"✓":st==="running"?"…":st==="error"?"✗":"–"}
-            </text>}
+            <text x={padX+28} y={y+28} fontSize={8} fill={T.muted}>{act.label.slice(0,22)}</text>
             {step.on_fail==="escalate" && (
               <g>
-                <line x1={padX+nodeW} y1={y+nodeH/2} x2={padX+nodeW+18} y2={y+nodeH/2} stroke={T.red} strokeWidth={1} strokeDasharray="3,2"/>
-                <text x={padX+nodeW+20} y={y+nodeH/2+4} fontSize={9} fill={T.red}>escalate</text>
+                <line x1={padX+nodeW} y1={y+nodeH/2} x2={padX+nodeW+16} y2={y+nodeH/2} stroke={T.red} strokeWidth={1} strokeDasharray="3,2"/>
+                <text x={padX+nodeW+18} y={y+nodeH/2+3} fontSize={8} fill={T.red}>⚠</text>
               </g>
             )}
+            {st && <text x={padX+nodeW-6} y={y+19} fontSize={9} fontWeight="700" fill={fill} textAnchor="end">
+              {st==="done"?"✓":st==="running"?"…":st==="error"?"✗":"–"}
+            </text>}
           </g>
         );
       })}
@@ -10795,36 +11103,223 @@ function RunbookFlowPreview({ steps, T, runStatuses }) {
   );
 }
 
-// ── RunbookBuilder — step-list (left) + visual preview (right) ────────────────
+// ── StepEditModal — full config for all 9 action types ────────────────────────
+function StepEditModal({ step: initialStep, index, allSteps, onSave, onClose, T }) {
+  const [s, setS] = React.useState({ ...initialStep, config:{ ...(initialStep.config||{}) } });
+  const upd = (p) => setS(prev=>({...prev,...p}));
+  const updCfg = (p) => setS(prev=>({...prev, config:{...prev.config,...p}}));
+  const act = ACTION_TYPES[s.type]||{label:s.type,icon:"⚙",color:T.muted};
+  const inp = (props) => ({
+    style:{ width:"100%", padding:"6px 9px", borderRadius:7, border:`1px solid ${T.border}`,
+      background:T.surface, color:T.text, fontSize:11, boxSizing:"border-box", ...props.style },
+    ...props
+  });
+  return (
+    <div style={{ position:"fixed", inset:0, background:"rgba(0,0,0,0.55)", zIndex:500,
+      display:"flex", alignItems:"center", justifyContent:"center" }}>
+      <div style={{ background:T.surface, borderRadius:14, padding:22, width:"min(500px,94vw)",
+        border:`1px solid ${T.border}`, maxHeight:"86vh", overflowY:"auto" }}>
+        <div style={{ display:"flex", alignItems:"center", gap:10, marginBottom:16 }}>
+          <span style={{ fontSize:18 }}>{act.icon}</span>
+          <div style={{ flex:1 }}>
+            <div style={{ fontSize:13, fontWeight:700, color:T.text }}>Edit Step</div>
+            <div style={{ fontSize:10, color:act.color }}>{act.label}</div>
+          </div>
+          <button onClick={onClose} style={{ background:"none",border:"none",cursor:"pointer",color:T.muted,fontSize:18 }}>×</button>
+        </div>
+        <div style={{ display:"flex", flexDirection:"column", gap:10 }}>
+          {/* Common */}
+          <div>
+            <div style={{ fontSize:10, color:T.muted, marginBottom:3, fontWeight:600, textTransform:"uppercase", letterSpacing:".05em" }}>Label</div>
+            <input {...inp({ value:s.label, onChange:e=>upd({label:e.target.value}) })}/>
+          </div>
+          <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:8 }}>
+            <div>
+              <div style={{ fontSize:10, color:T.muted, marginBottom:3, fontWeight:600, textTransform:"uppercase", letterSpacing:".05em" }}>On Failure</div>
+              <select value={s.on_fail||"continue"} onChange={e=>upd({on_fail:e.target.value})}
+                style={{ width:"100%", padding:"6px 8px", borderRadius:7, border:`1px solid ${T.border}`, background:T.surface, color:T.text, fontSize:11 }}>
+                <option value="continue">Continue</option>
+                <option value="next">Skip to next</option>
+                <option value="escalate">Escalate to human</option>
+                <option value="stop">Stop runbook</option>
+              </select>
+            </div>
+            <div>
+              <div style={{ fontSize:10, color:T.muted, marginBottom:3, fontWeight:600, textTransform:"uppercase", letterSpacing:".05em" }}>Max Retries</div>
+              <input type="number" min={0} max={10} {...inp({ value:s.retry_count||0, onChange:e=>upd({retry_count:+e.target.value}) })}/>
+            </div>
+          </div>
+          {/* Type-specific */}
+          {s.type==="send_alert" && <>
+            <div>
+              <div style={{ fontSize:10, color:T.muted, marginBottom:3, fontWeight:600, textTransform:"uppercase", letterSpacing:".05em" }}>Slack Channel</div>
+              <input {...inp({ value:s.config.channel||"", placeholder:"#data-ops", onChange:e=>updCfg({channel:e.target.value}) })}/>
+            </div>
+            <div>
+              <div style={{ fontSize:10, color:T.muted, marginBottom:3, fontWeight:600, textTransform:"uppercase", letterSpacing:".05em" }}>Message</div>
+              <textarea value={s.config.message||""} onChange={e=>updCfg({message:e.target.value})} rows={2}
+                style={{ width:"100%", padding:"6px 9px", borderRadius:7, border:`1px solid ${T.border}`, background:T.surface, color:T.text, fontSize:11, resize:"none", boxSizing:"border-box" }}/>
+            </div>
+            <div>
+              <div style={{ fontSize:10, color:T.muted, marginBottom:3, fontWeight:600, textTransform:"uppercase", letterSpacing:".05em" }}>Severity</div>
+              <select value={s.config.severity||"warning"} onChange={e=>updCfg({severity:e.target.value})}
+                style={{ width:"100%", padding:"6px 8px", borderRadius:7, border:`1px solid ${T.border}`, background:T.surface, color:T.text, fontSize:11 }}>
+                <option value="info">ℹ Info</option><option value="warning">⚠ Warning</option><option value="critical">🔴 Critical</option>
+              </select>
+            </div>
+          </>}
+          {s.type==="run_sql" && <>
+            <div>
+              <div style={{ fontSize:10, color:T.muted, marginBottom:3, fontWeight:600, textTransform:"uppercase", letterSpacing:".05em" }}>SQL Query</div>
+              <textarea value={s.config.sql||""} onChange={e=>updCfg({sql:e.target.value})} rows={4}
+                style={{ width:"100%", padding:"6px 9px", borderRadius:7, border:`1px solid ${T.border}`, background:T.surface, color:T.text, fontSize:10, fontFamily:"monospace", resize:"vertical", boxSizing:"border-box" }}/>
+            </div>
+            <div>
+              <div style={{ fontSize:10, color:T.muted, marginBottom:3, fontWeight:600, textTransform:"uppercase", letterSpacing:".05em" }}>Assert (e.g. = 0, &gt; 100)</div>
+              <input {...inp({ value:s.config.assert||"", placeholder:"= 0", onChange:e=>updCfg({assert:e.target.value}) })}/>
+            </div>
+          </>}
+          {s.type==="wait_condition" && <>
+            <div>
+              <div style={{ fontSize:10, color:T.muted, marginBottom:3, fontWeight:600, textTransform:"uppercase", letterSpacing:".05em" }}>Condition</div>
+              <input {...inp({ value:s.config.condition||"", placeholder:"rows > 0", onChange:e=>updCfg({condition:e.target.value}) })}/>
+            </div>
+            <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:8 }}>
+              <div>
+                <div style={{ fontSize:10, color:T.muted, marginBottom:3, fontWeight:600, textTransform:"uppercase", letterSpacing:".05em" }}>Timeout (min)</div>
+                <input type="number" {...inp({ value:s.config.timeout_mins||15, onChange:e=>updCfg({timeout_mins:+e.target.value}) })}/>
+              </div>
+              <div>
+                <div style={{ fontSize:10, color:T.muted, marginBottom:3, fontWeight:600, textTransform:"uppercase", letterSpacing:".05em" }}>Poll (sec)</div>
+                <input type="number" {...inp({ value:s.config.poll_secs||30, onChange:e=>updCfg({poll_secs:+e.target.value}) })}/>
+              </div>
+            </div>
+          </>}
+          {s.type==="call_api" && <>
+            <div>
+              <div style={{ fontSize:10, color:T.muted, marginBottom:3, fontWeight:600, textTransform:"uppercase", letterSpacing:".05em" }}>URL</div>
+              <input {...inp({ value:s.config.url||"", placeholder:"https://api.example.com/trigger", onChange:e=>updCfg({url:e.target.value}) })}/>
+            </div>
+            <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:8 }}>
+              <div>
+                <div style={{ fontSize:10, color:T.muted, marginBottom:3, fontWeight:600, textTransform:"uppercase", letterSpacing:".05em" }}>Method</div>
+                <select value={s.config.method||"POST"} onChange={e=>updCfg({method:e.target.value})}
+                  style={{ width:"100%", padding:"6px 8px", borderRadius:7, border:`1px solid ${T.border}`, background:T.surface, color:T.text, fontSize:11 }}>
+                  <option>POST</option><option>GET</option><option>PUT</option><option>PATCH</option>
+                </select>
+              </div>
+              <div>
+                <div style={{ fontSize:10, color:T.muted, marginBottom:3, fontWeight:600, textTransform:"uppercase", letterSpacing:".05em" }}>Timeout (sec)</div>
+                <input type="number" {...inp({ value:s.config.timeout_s||30, onChange:e=>updCfg({timeout_s:+e.target.value}) })}/>
+              </div>
+            </div>
+            <div>
+              <div style={{ fontSize:10, color:T.muted, marginBottom:3, fontWeight:600, textTransform:"uppercase", letterSpacing:".05em" }}>Body (JSON)</div>
+              <textarea value={s.config.body||""} onChange={e=>updCfg({body:e.target.value})} rows={2}
+                style={{ width:"100%", padding:"6px 9px", borderRadius:7, border:`1px solid ${T.border}`, background:T.surface, color:T.text, fontSize:10, fontFamily:"monospace", resize:"none", boxSizing:"border-box" }}/>
+            </div>
+          </>}
+          {(s.type==="pause_jobs"||s.type==="resume_jobs") && (
+            <div>
+              <div style={{ fontSize:10, color:T.muted, marginBottom:3, fontWeight:600, textTransform:"uppercase", letterSpacing:".05em" }}>Scope</div>
+              <select value={s.config.scope||"all_downstream"} onChange={e=>updCfg({scope:e.target.value})}
+                style={{ width:"100%", padding:"6px 8px", borderRadius:7, border:`1px solid ${T.border}`, background:T.surface, color:T.text, fontSize:11 }}>
+                <option value="all_downstream">All downstream</option>
+                <option value="direct_downstream">Direct only</option>
+                <option value="specific">Specific jobs</option>
+              </select>
+            </div>
+          )}
+          {s.type==="trigger_refresh" && <>
+            <div>
+              <div style={{ fontSize:10, color:T.muted, marginBottom:3, fontWeight:600, textTransform:"uppercase", letterSpacing:".05em" }}>Target Pipeline</div>
+              <input {...inp({ value:s.config.target||"", placeholder:"e.g. api_download", onChange:e=>updCfg({target:e.target.value}) })}/>
+            </div>
+            <label style={{ display:"flex", alignItems:"center", gap:8, cursor:"pointer" }}>
+              <input type="checkbox" checked={!!s.config.force_full} onChange={e=>updCfg({force_full:e.target.checked})} style={{ width:13, height:13 }}/>
+              <span style={{ fontSize:11, color:T.text }}>Force full re-download</span>
+            </label>
+          </>}
+          {s.type==="validate_data" && <>
+            <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:8 }}>
+              <div>
+                <div style={{ fontSize:10, color:T.muted, marginBottom:3, fontWeight:600, textTransform:"uppercase", letterSpacing:".05em" }}>Max age (min)</div>
+                <input type="number" {...inp({ value:s.config.max_age_mins||60, onChange:e=>updCfg({max_age_mins:+e.target.value}) })}/>
+              </div>
+              <div>
+                <div style={{ fontSize:10, color:T.muted, marginBottom:3, fontWeight:600, textTransform:"uppercase", letterSpacing:".05em" }}>Min rows</div>
+                <input type="number" {...inp({ value:s.config.min_rows||0, onChange:e=>updCfg({min_rows:+e.target.value}) })}/>
+              </div>
+            </div>
+            <div>
+              <div style={{ fontSize:10, color:T.muted, marginBottom:3, fontWeight:600, textTransform:"uppercase", letterSpacing:".05em" }}>Table</div>
+              <input {...inp({ value:s.config.table||"", placeholder:"e.g. mws.report", onChange:e=>updCfg({table:e.target.value}) })}/>
+            </div>
+          </>}
+          {s.type==="escalate" && <>
+            <div>
+              <div style={{ fontSize:10, color:T.muted, marginBottom:3, fontWeight:600, textTransform:"uppercase", letterSpacing:".05em" }}>Approval Message</div>
+              <textarea value={s.config.approval_message||""} onChange={e=>updCfg({approval_message:e.target.value})} rows={2}
+                style={{ width:"100%", padding:"6px 9px", borderRadius:7, border:`1px solid ${T.border}`, background:T.surface, color:T.text, fontSize:11, resize:"none", boxSizing:"border-box" }}/>
+            </div>
+            <div>
+              <div style={{ fontSize:10, color:T.muted, marginBottom:3, fontWeight:600, textTransform:"uppercase", letterSpacing:".05em" }}>Auto-reject after (min, 0=never)</div>
+              <input type="number" min={0} {...inp({ value:s.config.auto_reject_mins||0, onChange:e=>updCfg({auto_reject_mins:+e.target.value}) })}/>
+            </div>
+          </>}
+          <div style={{ display:"flex", gap:8, marginTop:4 }}>
+            <Btn onClick={()=>onSave(s,index)} style={{ flex:1, background:T.accent, color:"white", border:"none" }}>Save Step</Btn>
+            <Btn onClick={onClose} variant="ghost" style={{ flex:1 }}>Cancel</Btn>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ── RunbookBuilder — full AI-rich builder ─────────────────────────────────────
 function RunbookBuilder({ initial, onSave, onCancel, T }) {
   const blankRb = { id:"rb-"+Date.now(), name:"", desc:"", icon:"⚙", color:"#6366f1",
-    trigger:{ type:"manual", label:"Manual trigger" }, tags:[], steps:[] };
-  const [rb, setRb] = React.useState(initial || blankRb);
-  const [editingStep, setEditingStep] = React.useState(null); // {step, index} | null
-  const [addingType, setAddingType] = React.useState(null);
+    trigger:{ type:"manual", label:"Manual trigger" }, tags:[], steps:[],
+    notifications:{ slack:"", email:"", on_start:false, on_complete:true, on_failure:true } };
+  const [rb, setRb] = React.useState(() => ({ ...blankRb, ...(initial||{}),
+    notifications:{ ...blankRb.notifications, ...(initial?.notifications||{}) } }));
+  const [editingStep, setEditingStep] = React.useState(null);
+  const [addingType, setAddingType] = React.useState(false);
+  const [leftTab, setLeftTab] = React.useState("steps"); // steps | trigger | notify
+  // AI state
   const [aiBuilding, setAiBuilding] = React.useState(false);
-  const [aiPrompt, setAiPrompt] = React.useState("");
   const [showAiBox, setShowAiBox] = React.useState(false);
+  const [aiPrompt, setAiPrompt] = React.useState("");
+  const [chatOpen, setChatOpen] = React.useState(false);
+  const [chatMsgs, setChatMsgs] = React.useState([]);
+  const [chatInput, setChatInput] = React.useState("");
+  const [chatLoading, setChatLoading] = React.useState(false);
+  const [suggestions, setSuggestions] = React.useState({}); // {stepId: suggestionStep}
+  const [reviewing, setReviewing] = React.useState(false);
+  const [reviewNotes, setReviewNotes] = React.useState(null);
+  const chatEndRef = React.useRef(null);
 
-  const update = (patch) => setRb(p=>({...p,...patch}));
+  const upd = (p) => setRb(prev=>({...prev,...p}));
+  const updTrigger = (p) => setRb(prev=>({...prev, trigger:{...prev.trigger,...p}}));
+  const updNotif = (p) => setRb(prev=>({...prev, notifications:{...prev.notifications,...p}}));
+
   const addStep = (type) => {
     const act = ACTION_TYPES[type];
-    const newStep = { id:"step-"+Date.now(), type, label:act.label, config:{}, on_fail:"continue" };
-    setRb(p=>({...p, steps:[...p.steps, newStep]}));
-    setAddingType(null);
+    const newStep = { id:"step-"+Date.now(), type, label:act.label, config:{}, on_fail:"continue", retry_count:0 };
+    setRb(prev=>({...prev, steps:[...prev.steps, newStep]}));
+    setAddingType(false);
+    // Ask AI for next-step suggestion
+    fetchNextStepSuggestion([...rb.steps, newStep], newStep.id);
   };
-  const deleteStep = (idx) => setRb(p=>({...p, steps:p.steps.filter((_,i)=>i!==idx)}));
+  const deleteStep = (idx) => setRb(prev=>({...prev, steps:prev.steps.filter((_,i)=>i!==idx)}));
   const moveStep = (idx, dir) => {
-    const steps = [...rb.steps];
-    const [removed] = steps.splice(idx,1);
-    steps.splice(idx+dir,0,removed);
-    setRb(p=>({...p, steps}));
+    const steps=[...rb.steps]; const [r]=steps.splice(idx,1); steps.splice(idx+dir,0,r);
+    setRb(prev=>({...prev, steps}));
   };
-  const saveStep = (step, idx) => {
-    setRb(p=>({...p, steps:p.steps.map((s,i)=>i===idx?step:s)}));
-    setEditingStep(null);
-  };
+  const saveStep = (step, idx) => { setRb(prev=>({...prev, steps:prev.steps.map((s,i)=>i===idx?step:s)})); setEditingStep(null); };
 
+  // ── AI: generate full runbook from prompt ─────────────────────────────────
   const buildWithAi = async () => {
     if (!aiPrompt.trim()) return;
     setAiBuilding(true);
@@ -10832,448 +11327,1055 @@ function RunbookBuilder({ initial, onSave, onCancel, T }) {
       const res = await fetch(`${API}/api/ai/chat`, {
         method:"POST", headers:{"Content-Type":"application/json"},
         body: JSON.stringify({
-          system:`You are a senior data engineering runbook designer. Given a scenario, return a JSON runbook with sequential steps for an autonomous agent to execute.
-Return ONLY JSON (no markdown):
+          system:`You are a senior data engineering runbook designer for an Amazon Seller ecommerce analytics platform running on Redshift.
+Given a scenario, return a complete JSON runbook an autonomous agent can execute.
+Available step types: pause_jobs|resume_jobs|trigger_refresh|validate_data|run_sql|wait_condition|send_alert|call_api|escalate
+Return ONLY valid JSON (no markdown, no backticks):
 {
-  "name": "...",
-  "desc": "...",
+  "name": "string",
+  "desc": "string",
   "icon": "emoji",
+  "color": "#hexcolor",
+  "tags": ["string"],
+  "trigger": { "type": "manual|schedule|condition|webhook", "condition": "optional" },
+  "notifications": { "slack": "#channel", "on_failure": true, "on_complete": true },
   "steps": [
-    { "id": "s1", "type": "<one of: pause_jobs|resume_jobs|trigger_refresh|validate_data|run_sql|wait_condition|send_alert|call_api|escalate>",
-      "label": "...", "config": {}, "on_fail": "continue|escalate|next" }
+    { "id": "s1", "type": "step_type", "label": "string", "config": {}, "on_fail": "continue|escalate|stop", "retry_count": 0 }
   ]
 }`,
           messages:[{ role:"user", content:`Scenario: ${aiPrompt}` }],
-          max_tokens:900, temperature:0.2
+          max_tokens:1000, temperature:0.2
         })
       });
       const d = await res.json();
       const text = (d?.content?.[0]?.text||"{}").replace(/```json|```/g,"").trim();
       const parsed = JSON.parse(text);
-      if (parsed.steps) setRb(p=>({...p, ...parsed, id:p.id, trigger:p.trigger }));
+      if (parsed.steps?.length) {
+        setRb(prev=>({ ...prev, ...parsed, id:prev.id,
+          notifications:{ ...blankRb.notifications, ...(parsed.notifications||{}) } }));
+        setShowAiBox(false);
+        setAiPrompt("");
+      }
     } catch(e) {}
     setAiBuilding(false);
-    setShowAiBox(false);
   };
 
+  // ── AI: suggest next step after each addition ─────────────────────────────
+  const fetchNextStepSuggestion = async (currentSteps, lastStepId) => {
+    if (currentSteps.length < 1) return;
+    try {
+      const stepSummary = currentSteps.map(s=>`${s.type}: ${s.label}`).join(" → ");
+      const res = await fetch(`${API}/api/ai/chat`, {
+        method:"POST", headers:{"Content-Type":"application/json"},
+        body: JSON.stringify({
+          system:`You are a runbook design assistant. Given the current steps in a data engineering runbook, suggest the single most logical NEXT step. Return ONLY JSON: {"type":"step_type","label":"string","config":{},"on_fail":"continue"} where type is one of: pause_jobs|resume_jobs|trigger_refresh|validate_data|run_sql|wait_condition|send_alert|call_api|escalate. No markdown.`,
+          messages:[{ role:"user", content:`Current steps: ${stepSummary}\nWhat should come next?` }],
+          max_tokens:120, temperature:0.2
+        })
+      });
+      const d = await res.json();
+      const text = (d?.content?.[0]?.text||"{}").replace(/```json|```/g,"").trim();
+      const sug = JSON.parse(text);
+      if (sug.type && ACTION_TYPES[sug.type]) {
+        setSuggestions(prev=>({ ...prev, [lastStepId]:{ ...sug, id:"sug-"+Date.now() } }));
+      }
+    } catch(e) {}
+  };
+
+  const acceptSuggestion = (stepId, sug) => {
+    const newStep = { ...sug, id:"step-"+Date.now(), config:sug.config||{}, retry_count:0 };
+    setRb(prev=>({...prev, steps:[...prev.steps, newStep]}));
+    setSuggestions(prev=>{ const n={...prev}; delete n[stepId]; return n; });
+    fetchNextStepSuggestion([...rb.steps, newStep], newStep.id);
+  };
+
+  // ── AI: review runbook for gaps ───────────────────────────────────────────
+  const reviewRunbook = async () => {
+    if (!rb.steps.length) return;
+    setReviewing(true); setReviewNotes(null);
+    try {
+      const stepSummary = rb.steps.map((s,i)=>`${i+1}. [${s.type}] ${s.label} (on_fail: ${s.on_fail||"continue"})`).join("\n");
+      const res = await fetch(`${API}/api/ai/chat`, {
+        method:"POST", headers:{"Content-Type":"application/json"},
+        body: JSON.stringify({
+          system:`You are a senior data engineering runbook reviewer. Analyse a runbook for gaps, risks and improvements. Be specific and concise. Return JSON: {"score":85,"issues":[{"severity":"high|medium|low","text":"string"}],"suggestions":[{"text":"string","fix":"string"}]}. No markdown.`,
+          messages:[{ role:"user", content:`Runbook: "${rb.name}"\nTrigger: ${rb.trigger?.type}\nSteps:\n${stepSummary}` }],
+          max_tokens:500, temperature:0.2
+        })
+      });
+      const d = await res.json();
+      const text = (d?.content?.[0]?.text||"{}").replace(/```json|```/g,"").trim();
+      setReviewNotes(JSON.parse(text));
+    } catch(e) { setReviewNotes({ score:0, issues:[{severity:"high",text:"Review failed. Try again."}], suggestions:[] }); }
+    setReviewing(false);
+  };
+
+  // ── AI: chat to iterate on runbook ────────────────────────────────────────
+  const sendChat = async () => {
+    if (!chatInput.trim() || chatLoading) return;
+    const userMsg = chatInput.trim();
+    setChatInput("");
+    setChatMsgs(prev=>[...prev, { role:"user", text:userMsg }]);
+    setChatLoading(true);
+    try {
+      const rbSummary = JSON.stringify({ name:rb.name, steps:rb.steps.map(s=>({ type:s.type, label:s.label, on_fail:s.on_fail })) });
+      const history = chatMsgs.slice(-6).map(m=>({ role:m.role==="user"?"user":"assistant", content:m.text }));
+      const res = await fetch(`${API}/api/ai/chat`, {
+        method:"POST", headers:{"Content-Type":"application/json"},
+        body: JSON.stringify({
+          system:`You are an AI runbook design assistant. The user has a runbook they are building and wants to modify it through conversation. When the user asks to change the runbook, return JSON with both a reply and updated steps. Format: {"reply":"what you did","steps":[...updated steps array...]} — only include steps if you're changing them. Steps format: {"id":"s1","type":"step_type","label":"string","config":{},"on_fail":"continue|escalate|stop","retry_count":0}. If no step changes, just: {"reply":"your response"}. No markdown.`,
+          messages:[...history, { role:"user", content:`Current runbook: ${rbSummary}\n\nRequest: ${userMsg}` }],
+          max_tokens:700, temperature:0.3
+        })
+      });
+      const d = await res.json();
+      const raw = (d?.content?.[0]?.text||"{}").replace(/```json|```/g,"").trim();
+      let parsed; try { parsed = JSON.parse(raw); } catch { parsed = { reply: raw }; }
+      if (parsed.steps?.length) {
+        setRb(prev=>({...prev, steps:parsed.steps}));
+        setChatMsgs(prev=>[...prev, { role:"assistant", text:(parsed.reply||"Done.")+" ✓ Steps updated." }]);
+      } else {
+        setChatMsgs(prev=>[...prev, { role:"assistant", text:parsed.reply||raw }]);
+      }
+    } catch(e) { setChatMsgs(prev=>[...prev, { role:"assistant", text:"Error — try again." }]); }
+    setChatLoading(false);
+    setTimeout(()=>chatEndRef.current?.scrollIntoView({behavior:"smooth"}), 100);
+  };
+
+  React.useEffect(()=>{ chatEndRef.current?.scrollIntoView({behavior:"smooth"}); }, [chatMsgs]);
+
   const TRIGGER_TYPES = [
-    { value:"manual",    label:"Manual (Run Now)" },
-    { value:"schedule",  label:"On Schedule" },
-    { value:"condition", label:"Auto (Condition/Alert)" },
-    { value:"webhook",   label:"Via Webhook/API" },
+    { value:"manual", label:"Manual (Run Now)" },
+    { value:"schedule", label:"On Schedule (Cron)" },
+    { value:"condition", label:"Auto (Alert/Condition)" },
+    { value:"webhook", label:"Via Webhook" },
   ];
+  const cronHints = { "0 6 * * *":"Daily 6am","0 * * * *":"Hourly","*/15 * * * *":"Every 15min","0 9 * * 1-5":"Weekdays 9am" };
 
   return (
     <div style={{ display:"flex", flexDirection:"column", height:"100%", overflow:"hidden" }}>
       {/* Header */}
-      <div style={{ padding:"16px 20px", borderBottom:`1px solid ${T.border}`, display:"flex", alignItems:"center", gap:12, flexShrink:0 }}>
-        <button onClick={onCancel} style={{ background:"none",border:"none",cursor:"pointer",color:T.muted,fontSize:13 }}>← Back</button>
-        <div style={{ flex:1, fontWeight:700, fontSize:15, color:T.text }}>{rb.id===blankRb.id?"New Runbook":rb.name||"Untitled Runbook"}</div>
-        <Btn onClick={()=>setShowAiBox(p=>!p)} size="sm" style={{ background:`linear-gradient(135deg,${T.accent},${T.purple})`,color:"white",border:"none" }}>
+      <div style={{ padding:"11px 18px", borderBottom:`1px solid ${T.border}`, display:"flex", alignItems:"center", gap:10, flexShrink:0 }}>
+        <button onClick={onCancel} style={{ background:"none",border:"none",cursor:"pointer",color:T.muted,fontSize:12 }}>← Back</button>
+        <div style={{ flex:1, fontWeight:700, fontSize:14, color:T.text }}>{rb.name||"Untitled Runbook"}</div>
+        <Btn size="sm" variant="ghost" onClick={reviewRunbook} disabled={reviewing||!rb.steps.length}
+          style={{ color:"#f97316", borderColor:"#f9731630", fontSize:10 }}>
+          {reviewing?<Spinner size={9}/>:"🔍"} Review
+        </Btn>
+        <Btn size="sm" onClick={()=>setShowAiBox(p=>!p)}
+          style={{ background:`linear-gradient(135deg,${T.accent},${T.purple})`,color:"white",border:"none",fontSize:11 }}>
           ✦ Build with AI
         </Btn>
-        <Btn onClick={()=>onSave(rb)} size="sm" style={{ background:T.accent,color:"white",border:"none" }} disabled={!rb.name.trim()||!rb.steps.length}>
-          Save Runbook
+        <Btn size="sm" onClick={()=>setChatOpen(p=>!p)} variant="ghost"
+          style={{ color:T.accent, borderColor:`${T.accent}30`, fontSize:11 }}>
+          💬 Chat
+        </Btn>
+        <Btn size="sm" onClick={()=>onSave(rb)} style={{ background:T.accent,color:"white",border:"none" }}
+          disabled={!rb.name.trim()||!rb.steps.length}>
+          Save
         </Btn>
       </div>
 
       {/* AI Build Box */}
       {showAiBox && (
-        <div style={{ padding:"12px 20px", borderBottom:`1px solid ${T.border}`, background:`${T.accent}08`, flexShrink:0 }}>
-          <div style={{ fontSize:11, color:T.muted, marginBottom:6 }}>Describe the scenario — AI will generate the runbook steps:</div>
-          <div style={{ display:"flex", gap:8 }}>
+        <div style={{ padding:"10px 18px", borderBottom:`1px solid ${T.border}`, background:`${T.accent}08`, flexShrink:0 }}>
+          <div style={{ fontSize:10, color:T.muted, marginBottom:5 }}>Describe the scenario — AI generates the full runbook:</div>
+          <div style={{ display:"flex", gap:7 }}>
             <input value={aiPrompt} onChange={e=>setAiPrompt(e.target.value)}
-              placeholder="e.g. API download fails, pause downstream, retry 3x, validate, resume, alert team"
-              style={{ flex:1, padding:"8px 10px", borderRadius:8, border:`1px solid ${T.border}`,
-                background:T.surface, color:T.text, fontSize:12 }}/>
+              onKeyDown={e=>e.key==="Enter"&&buildWithAi()}
+              placeholder="e.g. API download fails, retry 3x, validate, resume downstream, alert team on Slack"
+              style={{ flex:1, padding:"7px 10px", borderRadius:7, border:`1px solid ${T.border}`, background:T.surface, color:T.text, fontSize:11 }}/>
             <Btn onClick={buildWithAi} disabled={!aiPrompt.trim()||aiBuilding} size="sm"
-              style={{ background:T.accent, color:"white", border:"none" }}>
-              {aiBuilding ? <Spinner size={10} color="white"/> : "Generate"}
+              style={{ background:T.accent,color:"white",border:"none" }}>
+              {aiBuilding?<Spinner size={9} color="white"/>:"Generate"}
             </Btn>
           </div>
         </div>
       )}
 
+      {/* AI Review Notes */}
+      {reviewNotes && (
+        <div style={{ padding:"10px 18px", borderBottom:`1px solid ${T.border}`, background:"#f9731608", flexShrink:0 }}>
+          <div style={{ display:"flex", alignItems:"center", gap:8, marginBottom:7 }}>
+            <div style={{ fontSize:10, fontWeight:700, color:"#f97316", textTransform:"uppercase", letterSpacing:".05em" }}>
+              🔍 AI Review — Score: {reviewNotes.score}/100
+            </div>
+            <div style={{ flex:1, height:3, borderRadius:99, background:T.border, overflow:"hidden" }}>
+              <div style={{ height:"100%", width:`${reviewNotes.score}%`, borderRadius:99,
+                background:reviewNotes.score>75?T.green:reviewNotes.score>50?"#f97316":T.red, transition:"width 0.5s" }}/>
+            </div>
+            <button onClick={()=>setReviewNotes(null)} style={{ background:"none",border:"none",cursor:"pointer",color:T.muted,fontSize:14 }}>×</button>
+          </div>
+          {(reviewNotes.issues||[]).map((iss,i)=>(
+            <div key={i} style={{ fontSize:10, color:iss.severity==="high"?T.red:iss.severity==="medium"?"#f97316":T.muted,
+              marginBottom:3, display:"flex", gap:5 }}>
+              <span>{iss.severity==="high"?"🔴":iss.severity==="medium"?"🟡":"🟢"}</span>
+              <span>{iss.text}</span>
+            </div>
+          ))}
+          {(reviewNotes.suggestions||[]).map((sug,i)=>(
+            <div key={i} style={{ fontSize:10, color:T.muted, marginBottom:3, display:"flex", gap:5 }}>
+              <span>💡</span><span><strong style={{ color:T.text }}>{sug.text}</strong> — {sug.fix}</span>
+            </div>
+          ))}
+        </div>
+      )}
+
       <div style={{ display:"flex", flex:1, overflow:"hidden" }}>
-        {/* Left: Step List */}
-        <div style={{ width:360, borderRight:`1px solid ${T.border}`, display:"flex", flexDirection:"column", overflow:"hidden" }}>
-          {/* Metadata */}
-          <div style={{ padding:"14px 16px", borderBottom:`1px solid ${T.border}`, flexShrink:0 }}>
-            <input value={rb.name} onChange={e=>update({name:e.target.value})}
-              placeholder="Runbook name…"
-              style={{ width:"100%", padding:"7px 10px", borderRadius:8, border:`1px solid ${T.border}`,
-                background:T.surface, color:T.text, fontSize:13, fontWeight:700, marginBottom:8, boxSizing:"border-box" }}/>
-            <textarea value={rb.desc} onChange={e=>update({desc:e.target.value})}
-              placeholder="What does this runbook do? When should it run?"
-              rows={2} style={{ width:"100%", padding:"7px 10px", borderRadius:8, border:`1px solid ${T.border}`,
-                background:T.surface, color:T.text, fontSize:11, resize:"none", boxSizing:"border-box" }}/>
-            <div style={{ marginTop:8 }}>
-              <div style={{ fontSize:10, color:T.muted, marginBottom:4 }}>Trigger</div>
-              <select value={rb.trigger.type} onChange={e=>update({trigger:{...rb.trigger, type:e.target.value}})}
-                style={{ width:"100%", padding:"6px 8px", borderRadius:7, border:`1px solid ${T.border}`,
-                  background:T.surface, color:T.text, fontSize:11 }}>
-                {TRIGGER_TYPES.map(t=><option key={t.value} value={t.value}>{t.label}</option>)}
-              </select>
-              {rb.trigger.type==="schedule" && (
-                <input value={rb.trigger.cron||""} onChange={e=>update({trigger:{...rb.trigger,cron:e.target.value}})}
-                  placeholder="cron: 0 6 * * *" style={{ width:"100%", marginTop:4, padding:"6px 8px", borderRadius:7,
-                    border:`1px solid ${T.border}`, background:T.surface, color:T.text, fontSize:11, boxSizing:"border-box" }}/>
-              )}
-              {rb.trigger.type==="condition" && (
-                <input value={rb.trigger.condition||""} onChange={e=>update({trigger:{...rb.trigger,condition:e.target.value}})}
-                  placeholder="e.g. api_download_failed" style={{ width:"100%", marginTop:4, padding:"6px 8px", borderRadius:7,
-                    border:`1px solid ${T.border}`, background:T.surface, color:T.text, fontSize:11, boxSizing:"border-box" }}/>
-              )}
-            </div>
+        {/* Left panel */}
+        <div style={{ width:340, borderRight:`1px solid ${T.border}`, display:"flex", flexDirection:"column", overflow:"hidden", flexShrink:0 }}>
+          {/* Name + desc */}
+          <div style={{ padding:"10px 13px", borderBottom:`1px solid ${T.border}`, flexShrink:0 }}>
+            <input value={rb.name} onChange={e=>upd({name:e.target.value})} placeholder="Runbook name…"
+              style={{ width:"100%", padding:"6px 9px", borderRadius:7, border:`1px solid ${T.border}`,
+                background:T.surface, color:T.text, fontSize:12, fontWeight:700, marginBottom:5, boxSizing:"border-box" }}/>
+            <textarea value={rb.desc} onChange={e=>upd({desc:e.target.value})} placeholder="What does this runbook do?" rows={2}
+              style={{ width:"100%", padding:"6px 9px", borderRadius:7, border:`1px solid ${T.border}`,
+                background:T.surface, color:T.text, fontSize:10, resize:"none", boxSizing:"border-box" }}/>
           </div>
-
-          {/* Steps */}
-          <div style={{ flex:1, overflowY:"auto", padding:"14px 16px" }}>
-            <div style={{ fontSize:10, fontWeight:700, color:T.muted, textTransform:"uppercase", letterSpacing:".06em", marginBottom:10 }}>
-              Steps ({rb.steps.length})
-            </div>
-            {rb.steps.map((step,i)=>(
-              <RunbookStepCard key={step.id} step={step} index={i} total={rb.steps.length}
-                onEdit={(s,idx)=>setEditingStep({step:s,index:idx})}
-                onDelete={deleteStep} onMove={moveStep} T={T}/>
-            ))}
-
-            {/* Add step */}
-            {addingType===null ? (
-              <button onClick={()=>setAddingType("picker")}
-                style={{ width:"100%", marginTop:10, padding:"8px", borderRadius:8, border:`1px dashed ${T.border}`,
-                  background:"none", cursor:"pointer", color:T.muted, fontSize:12 }}>
-                + Add Step
+          {/* Sub-tabs */}
+          <div style={{ display:"flex", borderBottom:`1px solid ${T.border}`, flexShrink:0 }}>
+            {[["steps","Steps"],["trigger","Trigger"],["notify","Notify"]].map(([id,label])=>(
+              <button key={id} onClick={()=>setLeftTab(id)}
+                style={{ flex:1, padding:"6px 4px", fontSize:10, fontWeight:700, cursor:"pointer",
+                  background:"none", border:"none", borderBottom:`2px solid ${leftTab===id?T.accent:"transparent"}`,
+                  color:leftTab===id?T.accent:T.muted }}>
+                {label}
               </button>
-            ) : (
-              <div style={{ marginTop:10, background:T.card, borderRadius:10, border:`1px solid ${T.border}`, padding:10 }}>
-                <div style={{ fontSize:11, fontWeight:700, color:T.text, marginBottom:8 }}>Choose action type:</div>
-                <div style={{ display:"flex", flexDirection:"column", gap:4 }}>
-                  {Object.entries(ACTION_TYPES).map(([key,act])=>(
-                    <button key={key} onClick={()=>addStep(key)}
-                      style={{ display:"flex", alignItems:"center", gap:8, padding:"7px 10px", borderRadius:8,
-                        border:`1px solid ${act.color}30`, background:`${act.color}10`, cursor:"pointer",
-                        textAlign:"left" }}>
-                      <span style={{ fontSize:14 }}>{act.icon}</span>
-                      <div>
-                        <div style={{ fontSize:11, fontWeight:700, color:act.color }}>{act.label}</div>
-                        <div style={{ fontSize:10, color:T.muted }}>{act.desc}</div>
-                      </div>
-                    </button>
-                  ))}
-                </div>
-                <button onClick={()=>setAddingType(null)}
-                  style={{ marginTop:8, width:"100%", padding:"6px", background:"none", border:"none", cursor:"pointer", color:T.muted, fontSize:11 }}>
-                  Cancel
-                </button>
-              </div>
-            )}
+            ))}
           </div>
+
+          {/* STEPS */}
+          {leftTab==="steps" && (
+            <div style={{ flex:1, overflowY:"auto", padding:"10px 12px" }}>
+              <div style={{ fontSize:9, fontWeight:700, color:T.muted, textTransform:"uppercase", letterSpacing:".06em", marginBottom:8 }}>
+                Steps ({rb.steps.length})
+              </div>
+              {rb.steps.map((step,i)=>(
+                <RunbookStepCard key={step.id} step={step} index={i} total={rb.steps.length}
+                  onEdit={(s,idx)=>setEditingStep({step:s,index:idx})}
+                  onDelete={deleteStep} onMove={moveStep} T={T}
+                  suggestion={suggestions[step.id]}
+                  onAcceptSuggestion={(sug)=>acceptSuggestion(step.id, sug)}/>
+              ))}
+              {!addingType ? (
+                <button onClick={()=>setAddingType(true)}
+                  style={{ width:"100%", marginTop:8, padding:"7px", borderRadius:7, border:`1px dashed ${T.border}`,
+                    background:"none", cursor:"pointer", color:T.muted, fontSize:11 }}>
+                  + Add Step
+                </button>
+              ) : (
+                <div style={{ marginTop:8, background:T.card, borderRadius:9, border:`1px solid ${T.border}`, padding:9 }}>
+                  <div style={{ fontSize:10, fontWeight:700, color:T.text, marginBottom:7 }}>Choose action:</div>
+                  <div style={{ display:"flex", flexDirection:"column", gap:3 }}>
+                    {Object.entries(ACTION_TYPES).map(([key,act])=>(
+                      <button key={key} onClick={()=>addStep(key)}
+                        style={{ display:"flex", alignItems:"center", gap:7, padding:"6px 9px", borderRadius:7,
+                          border:`1px solid ${act.color}25`, background:`${act.color}0C`, cursor:"pointer", textAlign:"left" }}>
+                        <span style={{ fontSize:13 }}>{act.icon}</span>
+                        <div>
+                          <div style={{ fontSize:10, fontWeight:700, color:act.color }}>{act.label}</div>
+                          <div style={{ fontSize:9, color:T.muted }}>{act.desc}</div>
+                        </div>
+                      </button>
+                    ))}
+                  </div>
+                  <button onClick={()=>setAddingType(false)}
+                    style={{ marginTop:7, width:"100%", padding:"5px", background:"none", border:"none", cursor:"pointer", color:T.muted, fontSize:10 }}>
+                    Cancel
+                  </button>
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* TRIGGER */}
+          {leftTab==="trigger" && (
+            <div style={{ flex:1, overflowY:"auto", padding:"12px 13px", display:"flex", flexDirection:"column", gap:10 }}>
+              <div>
+                <div style={{ fontSize:9, fontWeight:700, color:T.muted, textTransform:"uppercase", letterSpacing:".05em", marginBottom:4 }}>Type</div>
+                <select value={rb.trigger.type} onChange={e=>updTrigger({type:e.target.value})}
+                  style={{ width:"100%", padding:"6px 8px", borderRadius:7, border:`1px solid ${T.border}`, background:T.surface, color:T.text, fontSize:11 }}>
+                  {TRIGGER_TYPES.map(t=><option key={t.value} value={t.value}>{t.label}</option>)}
+                </select>
+              </div>
+              {rb.trigger.type==="schedule" && <>
+                <div>
+                  <div style={{ fontSize:9, fontWeight:700, color:T.muted, textTransform:"uppercase", letterSpacing:".05em", marginBottom:4 }}>Cron</div>
+                  <input value={rb.trigger.cron||""} onChange={e=>updTrigger({cron:e.target.value})} placeholder="0 6 * * *"
+                    style={{ width:"100%", padding:"6px 9px", borderRadius:7, border:`1px solid ${T.border}`, background:T.surface, color:T.text, fontSize:11, fontFamily:"monospace", boxSizing:"border-box" }}/>
+                  {cronHints[rb.trigger.cron] && <div style={{ fontSize:9, color:T.accent, marginTop:2 }}>→ {cronHints[rb.trigger.cron]}</div>}
+                  <div style={{ display:"flex", gap:4, flexWrap:"wrap", marginTop:5 }}>
+                    {Object.entries(cronHints).map(([v,l])=>(
+                      <button key={v} onClick={()=>updTrigger({cron:v})}
+                        style={{ padding:"2px 7px", borderRadius:10, fontSize:8, cursor:"pointer",
+                          background:rb.trigger.cron===v?T.accent+"22":"none", color:rb.trigger.cron===v?T.accent:T.muted,
+                          border:`1px solid ${rb.trigger.cron===v?T.accent:T.border}` }}>{l}</button>
+                    ))}
+                  </div>
+                </div>
+                <div>
+                  <div style={{ fontSize:9, fontWeight:700, color:T.muted, textTransform:"uppercase", letterSpacing:".05em", marginBottom:4 }}>Timezone</div>
+                  <select value={rb.trigger.timezone||"UTC"} onChange={e=>updTrigger({timezone:e.target.value})}
+                    style={{ width:"100%", padding:"6px 8px", borderRadius:7, border:`1px solid ${T.border}`, background:T.surface, color:T.text, fontSize:11 }}>
+                    {["UTC","America/New_York","America/Los_Angeles","Europe/London","Asia/Kolkata","Asia/Tokyo"].map(tz=><option key={tz}>{tz}</option>)}
+                  </select>
+                </div>
+              </>}
+              {rb.trigger.type==="condition" && (
+                <div>
+                  <div style={{ fontSize:9, fontWeight:700, color:T.muted, textTransform:"uppercase", letterSpacing:".05em", marginBottom:4 }}>Alert Condition Key</div>
+                  <input value={rb.trigger.condition||""} onChange={e=>updTrigger({condition:e.target.value})} placeholder="e.g. api_download_failed"
+                    style={{ width:"100%", padding:"6px 9px", borderRadius:7, border:`1px solid ${T.border}`, background:T.surface, color:T.text, fontSize:11, boxSizing:"border-box" }}/>
+                  <div style={{ fontSize:9, color:T.muted, marginTop:3 }}>Fires automatically when this alert condition is triggered by any check.</div>
+                </div>
+              )}
+              {rb.trigger.type==="webhook" && (
+                <div>
+                  <div style={{ fontSize:9, fontWeight:700, color:T.muted, textTransform:"uppercase", letterSpacing:".05em", marginBottom:4 }}>Webhook URL</div>
+                  <div style={{ padding:"6px 9px", borderRadius:7, border:`1px solid ${T.border}`, background:T.card, color:T.muted, fontSize:10, fontFamily:"monospace", wordBreak:"break-all" }}>
+                    {`${API}/api/runbooks/${rb.id}/trigger`}
+                  </div>
+                  <div style={{ fontSize:9, color:T.muted, marginTop:3 }}>POST to this URL to trigger externally.</div>
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* NOTIFY */}
+          {leftTab==="notify" && (
+            <div style={{ flex:1, overflowY:"auto", padding:"12px 13px", display:"flex", flexDirection:"column", gap:10 }}>
+              <div>
+                <div style={{ fontSize:9, fontWeight:700, color:T.muted, textTransform:"uppercase", letterSpacing:".05em", marginBottom:4 }}>Slack Channel</div>
+                <input value={rb.notifications?.slack||""} onChange={e=>updNotif({slack:e.target.value})} placeholder="#data-ops"
+                  style={{ width:"100%", padding:"6px 9px", borderRadius:7, border:`1px solid ${T.border}`, background:T.surface, color:T.text, fontSize:11, boxSizing:"border-box" }}/>
+              </div>
+              <div>
+                <div style={{ fontSize:9, fontWeight:700, color:T.muted, textTransform:"uppercase", letterSpacing:".05em", marginBottom:4 }}>Email</div>
+                <input value={rb.notifications?.email||""} onChange={e=>updNotif({email:e.target.value})} placeholder="ops@company.com"
+                  style={{ width:"100%", padding:"6px 9px", borderRadius:7, border:`1px solid ${T.border}`, background:T.surface, color:T.text, fontSize:11, boxSizing:"border-box" }}/>
+              </div>
+              <div>
+                <div style={{ fontSize:9, fontWeight:700, color:T.muted, textTransform:"uppercase", letterSpacing:".05em", marginBottom:6 }}>Notify on…</div>
+                {[["on_start","🚀 Runbook started"],["on_complete","✅ Completed"],["on_failure","🔴 Step failed"]].map(([k,label])=>(
+                  <label key={k} style={{ display:"flex", alignItems:"center", gap:7, marginBottom:7, cursor:"pointer" }}>
+                    <input type="checkbox" checked={!!rb.notifications?.[k]} onChange={e=>updNotif({[k]:e.target.checked})} style={{ width:13, height:13 }}/>
+                    <span style={{ fontSize:11, color:T.text }}>{label}</span>
+                  </label>
+                ))}
+              </div>
+            </div>
+          )}
         </div>
 
-        {/* Right: Visual Flow Preview */}
-        <div style={{ flex:1, overflowY:"auto", padding:20, background:T.surface }}>
-          <div style={{ fontSize:11, fontWeight:700, color:T.muted, textTransform:"uppercase", letterSpacing:".06em", marginBottom:14 }}>
-            Flow Preview
-          </div>
+        {/* Centre: Flow Preview */}
+        <div style={{ flex:1, overflowY:"auto", padding:16, background:T.surface, display:"flex", flexDirection:"column" }}>
+          <div style={{ fontSize:9, fontWeight:700, color:T.muted, textTransform:"uppercase", letterSpacing:".06em", marginBottom:12 }}>Flow Preview</div>
           <RunbookFlowPreview steps={rb.steps} T={T}/>
         </div>
+
+        {/* Right: AI Chat panel */}
+        {chatOpen && (
+          <div style={{ width:280, borderLeft:`1px solid ${T.border}`, display:"flex", flexDirection:"column", overflow:"hidden", flexShrink:0 }}>
+            <div style={{ padding:"10px 12px", borderBottom:`1px solid ${T.border}`, display:"flex", alignItems:"center", gap:6, flexShrink:0 }}>
+              <span style={{ fontSize:13 }}>💬</span>
+              <div style={{ flex:1, fontSize:11, fontWeight:700, color:T.text }}>AI Assistant</div>
+              <button onClick={()=>setChatOpen(false)} style={{ background:"none",border:"none",cursor:"pointer",color:T.muted,fontSize:14 }}>×</button>
+            </div>
+            <div style={{ flex:1, overflowY:"auto", padding:"10px 12px" }}>
+              {chatMsgs.length===0 && (
+                <div style={{ fontSize:10, color:T.muted, lineHeight:1.6 }}>
+                  Ask me to modify your runbook. Examples:<br/>
+                  <span style={{ color:T.accent }}>"Add a Slack alert before each escalation"</span><br/>
+                  <span style={{ color:T.accent }}>"Make retry logic more aggressive"</span><br/>
+                  <span style={{ color:T.accent }}>"Add a validation step after the refresh"</span>
+                </div>
+              )}
+              {chatMsgs.map((m,i)=>(
+                <div key={i} style={{ marginBottom:8,
+                  display:"flex", flexDirection:m.role==="user"?"row-reverse":"row", gap:6, alignItems:"flex-start" }}>
+                  <div style={{ maxWidth:"88%", padding:"7px 9px", borderRadius:8, fontSize:10, lineHeight:1.5,
+                    background:m.role==="user"?T.accent:T.card,
+                    color:m.role==="user"?"white":T.text,
+                    border:m.role==="user"?"none":`1px solid ${T.border}` }}>
+                    {m.text}
+                  </div>
+                </div>
+              ))}
+              {chatLoading && <div style={{ fontSize:10, color:T.muted, display:"flex", gap:5, alignItems:"center" }}><Spinner size={8}/> Thinking…</div>}
+              <div ref={chatEndRef}/>
+            </div>
+            <div style={{ padding:"8px 10px", borderTop:`1px solid ${T.border}`, flexShrink:0 }}>
+              <div style={{ display:"flex", gap:6 }}>
+                <input value={chatInput} onChange={e=>setChatInput(e.target.value)}
+                  onKeyDown={e=>e.key==="Enter"&&!e.shiftKey&&sendChat()}
+                  placeholder="Ask AI to modify…"
+                  style={{ flex:1, padding:"6px 8px", borderRadius:7, border:`1px solid ${T.border}`, background:T.surface, color:T.text, fontSize:10 }}/>
+                <button onClick={sendChat} disabled={!chatInput.trim()||chatLoading}
+                  style={{ padding:"6px 10px", borderRadius:7, background:T.accent, color:"white", border:"none", cursor:"pointer", fontSize:11 }}>
+                  ↑
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
       </div>
 
       {/* Step Edit Modal */}
       {editingStep && (
-        <div style={{ position:"fixed",inset:0,background:"rgba(0,0,0,0.5)",zIndex:400,
-          display:"flex",alignItems:"center",justifyContent:"center" }}>
-          <div style={{ background:T.surface,borderRadius:14,padding:24,width:"min(480px,92vw)",
-            border:`1px solid ${T.border}`,maxHeight:"80vh",overflowY:"auto" }}>
-            <div style={{ fontSize:14,fontWeight:700,color:T.text,marginBottom:16 }}>Edit Step</div>
-            {(()=>{
-              const s = {...editingStep.step};
-              const act = ACTION_TYPES[s.type]||{label:s.type,icon:"⚙",color:T.muted};
-              return (
-                <div style={{ display:"flex",flexDirection:"column",gap:10 }}>
-                  <div>
-                    <div style={{ fontSize:10,color:T.muted,marginBottom:3 }}>Label</div>
-                    <input defaultValue={s.label} onChange={e=>{s.label=e.target.value;}}
-                      style={{ width:"100%",padding:"7px 10px",borderRadius:8,border:`1px solid ${T.border}`,
-                        background:T.card,color:T.text,fontSize:12,boxSizing:"border-box" }}/>
-                  </div>
-                  <div>
-                    <div style={{ fontSize:10,color:T.muted,marginBottom:3 }}>On Failure</div>
-                    <select defaultValue={s.on_fail||"continue"} onChange={e=>{s.on_fail=e.target.value;}}
-                      style={{ width:"100%",padding:"7px 8px",borderRadius:8,border:`1px solid ${T.border}`,
-                        background:T.card,color:T.text,fontSize:12 }}>
-                      <option value="continue">Continue to next step</option>
-                      <option value="next">Skip to next</option>
-                      <option value="escalate">Escalate to human</option>
-                      <option value="stop">Stop runbook</option>
-                    </select>
-                  </div>
-                  {(s.type==="send_alert") && <>
-                    <div>
-                      <div style={{ fontSize:10,color:T.muted,marginBottom:3 }}>Channel</div>
-                      <input defaultValue={s.config?.channel||""} onChange={e=>{s.config={...s.config,channel:e.target.value};}}
-                        placeholder="#data-ops" style={{ width:"100%",padding:"7px 10px",borderRadius:8,border:`1px solid ${T.border}`,background:T.card,color:T.text,fontSize:12,boxSizing:"border-box" }}/>
-                    </div>
-                    <div>
-                      <div style={{ fontSize:10,color:T.muted,marginBottom:3 }}>Message</div>
-                      <textarea defaultValue={s.config?.message||""} onChange={e=>{s.config={...s.config,message:e.target.value};}}
-                        rows={2} style={{ width:"100%",padding:"7px 10px",borderRadius:8,border:`1px solid ${T.border}`,background:T.card,color:T.text,fontSize:12,resize:"none",boxSizing:"border-box" }}/>
-                    </div>
-                  </>}
-                  {(s.type==="run_sql") && <>
-                    <div>
-                      <div style={{ fontSize:10,color:T.muted,marginBottom:3 }}>SQL</div>
-                      <textarea defaultValue={s.config?.sql||""} onChange={e=>{s.config={...s.config,sql:e.target.value};}}
-                        rows={3} style={{ width:"100%",padding:"7px 10px",borderRadius:8,border:`1px solid ${T.border}`,background:T.card,color:T.text,fontSize:11,fontFamily:"monospace",resize:"vertical",boxSizing:"border-box" }}/>
-                    </div>
-                    <div>
-                      <div style={{ fontSize:10,color:T.muted,marginBottom:3 }}>Assert (e.g. "= 0", "&gt; 100")</div>
-                      <input defaultValue={s.config?.assert||""} onChange={e=>{s.config={...s.config,assert:e.target.value};}}
-                        style={{ width:"100%",padding:"7px 10px",borderRadius:8,border:`1px solid ${T.border}`,background:T.card,color:T.text,fontSize:12,boxSizing:"border-box" }}/>
-                    </div>
-                  </>}
-                  {(s.type==="wait_condition") && <>
-                    <div>
-                      <div style={{ fontSize:10,color:T.muted,marginBottom:3 }}>Condition</div>
-                      <input defaultValue={s.config?.condition||""} onChange={e=>{s.config={...s.config,condition:e.target.value};}}
-                        style={{ width:"100%",padding:"7px 10px",borderRadius:8,border:`1px solid ${T.border}`,background:T.card,color:T.text,fontSize:12,boxSizing:"border-box" }}/>
-                    </div>
-                    <div>
-                      <div style={{ fontSize:10,color:T.muted,marginBottom:3 }}>Timeout (minutes)</div>
-                      <input type="number" defaultValue={s.config?.timeout_mins||15} onChange={e=>{s.config={...s.config,timeout_mins:+e.target.value};}}
-                        style={{ width:"100%",padding:"7px 10px",borderRadius:8,border:`1px solid ${T.border}`,background:T.card,color:T.text,fontSize:12,boxSizing:"border-box" }}/>
-                    </div>
-                  </>}
-                  {(s.type==="call_api") && <>
-                    <div>
-                      <div style={{ fontSize:10,color:T.muted,marginBottom:3 }}>URL</div>
-                      <input defaultValue={s.config?.url||""} onChange={e=>{s.config={...s.config,url:e.target.value};}}
-                        style={{ width:"100%",padding:"7px 10px",borderRadius:8,border:`1px solid ${T.border}`,background:T.card,color:T.text,fontSize:12,boxSizing:"border-box" }}/>
-                    </div>
-                    <div>
-                      <div style={{ fontSize:10,color:T.muted,marginBottom:3 }}>Method</div>
-                      <select defaultValue={s.config?.method||"POST"} onChange={e=>{s.config={...s.config,method:e.target.value};}}
-                        style={{ width:"100%",padding:"7px 8px",borderRadius:8,border:`1px solid ${T.border}`,background:T.card,color:T.text,fontSize:12 }}>
-                        <option>POST</option><option>GET</option><option>PUT</option>
-                      </select>
-                    </div>
-                  </>}
-                  <div style={{ display:"flex",gap:8,marginTop:4 }}>
-                    <Btn onClick={()=>saveStep(s,editingStep.index)} style={{ flex:1,background:T.accent,color:"white",border:"none" }}>Save Step</Btn>
-                    <Btn onClick={()=>setEditingStep(null)} variant="ghost" style={{ flex:1 }}>Cancel</Btn>
-                  </div>
-                </div>
-              );
-            })()}
-          </div>
-        </div>
+        <StepEditModal step={editingStep.step} index={editingStep.index}
+          allSteps={rb.steps} onSave={saveStep} onClose={()=>setEditingStep(null)} T={T}/>
       )}
     </div>
   );
 }
 
+// ── SopImportWizard — parse SOP/doc into runbook + optional workflow ──────────
+function SopImportWizard({ onDone, onCancel, T }) {
+  const [step, setStep] = React.useState("input"); // input | parsing | preview | done
+  const [inputText, setInputText] = React.useState("");
+  const [fileName, setFileName] = React.useState("");
+  const [parsed, setParsed] = React.useState(null); // { runbook, workflow }
+  const [activeTab, setActiveTab] = React.useState("runbook");
+  const [saving, setSaving] = React.useState(false);
+  const fileRef = React.useRef();
+
+  const handleFile = (e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setFileName(file.name);
+    const reader = new FileReader();
+    reader.onload = ev => setInputText(ev.target.result||"");
+    reader.readAsText(file);
+  };
+
+  const parse = async () => {
+    if (!inputText.trim()) return;
+    setStep("parsing");
+    try {
+      const res = await fetch(`${API}/api/ai/chat`, {
+        method:"POST", headers:{"Content-Type":"application/json"},
+        body: JSON.stringify({
+          system:`You are an expert at converting SOP documents, runbooks, and process descriptions into structured automation configs for a data engineering platform.
+
+Parse the provided document and return ONLY valid JSON (no markdown, no backticks):
+{
+  "runbook": {
+    "name": "string",
+    "desc": "string",
+    "icon": "emoji",
+    "color": "#hexcolor",
+    "tags": ["string"],
+    "trigger": { "type": "manual|schedule|condition", "condition": "optional string", "cron": "optional" },
+    "notifications": { "slack": "", "on_failure": true, "on_complete": true },
+    "steps": [
+      { "id": "s1", "type": "pause_jobs|resume_jobs|trigger_refresh|validate_data|run_sql|wait_condition|send_alert|call_api|escalate",
+        "label": "string", "config": {}, "on_fail": "continue|escalate|stop", "retry_count": 0 }
+    ]
+  },
+  "workflow": null,
+  "summary": "2 sentence plain-English summary of what was parsed",
+  "gaps": ["any ambiguous or missing details that need human input"]
+}
+
+If the document contains data quality checks, validation criteria, or SQL-like conditions, also populate the workflow field:
+{
+  "workflow": {
+    "name": "string",
+    "desc": "string",
+    "schedule": "daily|hourly|manual",
+    "checks": [
+      { "name": "string", "sql": "string using mws.report/mws.orders/mws.inventory schema", "pass_condition": "rows = 0", "severity": "critical|high|medium|low" }
+    ]
+  }
+}
+
+Available step types and their configs:
+- pause_jobs: { scope: "all_downstream" }
+- resume_jobs: { scope: "all_downstream" }
+- trigger_refresh: { target: "pipeline_name", force_full: false }
+- validate_data: { table: "schema.table", max_age_mins: 60, min_rows: 0 }
+- run_sql: { sql: "SELECT ...", assert: "= 0" }
+- wait_condition: { condition: "string", timeout_mins: 30, poll_secs: 30 }
+- send_alert: { channel: "#channel", message: "string", severity: "warning" }
+- call_api: { url: "string", method: "POST", body: "{}" }
+- escalate: { approval_message: "string", auto_reject_mins: 0 }`,
+          messages:[{ role:"user", content:`Parse this document into a runbook and optionally a workflow:\n\n${inputText.slice(0,6000)}` }],
+          max_tokens:1400, temperature:0.2
+        })
+      });
+      const d = await res.json();
+      const text = (d?.content?.[0]?.text||"{}").replace(/```json|```/g,"").trim();
+      const result = JSON.parse(text);
+      if (!result.runbook?.steps?.length) throw new Error("No steps parsed");
+      // Ensure step IDs
+      result.runbook.steps = result.runbook.steps.map((s,i)=>({ ...s, id:s.id||`s${i+1}` }));
+      if (result.runbook) result.runbook.id = "rb-"+Date.now();
+      if (result.workflow) result.workflow.id = `wf_sop_${Date.now().toString(36)}`;
+      setParsed(result);
+      setStep("preview");
+    } catch(e) {
+      setParsed({ error: "Could not parse document. Make sure it describes a process with clear steps.", runbook:null, workflow:null });
+      setStep("preview");
+    }
+  };
+
+  const save = () => {
+    if (!parsed?.runbook) return;
+    setSaving(true);
+    onDone(parsed.runbook, parsed.workflow||null);
+  };
+
+  if (step==="input") return (
+    <div style={{ display:"flex", flexDirection:"column", height:"100%", overflow:"hidden" }}>
+      <div style={{ padding:"12px 18px", borderBottom:`1px solid ${T.border}`, display:"flex", alignItems:"center", gap:10, flexShrink:0 }}>
+        <button onClick={onCancel} style={{ background:"none",border:"none",cursor:"pointer",color:T.muted,fontSize:12 }}>← Back</button>
+        <div style={{ flex:1 }}>
+          <div style={{ fontWeight:700, fontSize:14, color:T.text }}>Import SOP / Document</div>
+          <div style={{ fontSize:10, color:T.muted }}>Paste a process doc, SOP, or requirements — AI will build the runbook for you</div>
+        </div>
+      </div>
+      <div style={{ flex:1, overflowY:"auto", padding:"20px 24px" }}>
+        {/* Upload */}
+        <div style={{ marginBottom:14 }}>
+          <input ref={fileRef} type="file" accept=".txt,.md,.text" style={{ display:"none" }} onChange={handleFile}/>
+          <button onClick={()=>fileRef.current?.click()}
+            style={{ padding:"8px 16px", borderRadius:8, border:`1px dashed ${T.border}`, background:`${T.accent}08`,
+              cursor:"pointer", color:T.accent, fontSize:11, fontWeight:600 }}>
+            📎 Upload .txt / .md file
+          </button>
+          {fileName && <span style={{ marginLeft:10, fontSize:11, color:T.muted }}>{fileName}</span>}
+        </div>
+        <div style={{ fontSize:10, color:T.muted, textAlign:"center", marginBottom:10 }}>— or paste text directly —</div>
+        <textarea value={inputText} onChange={e=>setInputText(e.target.value)} rows={16}
+          placeholder={`Paste your SOP, runbook description, or requirements here…
+
+Examples of what works well:
+• "When API download fails: send Slack alert to #data-ops, pause all downstream jobs, retry download up to 3 times with 5 minute waits, validate data freshness, resume jobs if successful, escalate to on-call if all retries fail"
+• A bulleted SOP document describing incident response steps
+• A text file with your team's data quality requirements and thresholds`}
+          style={{ width:"100%", padding:"10px 13px", borderRadius:9, border:`1px solid ${T.border}`,
+            background:T.surface, color:T.text, fontSize:11, resize:"vertical", boxSizing:"border-box", lineHeight:1.6 }}/>
+        <div style={{ marginTop:14, display:"flex", gap:8 }}>
+          <Btn onClick={parse} disabled={!inputText.trim()}
+            style={{ background:`linear-gradient(135deg,${T.accent},${T.purple})`, color:"white", border:"none", flex:1, padding:"10px" }}>
+            ✦ Parse with AI
+          </Btn>
+        </div>
+        <div style={{ marginTop:16, padding:"12px 14px", borderRadius:9, background:T.card, border:`1px solid ${T.border}` }}>
+          <div style={{ fontSize:10, fontWeight:700, color:T.text, marginBottom:6 }}>What gets generated:</div>
+          <div style={{ fontSize:10, color:T.muted, lineHeight:1.7 }}>
+            🤖 <strong style={{ color:T.text }}>Agentic Runbook</strong> — autonomous step-by-step playbook with trigger, steps, and notifications<br/>
+            📋 <strong style={{ color:T.text }}>Workflow (optional)</strong> — if your doc contains data quality checks or validation rules, a matching check workflow is also created<br/>
+            ✏ <strong style={{ color:T.text }}>Fully editable</strong> — review and customise everything before saving
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+
+  if (step==="parsing") return (
+    <div style={{ display:"flex", flexDirection:"column", alignItems:"center", justifyContent:"center", height:"100%", gap:14 }}>
+      <Spinner size={28} color={T.accent}/>
+      <div style={{ fontSize:13, fontWeight:700, color:T.text }}>Parsing document…</div>
+      <div style={{ fontSize:11, color:T.muted }}>AI is extracting steps, triggers and checks</div>
+    </div>
+  );
+
+  if (step==="preview") return (
+    <div style={{ display:"flex", flexDirection:"column", height:"100%", overflow:"hidden" }}>
+      <div style={{ padding:"12px 18px", borderBottom:`1px solid ${T.border}`, display:"flex", alignItems:"center", gap:10, flexShrink:0 }}>
+        <button onClick={()=>setStep("input")} style={{ background:"none",border:"none",cursor:"pointer",color:T.muted,fontSize:12 }}>← Re-parse</button>
+        <div style={{ flex:1 }}>
+          <div style={{ fontWeight:700, fontSize:14, color:T.text }}>Review Parsed Output</div>
+          <div style={{ fontSize:10, color:T.muted }}>Review and customise before saving</div>
+        </div>
+        {parsed?.runbook && (
+          <Btn onClick={save} disabled={saving} style={{ background:T.accent, color:"white", border:"none" }}>
+            {saving?<Spinner size={9} color="white"/>:"Save"} {parsed.workflow?"Both":"Runbook"}
+          </Btn>
+        )}
+      </div>
+
+      {parsed?.error ? (
+        <div style={{ padding:24, color:T.red, fontSize:12 }}>⚠ {parsed.error}</div>
+      ) : (
+        <div style={{ flex:1, overflowY:"auto", padding:"16px 20px" }}>
+          {/* Summary + gaps */}
+          {parsed?.summary && (
+            <div style={{ padding:"10px 14px", borderRadius:9, background:`${T.accent}0A`, border:`1px solid ${T.accent}25`, marginBottom:14 }}>
+              <div style={{ fontSize:10, fontWeight:700, color:T.accent, marginBottom:3 }}>✦ AI Summary</div>
+              <div style={{ fontSize:11, color:T.text, lineHeight:1.6 }}>{parsed.summary}</div>
+            </div>
+          )}
+          {(parsed?.gaps||[]).length>0 && (
+            <div style={{ padding:"9px 13px", borderRadius:9, background:"#f9731608", border:"1px solid #f9731630", marginBottom:14 }}>
+              <div style={{ fontSize:10, fontWeight:700, color:"#f97316", marginBottom:4 }}>⚠ Needs your input</div>
+              {parsed.gaps.map((g,i)=><div key={i} style={{ fontSize:10, color:T.muted, marginBottom:2 }}>• {g}</div>)}
+            </div>
+          )}
+
+          {/* Tab toggle if workflow was also generated */}
+          {parsed?.workflow && (
+            <div style={{ display:"flex", gap:2, marginBottom:14, borderBottom:`1px solid ${T.border}`, paddingBottom:0 }}>
+              {[["runbook","🤖 Runbook"],["workflow","📋 Workflow"]].map(([id,label])=>(
+                <button key={id} onClick={()=>setActiveTab(id)}
+                  style={{ padding:"6px 14px", fontSize:11, fontWeight:700, cursor:"pointer", background:"none", border:"none",
+                    borderBottom:`2px solid ${activeTab===id?T.accent:"transparent"}`, color:activeTab===id?T.accent:T.muted, marginBottom:-1 }}>
+                  {label}
+                </button>
+              ))}
+            </div>
+          )}
+
+          {/* Runbook preview */}
+          {activeTab==="runbook" && parsed?.runbook && (
+            <div>
+              <div style={{ marginBottom:12 }}>
+                <div style={{ fontSize:15, fontWeight:800, color:T.text, marginBottom:3 }}>{parsed.runbook.icon} {parsed.runbook.name}</div>
+                <div style={{ fontSize:11, color:T.muted }}>{parsed.runbook.desc}</div>
+                <div style={{ display:"flex", gap:6, marginTop:6, flexWrap:"wrap" }}>
+                  {(parsed.runbook.tags||[]).map(t=>(
+                    <span key={t} style={{ fontSize:9, padding:"2px 7px", borderRadius:20, background:T.surface, border:`1px solid ${T.border}`, color:T.muted }}>{t}</span>
+                  ))}
+                  <span style={{ fontSize:9, color:T.muted }}>Trigger: {parsed.runbook.trigger?.type}</span>
+                </div>
+              </div>
+              <div style={{ fontSize:9, fontWeight:700, color:T.muted, textTransform:"uppercase", letterSpacing:".06em", marginBottom:8 }}>
+                Steps ({parsed.runbook.steps.length})
+              </div>
+              {parsed.runbook.steps.map((step,i)=>{
+                const act = ACTION_TYPES[step.type]||{label:step.type,icon:"⚙",color:T.muted};
+                return (
+                  <div key={step.id} style={{ display:"flex", gap:10, padding:"8px 10px", borderRadius:8, border:`1px solid ${T.border}`,
+                    background:T.card, marginBottom:6, alignItems:"flex-start" }}>
+                    <span style={{ fontSize:14, flexShrink:0 }}>{act.icon}</span>
+                    <div style={{ flex:1, minWidth:0 }}>
+                      <div style={{ fontSize:11, fontWeight:700, color:T.text }}>{step.label}</div>
+                      <div style={{ fontSize:9, color:act.color }}>{act.label}</div>
+                      {step.on_fail&&step.on_fail!=="continue" && <div style={{ fontSize:9, color:T.orange }}>on fail → {step.on_fail}</div>}
+                    </div>
+                    <div style={{ fontSize:9, color:T.muted, flexShrink:0 }}>#{i+1}</div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+
+          {/* Workflow preview */}
+          {activeTab==="workflow" && parsed?.workflow && (
+            <div>
+              <div style={{ marginBottom:12 }}>
+                <div style={{ fontSize:15, fontWeight:800, color:T.text, marginBottom:3 }}>📋 {parsed.workflow.name}</div>
+                <div style={{ fontSize:11, color:T.muted }}>{parsed.workflow.desc}</div>
+                <div style={{ fontSize:10, color:T.accent, marginTop:4 }}>Schedule: {parsed.workflow.schedule}</div>
+              </div>
+              <div style={{ fontSize:9, fontWeight:700, color:T.muted, textTransform:"uppercase", letterSpacing:".06em", marginBottom:8 }}>
+                Checks ({parsed.workflow.checks?.length||0})
+              </div>
+              {(parsed.workflow.checks||[]).map((chk,i)=>(
+                <div key={i} style={{ padding:"8px 10px", borderRadius:8, border:`1px solid ${T.border}`, background:T.card, marginBottom:6 }}>
+                  <div style={{ fontSize:11, fontWeight:700, color:T.text, marginBottom:3 }}>{chk.name}</div>
+                  <div style={{ fontSize:9, fontFamily:"monospace", color:T.muted, marginBottom:3 }}>{chk.sql}</div>
+                  <div style={{ display:"flex", gap:6 }}>
+                    <span style={{ fontSize:9, color:T.accent }}>{chk.pass_condition}</span>
+                    <span style={{ fontSize:9, padding:"1px 6px", borderRadius:10, background:
+                      chk.severity==="critical"?`${T.red}18`:chk.severity==="high"?`${T.orange}18`:`${T.yellow}18`,
+                      color:chk.severity==="critical"?T.red:chk.severity==="high"?T.orange:T.yellow,
+                      fontWeight:700 }}>{chk.severity}</span>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+
+  return null;
+}
+
 // ── RunbooksView — list + execution ──────────────────────────────────────────
-function RunbooksView({ onBack, T }) {
-  const [runbooks, setRunbooks] = useLocal("wz_runbooks_v1", AGENTIC_RUNBOOK_TEMPLATES);
-  const [view, setView] = React.useState("list"); // list | builder | execute
+function RunbooksView({ onBack, T: TProp, onWorkflowCreated }) {
+  const _T = useT();
+  const T = TProp || _T;
+  const [runbooks, setRunbooks] = useLocal("wz_runbooks_v3", []);
+  const [execHistory, setExecHistory] = useLocal("wz_rb_execlog_v1", []);
+  const [view, setView] = React.useState("list"); // list | builder | execute | import | history
   const [editingRb, setEditingRb] = React.useState(null);
   const [executingRb, setExecutingRb] = React.useState(null);
   const [execLog, setExecLog] = React.useState([]);
-  const [execStatus, setExecStatus] = React.useState({}); // {stepId: "running"|"done"|"error"|"skipped"}
+  const [execStatus, setExecStatus] = React.useState({});
   const [execRunning, setExecRunning] = React.useState(false);
   const [execDone, setExecDone] = React.useState(false);
+  const [filter, setFilter] = React.useState("all"); // all | manual | schedule | condition
+  const [search, setSearch] = React.useState("");
 
   const saveRunbook = (rb) => {
-    setRunbooks(p => {
-      const idx = p.findIndex(r=>r.id===rb.id);
-      return idx>=0 ? p.map((r,i)=>i===idx?rb:r) : [...p, rb];
-    });
-    setView("list");
-    setEditingRb(null);
+    setRunbooks(p=>{ const idx=p.findIndex(r=>r.id===rb.id); return idx>=0?p.map((r,i)=>i===idx?rb:r):[...p,rb]; });
+    setView("list"); setEditingRb(null);
+  };
+  const deleteRunbook = (id) => setRunbooks(p=>p.filter(r=>r.id!==id));
+  const duplicateRunbook = (rb) => {
+    const dup = { ...rb, id:"rb-"+Date.now(), name:rb.name+" (copy)", steps:rb.steps.map(s=>({...s,id:"s-"+Date.now()+Math.random()})) };
+    setRunbooks(p=>[dup,...p]);
   };
 
-  const deleteRunbook = (id) => setRunbooks(p=>p.filter(r=>r.id!==id));
+  const handleImportDone = (runbook, workflow) => {
+    saveRunbook(runbook);
+    if (workflow && onWorkflowCreated) onWorkflowCreated(workflow);
+  };
 
   const executeRunbook = async (rb) => {
-    setExecutingRb(rb);
-    setExecLog([]);
-    setExecStatus({});
-    setExecRunning(true);
-    setExecDone(false);
-    setView("execute");
-
-    const log = (msg, type="info") => setExecLog(p=>[...p, { ts:new Date().toLocaleTimeString(), msg, type }]);
-    log(`🚀 Starting runbook: "${rb.name}"`, "start");
-
+    setExecutingRb(rb); setExecLog([]); setExecStatus({});
+    setExecRunning(true); setExecDone(false); setView("execute");
+    const log = (msg, type="info") => setExecLog(p=>[...p,{ ts:new Date().toLocaleTimeString(), msg, type }]);
+    log(`🚀 Starting: "${rb.name}"`, "start");
+    const startedAt = new Date().toISOString();
+    let finalStatus = "complete";
     for (const step of rb.steps) {
       setExecStatus(p=>({...p,[step.id]:"running"}));
       const act = ACTION_TYPES[step.type]||{label:step.type,icon:"⚙"};
       log(`${act.icon} ${step.label}…`);
-      // Simulate step execution
-      await new Promise(r=>setTimeout(r, 800+Math.random()*1200));
-      // Simulate occasional failure for demo
+      await new Promise(r=>setTimeout(r, 700+Math.random()*1000));
       const failed = step.type==="escalate";
       setExecStatus(p=>({...p,[step.id]:failed?"error":"done"}));
       if (failed) {
-        log(`✗ ${step.label} — escalating to human`, "error");
-        if (step.on_fail==="stop") { log("⛔ Runbook stopped due to failure.", "error"); break; }
-        if (step.on_fail==="escalate") { log("🙋 Awaiting human confirmation…", "warn"); break; }
+        log(`🙋 ${step.label} — awaiting approval`, "warn");
+        if (step.on_fail==="stop"||step.on_fail==="escalate") { finalStatus="awaiting"; break; }
       } else {
-        log(`✓ ${step.label} — complete`, "success");
+        log(`✓ ${step.label}`, "success");
       }
     }
-    setExecRunning(false);
-    setExecDone(true);
-    log(`🏁 Runbook "${rb.name}" execution complete.`, "done");
+    setExecRunning(false); setExecDone(true);
+    log(`🏁 ${finalStatus==="awaiting"?"Paused for approval":"Complete"}: "${rb.name}"`, "done");
+    setExecHistory(p=>[{ id:"exec-"+Date.now(), runbook_id:rb.id, runbook_name:rb.name,
+      started_at:startedAt, completed_at:new Date().toISOString(), status:finalStatus,
+      step_count:rb.steps.length },...p].slice(0,100));
   };
 
   if (view==="builder") return (
     <RunbookBuilder initial={editingRb} onSave={saveRunbook}
       onCancel={()=>{setView("list");setEditingRb(null);}} T={T}/>
   );
+  if (view==="import") return (
+    <SopImportWizard onDone={handleImportDone} onCancel={()=>setView("list")} T={T}/>
+  );
 
   if (view==="execute" && executingRb) return (
     <div style={{ display:"flex",flexDirection:"column",height:"100%",overflow:"hidden" }}>
-      <div style={{ padding:"16px 20px",borderBottom:`1px solid ${T.border}`,display:"flex",alignItems:"center",gap:12,flexShrink:0 }}>
-        <button onClick={()=>setView("list")} style={{ background:"none",border:"none",cursor:"pointer",color:T.muted,fontSize:13 }}>← Back</button>
-        <div style={{ flex:1,fontWeight:700,fontSize:15,color:T.text }}>{executingRb.name}</div>
-        {execRunning && <div style={{ display:"flex",alignItems:"center",gap:6,fontSize:12,color:T.accent }}><Spinner size={11} color={T.accent}/> Running…</div>}
-        {execDone && !execRunning && <div style={{ fontSize:12,color:T.green,fontWeight:700 }}>✓ Execution complete</div>}
+      <div style={{ padding:"11px 18px",borderBottom:`1px solid ${T.border}`,display:"flex",alignItems:"center",gap:10,flexShrink:0 }}>
+        <button onClick={()=>setView("list")} style={{ background:"none",border:"none",cursor:"pointer",color:T.muted,fontSize:12 }}>← Back</button>
+        <div style={{ flex:1, fontWeight:700, fontSize:13, color:T.text }}>{executingRb.name}</div>
+        {execRunning && <div style={{ display:"flex",alignItems:"center",gap:5,fontSize:11,color:T.accent }}><Spinner size={10} color={T.accent}/> Running…</div>}
+        {execDone && !execRunning && <div style={{ fontSize:11,color:T.green,fontWeight:700 }}>✓ Done</div>}
       </div>
       <div style={{ display:"flex",flex:1,overflow:"hidden" }}>
-        {/* Step progress */}
-        <div style={{ width:340,borderRight:`1px solid ${T.border}`,overflowY:"auto",padding:16 }}>
-          <div style={{ fontSize:10,fontWeight:700,color:T.muted,textTransform:"uppercase",letterSpacing:".06em",marginBottom:12 }}>Steps</div>
+        <div style={{ width:300,borderRight:`1px solid ${T.border}`,overflowY:"auto",padding:13 }}>
+          <div style={{ fontSize:9,fontWeight:700,color:T.muted,textTransform:"uppercase",letterSpacing:".06em",marginBottom:10 }}>Steps</div>
           {executingRb.steps.map((step,i)=>(
             <RunbookStepCard key={step.id} step={step} index={i} total={executingRb.steps.length}
-              onEdit={()=>{}} onDelete={()=>{}} onMove={()=>{}} T={T} isRunning={true}
-              runStatus={execStatus[step.id]}/>
+              onEdit={()=>{}} onDelete={()=>{}} onMove={()=>{}} T={T} isRunning={true} runStatus={execStatus[step.id]}/>
           ))}
         </div>
-        {/* Live log */}
-        <div style={{ flex:1,overflowY:"auto",padding:16,fontFamily:"monospace",fontSize:12 }}>
-          <div style={{ fontSize:10,fontWeight:700,color:T.muted,textTransform:"uppercase",letterSpacing:".06em",marginBottom:12 }}>Live Log</div>
+        <div style={{ flex:1,overflowY:"auto",padding:13,fontFamily:"monospace",fontSize:11 }}>
+          <div style={{ fontSize:9,fontWeight:700,color:T.muted,textTransform:"uppercase",letterSpacing:".06em",marginBottom:10 }}>Live Log</div>
           {execLog.map((entry,i)=>(
-            <div key={i} style={{ display:"flex",gap:10,marginBottom:6,
-              color:entry.type==="error"?T.red:entry.type==="success"?T.green:entry.type==="done"?T.accent:T.text }}>
-              <span style={{ color:T.muted,flexShrink:0 }}>{entry.ts}</span>
+            <div key={i} style={{ display:"flex",gap:8,marginBottom:5,
+              color:entry.type==="error"?T.red:entry.type==="success"?T.green:entry.type==="done"?T.accent:entry.type==="warn"?"#f97316":T.text }}>
+              <span style={{ color:T.muted,flexShrink:0,fontSize:9 }}>{entry.ts}</span>
               <span>{entry.msg}</span>
             </div>
           ))}
-          {execRunning && <div style={{ color:T.muted,animation:"pulse 1.5s infinite" }}>…</div>}
+          {execRunning && <div style={{ color:T.muted }}>…</div>}
         </div>
-        {/* Flow preview */}
-        <div style={{ width:240,borderLeft:`1px solid ${T.border}`,overflowY:"auto",padding:16 }}>
-          <div style={{ fontSize:10,fontWeight:700,color:T.muted,textTransform:"uppercase",letterSpacing:".06em",marginBottom:12 }}>Flow</div>
+        <div style={{ width:210,borderLeft:`1px solid ${T.border}`,overflowY:"auto",padding:13 }}>
+          <div style={{ fontSize:9,fontWeight:700,color:T.muted,textTransform:"uppercase",letterSpacing:".06em",marginBottom:10 }}>Flow</div>
           <RunbookFlowPreview steps={executingRb.steps} T={T} runStatuses={execStatus}/>
         </div>
       </div>
     </div>
   );
 
-  // List view
+  if (view==="history") return (
+    <div style={{ display:"flex",flexDirection:"column",height:"100%",overflow:"hidden" }}>
+      <div style={{ padding:"11px 18px",borderBottom:`1px solid ${T.border}`,display:"flex",alignItems:"center",gap:10,flexShrink:0 }}>
+        <button onClick={()=>setView("list")} style={{ background:"none",border:"none",cursor:"pointer",color:T.muted,fontSize:12 }}>← Back</button>
+        <div style={{ flex:1, fontWeight:700, fontSize:13, color:T.text }}>Execution History</div>
+        {execHistory.length>0 && <Btn size="sm" variant="ghost" onClick={()=>setExecHistory([])}>Clear</Btn>}
+      </div>
+      <div style={{ flex:1,overflowY:"auto",padding:16 }}>
+        {execHistory.length===0 && <div style={{ color:T.muted,fontSize:12,textAlign:"center",marginTop:40 }}>No executions yet.</div>}
+        {execHistory.map(h=>(
+          <div key={h.id} style={{ background:T.card,border:`1px solid ${T.border}`,borderRadius:9,padding:"10px 14px",marginBottom:8,display:"flex",gap:10,alignItems:"center" }}>
+            <div style={{ width:7,height:7,borderRadius:"50%",flexShrink:0,
+              background:h.status==="complete"?T.green:h.status==="awaiting"?"#f97316":T.red }}/>
+            <div style={{ flex:1 }}>
+              <div style={{ fontSize:12,fontWeight:700,color:T.text }}>{h.runbook_name}</div>
+              <div style={{ fontSize:9,color:T.muted }}>{new Date(h.started_at).toLocaleString()} · {h.step_count} steps</div>
+            </div>
+            <div style={{ fontSize:10,fontWeight:700,textTransform:"capitalize",
+              color:h.status==="complete"?T.green:h.status==="awaiting"?"#f97316":T.red }}>{h.status}</div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+
+  // ── List view ─────────────────────────────────────────────────────────────
+  const triggerColors = { manual:"#6366f1", schedule:"#06b6d4", condition:"#f97316", webhook:"#22c55e" };
+  const filtered = runbooks.filter(rb=>{
+    if (filter!=="all" && rb.trigger?.type!==filter) return false;
+    if (search && !rb.name.toLowerCase().includes(search.toLowerCase()) && !rb.desc?.toLowerCase().includes(search.toLowerCase())) return false;
+    return true;
+  });
+
   return (
     <div style={{ display:"flex",flexDirection:"column",height:"100%",overflow:"hidden" }}>
-      <div style={{ padding:"16px 20px",borderBottom:`1px solid ${T.border}`,display:"flex",alignItems:"center",gap:12,flexShrink:0 }}>
-        <button onClick={onBack} style={{ background:"none",border:"none",cursor:"pointer",color:T.muted,fontSize:13 }}>← Workflows</button>
+      {/* Header */}
+      <div style={{ padding:"12px 18px",borderBottom:`1px solid ${T.border}`,display:"flex",alignItems:"center",gap:9,flexShrink:0 }}>
+        <button onClick={onBack} style={{ background:"none",border:"none",cursor:"pointer",color:T.muted,fontSize:12 }}>← Workflows</button>
         <div style={{ flex:1 }}>
-          <div style={{ fontWeight:800,fontSize:18,color:T.text }}>Agentic Runbooks</div>
-          <div style={{ fontSize:11,color:T.muted,marginTop:1 }}>Autonomous playbooks that act as a senior QA engineer</div>
+          <div style={{ fontWeight:800, fontSize:16, color:T.text }}>Agentic Runbooks</div>
+          <div style={{ fontSize:10, color:T.muted }}>Autonomous playbooks — AI-powered, fully customisable</div>
         </div>
-        <Btn onClick={()=>{setEditingRb(null);setView("builder");}}
-          style={{ background:T.accent,color:"white",border:"none" }} size="sm">
-          <Plus size={11}/> New Runbook
+        <Btn size="sm" variant="ghost" onClick={()=>setView("history")} style={{ fontSize:10 }}>
+          📋 History ({execHistory.length})
+        </Btn>
+        <Btn size="sm" onClick={()=>setView("import")}
+          style={{ background:`linear-gradient(135deg,#f97316,#ef4444)`, color:"white", border:"none", fontSize:11 }}>
+          📄 Import SOP
+        </Btn>
+        <Btn size="sm" onClick={()=>{setEditingRb(null);setView("builder");}}
+          style={{ background:T.accent, color:"white", border:"none" }}>
+          <Plus size={10}/> New
         </Btn>
       </div>
 
-      <div style={{ flex:1,overflowY:"auto",padding:"20px" }}>
-        {/* Info banner */}
-        <div style={{ background:`${T.accent}0C`,border:`1px solid ${T.accent}30`,borderRadius:12,
-          padding:"12px 16px",marginBottom:20,display:"flex",gap:12,alignItems:"flex-start" }}>
-          <div style={{ fontSize:20,flexShrink:0 }}>🤖</div>
-          <div>
-            <div style={{ fontSize:12,fontWeight:700,color:T.text,marginBottom:3 }}>What are Agentic Runbooks?</div>
-            <div style={{ fontSize:11,color:T.muted,lineHeight:1.6 }}>
-              Runbooks are autonomous step-by-step playbooks an AI agent executes on your behalf — pausing jobs, retrying downloads,
-              validating data, alerting stakeholders, and resuming pipelines. Like having a senior QA engineer on call 24/7.
-            </div>
-          </div>
+      {/* Search + filter bar */}
+      <div style={{ padding:"8px 18px", borderBottom:`1px solid ${T.border}`, display:"flex", gap:8, alignItems:"center", flexShrink:0 }}>
+        <input value={search} onChange={e=>setSearch(e.target.value)} placeholder="Search runbooks…"
+          style={{ flex:1, padding:"5px 9px", borderRadius:7, border:`1px solid ${T.border}`, background:T.surface, color:T.text, fontSize:11 }}/>
+        <div style={{ display:"flex", gap:3 }}>
+          {[["all","All"],["manual","Manual"],["schedule","Schedule"],["condition","Auto"]].map(([v,l])=>(
+            <button key={v} onClick={()=>setFilter(v)}
+              style={{ padding:"4px 10px", borderRadius:7, fontSize:10, fontWeight:600, cursor:"pointer",
+                background:filter===v?T.accent:"none", color:filter===v?"white":T.muted,
+                border:`1px solid ${filter===v?T.accent:T.border}` }}>{l}</button>
+          ))}
         </div>
+      </div>
 
-        <div style={{ display:"grid",gap:14 }}>
-          {runbooks.map(rb=>{
-            const triggerColors = { manual:"#6366f1", schedule:"#06b6d4", condition:"#f97316", webhook:"#22c55e" };
+      <div style={{ flex:1, overflowY:"auto", padding:"14px 18px" }}>
+        {filtered.length===0 && (
+          <div style={{ textAlign:"center", padding:"40px 0", color:T.muted, fontSize:12 }}>
+            No runbooks found. <button onClick={()=>setView("import")} style={{ color:T.accent, background:"none", border:"none", cursor:"pointer", fontSize:12 }}>Import an SOP</button> or <button onClick={()=>{setEditingRb(null);setView("builder");}} style={{ color:T.accent, background:"none", border:"none", cursor:"pointer", fontSize:12 }}>create one</button>.
+          </div>
+        )}
+        <div style={{ display:"grid", gap:11 }}>
+          {filtered.map(rb=>{
             const tc = triggerColors[rb.trigger?.type]||T.muted;
+            const lastExec = execHistory.find(h=>h.runbook_id===rb.id);
             return (
-              <div key={rb.id} style={{ background:T.card,border:`1px solid ${T.border}`,borderRadius:14,
-                padding:"16px 18px",display:"flex",gap:16,alignItems:"flex-start" }}>
-                <div style={{ width:44,height:44,borderRadius:12,background:`${rb.color||T.accent}18`,
-                  border:`1px solid ${rb.color||T.accent}40`,display:"flex",alignItems:"center",
-                  justifyContent:"center",fontSize:20,flexShrink:0 }}>{rb.icon||"⚙"}</div>
-                <div style={{ flex:1,minWidth:0 }}>
-                  <div style={{ display:"flex",alignItems:"center",gap:8,marginBottom:3 }}>
-                    <div style={{ fontSize:14,fontWeight:700,color:T.text }}>{rb.name}</div>
-                    <div style={{ fontSize:9,fontWeight:700,color:tc,background:`${tc}15`,
-                      padding:"2px 7px",borderRadius:20,textTransform:"uppercase",letterSpacing:".05em" }}>
+              <div key={rb.id} style={{ background:T.card, border:`1px solid ${T.border}`, borderRadius:12,
+                padding:"13px 15px", display:"flex", gap:12, alignItems:"flex-start" }}>
+                <div style={{ width:40,height:40,borderRadius:10,background:`${rb.color||T.accent}18`,
+                  border:`1px solid ${rb.color||T.accent}35`,display:"flex",alignItems:"center",
+                  justifyContent:"center",fontSize:18,flexShrink:0 }}>{rb.icon||"⚙"}</div>
+                <div style={{ flex:1, minWidth:0 }}>
+                  <div style={{ display:"flex", alignItems:"center", gap:7, marginBottom:2 }}>
+                    <div style={{ fontSize:13, fontWeight:700, color:T.text }}>{rb.name}</div>
+                    <span style={{ fontSize:8, fontWeight:700, color:tc, background:`${tc}15`,
+                      padding:"2px 6px", borderRadius:20, textTransform:"uppercase", letterSpacing:".05em" }}>
                       {rb.trigger?.type||"manual"}
-                    </div>
+                    </span>
+                    {rb.notifications?.slack && <span style={{ fontSize:9, color:T.muted }}>🔔 {rb.notifications.slack}</span>}
                   </div>
-                  <div style={{ fontSize:11,color:T.muted,marginBottom:8,lineHeight:1.5 }}>{rb.desc}</div>
-                  <div style={{ display:"flex",gap:6,flexWrap:"wrap" }}>
+                  <div style={{ fontSize:10, color:T.muted, marginBottom:5, lineHeight:1.5 }}>{rb.desc}</div>
+                  <div style={{ display:"flex", gap:5, flexWrap:"wrap", alignItems:"center" }}>
                     {(rb.tags||[]).map(tag=>(
-                      <span key={tag} style={{ fontSize:9,color:T.muted,background:T.surface,
-                        padding:"2px 7px",borderRadius:20,border:`1px solid ${T.border}` }}>{tag}</span>
+                      <span key={tag} style={{ fontSize:8, color:T.muted, background:T.surface,
+                        padding:"1px 6px", borderRadius:20, border:`1px solid ${T.border}` }}>{tag}</span>
                     ))}
-                    <span style={{ fontSize:9,color:T.muted }}>{rb.steps?.length||0} steps</span>
+                    <span style={{ fontSize:9, color:T.muted }}>{rb.steps?.length||0} steps</span>
+                    {lastExec && <span style={{ fontSize:9, color:lastExec.status==="complete"?T.green:"#f97316" }}>
+                      Last: {lastExec.status} · {new Date(lastExec.started_at).toLocaleDateString()}
+                    </span>}
                   </div>
                 </div>
-                <div style={{ display:"flex",flexDirection:"column",gap:6,flexShrink:0 }}>
+                <div style={{ display:"flex", flexDirection:"column", gap:4, flexShrink:0 }}>
                   <Btn size="sm" onClick={()=>executeRunbook(rb)}
-                    style={{ background:rb.color||T.accent,color:"white",border:"none",minWidth:80 }}>
+                    style={{ background:rb.color||T.accent, color:"white", border:"none", minWidth:70, fontSize:11 }}>
                     ▶ Run
                   </Btn>
                   <Btn size="sm" variant="ghost" onClick={()=>{setEditingRb(rb);setView("builder");}}>✏ Edit</Btn>
-                  <Btn size="sm" variant="muted" onClick={()=>deleteRunbook(rb.id)}>✕ Delete</Btn>
+                  <Btn size="sm" variant="ghost" onClick={()=>duplicateRunbook(rb)}>⧉ Copy</Btn>
+                  <Btn size="sm" variant="muted" onClick={()=>deleteRunbook(rb.id)}>✕</Btn>
                 </div>
               </div>
             );
           })}
         </div>
 
-        {/* ── Built-in Workflows merged in ─────────────────────────────── */}
-        <div style={{ marginTop:28,marginBottom:8 }}>
-          <div style={{ fontSize:11,fontWeight:700,color:T.muted,textTransform:"uppercase",
-            letterSpacing:".06em",marginBottom:14 }}>Built-in Workflows</div>
-          <div style={{ display:"grid",gridTemplateColumns:"1fr 1fr",gap:12 }}>
-            {BUILTIN_WFS.map(wf=>{
-              const accentColor = wf.id==="ads-sop" ? "#f97316" : T.accent;
-              return (
-                <div key={wf.id} style={{ background:T.card,border:`1px solid ${T.border}`,
-                  borderLeft:`3px solid ${accentColor}`,borderRadius:12,padding:"14px 16px" }}>
-                  <div style={{ fontSize:13,fontWeight:700,color:T.text,marginBottom:4 }}>{wf.name}</div>
-                  <div style={{ fontSize:11,color:T.muted,marginBottom:8,lineHeight:1.4 }}>{wf.desc}</div>
-                  <div style={{ display:"flex",gap:6,flexWrap:"wrap",marginBottom:10 }}>
-                    <Badge label={wf.schedule||"manual"} color={accentColor}/>
-                    {(wf.agents||[]).map(a=>(
-                      <span key={a} style={{ fontSize:9,padding:"2px 7px",borderRadius:20,
-                        background:`${accentColor}12`,color:accentColor,fontWeight:600 }}>{a}</span>
-                    ))}
-                  </div>
-                  <div style={{ display:"flex",gap:6 }}>
-                    <Btn size="sm" onClick={()=>onBack && onBack("sop_"+wf.id)}
-                      style={{ background:accentColor,color:"white",border:"none" }}>
-                      ▶ Run
-                    </Btn>
-                    <Btn size="sm" variant="ghost" onClick={()=>onBack && onBack("sop_"+wf.id)}>
-                      Open
-                    </Btn>
-                  </div>
-                </div>
-              );
-            })}
+        {/* Runbook Template Gallery */}
+        {runbooks.length === 0 && (
+          <div style={{ marginBottom:20, padding:"14px 16px", borderRadius:10,
+            background:`${T.accent}06`, border:`1px solid ${T.accent}20` }}>
+            <div style={{ fontSize:11, fontWeight:700, color:T.accent, marginBottom:3 }}>
+              ✦ Start from a template
+            </div>
+            <div style={{ fontSize:10, color:T.muted }}>
+              Pick a template below or <button onClick={()=>setView("builder")} style={{ color:T.accent, background:"none", border:"none", cursor:"pointer", fontSize:10 }}>create from scratch</button>.
+            </div>
           </div>
-        </div>
+        )}
+        {AGENTIC_RUNBOOK_TEMPLATES.length > 0 && (
+          <div style={{ marginBottom:20 }}>
+            <div style={{ fontSize:9, fontWeight:700, color:T.muted, textTransform:"uppercase",
+              letterSpacing:".06em", marginBottom:10 }}>Template Gallery</div>
+            <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:8 }}>
+              {AGENTIC_RUNBOOK_TEMPLATES.map(tpl => {
+                const alreadyAdded = runbooks.some(r => r.template_id === tpl.id);
+                return (
+                  <div key={tpl.id} style={{ background:T.card, border:`1px solid ${alreadyAdded?tpl.color+"40":T.border}`,
+                    borderLeft:`3px solid ${tpl.color}`, borderRadius:10, padding:"10px 13px",
+                    opacity: alreadyAdded ? 0.6 : 1 }}>
+                    <div style={{ display:"flex", alignItems:"center", gap:8, marginBottom:4 }}>
+                      <span style={{ fontSize:16 }}>{tpl.icon}</span>
+                      <div style={{ fontSize:11, fontWeight:700, color:T.text, flex:1 }}>{tpl.name}</div>
+                      {alreadyAdded && <span style={{ fontSize:9, color:tpl.color, fontWeight:700 }}>Added</span>}
+                    </div>
+                    <div style={{ fontSize:10, color:T.muted, marginBottom:8, lineHeight:1.5 }}>{tpl.desc}</div>
+                    <div style={{ display:"flex", gap:5 }}>
+                      {!alreadyAdded && (
+                        <Btn size="sm" onClick={()=>{
+                          const rb = { ...tpl, id:"rb-"+Date.now(),
+                            template_id:tpl.id,
+                            steps: tpl.steps.map(s=>({...s, id:"s-"+Date.now()+Math.random()})) };
+                          saveRunbook(rb);
+                        }} style={{ background:tpl.color, color:"white", border:"none", fontSize:10 }}>
+                          + Use Template
+                        </Btn>
+                      )}
+                      <Btn size="sm" variant="ghost" onClick={()=>{
+                        const rb = { ...tpl, id:"rb-"+Date.now(), name:tpl.name+" (copy)",
+                          template_id:tpl.id,
+                          steps: tpl.steps.map(s=>({...s, id:"s-"+Date.now()+Math.random()})) };
+                        setEditingRb(rb); setView("builder");
+                      }} style={{ fontSize:10 }}>Customise</Btn>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        )}
+
+      </div>
+    </div>
+  );
+}
+
+
+// ── WorkflowDependencyGraph — SVG DAG of workflow dependencies ───────────────
+function WorkflowDependencyGraph({ workflows, runHistory, T, onOpen }) {
+  if (!workflows.length) return null;
+  // Only render if at least one workflow has depends_on
+  const hasAnyDeps = workflows.some(w => (w.depends_on||[]).length > 0);
+  if (!hasAnyDeps) return null;
+
+  // Layout: simple left-to-right columns by depth
+  const depths = {};
+  const getDepth = (id, visited=new Set()) => {
+    if (depths[id] !== undefined) return depths[id];
+    if (visited.has(id)) return 0; // cycle guard
+    visited.add(id);
+    const wf = workflows.find(w => w.id === id);
+    const deps = wf?.depends_on || [];
+    const d = deps.length ? Math.max(...deps.map(d => getDepth(d, new Set(visited)))) + 1 : 0;
+    depths[id] = d;
+    return d;
+  };
+  workflows.forEach(w => getDepth(w.id));
+
+  const maxDepth = Math.max(...Object.values(depths), 0);
+  const cols = {};
+  workflows.forEach(w => { const d = depths[w.id]||0; if (!cols[d]) cols[d] = []; cols[d].push(w); });
+
+  const nodeW = 140, nodeH = 36, colGap = 60, rowGap = 12, padX = 16, padY = 16;
+  const maxColLen = Math.max(...Object.values(cols).map(c => c.length));
+  const svgW = (maxDepth+1)*(nodeW+colGap) - colGap + padX*2;
+  const svgH = maxColLen*(nodeH+rowGap) - rowGap + padY*2;
+
+  const nodePos = {};
+  Object.entries(cols).forEach(([depth, wfs]) => {
+    wfs.forEach((wf, i) => {
+      const x = padX + parseInt(depth) * (nodeW + colGap);
+      const totalH = wfs.length * (nodeH+rowGap) - rowGap;
+      const startY = padY + (maxColLen*(nodeH+rowGap) - totalH) / 2;
+      nodePos[wf.id] = { x, y: startY + i*(nodeH+rowGap) };
+    });
+  });
+
+  const lastRunStatus = {};
+  workflows.forEach(w => {
+    const runs = runHistory.filter(r => r.workflow_id === w.id);
+    lastRunStatus[w.id] = runs[0]?.status || null;
+  });
+
+  return (
+    <div style={{ marginBottom:16, padding:"12px 14px", borderRadius:10,
+      background:T.surface, border:`1px solid ${T.border}` }}>
+      <div style={{ fontSize:10, fontWeight:700, color:T.muted, textTransform:"uppercase",
+        letterSpacing:".06em", marginBottom:10 }}>Dependency Graph</div>
+      <div style={{ overflowX:"auto" }}>
+        <svg width={Math.max(svgW,300)} height={Math.max(svgH,80)} style={{ display:"block" }}>
+          {/* Draw edges */}
+          {workflows.map(wf => (wf.depends_on||[]).map(depId => {
+            const from = nodePos[depId]; const to = nodePos[wf.id];
+            if (!from || !to) return null;
+            const x1 = from.x + nodeW, y1 = from.y + nodeH/2;
+            const x2 = to.x, y2 = to.y + nodeH/2;
+            const mx = (x1+x2)/2;
+            return (
+              <path key={`${depId}-${wf.id}`}
+                d={`M${x1},${y1} C${mx},${y1} ${mx},${y2} ${x2},${y2}`}
+                fill="none" stroke={T.border} strokeWidth={1.5} strokeDasharray="4,3"
+                markerEnd="url(#arr)"/>
+            );
+          }))}
+          {/* Arrow marker */}
+          <defs>
+            <marker id="arr" markerWidth="6" markerHeight="6" refX="5" refY="3" orient="auto">
+              <path d="M0,0 L6,3 L0,6 Z" fill={T.border}/>
+            </marker>
+          </defs>
+          {/* Draw nodes */}
+          {workflows.map(wf => {
+            const pos = nodePos[wf.id];
+            if (!pos) return null;
+            const st = lastRunStatus[wf.id];
+            const nodeColor = st === "clean" ? T.green : st ? T.red : T.accent;
+            return (
+              <g key={wf.id} style={{ cursor:"pointer" }} onClick={() => onOpen && onOpen(wf)}>
+                <rect x={pos.x} y={pos.y} width={nodeW} height={nodeH} rx={7}
+                  fill={nodeColor+"15"} stroke={nodeColor} strokeWidth={1.5}/>
+                <text x={pos.x+10} y={pos.y+14} fontSize={9} fontWeight="700"
+                  fill={nodeColor} style={{ userSelect:"none" }}>
+                  {wf.name.slice(0,16)}{wf.name.length>16?"…":""}
+                </text>
+                <text x={pos.x+10} y={pos.y+26} fontSize={8} fill={T.muted} style={{ userSelect:"none" }}>
+                  {st==="clean"?"✓ clean":st?"✗ failed":"no runs"}
+                </text>
+                {st && (
+                  <circle cx={pos.x+nodeW-10} cy={pos.y+nodeH/2} r={4}
+                    fill={st==="clean"?T.green:T.red}/>
+                )}
+              </g>
+            );
+          })}
+        </svg>
       </div>
     </div>
   );
@@ -11409,13 +12511,74 @@ function WorkflowsTab({ navigateTo }) {
       } else {
         setHistory(p=>[data,...p].slice(0,200));
         setLiveRun(data);
-        const failed = data.failed || 0;
+        // Apply per-check alert thresholds before notifying
+        const checkResults = data.check_results || [];
+        const getConsecFails = (chkName) => {
+          let streak = 0;
+          for (const run of runHistory.slice(0,5)) {
+            const prev = (run.check_results||[]).find(c=>c.name===chkName);
+            if (prev && !prev.passed) streak++; else break;
+          }
+          return streak;
+        };
+        const alertableFailures = checkResults.filter(c => {
+          if (c.passed) return false;
+          const chkDef = (wf.checks||[]).find(ch=>ch.name===c.name);
+          if (!chkDef) return true;
+          if ((chkDef.min_rows_threshold??0)>0 && (c.row_count||0)<chkDef.min_rows_threshold) return false;
+          const needed = chkDef.alert_after_failures??1;
+          if (needed>1 && getConsecFails(c.name)<needed-1) return false;
+          return true;
+        });
+        const failed = alertableFailures.length;
         if (failed > 0) {
+          markScheduleRun(wf.id);
           addNotif(`${wf.name}: ${failed} check${failed!==1?"s":""} failed`, "error", {
             persistent:true, actionLabel:"View results", action:()=>setView("detail")
           });
+          // ⚡ Fire Slack webhook on failure
+          (()=>{
+            try {
+              const slackUrl = wf.slack_channel || localStorage.getItem("wz_slack") || "";
+              if (!slackUrl) return;
+              const failedNames = alertableFailures.map(c=>c.name).join(", ");
+              fetch(slackUrl, {
+                method:"POST", headers:{"Content-Type":"application/json"},
+                body: JSON.stringify({
+                  text:`🔴 *${wf.name}* — ${failed} check${failed!==1?"s":""} failed
+*Failed:* ${failedNames}
+*Time:* ${new Date().toLocaleString()}`
+                })
+              }).catch(()=>{});
+            } catch(e) {}
+          })();
           // ⚡ Signal event-driven pipelines
           window.dispatchEvent(new CustomEvent("wz_failure_detected", { detail:{ source:"workflow", name:wf.name, failed } }));
+          // ⚡ Auto-trigger linked runbook if configured
+          if (wf.linked_runbook_id) {
+            (()=>{
+              try {
+                const allRbs = JSON.parse(localStorage.getItem("wz_runbooks_v3")||"[]");
+                const linkedRb = allRbs.find(r=>r.id===wf.linked_runbook_id);
+                if (linkedRb) {
+                  addNotif(
+                    `🤖 Auto-triggering runbook: "${linkedRb.name}"`,
+                    "run",
+                    { persistent:false, actionLabel:"View Runbooks", action:()=>setView("runbooks") }
+                  );
+                  // Record the auto-trigger in exec history
+                  const execRecord = {
+                    id:"exec-"+Date.now(), runbook_id:linkedRb.id, runbook_name:linkedRb.name,
+                    started_at:new Date().toISOString(), completed_at:new Date().toISOString(),
+                    status:"auto-triggered", step_count:linkedRb.steps?.length||0,
+                    triggered_by:`workflow:${wf.name}`
+                  };
+                  const prevHistory = JSON.parse(localStorage.getItem("wz_rb_execlog_v1")||"[]");
+                  localStorage.setItem("wz_rb_execlog_v1", JSON.stringify([execRecord,...prevHistory].slice(0,100)));
+                }
+              } catch(e) {}
+            })();
+          }
           // ⚡ Auto-Severity Classifier — re-classify check severities based on actual impact
           (async()=>{
             try {
@@ -11458,7 +12621,21 @@ Rules: critical=data loss/corruption risk, high=significant business impact, med
             } catch(e){}
           })();
         } else {
+          markScheduleRun(wf.id);
           addNotif(`${wf.name}: all checks passed ✓`, "success");
+          // ⚡ Fire Slack webhook on success (if configured on workflow)
+          (()=>{
+            try {
+              const slackUrl = wf.slack_channel || "";
+              if (!slackUrl) return; // only fire success if workflow has its own channel
+              fetch(slackUrl, {
+                method:"POST", headers:{"Content-Type":"application/json"},
+                body: JSON.stringify({
+                  text:`✅ *${wf.name}* — all ${data.total_checks||0} checks passed · ${new Date().toLocaleTimeString()}`
+                })
+              }).catch(()=>{});
+            } catch(e) {}
+          })();
         }
       }
     } catch(e) {
@@ -11485,10 +12662,145 @@ Rules: critical=data loss/corruption risk, high=significant business impact, med
   const [selectedWfIds, setSelectedWfIds] = React.useState(new Set());
   const toggleWfSelect = (id) => setSelectedWfIds(p => { const n=new Set(p); n.has(id)?n.delete(id):n.add(id); return n; });
   const clearWfSelect = () => setSelectedWfIds(new Set());
+  const [bulkRunning,   setBulkRunning]   = React.useState(false);
+
+  const runBulk = async () => {
+    if (!selectedWfIds.size || bulkRunning) return;
+    setBulkRunning(true);
+    const toRun = BUILTIN_WFS.filter(w => selectedWfIds.has(w.id));
+    addNotif(`Running ${toRun.length} workflow${toRun.length!==1?"s":""}…`, "run");
+    await Promise.all(toRun.map(wf => runWf(wf)));
+    clearWfSelect();
+    setBulkRunning(false);
+  };
+
+  const selectAllWfs = () => setSelectedWfIds(new Set(BUILTIN_WFS.map(w => w.id)));
+
+  // ── Scheduling engine ──────────────────────────────────────────────────────
+  // Parse schedule string → interval in ms (null = manual only)
+  const parseScheduleMs = (schedule) => {
+    if (!schedule || schedule === "manual") return null;
+    const m = schedule.match(/every\s+(\d+)\s*(min|hour)/i);
+    if (m) {
+      const n = parseInt(m[1]);
+      return m[2].toLowerCase().startsWith("h") ? n * 3600000 : n * 60000;
+    }
+    // Daily at HH:MM IST — treat as 24h
+    if (/\d+:\d+/.test(schedule)) return 24 * 3600000;
+    return null;
+  };
+
+  // Get next-run label for display on cards
+  const nextRunLabel = (wf) => {
+    const ms = parseScheduleMs(wf.schedule);
+    if (!ms) return null;
+    const key = `wz_sched_lastrun_${wf.id}`;
+    const last = parseInt(localStorage.getItem(key)||"0");
+    if (!last) return "Pending first run";
+    const nextMs = last + ms;
+    const diffMs = nextMs - Date.now();
+    if (diffMs <= 0) return "Due now";
+    const diffMin = Math.round(diffMs / 60000);
+    if (diffMin < 60) return `Next in ${diffMin}m`;
+    const diffH = Math.round(diffMin / 60);
+    return `Next in ${diffH}h`;
+  };
+
+  // Scheduling ticker — check every 60s if any workflow is overdue
+  React.useEffect(() => {
+    const tick = () => {
+      BUILTIN_WFS.forEach(wf => {
+        if (!wf.enabled && wf.enabled !== undefined) return;
+        const ms = parseScheduleMs(wf.schedule);
+        if (!ms) return;
+        const key = `wz_sched_lastrun_${wf.id}`;
+        const last = parseInt(localStorage.getItem(key)||"0");
+        const overdue = Date.now() - last >= ms;
+        if (overdue && !running[wf.id]) {
+          localStorage.setItem(key, Date.now().toString());
+          addNotif(`⏰ Scheduled run: ${wf.name}`, "run");
+          runWf(wf);
+        }
+      });
+    };
+    tick(); // check immediately on mount
+    const id = setInterval(tick, 60000);
+    return () => clearInterval(id);
+  }, [workflows, running]);
+
+  // Track last manual run time for scheduling
+  const markScheduleRun = (wfId) => {
+    localStorage.setItem(`wz_sched_lastrun_${wfId}`, Date.now().toString());
+  };
+
+  // ── WorkflowsTab keyboard shortcuts (placed after all deps are declared) ──
+  React.useEffect(() => {
+    const handler = (e) => {
+      const tag = document.activeElement?.tagName?.toLowerCase();
+      if (tag === "input" || tag === "textarea" || tag === "select") return;
+      if (e.metaKey || e.ctrlKey || e.altKey) return;
+      if (e.key === "n" || e.key === "N") { e.preventDefault(); setEditing(null); setView("builder"); }
+      if (e.key === "r" || e.key === "R") {
+        e.preventDefault();
+        if (selectedWfIds.size > 0) { runBulk(); }
+        else if (BUILTIN_WFS.length > 0) { runWf(BUILTIN_WFS[0]); }
+      }
+      if (e.key === "Escape") {
+        if (selectedWfIds.size > 0) { e.preventDefault(); clearWfSelect(); }
+      }
+    };
+    window.addEventListener("keydown", handler);
+    return () => window.removeEventListener("keydown", handler);
+  }, [selectedWfIds, running, bulkRunning]);
   const [showAiAssistant, setShowAiAssistant] = React.useState(false);
   const [showTemplateLib, setShowTemplateLib] = React.useState(false);
+  const [wfFilter, setWfFilter] = useLocal("wz_wf_filter", "all"); // all | failing | scheduled | disabled
+  const [genTplPrompt,    setGenTplPrompt]    = React.useState("");
+  const [genTplLoading,   setGenTplLoading]   = React.useState(false);
+  const [genTplResult,    setGenTplResult]    = React.useState(null); // generated BUILTIN_TEMPLATES-style object
   const [activatingTpl,   setActivatingTpl]   = React.useState(null);
   const [previewTpl,      setPreviewTpl]       = React.useState(null); // template being previewed
+  const [setupTpl,        setSetupTpl]         = React.useState(null); // template in setup wizard
+  const [setupCfg,        setSetupCfg]         = React.useState({}); // {name, schedule, slack_channel, linked_runbook_id, auto_create_runbook}
+
+  // ── AI-generate a custom template from description ────────────────────────
+  const generateTemplate = async () => {
+    if (!genTplPrompt.trim()) return;
+    setGenTplLoading(true); setGenTplResult(null);
+    try {
+      const res = await fetch(`${API}/api/ai/chat`, {
+        method:"POST", headers:{"Content-Type":"application/json"},
+        body: JSON.stringify({
+          system:`You are a senior data engineering lead. Given a description, generate a built-in workflow template for an Amazon Seller ecommerce analytics platform on Redshift.
+Return ONLY valid JSON (no markdown):
+{
+  "id": "tpl-custom-XXXXXX",
+  "name": "string",
+  "icon": "emoji",
+  "color": "#hexcolor",
+  "desc": "string (2 sentences)",
+  "tags": ["string"],
+  "phases": ["phase1","phase2"],
+  "gates": ["Gate 1 name","Gate 2 name"],
+  "detection_checks": [
+    {"name":"string","sql":"SELECT ... FROM mws.report|mws.orders|mws.inventory|mws.sales_and_traffic_by_date|public.tbl_amzn_campaign_report","pass_condition":"rows = 0 or rows > 0","severity":"critical|high|medium|low"}
+  ]
+}
+Rules: 3-5 checks, use ONLY real columns from the schema above, pass_condition must be "rows = 0" or "rows > 0", 2-4 phases, 2-3 gates. Generate 3-5 genuinely useful, specific checks.`,
+          messages:[{role:"user", content:`Generate a workflow template for: ${genTplPrompt}`}],
+          max_tokens:900, temperature:0.3
+        })
+      });
+      const d = await res.json();
+      const text = (d?.content?.[0]?.text||"{}").replace(/```json|```/g,"").trim();
+      const tpl = JSON.parse(text);
+      if (tpl.detection_checks?.length) {
+        tpl.id = `tpl-custom-${Date.now().toString(36)}`;
+        setGenTplResult(tpl);
+      }
+    } catch(e) { addNotif("Failed to generate template — try again", "error"); }
+    setGenTplLoading(false);
+  };
 
   // Seed built-in workflows into backend on first load if they don't exist yet
   const BUILTIN_SEEDS = [
@@ -11581,8 +12893,8 @@ Rules:
 Respond with ONLY this JSON array (no other text, no backticks):
 [{"name":"string","desc":"string","schedule":"daily","icon":"emoji","tags":["string"],"checks":[{"name":"string","sql":"string","pass_condition":"rows = 0","severity":"critical|high|medium|low","explanation":"string"}]}]`,
           messages:[{role:"user",content:`Generate 3 fresh workflow suggestions focused on ${focusArea}. JSON array only.`}],
-          max_tokens:1400,
-          temperature:0.9
+          max_tokens:900,
+          temperature:0.4
         })
       });
 
@@ -11655,10 +12967,6 @@ Respond with ONLY this JSON array (no other text, no backticks):
       ]},
   ];
 
-  if (view==="runbooks") return (
-    <RunbooksView onBack={(sig)=>{ if(sig==="sop_ads-sop") setView("sop"); else setView("list"); }} T={T}/>
-  );
-
   if (view==="builder") return (
     <div style={{ display:"flex", flexDirection:"column", height:"100%", overflow:"hidden" }}>
       {saveError && (
@@ -11725,7 +13033,7 @@ Respond with ONLY this JSON array (no other text, no backticks):
         history={runHistory}
         workflows={workflows}
         onBack={()=>setView("list")}
-        onOpenWf={(wf)=>{ setDetail(wf); setView("detail"); }}
+        onOpenWf={(wf, run)=>{ setDetail(wf); setLiveRun(run||null); setView("detail"); }}
       />
     </div>
   );
@@ -11736,7 +13044,7 @@ Respond with ONLY this JSON array (no other text, no backticks):
   return (
     <div style={{ display:"flex", minHeight:"100%" }}>
     {/* Main content */}
-    <div style={{ flex:1, padding:"24px 28px", maxWidth: showAiAssistant ? 700 : 1100 }}>
+    <div style={{ flex:1, padding:"24px 28px", maxWidth:1100, paddingRight: showAiAssistant ? 420 : 28 }}>
 
       {/* Header */}
       <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom:20 }}>
@@ -11747,9 +13055,9 @@ Respond with ONLY this JSON array (no other text, no backticks):
           </div>
         </div>
         <div style={{ display:"flex", gap:8 }}>
-          <Btn onClick={()=>setView("runbooks")} size="sm"
+          <Btn onClick={()=>setShowNlWf(true)} size="sm"
             style={{ background:`linear-gradient(135deg,${T.accent},${T.purple})`, color:"white", border:"none" }}>
-            🤖 Runbooks
+            ✦ Build with AI
           </Btn>
           <Btn onClick={()=>setView("library")} variant="ghost" size="sm">
             📚 Library
@@ -11764,6 +13072,28 @@ Respond with ONLY this JSON array (no other text, no backticks):
         </div>
       </div>
 
+      {/* Sub-nav: Workflows | Runbooks */}
+      <div style={{ display:"flex", gap:0, borderBottom:`1px solid ${T.border}`, marginBottom:20, marginTop:-8 }}>
+        {[["list","📋 Workflows"],["runbooks","🤖 Runbooks"]].map(([id,label])=>(
+          <button key={id} onClick={()=>setView(id)}
+            style={{ padding:"9px 20px", fontSize:12, fontWeight:700, cursor:"pointer",
+              background:"none", border:"none",
+              borderBottom:`2px solid ${view===id?T.accent:"transparent"}`,
+              color:view===id?T.accent:T.muted, transition:"color .15s" }}>
+            {label}
+          </button>
+        ))}
+      </div>
+
+      {/* Runbooks sub-section */}
+      {view==="runbooks" && (
+        <div style={{ margin:"-24px -28px", height:"calc(100vh - 120px)", overflow:"hidden" }}>
+          <RunbooksView onBack={(sig)=>{ if(sig==="sop_ads-sop") setView("sop"); else setView("list"); }} T={T}
+            onWorkflowCreated={(wf)=>{ setWfs(p=>[...p, {...wf, id:wf.id||`wf_${Date.now().toString(36)}`, enabled:true}]); }}/>
+        </div>
+      )}
+
+      {view === "list" && <>
       {/* ── Cross-workflow correlation banner ── */}
       {(() => {
         if (runHistory.length < 2) return null;
@@ -11858,26 +13188,132 @@ Respond with ONLY this JSON array (no other text, no backticks):
         </div>
       )}
 
+      {/* ── Workflow filter bar ──────────────────────────────────────────── */}
+      <div style={{ display:"flex", gap:6, marginBottom:16, alignItems:"center" }}>
+        {[
+          ["all", "All"],
+          ["failing", `Failing (${runHistory.filter((r,i,a)=>r.status!=="clean"&&a.findIndex(x=>x.workflow_id===r.workflow_id)===i).length})`],
+          ["scheduled", "Scheduled"],
+          ["disabled", "Disabled"],
+        ].map(([v, label]) => (
+          <button key={v} onClick={()=>setWfFilter(v)}
+            style={{ padding:"4px 12px", borderRadius:99, fontSize:11, cursor:"pointer",
+              fontWeight: wfFilter===v ? 700 : 400,
+              background: wfFilter===v ? `${T.accent}15` : "transparent",
+              color: wfFilter===v ? T.accent : T.muted,
+              border: `1px solid ${wfFilter===v ? T.accent+"40" : T.border}`,
+              transition:"all .15s" }}>
+            {label}
+          </button>
+        ))}
+        {wfFilter !== "all" && (
+          <button onClick={()=>setWfFilter("all")}
+            style={{ fontSize:10, color:T.muted, background:"none", border:"none", cursor:"pointer", marginLeft:4 }}>
+            ✕ Clear filter
+          </button>
+        )}
+      </div>
+
+      {/* ── Dependency Graph ─────────────────────────────────────────────── */}
+      <WorkflowDependencyGraph
+        workflows={[...BUILTIN_WFS, ...workflows].filter((w,i,a)=>a.findIndex(x=>x.id===w.id)===i)}
+        runHistory={runHistory}
+        T={T}
+        onOpen={(wf)=>{ setDetail(wf); setLiveRun(null); setView("detail"); }}
+      />
+
       {/* ── BUILT-IN WORKFLOWS + TEMPLATE LIBRARY ─────────────────────────── */}
       {(() => {
         const builtins = BUILTIN_WFS;
         return (
           <div style={{ marginBottom:20 }}>
-            <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom:10 }}>
-              <div style={{ fontSize:11, fontWeight:700, color:T.muted, textTransform:"uppercase",
-                letterSpacing:"0.06em" }}>Built-in Workflows</div>
+            <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom:selectedWfIds.size>0?6:10 }}>
+              <div style={{ display:"flex", alignItems:"center", gap:8 }}>
+                <div style={{ fontSize:11, fontWeight:700, color:T.muted, textTransform:"uppercase",
+                  letterSpacing:"0.06em" }}>Built-in Workflows</div>
+                <button onClick={()=>selectedWfIds.size===BUILTIN_WFS.length?clearWfSelect():selectAllWfs()}
+                  style={{ fontSize:9, color:T.muted, background:"none", border:`1px solid ${T.border}`,
+                    borderRadius:5, padding:"1px 7px", cursor:"pointer" }}>
+                  {selectedWfIds.size===BUILTIN_WFS.length?"Deselect all":"Select all"}
+                </button>
+              </div>
               <Btn size="sm" variant="ghost" onClick={()=>setShowTemplateLib(p=>!p)}
                 style={{ fontSize:10, color:T.purple, borderColor:`${T.purple}30` }}>
                 {showTemplateLib?"Hide":"＋ Add from Library"}
               </Btn>
             </div>
+            {/* Bulk action bar */}
+            {selectedWfIds.size > 0 && (
+              <div style={{ display:"flex", alignItems:"center", gap:8, marginBottom:10,
+                padding:"8px 12px", borderRadius:8,
+                background:`linear-gradient(135deg,${T.accent}12,${T.purple}08)`,
+                border:`1px solid ${T.accent}30` }}>
+                <span style={{ fontSize:11, color:T.accent, fontWeight:700 }}>
+                  {selectedWfIds.size} selected
+                </span>
+                <Btn size="sm" onClick={runBulk} disabled={bulkRunning}
+                  style={{ background:`linear-gradient(135deg,${T.accent},${T.purple})`, color:"white", border:"none" }}>
+                  {bulkRunning?<Spinner size={9} color="white"/>:<Play size={9}/>}
+                  {bulkRunning?` Running…`:` Run ${selectedWfIds.size}`}
+                </Btn>
+                <button onClick={clearWfSelect}
+                  style={{ fontSize:10, color:T.muted, background:"none", border:"none", cursor:"pointer", marginLeft:"auto" }}>
+                  ✕ Clear
+                </button>
+              </div>
+            )}
 
             {/* Template Library panel */}
             {showTemplateLib && (
               <div style={{ marginBottom:14, padding:"16px 18px", borderRadius:10,
                 border:`1px solid ${T.purple}30`, background:`${T.purple}04` }}>
-                <div style={{ fontSize:12, fontWeight:700, color:T.purple, marginBottom:12 }}>
-                  📚 Built-in Workflow Templates
+                <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom:12 }}>
+                  <div style={{ fontSize:12, fontWeight:700, color:T.purple }}>📚 Built-in Workflow Templates</div>
+                </div>
+                {/* AI Template Generator */}
+                <div style={{ marginBottom:14, padding:"10px 12px", borderRadius:9,
+                  background:`${T.accent}07`, border:`1px solid ${T.accent}20` }}>
+                  <div style={{ fontSize:10, fontWeight:700, color:T.accent, marginBottom:6 }}>✦ Generate a custom template</div>
+                  <div style={{ display:"flex", gap:7 }}>
+                    <input value={genTplPrompt} onChange={e=>setGenTplPrompt(e.target.value)}
+                      onKeyDown={e=>e.key==="Enter"&&generateTemplate()}
+                      placeholder="e.g. monitor FBA shipment delays and inventory sync failures"
+                      style={{ flex:1, padding:"6px 9px", borderRadius:7, border:`1px solid ${T.border}`,
+                        background:T.surface, color:T.text, fontSize:11 }}/>
+                    <Btn size="sm" onClick={generateTemplate} disabled={!genTplPrompt.trim()||genTplLoading}
+                      style={{ background:T.accent, color:"white", border:"none", whiteSpace:"nowrap" }}>
+                      {genTplLoading?<Spinner size={9} color="white"/>:"Generate"}
+                    </Btn>
+                  </div>
+                  {genTplResult && (
+                    <div style={{ marginTop:10, padding:"10px 12px", borderRadius:8,
+                      background:T.card, border:`1px solid ${genTplResult.color||T.accent}30` }}>
+                      <div style={{ display:"flex", alignItems:"center", gap:8, marginBottom:6 }}>
+                        <span style={{ fontSize:18 }}>{genTplResult.icon}</span>
+                        <div style={{ flex:1 }}>
+                          <div style={{ fontSize:12, fontWeight:700, color:T.text }}>{genTplResult.name}</div>
+                          <div style={{ fontSize:10, color:T.muted }}>{genTplResult.detection_checks?.length} checks · {genTplResult.phases?.length} phases</div>
+                        </div>
+                        <Btn size="sm" onClick={()=>{
+                          setSetupTpl(genTplResult);
+                          setSetupCfg({ name:genTplResult.name, schedule:"daily", slack_channel:"", linked_runbook_id:"" });
+                          setShowTemplateLib(false);
+                          setGenTplResult(null); setGenTplPrompt("");
+                        }} style={{ background:genTplResult.color||T.accent, color:"white", border:"none", fontSize:10 }}>
+                          + Use
+                        </Btn>
+                      </div>
+                      <div style={{ fontSize:10, color:T.muted, marginBottom:6 }}>{genTplResult.desc}</div>
+                      {(genTplResult.detection_checks||[]).map((c,i)=>(
+                        <div key={i} style={{ fontSize:9, color:T.muted, marginBottom:2, display:"flex", gap:5 }}>
+                          <span style={{ color:c.severity==="critical"?T.red:c.severity==="high"?"#f97316":"#eab308" }}>
+                            {c.severity==="critical"?"🔴":c.severity==="high"?"🟠":"🟡"}
+                          </span>
+                          <span style={{ color:T.text, fontWeight:600 }}>{c.name}</span>
+                        </div>
+                      ))}
+                    </div>
+                  )}
                 </div>
                 <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr 1fr", gap:10 }}>
                   {BUILTIN_TEMPLATES.map(tpl=>{
@@ -11913,33 +13349,14 @@ Respond with ONLY this JSON array (no other text, no backticks):
                               style={{fontSize:10,color:tpl.color,borderColor:tpl.color+"40"}}>
                               Preview
                             </Btn>
-                            <Btn size="sm" onClick={async()=>{
-                              setActivatingTpl(tpl.id);
-                              // Create workflow from template
-                              const wf = {
-                                id: tpl.id,
-                                name: tpl.name,
-                                desc: tpl.desc,
-                                schedule: "daily",
-                                enabled: true,
-                                checks: tpl.detection_checks.map((c,i)=>({...c, id:`${tpl.id}_c${i}`})),
-                                tables: [], db_key:"default", slack_channel:"",
-                                builtin_type:"template", template_id:tpl.id,
-                                color: tpl.color,
-                              };
-                              await fetch(`${API}/api/custom-workflows/save/v2`,{
-                                method:"POST", headers:{"Content-Type":"application/json"},
-                                body:JSON.stringify(wf)
-                              }).catch(()=>{});
-                              setWfs(p=>[...p.filter(w=>w.id!==tpl.id), wf]);
-                              setActivatingTpl(null);
+                            <Btn size="sm" onClick={()=>{
+                              setSetupTpl(tpl);
+                              setSetupCfg({ name:tpl.name, schedule:"daily", slack_channel:"", linked_runbook_id:"" });
                               setShowTemplateLib(false);
                             }}
-                            disabled={isActivating}
                             style={{ background:tpl.color, color:"white", border:"none", fontSize:10 }}>
-                            {isActivating?<Spinner size={9} color="white"/>:null}
-                            {isActivating?"Adding…":"＋ Add Workflow"}
-                          </Btn>
+                              ＋ Add Workflow
+                            </Btn>
                           </div>
                         }
                       </div>
@@ -11949,16 +13366,59 @@ Respond with ONLY this JSON array (no other text, no backticks):
               </div>
             )}
 
+            {(() => {
+              const filteredBuiltins = builtins.filter(wf => {
+                if (wfFilter === "all") return true;
+                if (wfFilter === "failing") {
+                  const lastRun = runHistory.find(r=>r.workflow_id===wf.id);
+                  return lastRun && lastRun.status !== "clean";
+                }
+                if (wfFilter === "scheduled") return wf.schedule && wf.schedule !== "manual" && wf.schedule !== "On demand";
+                if (wfFilter === "disabled") return wf.enabled === false;
+                return true;
+              });
+              if (filteredBuiltins.length === 0) return (
+                <div style={{ padding:"24px 0", textAlign:"center", color:T.muted, fontSize:12 }}>
+                  No workflows match filter "{wfFilter}"
+                </div>
+              );
+              return null;
+            })()}
             <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:10 }}>
-              {builtins.map(wf=>{
+              {builtins.filter(wf => {
+                if (wfFilter === "all") return true;
+                if (wfFilter === "failing") {
+                  const lastRun = runHistory.find(r=>r.workflow_id===wf.id);
+                  return lastRun && lastRun.status !== "clean";
+                }
+                if (wfFilter === "scheduled") return wf.schedule && wf.schedule !== "manual" && wf.schedule !== "On demand";
+                if (wfFilter === "disabled") return wf.enabled === false;
+                return true;
+              }).map(wf=>{
                 const accentColor = wf.id==="ads-sop" ? T.orange : T.accent;
                 const isRunning   = !!running[wf.id] || (wf.id==="ads-sop"&&sopRunning);
                 const wfRuns      = runHistory.filter(r=>r.workflow_id===wf.id);
                 const lastRun     = wfRuns[0];
+                // Health score: weighted pass rate (critical failures penalise more)
+                const healthScore = (() => {
+                  if (wfRuns.length === 0) return null;
+                  const recent = wfRuns.slice(0, 10);
+                  const total = recent.length;
+                  if (!total) return null;
+                  const clean = recent.filter(r => r.status === "clean").length;
+                  const baseScore = Math.round((clean / total) * 100);
+                  // Penalise if last run failed
+                  return lastRun?.status !== "clean" ? Math.max(0, baseScore - 10) : baseScore;
+                })();
                 return (
-                  <div key={wf.id} style={{ background:T.card, border:`1px solid ${T.border}`,
-                    borderLeft:`3px solid ${accentColor}`, borderRadius:10, padding:"14px 16px" }}>
+                  <div key={wf.id} style={{ background:T.card,
+                    border:`1px solid ${selectedWfIds.has(wf.id)?T.accent+"60":T.border}`,
+                    borderLeft:`3px solid ${accentColor}`, borderRadius:10, padding:"14px 16px",
+                    transition:"border-color .15s" }}>
                     <div style={{ display:"flex", alignItems:"flex-start", gap:10, marginBottom:6 }}>
+                      <input type="checkbox" checked={selectedWfIds.has(wf.id)}
+                        onChange={()=>toggleWfSelect(wf.id)}
+                        style={{ marginTop:3, flexShrink:0, accentColor:T.accent, cursor:"pointer", width:13, height:13 }}/>
                       <div style={{ flex:1 }}>
                         <div style={{ fontSize:13, fontWeight:700, color:T.text }}>{wf.name}</div>
                         <div style={{ fontSize:11, color:T.muted, marginTop:2, lineHeight:1.4 }}>{wf.desc}</div>
@@ -11967,6 +13427,19 @@ Respond with ONLY this JSON array (no other text, no backticks):
                     {/* Schedule + checks summary */}
                     <div style={{ display:"flex", gap:6, alignItems:"center", marginBottom:8, flexWrap:"wrap" }}>
                       <Badge label={wf.schedule||"manual"} color={accentColor}/>
+                      {wf.linked_runbook_id && (() => {
+                        try {
+                          const rbs = JSON.parse(localStorage.getItem("wz_runbooks_v3")||"[]");
+                          const rb = rbs.find(r=>r.id===wf.linked_runbook_id);
+                          return rb ? (
+                            <span title={`Auto-triggers: ${rb.name}`} style={{ fontSize:9, padding:"2px 7px", borderRadius:99,
+                              background:`${T.accent}12`, color:T.accent, fontWeight:700,
+                              border:`1px solid ${T.accent}25` }}>
+                              🤖 {rb.name.slice(0,16)}{rb.name.length>16?"…":""}
+                            </span>
+                          ) : null;
+                        } catch { return null; }
+                      })()}
                       {(wf.checks||[]).length > 0 && (
                         <span style={{ fontSize:10, color:T.muted }}>
                           {wf.checks.length} check{wf.checks.length!==1?"s":""}
@@ -11976,6 +13449,13 @@ Respond with ONLY this JSON array (no other text, no backticks):
                         <span style={{ fontSize:10,
                           color:lastRun.status==="clean"?T.green:T.red }}>
                           · last: {lastRun.status==="clean"?"✓":"✗"} {lastRun.started_at?.slice(11,16)}
+                        </span>
+                      )}
+                      {nextRunLabel(wf) && (
+                        <span style={{ fontSize:9, color:T.muted,
+                          background:T.surface, padding:"1px 6px", borderRadius:10,
+                          border:`1px solid ${T.border}` }}>
+                          ⏰ {nextRunLabel(wf)}
                         </span>
                       )}
                       {/* Sparkline — last 10 runs */}
@@ -11989,10 +13469,20 @@ Respond with ONLY this JSON array (no other text, no backticks):
                           ))}
                         </div>
                       )}
+                      {healthScore !== null && (
+                        <div title={`Health: ${healthScore}% over last ${Math.min(wfRuns.length,10)} runs`}
+                          style={{ display:"flex", alignItems:"center", gap:3, marginLeft:4,
+                            padding:"1px 7px", borderRadius:99, fontSize:9, fontWeight:700,
+                            background: healthScore>=80?`${T.green}15`:healthScore>=50?`#f9731615`:`${T.red}15`,
+                            color: healthScore>=80?T.green:healthScore>=50?"#f97316":T.red,
+                            border:`1px solid ${healthScore>=80?T.green+"30":healthScore>=50?"#f9731630":T.red+"30"}` }}>
+                          {healthScore}%
+                        </div>
+                      )}
                     </div>
-                    <div style={{ display:"flex", gap:7, flexWrap:"wrap" }}>
-                      <Btn onClick={()=>{ runBuiltin(wf); if(wf.id==="ads-sop") setView("sop"); }} disabled={isRunning} size="sm"
-                        style={{ background:isRunning?T.border:accentColor, color:"white", border:"none" }}>
+                    <div style={{ display:"flex", gap:7, flexWrap:"wrap", alignItems:"center" }}>
+                      <Btn onClick={()=>{ runBuiltin(wf); if(wf.id==="ads-sop") setView("sop"); }} disabled={isRunning||(wf.enabled===false)} size="sm"
+                        style={{ background:isRunning||(wf.enabled===false)?T.border:accentColor, color:"white", border:"none" }}>
                         {isRunning?<Spinner size={10} color="white"/>:<Play size={10}/>}
                         {wf.id==="ads-sop"?"Start Check":"Run Now"}
                       </Btn>
@@ -12009,6 +13499,19 @@ Respond with ONLY this JSON array (no other text, no backticks):
                         size="sm" variant="ghost">✏ Edit</Btn>
                       <Btn onClick={()=>{ setDetail(wf); setLiveRun(null); setView("detail"); }}
                         size="sm" variant="ghost"><Eye size={10}/> History</Btn>
+                      {/* Enable/disable toggle */}
+                      <label style={{ display:"flex", alignItems:"center", gap:5, cursor:"pointer",
+                        marginLeft:"auto", fontSize:10, color:T.muted }}>
+                        <span style={{ fontSize:9 }}>{wf.enabled===false ? "Off" : "On"}</span>
+                        <div onClick={()=>toggleEnabled(wf)}
+                          style={{ width:28, height:16, borderRadius:99, cursor:"pointer",
+                            background:wf.enabled===false?T.border:accentColor,
+                            position:"relative", transition:"background 0.2s", flexShrink:0 }}>
+                          <div style={{ position:"absolute", top:2, borderRadius:"50%", width:12, height:12,
+                            background:"white", transition:"left 0.2s",
+                            left:wf.enabled===false?"2px":"14px" }}/>
+                        </div>
+                      </label>
                     </div>
                   </div>
                 );
@@ -12017,6 +13520,36 @@ Respond with ONLY this JSON array (no other text, no backticks):
           </div>
         );
       })()}
+
+      {/* ── Getting started callout when no runs yet ──────────────────────── */}
+      {runHistory.length === 0 && (
+        <div style={{ marginBottom:20, padding:"20px 24px", borderRadius:12,
+          background:`linear-gradient(135deg,${T.accent}08,${T.purple}06)`,
+          border:`1px solid ${T.accent}25` }}>
+          <div style={{ fontSize:14, fontWeight:800, color:T.text, marginBottom:6 }}>
+            👋 Welcome to Workflows
+          </div>
+          <div style={{ fontSize:12, color:T.muted, marginBottom:16, lineHeight:1.7 }}>
+            Run your first workflow to start monitoring data quality. Here's what you can do:
+          </div>
+          <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr 1fr", gap:10 }}>
+            {[
+              { icon:"▶", title:"Run a built-in check", desc:"Click Run Now on any workflow above to immediately scan your data", action:()=>BUILTIN_WFS[0]&&runWf(BUILTIN_WFS[0]), cta:"Run Daily Ads Check" },
+              { icon:"✦", title:"Build with AI", desc:"Describe what you want to monitor in plain English and AI writes the SQL", action:()=>setShowNlWf(true), cta:"Build with AI" },
+              { icon:"📚", title:"Add from library", desc:"Pick from pre-built templates for orders, ads, inventory and replication", action:()=>setShowTemplateLib(true), cta:"Browse Library" },
+            ].map((tile,i) => (
+              <div key={i} style={{ padding:"14px 16px", borderRadius:10, background:T.card,
+                border:`1px solid ${T.border}`, cursor:"pointer" }}
+                onClick={tile.action}>
+                <div style={{ fontSize:20, marginBottom:8 }}>{tile.icon}</div>
+                <div style={{ fontSize:12, fontWeight:700, color:T.text, marginBottom:4 }}>{tile.title}</div>
+                <div style={{ fontSize:10, color:T.muted, lineHeight:1.5, marginBottom:10 }}>{tile.desc}</div>
+                <div style={{ fontSize:11, fontWeight:700, color:T.accent }}>{tile.cta} →</div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
 
       {/* ── AI SUGGESTIONS + TEMPLATES ──────────────────────────────────────── */}
       <div style={{ marginBottom:20 }}>
@@ -12190,6 +13723,7 @@ Respond with ONLY this JSON array (no other text, no backticks):
             style={{ flexShrink:0 }}>Go to Pipeline Runs →</Btn>
         )}
       </div>
+      </> }
       </div>
 
     {/* Undo delete toasts */}
@@ -12213,9 +13747,12 @@ Respond with ONLY this JSON array (no other text, no backticks):
       </div>
     )}
 
-    {/* AI Assistant panel */}
+    {/* AI Assistant panel — fixed right drawer */}
     {showAiAssistant && (
-      <div style={{ width:400, flexShrink:0, height:"100%", display:"flex", flexDirection:"column" }}>
+      <div style={{ position:"fixed", top:0, right:0, width:400, height:"100vh",
+        zIndex:200, display:"flex", flexDirection:"column",
+        boxShadow:"-8px 0 32px rgba(0,0,0,0.18)",
+        borderLeft:`1px solid ${T.border}` }}>
         <AiWorkflowAssistant
           workflows={workflows}
           dbSchema={dbSchema}
@@ -12415,6 +13952,151 @@ Rules: 3-6 checks, SELECT only, use real columns, never invent columns.`,
     })()}
 
       {/* ── Template Preview Modal ───────────────────────────────────────── */}
+      {/* ── Template Setup Wizard modal ───────────────────────────────────── */}
+      {setupTpl && (
+        <div style={{ position:"fixed", inset:0, background:"rgba(0,0,0,0.6)",
+          zIndex:3100, display:"flex", alignItems:"center", justifyContent:"center", padding:"24px" }}
+          onClick={()=>setSetupTpl(null)}>
+          <div style={{ background:T.surface, borderRadius:14, width:"min(480px,94vw)",
+            border:`1px solid ${setupTpl.color}40`, boxShadow:"0 24px 60px rgba(0,0,0,0.4)",
+            overflow:"hidden" }}
+            onClick={e=>e.stopPropagation()}>
+            {/* Header */}
+            <div style={{ padding:"16px 20px", borderBottom:`1px solid ${T.border}`,
+              background:`${setupTpl.color}08`, display:"flex", alignItems:"center", gap:10 }}>
+              <span style={{ fontSize:22 }}>{setupTpl.icon}</span>
+              <div style={{ flex:1 }}>
+                <div style={{ fontSize:13, fontWeight:800, color:T.text }}>{setupTpl.name}</div>
+                <div style={{ fontSize:10, color:T.muted }}>Configure before activating</div>
+              </div>
+              <button onClick={()=>setSetupTpl(null)} style={{ background:"none",border:"none",cursor:"pointer",color:T.muted,fontSize:18 }}>×</button>
+            </div>
+            {/* Body */}
+            <div style={{ padding:"18px 20px", display:"flex", flexDirection:"column", gap:13 }}>
+              <div>
+                <div style={{ fontSize:10, fontWeight:700, color:T.muted, marginBottom:4, textTransform:"uppercase", letterSpacing:".05em" }}>Workflow Name</div>
+                <input value={setupCfg.name||""} onChange={e=>setSetupCfg(p=>({...p,name:e.target.value}))}
+                  style={{ width:"100%", padding:"7px 10px", borderRadius:8, border:`1px solid ${T.border}`,
+                    background:T.card, color:T.text, fontSize:12, boxSizing:"border-box" }}/>
+              </div>
+              <div>
+                <div style={{ fontSize:10, fontWeight:700, color:T.muted, marginBottom:4, textTransform:"uppercase", letterSpacing:".05em" }}>Schedule</div>
+                <select value={setupCfg.schedule||"daily"} onChange={e=>setSetupCfg(p=>({...p,schedule:e.target.value}))}
+                  style={{ width:"100%", padding:"7px 8px", borderRadius:8, border:`1px solid ${T.border}`, background:T.card, color:T.text, fontSize:12 }}>
+                  {SCHEDULE_OPTS.map(o=><option key={o.value} value={o.value}>{o.label}</option>)}
+                </select>
+              </div>
+              <div>
+                <div style={{ fontSize:10, fontWeight:700, color:T.muted, marginBottom:4, textTransform:"uppercase", letterSpacing:".05em" }}>Slack Channel (optional)</div>
+                <input value={setupCfg.slack_channel||""} onChange={e=>setSetupCfg(p=>({...p,slack_channel:e.target.value}))}
+                  placeholder="#data-ops"
+                  style={{ width:"100%", padding:"7px 10px", borderRadius:8, border:`1px solid ${T.border}`,
+                    background:T.card, color:T.text, fontSize:12, boxSizing:"border-box" }}/>
+              </div>
+              {/* Runbook wiring */}
+              <div style={{ padding:"12px 14px", borderRadius:9, background:`${T.accent}07`, border:`1px solid ${T.accent}20` }}>
+                <div style={{ fontSize:10, fontWeight:700, color:T.accent, marginBottom:6 }}>
+                  🤖 Link a Runbook (optional)
+                </div>
+                <div style={{ fontSize:10, color:T.muted, marginBottom:8, lineHeight:1.5 }}>
+                  When this workflow detects failures, automatically trigger a runbook to remediate.
+                </div>
+                {/* Auto-create paired runbook */}
+                <label style={{ display:"flex", alignItems:"flex-start", gap:8, marginBottom:10, cursor:"pointer",
+                  padding:"8px 10px", borderRadius:7, background:T.card, border:`1px solid ${T.border}` }}>
+                  <input type="checkbox" checked={!!setupCfg.auto_create_runbook}
+                    onChange={e=>setSetupCfg(p=>({...p, auto_create_runbook:e.target.checked, linked_runbook_id:""}))}
+                    style={{ width:13, height:13, marginTop:1, flexShrink:0 }}/>
+                  <div>
+                    <div style={{ fontSize:11, fontWeight:700, color:T.text }}>✦ Auto-generate a paired runbook</div>
+                    <div style={{ fontSize:9, color:T.muted, marginTop:2 }}>AI builds a remediation runbook from this template's checks and links it automatically</div>
+                  </div>
+                </label>
+                {!setupCfg.auto_create_runbook && (
+                  <>
+                    <div style={{ fontSize:10, color:T.muted, marginBottom:5 }}>Or link an existing runbook:</div>
+                    <select value={setupCfg.linked_runbook_id||""} onChange={e=>setSetupCfg(p=>({...p,linked_runbook_id:e.target.value}))}
+                      style={{ width:"100%", padding:"7px 8px", borderRadius:8, border:`1px solid ${T.border}`, background:T.card, color:T.text, fontSize:12 }}>
+                      <option value="">— No runbook —</option>
+                      {(()=>{ try { return JSON.parse(localStorage.getItem("wz_runbooks_v3")||"[]"); } catch { return []; } })()
+                        .map(rb=><option key={rb.id} value={rb.id}>{rb.icon||"⚙"} {rb.name}</option>)}
+                    </select>
+                  </>
+                )}
+                {(setupCfg.linked_runbook_id||setupCfg.auto_create_runbook) && (
+                  <div style={{ fontSize:9, color:T.accent, marginTop:5 }}>
+                    ✓ On failure → runbook will auto-trigger
+                  </div>
+                )}
+              </div>
+            </div>
+            {/* Footer */}
+            <div style={{ padding:"12px 20px", borderTop:`1px solid ${T.border}`, display:"flex", gap:8, justifyContent:"flex-end", background:T.surface }}>
+              <Btn variant="ghost" onClick={()=>setSetupTpl(null)}>Cancel</Btn>
+              <Btn disabled={!setupCfg.name?.trim()||!!activatingTpl}
+                onClick={async()=>{
+                  const tpl = setupTpl;
+                  setActivatingTpl(tpl.id);
+                  setSetupTpl(null);
+                  let linkedRunbookId = setupCfg.linked_runbook_id||"";
+                  // Auto-generate paired runbook from template if requested
+                  if (setupCfg.auto_create_runbook && tpl.detection_checks?.length) {
+                    try {
+                      const checkSummary = tpl.detection_checks.map(c=>`- ${c.name} (${c.severity}): ${c.sql?.slice(0,80)}`).join("\n");
+                      const res = await fetch(`${API}/api/ai/chat`,{
+                        method:"POST", headers:{"Content-Type":"application/json"},
+                        body: JSON.stringify({
+                          system:`You are a senior data engineering runbook designer. Given a set of data quality checks from a workflow, create a remediation runbook an agent runs when those checks fail. Return ONLY valid JSON:
+{"name":"string","desc":"string","icon":"emoji","color":"#hex","tags":["string"],"trigger":{"type":"condition","condition":"workflow_failure"},"notifications":{"slack":"","on_failure":true,"on_complete":true},"steps":[{"id":"s1","type":"pause_jobs|resume_jobs|trigger_refresh|validate_data|run_sql|wait_condition|send_alert|call_api|escalate","label":"string","config":{},"on_fail":"continue|escalate|stop","retry_count":0}]}`,
+                          messages:[{role:"user", content:`Workflow: "${tpl.name}"
+Failed checks:
+${checkSummary}
+
+Create a remediation runbook.`}],
+                          max_tokens:900, temperature:0.2
+                        })
+                      });
+                      const d = await res.json();
+                      const text = (d?.content?.[0]?.text||"{}").replace(/```json|```/g,"").trim();
+                      const rb = JSON.parse(text);
+                      if (rb.steps?.length) {
+                        rb.id = "rb-"+Date.now();
+                        rb.steps = rb.steps.map((s,i)=>({...s, id:`s${i+1}`}));
+                        const prevRbs = JSON.parse(localStorage.getItem("wz_runbooks_v3")||"[]");
+                        localStorage.setItem("wz_runbooks_v3", JSON.stringify([rb, ...prevRbs]));
+                        linkedRunbookId = rb.id;
+                        addNotif(`✦ Auto-generated runbook: "${rb.name}"`, "info");
+                      }
+                    } catch(e) {}
+                  }
+                  const wf = {
+                    id: tpl.id,
+                    name: setupCfg.name||tpl.name,
+                    desc: tpl.desc,
+                    schedule: setupCfg.schedule||"daily",
+                    enabled: true,
+                    checks: tpl.detection_checks.map((c,i)=>({...c, id:`${tpl.id}_c${i}`})),
+                    tables:[], db_key:"default",
+                    slack_channel: setupCfg.slack_channel||"",
+                    builtin_type:"template", template_id:tpl.id, color:tpl.color,
+                    linked_runbook_id: linkedRunbookId,
+                  };
+                  await fetch(`${API}/api/custom-workflows/save/v2`,{
+                    method:"POST", headers:{"Content-Type":"application/json"},
+                    body:JSON.stringify(wf)
+                  }).catch(()=>{});
+                  setWfs(p=>[...p.filter(w=>w.id!==tpl.id), wf]);
+                  setActivatingTpl(null);
+                  addNotif(`✓ "${wf.name}" added${linkedRunbookId?" + runbook linked":""}`, "success");
+                }}
+                style={{ background:setupTpl.color, color:"white", border:"none" }}>
+                {activatingTpl?<><Spinner size={11} color="white"/> Adding…</>:<>＋ Activate Workflow</>}
+              </Btn>
+            </div>
+          </div>
+        </div>
+      )}
+
       {previewTpl && (
         <div style={{ position:"fixed", inset:0, background:"rgba(0,0,0,0.6)",
           zIndex:3000, display:"flex", alignItems:"center", justifyContent:"center",
@@ -12550,29 +14232,14 @@ Rules: 3-6 checks, SELECT only, use real columns, never invent columns.`,
               background:T.surface }}>
               <Btn variant="ghost" onClick={()=>setPreviewTpl(null)}>Cancel</Btn>
               <Btn
-                disabled={!!activatingTpl}
-                onClick={async()=>{
+                onClick={()=>{
                   const tpl = previewTpl;
-                  setActivatingTpl(tpl.id);
                   setPreviewTpl(null);
-                  const wf = {
-                    id: tpl.id, name: tpl.name, desc: tpl.desc,
-                    schedule:"daily", enabled:true,
-                    checks: tpl.detection_checks.map((c,i)=>({...c, id:`${tpl.id}_c${i}`})),
-                    tables:[], db_key:"default", slack_channel:"",
-                    builtin_type:"template", template_id:tpl.id, color:tpl.color,
-                  };
-                  await fetch(`${API}/api/custom-workflows/save/v2`,{
-                    method:"POST", headers:{"Content-Type":"application/json"},
-                    body:JSON.stringify(wf)
-                  }).catch(()=>{});
-                  setWfs(p=>[...p.filter(w=>w.id!==tpl.id), wf]);
-                  setActivatingTpl(null);
-                  setShowTemplateLib(false);
-                  addNotif(`✓ "${tpl.name}" added to your workflows`, "success");
+                  setSetupTpl(tpl);
+                  setSetupCfg({ name:tpl.name, schedule:"daily", slack_channel:"", linked_runbook_id:"" });
                 }}
                 style={{ background:previewTpl.color, color:"white", border:"none" }}>
-                {activatingTpl?<><Spinner size={11} color="white"/> Adding…</>:<>＋ Add Workflow</>}
+                ＋ Add Workflow
               </Btn>
             </div>
           </div>
@@ -12586,8 +14253,9 @@ Rules: 3-6 checks, SELECT only, use real columns, never invent columns.`,
 function WorkflowDetail({ wf, history, liveRun, onBack, onEdit, onRun, running }) {
   const T = useT();
   const [selectedRun, setSelectedRun] = React.useState(liveRun || history[0] || null);
-  const [compareRun,  setCompareRun]  = React.useState(null); // run to compare against
+  const [compareRun,  setCompareRun]  = React.useState(null);
   const [showDiff,    setShowDiff]    = React.useState(false);
+  const [showTrends,  setShowTrends]  = React.useState(false);
 
   React.useEffect(() => {
     if (liveRun) setSelectedRun(liveRun);
@@ -12595,6 +14263,36 @@ function WorkflowDetail({ wf, history, liveRun, onBack, onEdit, onRun, running }
 
   const fmt = (iso) => iso?.slice(0,16)?.replace("T"," ") || "—";
   const dur = (ms) => ms < 1000 ? `${ms}ms` : `${(ms/1000).toFixed(1)}s`;
+
+  // Build per-check trend data across last 10 runs
+  const checkTrends = React.useMemo(() => {
+    if (history.length < 2) return {};
+    const recentRuns = history.slice(0, 10);
+    const trendMap = {};
+    recentRuns.forEach(run => {
+      (run.check_results||[]).forEach(chk => {
+        const key = chk.name;
+        if (!trendMap[key]) trendMap[key] = { name:key, severity:chk.severity, results:[] };
+        trendMap[key].results.unshift({ passed:chk.passed, ts:run.started_at, rows:chk.row_count||0 });
+      });
+    });
+    // Compute pass rate and trend direction
+    Object.values(trendMap).forEach(t => {
+      const n = t.results.length;
+      t.passRate = n ? Math.round(t.results.filter(r=>r.passed).length / n * 100) : null;
+      // Trend: compare recent half vs older half
+      if (n >= 4) {
+        const recent = t.results.slice(-Math.ceil(n/2));
+        const older  = t.results.slice(0, Math.floor(n/2));
+        const rRate  = recent.filter(r=>r.passed).length / recent.length;
+        const oRate  = older.filter(r=>r.passed).length / older.length;
+        t.trend = rRate > oRate ? "improving" : rRate < oRate ? "degrading" : "stable";
+      } else {
+        t.trend = "stable";
+      }
+    });
+    return trendMap;
+  }, [history]);
 
   return (
     <div style={{ display:"flex", flex:1, overflow:"hidden" }}>
@@ -12613,6 +14311,11 @@ function WorkflowDetail({ wf, history, liveRun, onBack, onEdit, onRun, running }
               {running?<Spinner size={10} color="white"/>:<Play size={10}/>} Run now
             </Btn>
             <Btn onClick={onEdit} size="sm" variant="ghost">✏</Btn>
+            <Btn onClick={()=>setShowTrends(p=>!p)} size="sm" variant="ghost"
+              style={{ color:showTrends?T.accent:T.muted, borderColor:showTrends?`${T.accent}40`:T.border }}
+              title="Per-check trend across runs">
+              📈
+            </Btn>
           </div>
           {history.length > 0 && (
             <Btn size="sm" variant="ghost" style={{ marginTop:6, width:"100%",
@@ -12676,26 +14379,86 @@ function WorkflowDetail({ wf, history, liveRun, onBack, onEdit, onRun, running }
           </div>
         ) : (
           <>
+            {/* Per-check trend panel */}
+            {showTrends && Object.keys(checkTrends).length > 0 && (
+              <div style={{ padding:"12px 20px", borderBottom:`1px solid ${T.border}`,
+                background:T.surface, flexShrink:0, maxHeight:280, overflowY:"auto" }}>
+                <div style={{ fontSize:10, fontWeight:700, color:T.muted, textTransform:"uppercase",
+                  letterSpacing:".06em", marginBottom:10 }}>Check Trends — Last {Math.min(history.length,10)} runs</div>
+                <div style={{ display:"flex", flexDirection:"column", gap:6 }}>
+                  {Object.values(checkTrends).sort((a,b)=>(a.passRate??100)-(b.passRate??100)).map(t=>{
+                    const trendIcon = t.trend==="improving"?"↗":t.trend==="degrading"?"↘":"→";
+                    const trendColor = t.trend==="improving"?T.green:t.trend==="degrading"?T.red:T.muted;
+                    const sevColor = t.severity==="critical"?T.red:t.severity==="high"?"#f97316":t.severity==="medium"?"#eab308":T.muted;
+                    return (
+                      <div key={t.name} style={{ display:"flex", alignItems:"center", gap:10,
+                        padding:"6px 10px", borderRadius:8, background:T.card, border:`1px solid ${T.border}` }}>
+                        <div style={{ flex:1, minWidth:0 }}>
+                          <div style={{ fontSize:10, fontWeight:700, color:T.text,
+                            overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{t.name}</div>
+                          <div style={{ fontSize:9, color:sevColor }}>{t.severity}</div>
+                        </div>
+                        {/* Mini sparkline dots */}
+                        <div style={{ display:"flex", gap:2, alignItems:"center" }}>
+                          {t.results.map((r,i)=>(
+                            <div key={i} title={r.ts?.slice(0,16)}
+                              style={{ width:7, height:7, borderRadius:"50%",
+                                background:r.passed?T.green:T.red,
+                                opacity:0.4+(i/t.results.length)*0.6 }}/>
+                          ))}
+                        </div>
+                        <div style={{ fontSize:11, fontWeight:800,
+                          color:t.passRate===100?T.green:t.passRate>=70?"#f97316":T.red,
+                          minWidth:32, textAlign:"right" }}>
+                          {t.passRate??"-"}%
+                        </div>
+                        <div style={{ fontSize:12, color:trendColor, fontWeight:700, minWidth:14 }}
+                          title={t.trend}>{trendIcon}</div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
+
             {history.length > 1 && (
               <div style={{ padding:"8px 20px", borderBottom:`1px solid ${T.border}`,
-                display:"flex", alignItems:"center", gap:8, flexShrink:0, background:T.surface }}>
-                <span style={{ fontSize:11, color:T.muted }}>Compare with:</span>
+                display:"flex", alignItems:"center", gap:8, flexShrink:0, background:T.surface, flexWrap:"wrap" }}>
+                {/* Auto-compare with previous */}
+                {(() => {
+                  const prevRun = history.find(r => r.run_id !== selectedRun.run_id);
+                  if (!prevRun) return null;
+                  const prevFailed = prevRun.status !== "clean";
+                  const curFailed  = selectedRun.status !== "clean";
+                  const changed = prevFailed !== curFailed;
+                  return (
+                    <Btn size="sm"
+                      onClick={()=>{ setCompareRun(prevRun); setShowDiff(true); }}
+                      style={{ background:changed?`${T.orange}12`:`${T.accent}08`,
+                        color:changed?T.orange:T.accent,
+                        border:`1px solid ${changed?T.orange+"30":T.accent+"20"}`,
+                        fontSize:10 }}>
+                      {changed?"⚡":"↔"} vs previous {prevRun.status==="clean"?"✓":"✗"} {prevRun.started_at?.slice(5,16)?.replace("T"," ")}
+                    </Btn>
+                  );
+                })()}
+                <span style={{ fontSize:10, color:T.muted }}>or compare:</span>
                 <select onChange={e=>{
                     const r = history.find(h=>h.run_id===e.target.value);
                     setCompareRun(r||null);
                   }}
-                  defaultValue=""
+                  value={compareRun?.run_id||""}
                   style={{ padding:"3px 8px", borderRadius:6, fontSize:11,
                     border:`1px solid ${T.border}`, background:T.card,
                     color:T.text, outline:"none" }}>
-                  <option value="">— select run —</option>
+                  <option value="">— any run —</option>
                   {history.filter(r=>r.run_id!==selectedRun.run_id).map(r=>(
                     <option key={r.run_id} value={r.run_id}>
                       {r.started_at?.slice(0,16)?.replace("T"," ")} · {r.status==="clean"?"✓":"✗"}
                     </option>
                   ))}
                 </select>
-                {compareRun && (
+                {compareRun && !showDiff && (
                   <Btn size="sm" onClick={()=>setShowDiff(true)}
                     style={{ background:`${T.accent}10`, color:T.accent, border:`1px solid ${T.accent}30` }}>
                     View Diff
@@ -12946,7 +14709,7 @@ Be specific — mention check names and row counts. No bullet points. No markdow
 }
 
 // ── AllRunsView — cross-workflow run history ───────────────────────────────────
-function AllRunsView({ history, workflows, onBack, onOpenWf }) {
+function AllRunsView({ history, workflows, onBack, onOpenWf }) { // onOpenWf(wf, run?)
   const T = useT();
   const [filter, setFilter] = React.useState("all"); // all | failed | clean
   const [search, setSearch] = React.useState("");
@@ -13010,7 +14773,7 @@ function AllRunsView({ history, workflows, onBack, onOpenWf }) {
           const dur = run.duration_ms ? (run.duration_ms<1000?`${run.duration_ms}ms`:`${(run.duration_ms/1000).toFixed(1)}s`) : null;
           return (
             <div key={run.run_id}
-              onClick={()=>wf&&onOpenWf(wf)}
+              onClick={()=>wf&&onOpenWf(wf, run)}
               style={{ display:"flex", alignItems:"center", gap:12,
                 padding:"10px 16px", borderRadius:10,
                 background:T.card, border:`1px solid ${T.border}`,
@@ -13136,7 +14899,8 @@ Example: {"reply":"Created a workflow with 2 checks for mws.report","actions":[{
         body:JSON.stringify({
           system,
           messages:[...history, {role:"user", content:text}],
-          max_tokens:1200
+          max_tokens:900,
+          temperature:0.2
         })
       });
       const data = await res.json();
@@ -13486,7 +15250,8 @@ ${aiDesc.toLowerCase().includes("suggest") || aiDesc.toLowerCase().includes("ide
 
 No markdown, no backticks.`,
           messages:[{role:"user", content:aiDesc}],
-          max_tokens:1200
+          max_tokens:800,
+          temperature:0.2
         })
       });
       const data = await res.json();
@@ -17549,7 +19314,6 @@ function DataflowCard({ df, onStar, onOpen, onDelete, onDuplicate, onMove, folde
 
 
 
-
 // ─── DataflowRow ──────────────────────────────────────────────────────────────
 function DataflowRow({ df, onStar, onOpen, onDelete, onDuplicate, onMove, folders, T, isSelected, onToggleSelect }) {
   const [menuOpen, setMenuOpen] = React.useState(false);
@@ -17753,7 +19517,8 @@ Schema: ${dbSchema||"mws tables"}
 Return JSON array (no markdown): [{"name":"...","sql":"SELECT ...","pass_condition":"rows=0","severity":"high"}]
 Rules: use only real columns, return actual rows not just counts, max 3 checks.`,
           messages:[{role:"user",content:aiCheckInput}],
-          max_tokens:400
+          max_tokens:400,
+          temperature:0.2
         })
       });
       const d = await res.json();
@@ -18229,7 +19994,8 @@ Rules:
 
 Respond ONLY with a JSON array (no markdown):
 [{"name":"Check name","sql":"SELECT ...","pass_condition":"rows = 0","severity":"high"}]`,
-          messages:[{role:"user", content:aiInput}], max_tokens:600
+          messages:[{role:"user", content:aiInput}], max_tokens:600,
+          temperature:0.2
         })
       });
       const data = await res.json();
@@ -18620,7 +20386,8 @@ Return ONLY a JSON array (no markdown), max 5 items:
 Rules: use only real columns from schema, each check must be genuinely new.`,
           messages:[{role:"user", content:`Failure evidence:
 ${evidence.length ? JSON.stringify(evidence) : "No run history yet — suggest 5 foundational checks based on the schema."}`}],
-          max_tokens:600
+          max_tokens:400,
+          temperature:0.2
         })
       });
       const d = await res.json();
@@ -18800,7 +20567,8 @@ SQL rules: use only real columns, never COUNT(*) alone, return actual rows.
 pass_condition: "rows=0"|"rows>0"|"value>N". No markdown.`,
           messages:[...messages.slice(-4).map(m=>({role:m.role==="user"?"user":"assistant",content:m.text||""})).filter(h=>h.content),
             {role:"user",content:text}],
-          max_tokens:800
+          max_tokens:600,
+          temperature:0.2
         })
       });
       const d = await res.json();
@@ -19913,7 +21681,8 @@ Schedule format rules:
 - Use "every N min" for intervals
 - "daily" for once a day without specific time`,
                     messages:[{role:"user", content:nlInput}],
-                    max_tokens:150
+                    max_tokens:150,
+          temperature:0.2
                   })
                 });
                 const d = await res.json();
@@ -21166,9 +22935,39 @@ const AP_HISTORY_KEY = "wz_ap_history_v2";
 const AP_MAX_MEM     = 100;
 
 function apLoadMem()  { try{return JSON.parse(localStorage.getItem(AP_MEMORY_KEY)||"[]");}catch(e){return[];} }
-function apSaveMem(m) { try{localStorage.setItem(AP_MEMORY_KEY,JSON.stringify(m.slice(0,AP_MAX_MEM)));}catch(e){} }
+function apSaveMem(m) {
+  // Deduplicate: keep only the most recent entry per check_id per calendar day
+  const seen = new Set();
+  const deduped = m.filter(entry => {
+    const day = (entry.ts||"").slice(0,10);
+    const key = `${entry.check_id||entry.check_name}__${day}__${entry.pipeline_id||""}`;
+    if (seen.has(key)) return false;
+    seen.add(key); return true;
+  });
+  try{localStorage.setItem(AP_MEMORY_KEY,JSON.stringify(deduped.slice(0,AP_MAX_MEM)));}catch(e){}
+}
 function apLoadHist() { try{return JSON.parse(localStorage.getItem(AP_HISTORY_KEY)||"[]");}catch(e){return[];} }
 function apSaveHist(h){ try{localStorage.setItem(AP_HISTORY_KEY,JSON.stringify(h.slice(0,200)));}catch(e){} }
+
+// Safe pass-condition evaluator — replaces eval()
+function apEvalCondition(val, passCondition) {
+  try {
+    const parts = (passCondition || "rows = 0").trim().split(/\s+/);
+    const op    = parts[1] || "=";
+    const thresh = Number(parts[2] ?? 0);
+    const n = Number(val);
+    if (isNaN(n)) return false;
+    switch(op) {
+      case "=":  case "==": return n === thresh;
+      case "!=": case "<>": return n !== thresh;
+      case ">":             return n >  thresh;
+      case ">=":            return n >= thresh;
+      case "<":             return n <  thresh;
+      case "<=":            return n <= thresh;
+      default:              return n === thresh;
+    }
+  } catch(e) { return false; }
+}
 
 function AutoPilotTab({ onNavigate }) {
   const T = useT();
@@ -21188,7 +22987,9 @@ function AutoPilotTab({ onNavigate }) {
   const [agentDecisions, setAgentDecisions] = React.useState({});   // {pipe_id: [{agent,action,confidence,issue,status}]}
   const [scanExplanations, setScanExplanations] = React.useState({}); // {pipe_id: {text, ts, loading}}
   const [correlatedFailures, setCorrelatedFailures] = React.useState(null); // {pipes, hypothesis, ts} | null
-  const [circuitBroken, setCircuitBroken] = React.useState({}); // {pipe_id: {count, ts}}
+  const [circuitBroken, setCircuitBroken] = React.useState(()=>{
+    try { return JSON.parse(localStorage.getItem("wz_ap_circuit_v1")||"{}"); } catch(e) { return {}; }
+  }); // {pipe_id: {count, ts, name}} — persisted across refreshes
   const [suppressedChecks, setSuppressedChecks] = React.useState(
     ()=>{ try{return JSON.parse(localStorage.getItem("wz_suppressed_checks")||"{}");} catch(e){return {};} }
   ); // {check_id: {name, count, suppressed_at, pipeline_id}}
@@ -21204,10 +23005,13 @@ function AutoPilotTab({ onNavigate }) {
   const [nlBuilderResult, setNlBuilderResult] = React.useState(null); // generated pipeline preview
   const intervalRefs = React.useRef({});
 
-  // Persist suppressedChecks to localStorage
+  // Persist suppressedChecks + circuitBroken to localStorage
   React.useEffect(()=>{
     try{localStorage.setItem("wz_suppressed_checks",JSON.stringify(suppressedChecks));}catch(e){}
   },[suppressedChecks]);
+  React.useEffect(()=>{
+    try{localStorage.setItem("wz_ap_circuit_v1",JSON.stringify(circuitBroken));}catch(e){}
+  },[circuitBroken]);
 
   // ── AI Health Banner ───────────────────────────────────────────────────────
   const [healthSummary,  setHealthSummary]  = React.useState(null);  // {text, severity, ts}
@@ -21384,8 +23188,7 @@ Keep the whole report under 120 words. Be reassuring but honest.`,
             const r = await fetch(`${API}/api/query?sql=${encodeURIComponent(chk.sql)}`);
             const d = await r.json();
             const val = parseInt(Object.values(d.rows?.[0]||{})[0]||"0");
-            const [metric,op,thresh] = (chk.pass_condition||"rows = 0").split(" ");
-            const failed = !eval(`${val} ${op} ${Number(thresh)}`);
+            const failed = !apEvalCondition(val, chk.pass_condition);
             if (failed) {
               issues.push({...chk, actual_rows:val});
               log(agent.name, `⚠ FAILED: ${chk.name} (${val} rows)`, "warn");
@@ -21495,8 +23298,7 @@ Keep the whole report under 120 words. Be reassuring but honest.`,
             const r = await fetch(`${API}/api/query?sql=${encodeURIComponent(fix.issue.sql)}`);
             const d = await r.json();
             const val = parseInt(Object.values(d.rows?.[0]||{})[0]||"0");
-            const [metric,op,thresh]=(fix.issue.pass_condition||"rows = 0").split(" ");
-            const resolved = eval(`${val} ${op} ${Number(thresh)}`);
+            const resolved = apEvalCondition(val, fix.issue.pass_condition);
             log(agent.name, resolved?`✓ Resolved: ${fix.issue.name}`:`⚠ Still failing: ${fix.issue.name}`, resolved?"success":"warn");
 
             // ── Rollback if fix didn't resolve and rollback_sql exists ────
@@ -21587,6 +23389,8 @@ Keep the whole report under 120 words. Be reassuring but honest.`,
     setRunning(p=>({...p,[pid]:false}));
     // Clear circuit breaker if scan came back clean
     if (!issues.length) setCircuitBroken(p=>{const n={...p};delete n[pid];return n;});
+    // Ensure scan explanation loading state always clears
+    setScanExplanations(p=>p[pid]?.loading ? {...p,[pid]:{...p[pid],loading:false}} : p);
     // Auto-refresh stakeholder report after scan
     if (activeView==="stakeholder"&&stakeholderReport) generateStakeholderReport();
 
@@ -21724,6 +23528,8 @@ Be specific and direct. No bullet points. No markdown. Start with a timeframe li
   }, [runningPipes, pipelines, globalSlack]);
 
   // ── Interval management ────────────────────────────────────────────────────
+  // Track first-mount to allow immediate run only on initial load
+  const mountedRef = React.useRef(false);
   React.useEffect(()=>{
     pipelines.forEach(pipe=>{
       if (intervalRefs.current[pipe.id]) {
@@ -21731,10 +23537,21 @@ Be specific and direct. No bullet points. No markdown. Start with a timeframe li
         delete intervalRefs.current[pipe.id];
       }
       if (pipe.enabled && pipe.trigger==="schedule") {
-        runPipeline(pipe);
-        intervalRefs.current[pipe.id] = setInterval(()=>runPipeline(pipe), pipe.interval_min*60*1000);
+        // On first mount: run immediately only if overdue (last run > interval ago)
+        // On subsequent changes (toggle/edit): skip the immediate fire
+        if (!mountedRef.current) {
+          const key = `wz_sched_lastrun_ap_${pipe.id}`;
+          const last = parseInt(localStorage.getItem(key)||"0");
+          const overdue = Date.now() - last >= pipe.interval_min * 60 * 1000;
+          if (overdue) runPipeline(pipe);
+        }
+        intervalRefs.current[pipe.id] = setInterval(()=>{
+          localStorage.setItem(`wz_sched_lastrun_ap_${pipe.id}`, Date.now().toString());
+          runPipeline(pipe);
+        }, pipe.interval_min*60*1000);
       }
     });
+    mountedRef.current = true;
     return ()=>Object.values(intervalRefs.current).forEach(clearInterval);
   }, [pipelines.map(p=>p.id+p.enabled+p.interval_min).join(",")]);
 

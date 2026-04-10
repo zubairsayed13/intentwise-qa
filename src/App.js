@@ -9115,6 +9115,37 @@ function SopConfigPanel({ config, setConfig, onSave, saving, msg, onClose, T }) 
                   tables validated, and jobs triggered.
                 </div>
               </div>
+
+              {/* Gate 2 escalation */}
+              <div style={{ padding:"14px 16px", borderRadius:8, border:`1px solid ${T.border}`, background:T.surface }}>
+                <div style={{ fontSize:12, fontWeight:700, color:T.text, marginBottom:4 }}>🔔 Gate 2 Escalation</div>
+                <div style={{ fontSize:11, color:T.muted, marginBottom:10 }}>
+                  If Gate 2 ("Data Available") is still pending after N minutes, send a second alert to a different Slack webhook (e.g. manager channel).
+                </div>
+                <div style={{ display:"flex", flexDirection:"column", gap:8 }}>
+                  <div style={{ display:"flex", alignItems:"center", gap:10 }}>
+                    <label style={{ fontSize:11, color:T.text2, width:120 }}>Escalate after</label>
+                    <select value={escalationMin} onChange={e=>setEscalationMin(Number(e.target.value))}
+                      style={{ padding:"5px 8px", borderRadius:6, fontSize:11,
+                        border:`1px solid ${T.border}`, background:T.surface, color:T.text }}>
+                      {[15,30,45,60,90,120].map(m=><option key={m} value={m}>{m} min</option>)}
+                    </select>
+                  </div>
+                  <div style={{ display:"flex", alignItems:"center", gap:10 }}>
+                    <label style={{ fontSize:11, color:T.text2, width:120 }}>Escalation webhook</label>
+                    <input value={escalationCh} onChange={e=>setEscalationCh(e.target.value)}
+                      placeholder="https://hooks.slack.com/services/…"
+                      style={{ flex:1, padding:"5px 8px", borderRadius:6, fontSize:11,
+                        border:`1px solid ${escalationCh?T.accent:T.border}`,
+                        background:T.surface, color:T.text, outline:"none" }}/>
+                  </div>
+                  {escalationCh && (
+                    <div style={{ fontSize:10, color:T.green }}>
+                      ✓ Escalation active — will ping after {escalationMin}m of Gate 2 inactivity
+                    </div>
+                  )}
+                </div>
+              </div>
             </div>
           )}
 
@@ -9127,11 +9158,14 @@ function SopConfigPanel({ config, setConfig, onSave, saving, msg, onClose, T }) 
 
 
 // ─── AdsSopTab sub-components ───────────────────────────────────────────────
-function SopGatePanel({ gateNum, token, decision, label, checks, gateTimeout, submitGate, submitting, running, T }) {
+function SopGatePanel({ gateNum, token, decision, label, checks, gateTimeout, perGateTimeouts, submitGate, submitting, running, T }) {
   // ALL hooks at top — no exceptions, no conditionals
   const [elapsed,     setElapsed]     = React.useState(0);
   const [aiAdvice,    setAiAdvice]    = React.useState(null);
   const [aiAdviceLoad,setAiAdviceLoad]= React.useState(false);
+
+  // Per-gate timeout: use specific override if set, else fall back to global
+  const effectiveTimeout = (perGateTimeouts && perGateTimeouts[gateNum]) || gateTimeout;
 
   const isPending  = decision === "pending";
 
@@ -9170,7 +9204,7 @@ function SopGatePanel({ gateNum, token, decision, label, checks, gateTimeout, su
 
   // Early returns AFTER all hooks
   if (decision === "skipped") return null;
-  if (!token && !isPending && !isApproved && !isRejected && !isTimeout) {
+  if (!token && !isPending && !isApproved && !isRejected && !isTimeout && !isAutoApproved) {
     return (
       <Card style={{ padding:"12px 18px", marginBottom:10,
         borderColor:`${T.border}`, background:T.surface, opacity:0.6 }}>
@@ -9188,26 +9222,27 @@ function SopGatePanel({ gateNum, token, decision, label, checks, gateTimeout, su
     );
   }
 
-  const pct = Math.min((elapsed / Number(gateTimeout)) * 100, 100);
-  const remaining = Math.max(Number(gateTimeout) - elapsed, 0);
+  const isAutoApproved = decision === "auto-approved";
+  const pct = Math.min((elapsed / Number(effectiveTimeout)) * 100, 100);
+  const remaining = Math.max(Number(effectiveTimeout) - elapsed, 0);
 
   return (
     <Card style={{ padding:"14px 18px", marginBottom:10,
-      borderColor: isPending?`${T.yellow}50`:isApproved?`${T.green}40`:isTimeout?`${T.orange}40`:`${T.red}40`,
-      background:  isPending?`${T.yellow}06`:isApproved?`${T.green}06`:isTimeout?`${T.orange}06`:`${T.red}06` }}>
+      borderColor: isPending?`${T.yellow}50`:isApproved||isAutoApproved?`${T.green}40`:isTimeout?`${T.orange}40`:`${T.red}40`,
+      background:  isPending?`${T.yellow}06`:isApproved||isAutoApproved?`${T.green}06`:isTimeout?`${T.orange}06`:`${T.red}06` }}>
       <div style={{ display:"flex", alignItems:"center", gap:12 }}>
         <div style={{ width:32, height:32, borderRadius:8, flexShrink:0,
-          background: isPending?`${T.yellow}15`:isApproved?`${T.green}15`:isTimeout?`${T.orange}15`:`${T.red}15`,
+          background: isPending?`${T.yellow}15`:isApproved||isAutoApproved?`${T.green}15`:isTimeout?`${T.orange}15`:`${T.red}15`,
           display:"flex", alignItems:"center", justifyContent:"center",
           fontSize:14, fontWeight:800,
-          color: isPending?T.yellow:isApproved?T.green:isTimeout?T.orange:T.red }}>
+          color: isPending?T.yellow:isApproved||isAutoApproved?T.green:isTimeout?T.orange:T.red }}>
           {isPending?<Spinner size={14}/>:gateNum}
         </div>
         <div style={{ flex:1 }}>
           <div style={{ fontSize:12, fontWeight:700,
-            color: isPending?T.yellow:isApproved?T.green:isTimeout?T.orange:T.red }}>
+            color: isPending?T.yellow:isApproved||isAutoApproved?T.green:isTimeout?T.orange:T.red }}>
             🔒 Gate {gateNum}: {label}
-            {isApproved&&" ✓"}{isRejected&&" — stopped"}{isTimeout&&" — timed out, force-proceeded"}
+            {isApproved&&" ✓"}{isAutoApproved&&" ⚡ Auto-approved"}{isRejected&&" — stopped"}{isTimeout&&" — timed out, force-proceeded"}
           </div>
           {isPending && (
             <>
@@ -9260,6 +9295,7 @@ function SopGatePanel({ gateNum, token, decision, label, checks, gateTimeout, su
           </div>
         )}
         {isApproved && <Badge label="approved" color={T.green}/>}
+        {isAutoApproved && <Badge label="⚡ auto-approved" color={T.green}/>}
         {isRejected && <Badge label="rejected" color={T.red}/>}
         {isTimeout && (
           <div style={{ display:"flex", alignItems:"center", gap:6 }}>
@@ -9351,9 +9387,23 @@ function SopChecklist({ title, items, icon, type, T }) {
   );
 }
 
-function SopValidationTable({ results, T }) {
+function SopValidationTable({ results, T, historyData }) {
   if (!results?.length) return null;
   const allPass = results.every(r=>r.status==="PASS");
+
+  // Build per-table sparklines from historyData
+  const tableHistory = React.useMemo(() => {
+    const map = {};
+    (historyData||[]).forEach(run => {
+      (run.validation_results||[]).forEach(vr => {
+        const key = vr.name;
+        if (!map[key]) map[key] = [];
+        map[key].push({ pass: vr.status==="PASS", cov: vr.coverage_pct });
+      });
+    });
+    return map;
+  }, [historyData]);
+
   return (
     <Card style={{ padding:"14px 18px", marginBottom:10,
       borderColor:allPass?`${T.green}30`:`${T.orange}40`,
@@ -9366,7 +9416,7 @@ function SopValidationTable({ results, T }) {
       <table style={{ width:"100%", borderCollapse:"collapse", fontSize:11 }}>
         <thead>
           <tr style={{ borderBottom:`1px solid ${T.border}` }}>
-            {["Table","Status","Accounts (n-1)","5-day Baseline","Coverage %","Error"].map(h=>(
+            {["Table","Status","Accounts (n-1)","5-day Baseline","Coverage %","7d Trend","Error"].map(h=>(
               <th key={h} style={{ padding:"4px 10px", textAlign:"left",
                 fontSize:9, fontWeight:700, color:T.muted,
                 textTransform:"uppercase", letterSpacing:"0.05em" }}>{h}</th>
@@ -9374,30 +9424,64 @@ function SopValidationTable({ results, T }) {
           </tr>
         </thead>
         <tbody>
-          {results.map((r,i)=>(
-            <tr key={i} style={{ borderBottom:`1px solid ${T.border}30` }}>
-              <td style={{ padding:"6px 10px", fontFamily:"monospace",
-                fontSize:10, color:T.text2 }}>{r.short || r.name?.split("tbl_amzn_")[1]?.replace("_report","") || r.name}</td>
-              <td style={{ padding:"6px 10px" }}>
-                <Badge label={r.status}
-                  color={r.status==="PASS"?T.green:r.status==="FAIL"?T.red:T.yellow}/>
-              </td>
-              <td style={{ padding:"6px 10px", fontFamily:"monospace",
-                fontWeight:700, color:r.today_count>0?T.green:T.red }}>
-                {r.today_count ?? "—"}
-              </td>
-              <td style={{ padding:"6px 10px", fontFamily:"monospace", color:T.muted }}>
-                {r.baseline_avg ?? "—"}
-              </td>
-              <td style={{ padding:"6px 10px", fontFamily:"monospace",
-                color:r.coverage_pct>=80?T.green:r.coverage_pct>0?T.orange:T.red }}>
-                {r.coverage_pct!=null ? `${r.coverage_pct}%` : "—"}
-              </td>
-              <td style={{ padding:"6px 10px", fontSize:9, color:T.red }}>
-                {r.error||""}
-              </td>
-            </tr>
-          ))}
+          {results.map((r,i)=>{
+            const tableName = r.short || r.name?.split("tbl_amzn_")[1]?.replace("_report","") || r.name;
+            const spark = tableHistory[r.short||r.name] || [];
+            const passRate = spark.length ? Math.round(spark.filter(s=>s.pass).length/spark.length*100) : null;
+            const isFlaky = passRate !== null && passRate >= 30 && passRate <= 79;
+            const covTrend = spark.slice(-7).map(s=>s.cov).filter(v=>v!=null);
+            return (
+              <tr key={i} style={{ borderBottom:`1px solid ${T.border}30` }}>
+                <td style={{ padding:"6px 10px", fontFamily:"monospace", fontSize:10, color:T.text2 }}>
+                  {tableName}
+                </td>
+                <td style={{ padding:"6px 10px" }}>
+                  <div style={{ display:"flex", alignItems:"center", gap:4 }}>
+                    <Badge label={r.status} color={r.status==="PASS"?T.green:r.status==="FAIL"?T.red:T.yellow}/>
+                    {isFlaky && (
+                      <span style={{ fontSize:8, fontWeight:700, color:T.orange,
+                        background:`${T.orange}15`, padding:"1px 5px", borderRadius:99,
+                        textTransform:"uppercase" }} title={`Flaky: ${passRate}% pass rate`}>
+                        ⚠ flaky
+                      </span>
+                    )}
+                  </div>
+                </td>
+                <td style={{ padding:"6px 10px", fontFamily:"monospace",
+                  fontWeight:700, color:r.today_count>0?T.green:T.red }}>
+                  {r.today_count ?? "—"}
+                </td>
+                <td style={{ padding:"6px 10px", fontFamily:"monospace", color:T.muted }}>
+                  {r.baseline_avg ?? "—"}
+                </td>
+                <td style={{ padding:"6px 10px", fontFamily:"monospace",
+                  color:r.coverage_pct>=80?T.green:r.coverage_pct>0?T.orange:T.red }}>
+                  {r.coverage_pct!=null ? `${r.coverage_pct}%` : "—"}
+                </td>
+                <td style={{ padding:"6px 10px" }}>
+                  {covTrend.length > 0 ? (
+                    <div style={{ display:"flex", alignItems:"flex-end", gap:1 }}
+                      title={`Pass rate: ${passRate}% over ${spark.length} runs`}>
+                      {covTrend.map((cov,si) => (
+                        <div key={si} style={{ width:4,
+                          height: Math.max(3, Math.round((cov/100)*14)),
+                          borderRadius:2,
+                          background: cov>=80?`${T.green}90`:cov>0?`${T.orange}90`:`${T.red}90` }}
+                          title={`${cov}%`}/>
+                      ))}
+                      {passRate !== null && (
+                        <span style={{ fontSize:9, color:passRate>=80?T.green:passRate>=50?T.orange:T.red,
+                          fontWeight:700, marginLeft:3 }}>{passRate}%</span>
+                      )}
+                    </div>
+                  ) : <span style={{ fontSize:9, color:T.dim }}>—</span>}
+                </td>
+                <td style={{ padding:"6px 10px", fontSize:9, color:T.red }}>
+                  {r.error||""}
+                </td>
+              </tr>
+            );
+          })}
         </tbody>
       </table>
     </Card>
@@ -9492,11 +9576,22 @@ function AdsSopTab() {
 
   const [runId,      setRunId]      = React.useState(null);
   const [gateTimeout,setGateTimeout]= useLocal("wz_sop_gate_timeout", 30);
+  // Per-gate timeout overrides: {1: 60, 3: 15, ...} — null means use global
+  const [perGateTimeouts, setPerGateTimeouts] = useLocal("wz_sop_per_gate_timeouts", {});
+  // Auto-approve gates when all checks pass and no critical failures
+  const [autoApproveOnClean, setAutoApproveOnClean] = useLocal("wz_sop_auto_approve", false);
   const pollRef   = React.useRef(null);
   const [showHistory,   setShowHistory]   = React.useState(false);
   const [history,       setHistory]       = React.useState([]);
   const [histLoading,   setHistLoading]   = React.useState(false);
   const [histFilter,    setHistFilter]    = React.useState("all"); // all|complete|stopped|error
+  // Run diff
+  const [diffRunA,      setDiffRunA]      = React.useState(null);
+  const [showDiff,      setShowDiff]      = React.useState(false);
+  // Gate 2 escalation
+  const [escalationMin, setEscalationMin] = useLocal("wz_sop_escalation_min", 30);
+  const [escalationCh,  setEscalationCh]  = useLocal("wz_sop_escalation_ch", "");
+  const escalationRef = React.useRef(null);
   const [showSchedules, setShowSchedules] = React.useState(false);
   const [schedules,     setSchedules]     = React.useState([]);
   const [schedFormOpen, setSchedFormOpen] = React.useState(false);
@@ -9697,6 +9792,133 @@ function AdsSopTab() {
     setSubmitting(p => ({...p,[token]:false}));
   };
 
+  // ── Auto-approve gate if all checks pass and feature is enabled ─────────────
+  const tryAutoApprove = React.useCallback(async (token, gateNum, checks) => {
+    if (!autoApproveOnClean || !token) return false;
+    const hasCriticalFail = (checks||[]).some(c => !c.passed && (c.severity==="critical" || c.severity==="high"));
+    const anyFail = (checks||[]).some(c => !c.passed);
+    if (anyFail || hasCriticalFail) return false;
+    // All checks passed — auto-approve
+    addNotif?.(`⚡ Gate ${gateNum} auto-approved — all checks clean`, "success");
+    await submitGate(token, "approve");
+    return true;
+  }, [autoApproveOnClean, submitGate]);
+
+  // ── Severity routing: returns "halt" | "warn" | "log" ───────────────────────
+  const checkSeverityAction = (checks) => {
+    if (!checks?.length) return "halt";
+    const failed = checks.filter(c => !c.passed);
+    if (!failed.length) return "pass";
+    if (failed.some(c => c.severity==="critical")) return "halt";
+    if (failed.some(c => c.severity==="high"))     return "halt";
+    if (failed.some(c => c.severity==="medium"))   return "warn";
+    return "log"; // low severity only
+  };
+
+  // Watch for new pending gates and attempt auto-approve
+  React.useEffect(() => {
+    if (!result || !autoApproveOnClean) return;
+    for (let i = 1; i <= 5; i++) {
+      const token    = result[`gate${i}_token`];
+      const decision = result[`gate${i}_decision`];
+      const checks   = result[`gate${i}_checks`] || [];
+      if (decision === "pending" && token) {
+        tryAutoApprove(token, i, checks);
+      }
+    }
+  }, [result?.gate1_decision, result?.gate2_decision, result?.gate3_decision,
+      result?.gate4_decision, result?.gate5_decision, autoApproveOnClean]);
+
+  // ── Gate 2 escalation: re-ping Slack if pending too long ───────────────────
+  React.useEffect(() => {
+    if (!result || !escalationCh) return;
+    const g2decision = result.gate2_decision;
+    const g2token    = result.gate2_token;
+    if (g2decision !== "pending" || !g2token) {
+      if (escalationRef.current) { clearTimeout(escalationRef.current); escalationRef.current = null; }
+      return;
+    }
+    if (escalationRef.current) return; // already scheduled
+    escalationRef.current = setTimeout(async () => {
+      escalationRef.current = null;
+      try {
+        await fetch(escalationCh, {
+          method: "POST", headers: {"Content-Type":"application/json"},
+          body: JSON.stringify({
+            text: `⚠️ *Gate 2 escalation* — Daily Ads Check has been waiting ${escalationMin}m for data confirmation. Run ID: \`${runId || result.run_id || "?"}\`. Please approve or reject the gate.`
+          })
+        });
+        addNotif?.("Gate 2 escalation sent to Slack", "warning");
+      } catch(e) {}
+    }, escalationMin * 60000);
+    return () => { if (escalationRef.current) { clearTimeout(escalationRef.current); escalationRef.current = null; } };
+  }, [result?.gate2_decision, escalationCh, escalationMin]);
+
+  // ── Data window awareness (IST) ──────────────────────────────────────────
+  const dataWindowWarning = React.useMemo(() => {
+    const now = new Date();
+    // IST = UTC+5:30
+    const istOffsetMs = 5.5 * 60 * 60000;
+    const istMs = now.getTime() + (now.getTimezoneOffset() * 60000) + istOffsetMs;
+    const ist = new Date(istMs);
+    const h = ist.getHours(), m = ist.getMinutes();
+    const minOfDay = h * 60 + m;
+    // Data expected 3:30 PM IST = 900 min; downstream 4:00 PM = 960 min
+    if (minOfDay < 900) {
+      const wait = 900 - minOfDay;
+      return { level: "warn", msg: `⚠ Data not expected until 3:30 PM IST (~${wait}m from now). Running early may produce false failures.` };
+    }
+    if (minOfDay < 960) {
+      return { level: "info", msg: `ℹ Data arrived at 3:30 PM IST. Downstream tables ready ~4:00 PM IST — ${960-minOfDay}m remaining.` };
+    }
+    return null;
+  }, []);
+
+  // ── Persist completion data back into history for sparklines ────────────
+  React.useEffect(() => {
+    if (!result) return;
+    const terminal = ["complete","complete_no_issues","stopped","error"];
+    if (!terminal.includes(result.status)) return;
+    if (!result.run_id || !result.detection_result) return;
+    // Write detection_details into history localStorage so sparklines work
+    const key = "wz_sop_det_history_v1";
+    try {
+      const prev = JSON.parse(localStorage.getItem(key) || "[]");
+      const already = prev.some(r => r.run_id === result.run_id);
+      if (already) return;
+      const entry = {
+        run_id: result.run_id,
+        started_at: result.started_at || new Date().toISOString(),
+        status: result.status,
+        detection_details: (result.detection_result?.details || []).map(d => ({
+          check: d.check, status: d.status, severity: d.severity || "medium"
+        })),
+        validation_results: (result.validation_results || []).map(r => ({
+          name: r.short || r.name, status: r.status,
+          today_count: r.today_count, baseline_avg: r.baseline_avg,
+          coverage_pct: r.coverage_pct
+        })),
+        phase_timings: result.phase_timings || null,
+        duration_min: result.summary_data?.duration ? parseInt(result.summary_data.duration) : null,
+        gates_approved: result.summary_data?.gates_approved ?? null,
+        auto_approved_gates: [1,2,3,4,5].filter(n=>result[`gate${n}_decision`]==="auto-approved").length,
+      };
+      localStorage.setItem(key, JSON.stringify([entry, ...prev].slice(0, 60)));
+      // Refresh history if panel is open
+      if (showHistory) loadHistory();
+    } catch(e) {}
+  }, [result?.status]);
+
+  // ── Rich history: merge localStorage entries into loaded history ─────────
+  const enrichedHistory = React.useMemo(() => {
+    try {
+      const local = JSON.parse(localStorage.getItem("wz_sop_det_history_v1") || "[]");
+      if (!local.length) return history;
+      const localMap = Object.fromEntries(local.map(r => [r.run_id, r]));
+      return history.map(r => localMap[r.run_id] ? { ...r, ...localMap[r.run_id] } : r);
+    } catch { return history; }
+  }, [history, result?.status]);
+
   // ── Render helpers ─────────────────────────────────────────────────────────
 
 
@@ -9714,17 +9936,54 @@ function AdsSopTab() {
           </div>
         </div>
         <div style={{ display:"flex", gap:8, alignItems:"center" }}>
+          {/* Auto-approve toggle */}
+          <div style={{ display:"flex", alignItems:"center", gap:5, padding:"3px 9px",
+            borderRadius:6, border:`1px solid ${autoApproveOnClean?T.green+"40":T.border}`,
+            background:autoApproveOnClean?`${T.green}08`:"transparent", cursor:"pointer" }}
+            onClick={()=>setAutoApproveOnClean(p=>!p)}
+            title="When enabled, gates where all checks pass are approved automatically">
+            <span style={{ fontSize:10 }}>{autoApproveOnClean?"⚡":"○"}</span>
+            <span style={{ fontSize:10, color:autoApproveOnClean?T.green:T.muted, fontWeight:autoApproveOnClean?700:400 }}>
+              Auto-approve clean
+            </span>
+          </div>
+          {/* Global + per-gate timeouts */}
           <div style={{ display:"flex", alignItems:"center", gap:5 }}>
-            <span style={{ fontSize:10, color:T.muted }}>Gate timeout:</span>
+            <span style={{ fontSize:10, color:T.muted }}>Timeout:</span>
             <select value={gateTimeout} onChange={e=>setGateTimeout(Number(e.target.value))}
               style={{ fontSize:11, padding:"3px 6px", borderRadius:5,
-                border:`1px solid ${T.border}`, background:T.surface, color:T.text }}>
-              <option value={1}>1 min (test)</option>
-              <option value={5}>5 min</option>
-              <option value={15}>15 min</option>
-              <option value={30}>30 min</option>
-              <option value={60}>60 min</option>
+                border:`1px solid ${T.border}`, background:T.surface, color:T.text }}
+              title="Global default timeout for all gates">
+              <option value={1}>1m (test)</option>
+              <option value={5}>5m</option>
+              <option value={15}>15m</option>
+              <option value={30}>30m</option>
+              <option value={60}>60m</option>
             </select>
+            {/* Per-gate overrides — compact inline */}
+            {[1,2,3,4,5].map(n => {
+              const override = perGateTimeouts[n];
+              return (
+                <div key={n} style={{ display:"flex", alignItems:"center", gap:2 }}
+                  title={`Gate ${n} timeout override (blank = use global)`}>
+                  <span style={{ fontSize:9, color:T.dim }}>G{n}:</span>
+                  <select value={override||""} onChange={e=>{
+                      const v = e.target.value;
+                      setPerGateTimeouts(p=>v ? {...p,[n]:Number(v)} : (({[n]:_,...rest})=>rest)(p));
+                    }}
+                    style={{ fontSize:10, padding:"2px 4px", borderRadius:4, width:52,
+                      border:`1px solid ${override?T.accent+"50":T.border}`,
+                      background:override?`${T.accent}08`:T.surface, color:override?T.accent:T.muted }}>
+                    <option value="">—</option>
+                    <option value={5}>5m</option>
+                    <option value={15}>15m</option>
+                    <option value={30}>30m</option>
+                    <option value={60}>60m</option>
+                    <option value={90}>90m</option>
+                  </select>
+                </div>
+              );
+            })}
           </div>
           {running && runId && (
             <Btn onClick={forceAllGates} variant="ghost" size="sm"
@@ -9749,6 +10008,17 @@ function AdsSopTab() {
           </Btn>
         </div>
       </div>
+
+      {/* Data window awareness banner */}
+      {dataWindowWarning && !result && (
+        <div style={{ padding:"9px 14px", borderRadius:8, marginBottom:12,
+          background: dataWindowWarning.level==="warn"?`${T.orange}10`:`${T.accent}08`,
+          border:`1px solid ${dataWindowWarning.level==="warn"?T.orange:T.accent}30`,
+          fontSize:11, color: dataWindowWarning.level==="warn"?T.orange:T.accent,
+          display:"flex", alignItems:"center", gap:7 }}>
+          {dataWindowWarning.msg}
+        </div>
+      )}
 
       {/* Timeline bar */}
       <Card style={{ padding:"14px 20px", marginBottom:20 }}>
@@ -9930,11 +10200,15 @@ function AdsSopTab() {
       )}
 
       {/* ── HISTORY PANEL ────────────────────────────────────────────────── */}
+      {showDiff && diffRunA && result && (
+        <RunDiff runA={diffRunA} runB={result} onClose={()=>setShowDiff(false)}/>
+      )}
+
       {showHistory && (
         <Card style={{ padding:"16px 20px", marginBottom:14 }}>
           <div style={{ display:"flex", alignItems:"center", gap:8, marginBottom:12, flexWrap:"wrap" }}>
             <span style={{ fontSize:13, fontWeight:700, color:T.text }}>📋 Run History</span>
-            <span style={{ fontSize:10, color:T.muted }}>({history.length} runs)</span>
+            <span style={{ fontSize:10, color:T.muted }}>({enrichedHistory.length} runs)</span>
             <div style={{ display:"flex", gap:4, marginLeft:"auto" }}>
               {["all","complete","stopped","error"].map(f=>(
                 <button key={f} onClick={()=>setHistFilter(f)}
@@ -9950,49 +10224,90 @@ function AdsSopTab() {
               {histLoading?<Spinner size={10}/>:<RefreshCw size={10}/>}
             </Btn>
           </div>
-          {history.length === 0 && !histLoading && (
+          {enrichedHistory.length === 0 && !histLoading && (
             <div style={{ fontSize:12, color:T.muted, textAlign:"center", padding:"12px 0" }}>
               No past runs found
             </div>
           )}
           {histLoading && <div style={{ textAlign:"center", padding:"12px 0" }}><Spinner size={16}/></div>}
           <div style={{ display:"flex", flexDirection:"column", gap:6, maxHeight:340, overflowY:"auto" }}>
-            {history
+            {enrichedHistory
               .filter(run => histFilter==="all" || run.status===histFilter ||
                 (histFilter==="complete" && run.status==="complete_no_issues"))
               .map((run,i) => {
               const statusColor = run.status==="complete"?T.green:run.status==="complete_no_issues"?T.cyan:run.status==="stopped"?T.orange:run.status==="error"?T.red:T.muted;
               const statusLabel = run.status==="complete"?"✓ Complete":run.status==="complete_no_issues"?"✓ No issues":run.status==="stopped"?"⛔ Stopped":run.status==="error"?"✗ Error":run.status?.replace(/_/g," ");
+              // Per-phase timings if available
+              const phaseTimings = run.phase_timings || null; // {detection:2, pause:5, validation:8, ...}
+              const phaseOrder = ["detection","pause","confirm","validation","refresh","resume_copy","finalize"];
+              const phaseIcons = {detection:"🔍",pause:"⏸",confirm:"✅",validation:"🔬",refresh:"🔄",resume_copy:"▶",finalize:"🎉"};
               return (
                 <div key={run.run_id||i} style={{ padding:"9px 12px", borderRadius:8,
-                  border:`1px solid ${statusColor}25`, background:`${statusColor}05`,
-                  display:"flex", alignItems:"center", gap:10 }}>
-                  <div style={{ flex:1, minWidth:0 }}>
-                    <div style={{ display:"flex", alignItems:"center", gap:7, marginBottom:2 }}>
-                      <span style={{ fontSize:11, fontWeight:700, color:statusColor }}>{statusLabel}</span>
-                      {run.force_full && <span style={{ fontSize:9, color:T.muted, background:T.border, borderRadius:3, padding:"0 5px" }}>force-full</span>}
-                      {run.notified && <Badge label="Slack ✓" color={T.green}/>}
+                  border:`1px solid ${statusColor}25`, background:`${statusColor}05` }}>
+                  <div style={{ display:"flex", alignItems:"center", gap:10 }}>
+                    <div style={{ flex:1, minWidth:0 }}>
+                      <div style={{ display:"flex", alignItems:"center", gap:7, marginBottom:2 }}>
+                        <span style={{ fontSize:11, fontWeight:700, color:statusColor }}>{statusLabel}</span>
+                        {run.force_full && <span style={{ fontSize:9, color:T.muted, background:T.border, borderRadius:3, padding:"0 5px" }}>force-full</span>}
+                        {run.notified && <Badge label="Slack ✓" color={T.green}/>}
+                        {run.auto_approved_gates > 0 && <Badge label={`⚡ ${run.auto_approved_gates} auto`} color={T.green}/>}
+                      </div>
+                      <div style={{ fontSize:10, color:T.muted, fontFamily:"monospace" }}>
+                        {run.started_at}
+                        {run.duration_min!=null && ` · ${run.duration_min}m total`}
+                        {run.gates_approved!=null && ` · ${run.gates_approved}/5 gates`}
+                        {run.validation_pass!=null && ` · ${run.tables_passed}/${run.tables_checked} tables`}
+                      </div>
+                      {/* Per-phase timing bar */}
+                      {phaseTimings && run.duration_min > 0 && (
+                        <div style={{ marginTop:5 }}>
+                          <div style={{ display:"flex", gap:1, height:6, borderRadius:3, overflow:"hidden", width:"100%" }}>
+                            {phaseOrder.map(ph => {
+                              const t = phaseTimings[ph] || 0;
+                              if (!t) return null;
+                              const pct = Math.round((t / run.duration_min) * 100);
+                              const phColor = ph==="detection"?T.accent:ph==="validation"?T.purple:ph==="finalize"?T.green:T.muted;
+                              return (
+                                <div key={ph} style={{ width:`${pct}%`, background:phColor, minWidth:2 }}
+                                  title={`${phaseIcons[ph]} ${ph}: ${t}m (${pct}%)`}/>
+                              );
+                            })}
+                          </div>
+                          <div style={{ display:"flex", gap:6, marginTop:3, flexWrap:"wrap" }}>
+                            {phaseOrder.filter(ph=>phaseTimings[ph]>0).map(ph => (
+                              <span key={ph} style={{ fontSize:9, color:T.dim }}>
+                                {phaseIcons[ph]}{phaseTimings[ph]}m
+                              </span>
+                            ))}
+                          </div>
+                        </div>
+                      )}
                     </div>
-                    <div style={{ fontSize:10, color:T.muted, fontFamily:"monospace" }}>
-                      {run.started_at}
-                      {run.duration_min!=null && ` · ${run.duration_min}m`}
-                      {run.gates_approved!=null && ` · ${run.gates_approved}/5 gates`}
-                      {run.validation_pass!=null && ` · ${run.tables_passed}/${run.tables_checked} tables`}
+                    <div style={{ display:"flex", flexDirection:"column", gap:4, flexShrink:0 }}>
+                      <button
+                        onClick={async ()=>{
+                          try {
+                            const r = await fetch(`${API}/api/workflow/ads-sop/${run.run_id}`);
+                            const d = await r.json();
+                            if (!d.error){ setResult(d); setShowHistory(false); }
+                          } catch(e) {}
+                        }}
+                        style={{ fontSize:10, color:T.accent, background:"none",
+                          border:`1px solid ${T.accent}30`, borderRadius:5,
+                          padding:"3px 9px", cursor:"pointer" }}>
+                        View →
+                      </button>
+                      {result && run.run_id !== result.run_id && (
+                        <button
+                          onClick={()=>{ setDiffRunA(run); setShowDiff(true); }}
+                          style={{ fontSize:10, color:T.purple, background:"none",
+                            border:`1px solid ${T.purple}30`, borderRadius:5,
+                            padding:"3px 9px", cursor:"pointer" }}>
+                          ⇄ Diff
+                        </button>
+                      )}
                     </div>
                   </div>
-                  <button
-                    onClick={async ()=>{
-                      try {
-                        const r = await fetch(`${API}/api/workflow/ads-sop/${run.run_id}`);
-                        const d = await r.json();
-                        if (!d.error){ setResult(d); setShowHistory(false); }
-                      } catch(e) {}
-                    }}
-                    style={{ fontSize:10, color:T.accent, background:"none",
-                      border:`1px solid ${T.accent}30`, borderRadius:5,
-                      padding:"3px 9px", cursor:"pointer", flexShrink:0 }}>
-                    View →
-                  </button>
                 </div>
               );
             })}
@@ -10090,47 +10405,132 @@ function AdsSopTab() {
             )}
 
             {/* Detection result */}
-            {result.detection_result && (
-              <Card style={{ padding:"14px 18px", marginBottom:10,
-                borderColor: result.detection_result.missing?`${T.orange}40`:`${T.green}30`,
-                background:  result.detection_result.missing?`${T.orange}06`:`${T.green}06` }}>
-                <div style={{ display:"flex", alignItems:"center", gap:10, marginBottom:8 }}>
-                  <span style={{ fontSize:16 }}>🔍</span>
-                  <span style={{ fontSize:13, fontWeight:700,
-                    color:result.detection_result.missing?T.orange:T.green }}>
-                    Detection — {result.detection_result.missing?"Issues Found":"Clean"}
-                  </span>
-                  {!result.detection_result.missing && result.status==="complete_no_issues" && (
-                    <Btn size="sm" variant="ghost"
-                      onClick={async ()=>{
-                        setRunning(true); setResult(null); setRunId(null);
-                        if (pollRef.current){ clearInterval(pollRef.current); pollRef.current=null; }
-                        try {
-                          const res = await fetch(`${API}/api/workflow/ads-sop`,{
-                            method:"POST", headers:{"Content-Type":"application/json"},
-                            body:JSON.stringify({gate_timeout_min:Number(gateTimeout), force_full:true})
-                          });
-                          const data = await res.json();
-                          if (!data.error){ setRunId(data.run_id); runStartRef.current=Date.now(); startAdaptivePoll(data.run_id); }
-                        } catch(e){ setRunning(false); }
-                      }}
-                      style={{ marginLeft:"auto", fontSize:10, color:T.accent }}>
-                      ▶ Run Full Check Anyway
-                    </Btn>
-                  )}
-                </div>
-                <div style={{ display:"flex", flexDirection:"column", gap:4 }}>
-                  {result.detection_result.details?.map((d,i) => (
-                    <div key={i} style={{ display:"flex", alignItems:"center", gap:8, fontSize:11 }}>
-                      <Badge label={d.status}
-                        color={d.status==="PASS"?T.green:d.status==="FAIL"?T.red:T.yellow}/>
-                      <span style={{ color:T.text2 }}>{d.check}</span>
-                      <span style={{ color:T.muted }}>— {d.detail}</span>
-                    </div>
-                  ))}
-                </div>
-              </Card>
-            )}
+            {result.detection_result && (() => {
+              const details = result.detection_result.details || [];
+              const severityAction = checkSeverityAction(details.map(d=>({passed:d.status==="PASS", severity:d.severity})));
+              const sevColor = severityAction==="halt"?T.red:severityAction==="warn"?T.orange:severityAction==="pass"?T.green:T.muted;
+              const sevLabel = severityAction==="halt"?"🛑 Halting — critical/high failures":
+                               severityAction==="warn"?"⚠ Warning — medium severity, proceeding with caution":
+                               severityAction==="log"?"📝 Low severity only — logged, auto-proceeding":
+                               "✅ All checks passed";
+              // Build check pass-rate from history (last 10 runs)
+              const checkHistory = {};
+              (history||[]).slice(0,10).forEach(run => {
+                (run.detection_details||[]).forEach(d => {
+                  if (!checkHistory[d.check]) checkHistory[d.check] = [];
+                  checkHistory[d.check].push(d.status==="PASS");
+                });
+              });
+              return (
+                <Card style={{ padding:"14px 18px", marginBottom:10,
+                  borderColor: result.detection_result.missing?`${T.orange}40`:`${T.green}30`,
+                  background:  result.detection_result.missing?`${T.orange}06`:`${T.green}06` }}>
+                  <div style={{ display:"flex", alignItems:"center", gap:10, marginBottom:8 }}>
+                    <span style={{ fontSize:16 }}>🔍</span>
+                    <span style={{ fontSize:13, fontWeight:700,
+                      color:result.detection_result.missing?T.orange:T.green }}>
+                      Detection — {result.detection_result.missing?"Issues Found":"Clean"}
+                    </span>
+                    {/* Severity routing banner */}
+                    {result.detection_result.missing && (
+                      <span style={{ fontSize:10, fontWeight:600, color:sevColor,
+                        background:`${sevColor}12`, padding:"2px 8px", borderRadius:99,
+                        border:`1px solid ${sevColor}30` }}>
+                        {sevLabel}
+                      </span>
+                    )}
+                    {!result.detection_result.missing && result.status==="complete_no_issues" && (
+                      <Btn size="sm" variant="ghost"
+                        onClick={async ()=>{
+                          setRunning(true); setResult(null); setRunId(null);
+                          if (pollRef.current){ clearInterval(pollRef.current); pollRef.current=null; }
+                          try {
+                            const res = await fetch(`${API}/api/workflow/ads-sop`,{
+                              method:"POST", headers:{"Content-Type":"application/json"},
+                              body:JSON.stringify({gate_timeout_min:Number(gateTimeout), force_full:true})
+                            });
+                            const data = await res.json();
+                            if (!data.error){ setRunId(data.run_id); runStartRef.current=Date.now(); startAdaptivePoll(data.run_id); }
+                          } catch(e){ setRunning(false); }
+                        }}
+                        style={{ marginLeft:"auto", fontSize:10, color:T.accent }}>
+                        ▶ Run Full Check Anyway
+                      </Btn>
+                    )}
+                  </div>
+                  <div style={{ display:"flex", flexDirection:"column", gap:6 }}>
+                    {details.map((d,i) => {
+                      const isFail = d.status !== "PASS";
+                      const sev = d.severity || "medium";
+                      const sevC = sev==="critical"?T.red:sev==="high"?T.orange:sev==="medium"?T.yellow:T.muted;
+                      const sparkData = checkHistory[d.check] || [];
+                      const passRate = sparkData.length ? Math.round(sparkData.filter(Boolean).length/sparkData.length*100) : null;
+                      return (
+                        <div key={i} style={{ display:"flex", alignItems:"center", gap:8, fontSize:11,
+                          padding:"6px 8px", borderRadius:7,
+                          background:isFail?`${sevC}08`:"transparent",
+                          border:isFail?`1px solid ${sevC}20`:"1px solid transparent" }}>
+                          <Badge label={d.status} color={d.status==="PASS"?T.green:d.status==="FAIL"?T.red:T.yellow}/>
+                          {/* Severity badge on failures */}
+                          {isFail && (
+                            <span style={{ fontSize:8, fontWeight:700, color:sevC,
+                              background:`${sevC}15`, padding:"1px 5px", borderRadius:99,
+                              textTransform:"uppercase", letterSpacing:".04em" }}>
+                              {sev}
+                            </span>
+                          )}
+                          <span style={{ color:T.text2, flex:1 }}>{d.check}</span>
+                          <span style={{ color:T.muted }}>— {d.detail}</span>
+                          {/* Pass-rate sparkline + flaky badge */}
+                          {sparkData.length > 0 && (
+                            <div style={{ display:"flex", alignItems:"center", gap:3, flexShrink:0 }}
+                              title={`Pass rate last ${sparkData.length} runs: ${passRate}%`}>
+                              {passRate !== null && passRate >= 30 && passRate <= 79 && (
+                                <span style={{ fontSize:8, fontWeight:700, color:T.orange,
+                                  background:`${T.orange}15`, padding:"1px 5px", borderRadius:99,
+                                  textTransform:"uppercase", letterSpacing:".04em", flexShrink:0 }}>
+                                  ⚠ flaky
+                                </span>
+                              )}
+                              <div style={{ display:"flex", gap:1, alignItems:"flex-end" }}>
+                                {sparkData.slice(-7).map((p,si) => (
+                                  <div key={si} style={{ width:4, height:p?10:5, borderRadius:2,
+                                    background:p?`${T.green}80`:`${T.red}80` }}/>
+                                ))}
+                              </div>
+                              <span style={{ fontSize:9, color:passRate===100?T.green:passRate<50?T.red:T.orange,
+                                fontWeight:700 }}>{passRate}%</span>
+                            </div>
+                          )}
+                          {/* Retry individual check */}
+                          {isFail && !running && (
+                            <Btn size="sm" variant="ghost"
+                              style={{ fontSize:9, color:T.accent, borderColor:`${T.accent}30`, padding:"1px 7px", flexShrink:0 }}
+                              onClick={async ()=>{
+                                try {
+                                  const res = await fetch(`${API}/api/workflow/ads-sop/recheck`,{
+                                    method:"POST", headers:{"Content-Type":"application/json"},
+                                    body:JSON.stringify({check_name:d.check, run_id:runId||result.run_id})
+                                  });
+                                  const data = await res.json();
+                                  if (data.detail) {
+                                    setResult(p=>p?{...p, detection_result:{...p.detection_result,
+                                      details:p.detection_result.details.map((x,xi)=>xi===i?{...x,...data.detail}:x)
+                                    }}:p);
+                                  }
+                                  addNotif?.(`Re-checked: ${d.check}`, data.detail?.status==="PASS"?"success":"warning");
+                                } catch(e){ addNotif?.(`Recheck failed: ${e.message}`, "error"); }
+                              }}>
+                              ↺ Retry
+                            </Btn>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
+                </Card>
+              );
+            })()}
 
             {/* Gates and checklists — shown in real time */}
             {running && (
@@ -10143,7 +10543,7 @@ function AdsSopTab() {
             )}
             <SopGatePanel gateNum={1} token={result.gate1_token}
               decision={result.gate1_decision} label="Pause Mage Jobs"
-              checks={result.gate1_checks||[]} gateTimeout={gateTimeout}
+              checks={result.gate1_checks||[]} gateTimeout={gateTimeout} perGateTimeouts={perGateTimeouts}
               submitGate={submitGate} submitting={submitting} running={running} T={T}/>
 
             <SopChecklist title="Pause Mage Packages — Manual Action Required"
@@ -10151,14 +10551,14 @@ function AdsSopTab() {
 
             <SopGatePanel gateNum={2} token={result.gate2_token}
               decision={result.gate2_decision} label="Data Available"
-              checks={result.gate2_checks||[]} gateTimeout={gateTimeout}
+              checks={result.gate2_checks||[]} gateTimeout={gateTimeout} perGateTimeouts={perGateTimeouts}
               submitGate={submitGate} submitting={submitting} running={running} T={T}/>
 
-            <SopValidationTable results={result.validation_results} T={T}/>
+            <SopValidationTable results={result.validation_results} T={T} historyData={enrichedHistory}/>
 
             <SopGatePanel gateNum={3} token={result.gate3_token}
               decision={result.gate3_decision} label="Proceed with Refreshes"
-              checks={result.gate3_checks||[]} gateTimeout={gateTimeout}
+              checks={result.gate3_checks||[]} gateTimeout={gateTimeout} perGateTimeouts={perGateTimeouts}
               submitGate={submitGate} submitting={submitting} running={running} T={T}/>
 
             <SopChecklist title="Trigger Refreshes — Manual Action Required"
@@ -10166,7 +10566,7 @@ function AdsSopTab() {
 
             <SopGatePanel gateNum={4} token={result.gate4_token}
               decision={result.gate4_decision} label="Run Product Summary"
-              checks={result.gate4_checks||[]} gateTimeout={gateTimeout}
+              checks={result.gate4_checks||[]} gateTimeout={gateTimeout} perGateTimeouts={perGateTimeouts}
               submitGate={submitGate} submitting={submitting} running={running} T={T}/>
 
             <SopChecklist title="Resume Mage & GDS BigQuery Copies"
@@ -10174,7 +10574,7 @@ function AdsSopTab() {
 
             <SopGatePanel gateNum={5} token={result.gate5_token}
               decision={result.gate5_decision} label="Resume Mage & GDS Copies"
-              checks={result.gate5_checks||[]} gateTimeout={gateTimeout}
+              checks={result.gate5_checks||[]} gateTimeout={gateTimeout} perGateTimeouts={perGateTimeouts}
               submitGate={submitGate} submitting={submitting} running={running} T={T}/>
 
             {/* Resume from gate — shown when run is stopped/errored */}

@@ -1298,7 +1298,7 @@ Rules: SELECT only, include column aliases, max 2-3 columns, GROUP BY if aggrega
         } catch(e){ setTestResult({error:e.message}); }
         setTesting(false);
       }
-    } catch(e) { console.error(e); }
+    } catch(e) {}
     setAiLoading(false);
   };
 
@@ -2544,7 +2544,7 @@ function MorningBriefTab({ onNavigate, onIssueFound }) {
       const res  = await fetch(`${API}/api/anomaly/check`);
       const data = await res.json();
       setAnomalies(data);
-    } catch(e) { console.error(e); }
+    } catch(e) {}
     setAnomalyLoading(false);
   };
 
@@ -2555,7 +2555,7 @@ function MorningBriefTab({ onNavigate, onIssueFound }) {
         headers:{"Content-Type":"application/json"},
         body:JSON.stringify({}) });
       await runAnomalyCheck();
-    } catch(e) { console.error(e); }
+    } catch(e) {}
     setAnomalyLoading(false);
   };
 
@@ -4852,7 +4852,7 @@ Rules: only SELECT queries, use exact table name, pass_condition is one of: "row
           ...arr.map(c=>({id:`chk-${Date.now()}-${Math.random().toString(36).slice(2)}`, ...c}))]}));
         setAiDesc("");
       }
-    } catch(e) { console.error(e); }
+    } catch(e) {}
     setAiLoading(false);
   };
 
@@ -5074,7 +5074,7 @@ function MonitorTab() {
         total_rows: data.total_rows,
       };
       setCsResults(p=>({...p,[scanId]:synth}));
-    } catch(e) { console.error(e); }
+    } catch(e) {}
     setScanning(p=>({...p,[key]:false}));
   };
 
@@ -5692,7 +5692,7 @@ function EvalsTab() {
       const data = await res.json();
       setActiveRun(data);
       setHistory(p=>[data,...p].slice(0,20));
-    } catch(e) { console.error(e); }
+    } catch(e) {}
     setRunning(false);
   };
 
@@ -7228,7 +7228,7 @@ Return ONLY valid Redshift SQL, no explanation, no markdown, no backticks.`,
         // Auto-validate the generated SQL against live schema
         await validateSql(generatedSql);
       }
-    } catch(e) { console.error(e); }
+    } catch(e) {}
     setAiLoading(false);
   };
 
@@ -7722,23 +7722,25 @@ Return ONLY valid Redshift SQL, no explanation, no markdown, no backticks.`,
 // ─── Workflows Tab ────────────────────────────────────────────────────────────
 // ─── Ads SOP Tab ──────────────────────────────────────────────────────────────
 // Runs the Daily Ads Data Availability Check as a multi-agent LangGraph workflow.
-// Timeline: Data expected 3:30 PM → Downstream 4:00 PM → Complete ~7:00 PM IST
+// Timeline: Ads data expected 3:30–3:45 PM IST → Downstream jobs start 4:00 PM IST
+// Action trigger: data not available by 4:00 PM → follow SOP below
+// Phases: Detection → Notify & Escalate → Pause Mage → Await Ads Team → Validate Redshift → Trigger Refreshes → Resume & Copy
 const SOP_PHASES = [
-  { id:"detection",    label:"Detection",      icon:"🔍", agents:["DataAvailabilityAgent"] },
-  { id:"pause",        label:"Pause Mage",     icon:"⏸",  agents:["Manual checklist"] },
-  { id:"confirm",      label:"Data Confirm",   icon:"✅",  agents:["AdsTeamConfirmation"] },
-  { id:"validation",   label:"Validation",     icon:"🔬", agents:["ValidationAgent"] },
-  { id:"refresh",      label:"Refresh",        icon:"🔄", agents:["Manual checklist"] },
-  { id:"resume_copy",  label:"Resume & Copy",  icon:"▶",  agents:["Manual checklist"] },
-  { id:"finalize",     label:"Finalize",       icon:"🎉", agents:["FinalizationAgent"] },
+  { id:"detection",    label:"Detection",           icon:"🔍", agents:["DataAvailabilityAgent"] },
+  { id:"notify",       label:"Notify & Escalate",   icon:"📣", agents:["Auto Slack + Manual escalation"] },
+  { id:"pause",        label:"Pause Mage Jobs",      icon:"⏸",  agents:["Guided checklist — one-click links"] },
+  { id:"confirm",      label:"Await Ads Team",       icon:"⏳", agents:["AdsTeamConfirmation — human gate"] },
+  { id:"validation",   label:"Validate Redshift",    icon:"🔬", agents:["ValidationAgent — 4 SQL checks"] },
+  { id:"refresh",      label:"Trigger Refreshes",    icon:"🔄", agents:["Guided checklist — step functions"] },
+  { id:"resume_copy",  label:"Resume & GDS Copies",  icon:"▶",  agents:["Guided checklist — Mage re-enable + GDS"] },
 ];
 
 const SOP_GATES = [
-  { num:1, label:"Pause Mage Jobs",           phase:"pause"       },
-  { num:2, label:"Data Available",            phase:"confirm"     },
-  { num:3, label:"Proceed with Refreshes",    phase:"refresh"     },
-  { num:4, label:"Run Product Summary",       phase:"resume_copy" },
-  { num:5, label:"Resume Mage & GDS Copies",  phase:"finalize"    },
+  { num:1, label:"Confirm issue & Slack sent",         phase:"notify"      },
+  { num:2, label:"Mage packages paused",               phase:"pause"       },
+  { num:3, label:"Ads team confirmed data in Redshift", phase:"confirm"     },
+  { num:4, label:"Redshift validation passed",          phase:"validation"  },
+  { num:5, label:"All refreshes complete",              phase:"refresh"     },
 ];
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -8577,7 +8579,8 @@ function SopConfigPanel({ config, setConfig, onSave, saving, msg, onClose, T }) 
 
   const SECTIONS = [
     {id:"detection", label:"🔍 Detection Checks"},
-    {id:"gate2",     label:"✅ Gate 2 Validation"},
+    {id:"notify",    label:"📣 Notify & Escalate"},
+    {id:"gate2",     label:"✅ Gate 4 Validation"},
     {id:"timing",    label:"⏱ Timing & Trigger"},
     {id:"alerts",    label:"🔔 Notifications"},
     {id:"mage",      label:"⏸ Mage Packages"},
@@ -8626,7 +8629,7 @@ function SopConfigPanel({ config, setConfig, onSave, saving, msg, onClose, T }) 
   // ── AWS refresh jobs ────────────────────────────────────────────────────────
   const addRefreshJob = () => setConfig(p=>({
     ...p, aws_refresh_jobs:[...(p.aws_refresh_jobs||[]),
-      {id:Date.now().toString(36), name:"", type:"scheduled_query", region:"us-east-1", url:""}]
+      {id:Date.now().toString(36), name:"", type:"step_function", region:"us-east-1", url:"", console_url:"", duration_hint:""}]
   }));
   const updateRefresh = (i, field, val) => setConfig(p=>({
     ...p, aws_refresh_jobs:(p.aws_refresh_jobs||[]).map((c,j)=>j===i?{...c,[field]:val}:c)
@@ -8750,11 +8753,57 @@ function SopConfigPanel({ config, setConfig, onSave, saving, msg, onClose, T }) 
             </div>
           )}
 
+          {/* ── NOTIFY & ESCALATE ───────────────────────────────────────── */}
+          {section==="notify" && (
+            <div>
+              <div style={{ fontSize:11, color:T.muted, marginBottom:12, lineHeight:1.6 }}>
+                Auto Slack notification is sent to the channel below when detection fails.
+                Configure the escalation contacts so the guided checklist shows who to tag.
+              </div>
+              <div style={{ display:"flex", flexDirection:"column", gap:12 }}>
+                <div>
+                  <label style={{ fontSize:10, fontWeight:600, color:T.muted, display:"block", marginBottom:2 }}>Slack Channel</label>
+                  <input value={config.notify_channel||""} onChange={e=>setConfig(p=>({...p,notify_channel:e.target.value}))}
+                    placeholder="#dev-python-support" style={inp}/>
+                </div>
+                <div>
+                  <label style={{ fontSize:10, fontWeight:600, color:T.muted, display:"block", marginBottom:2 }}>
+                    Primary contacts to tag <span style={{ color:T.dim, fontWeight:400 }}>(comma-separated Slack handles)</span>
+                  </label>
+                  <input value={config.notify_primary||""} onChange={e=>setConfig(p=>({...p,notify_primary:e.target.value}))}
+                    placeholder="@Abhiraj, @Abhishek Sindagi, @Sairam Ganna" style={inp}/>
+                </div>
+                <div>
+                  <label style={{ fontSize:10, fontWeight:600, color:T.muted, display:"block", marginBottom:2 }}>
+                    Escalation contacts <span style={{ color:T.dim, fontWeight:400 }}>(tag if no response within 30 min)</span>
+                  </label>
+                  <input value={config.notify_escalation||""} onChange={e=>setConfig(p=>({...p,notify_escalation:e.target.value}))}
+                    placeholder="@Zubair, @raghavendra" style={inp}/>
+                </div>
+                <div>
+                  <label style={{ fontSize:10, fontWeight:600, color:T.muted, display:"block", marginBottom:2 }}>
+                    Escalation wait (minutes) <span style={{ color:T.dim, fontWeight:400 }}>(default 30)</span>
+                  </label>
+                  <input type="number" value={config.notify_escalation_wait||30}
+                    onChange={e=>setConfig(p=>({...p,notify_escalation_wait:Number(e.target.value)}))}
+                    style={{...inp, width:100}}/>
+                </div>
+                <div style={{ padding:"10px 12px", borderRadius:8, background:`${T.accent}08`,
+                  border:`1px solid ${T.accent}20`, fontSize:11, color:T.text2, lineHeight:1.6 }}>
+                  <strong style={{ color:T.accent }}>Auto-notification message preview:</strong><br/>
+                  🚨 <em>Ads data not available by 4:00 PM IST. Initiating SOP. Tagging {config.notify_primary||"@Abhiraj, @Abhishek Sindagi, @Sairam Ganna"} — please fix ASAP.</em>
+                </div>
+              </div>
+            </div>
+          )}
+
           {/* ── MAGE PACKAGES ───────────────────────────────────────────── */}
           {section==="mage" && (
             <div>
-              <div style={{ fontSize:11, color:T.muted, marginBottom:12 }}>
-                Configure Mage pipeline packages to pause. Add the API pause URL for each package.
+              <div style={{ fontSize:11, color:T.muted, marginBottom:12, lineHeight:1.5 }}>
+                Configure Mage packages to pause. Add the trigger page URL so the operator can open it directly and disable the trigger in one click.
+                Packages are grouped by org and sorted by pause deadline.
+
               </div>
               <div style={{ display:"flex", flexDirection:"column", gap:10 }}>
                 {(config.mage_packages||[]).map((pkg,i)=>(
@@ -8781,14 +8830,22 @@ function SopConfigPanel({ config, setConfig, onSave, saving, msg, onClose, T }) 
                         <input value={pkg.pause_by} onChange={e=>updateMage(i,"pause_by",e.target.value)}
                           placeholder="4:20 PM" style={inp}/>
                       </div>
+                      <div style={{ gridColumn:"1 / -1" }}>
+                        <label style={{ fontSize:10, fontWeight:600, color:T.muted, display:"block", marginBottom:2 }}>
+                          Mage Trigger Page URL <span style={{ color:T.dim, fontWeight:400 }}>(one-click open → disable trigger toggle)</span>
+                        </label>
+                        <input value={pkg.open_url||""} onChange={e=>updateMage(i,"open_url",e.target.value)}
+                          placeholder="http://172.30.100.24:31479/pipelines/pipeline_name/triggers/12345"
+                          style={inp}/>
+                      </div>
                     </div>
                     <div style={{ display:"flex", gap:8, alignItems:"flex-end" }}>
                       <div style={{ flex:1 }}>
                         <label style={{ fontSize:10, fontWeight:600, color:T.muted, display:"block", marginBottom:2 }}>
-                          Mage Pause URL <span style={{ color:T.dim, fontWeight:400 }}>(optional — leave blank for manual checklist)</span>
+                          Mage API Pause URL <span style={{ color:T.dim, fontWeight:400 }}>(future automation — leave blank for now)</span>
                         </label>
                         <input value={pkg.pause_url||""} onChange={e=>updateMage(i,"pause_url",e.target.value)}
-                          placeholder="https://mage.example.com/api/pipelines/123/pause"
+                          placeholder="https://mage.example.com/api/pipeline_schedules/123"
                           style={inp}/>
                       </div>
                       <button onClick={()=>removeMage(i)}
@@ -8807,8 +8864,9 @@ function SopConfigPanel({ config, setConfig, onSave, saving, msg, onClose, T }) 
           {/* ── AWS REFRESH JOBS ────────────────────────────────────────── */}
           {section==="refresh" && (
             <div>
-              <div style={{ fontSize:11, color:T.muted, marginBottom:12 }}>
-                AWS refresh jobs to trigger. Add an API URL to trigger automatically, or leave blank for manual checklist.
+              <div style={{ fontSize:11, color:T.muted, marginBottom:12, lineHeight:1.5 }}>
+                AWS Step Function refresh jobs. Add the <strong>AWS Console URL</strong> so the operator can open it and click "New Execution" in one step.
+                Run sequentially — not simultaneously. Set duration hint so the operator knows when to proceed to the next job.
               </div>
               <div style={{ display:"flex", flexDirection:"column", gap:10 }}>
                 {(config.aws_refresh_jobs||[]).map((job,i)=>(
@@ -8818,22 +8876,37 @@ function SopConfigPanel({ config, setConfig, onSave, saving, msg, onClose, T }) 
                       <div>
                         <label style={{ fontSize:10, fontWeight:600, color:T.muted, display:"block", marginBottom:2 }}>Job Name</label>
                         <input value={job.name} onChange={e=>updateRefresh(i,"name",e.target.value)}
-                          placeholder="Campaign Report Refresh" style={inp}/>
+                          placeholder="Campaign, Targets & Label Summary Refresh" style={inp}/>
                       </div>
                       <div>
                         <label style={{ fontSize:10, fontWeight:600, color:T.muted, display:"block", marginBottom:2 }}>Type</label>
-                        <select value={job.type} onChange={e=>updateRefresh(i,"type",e.target.value)} style={inp}>
-                          <option value="scheduled_query">Scheduled Query</option>
-                          <option value="aws_job">AWS Job</option>
+                        <select value={job.type||"step_function"} onChange={e=>updateRefresh(i,"type",e.target.value)} style={inp}>
+                          <option value="step_function">AWS Step Function</option>
                           <option value="lambda">Lambda</option>
                           <option value="glue">Glue Job</option>
+                          <option value="redshift_query">Redshift Query</option>
+                          <option value="other">Other</option>
                         </select>
+                      </div>
+                      <div>
+                        <label style={{ fontSize:10, fontWeight:600, color:T.muted, display:"block", marginBottom:2 }}>
+                          AWS Console URL <span style={{ color:T.dim, fontWeight:400 }}>(one-click open → New Execution)</span>
+                        </label>
+                        <input value={job.console_url||""} onChange={e=>updateRefresh(i,"console_url",e.target.value)}
+                          placeholder="https://console.aws.amazon.com/states/home#/statemachines/view/..." style={inp}/>
+                      </div>
+                      <div>
+                        <label style={{ fontSize:10, fontWeight:600, color:T.muted, display:"block", marginBottom:2 }}>
+                          Est. Duration <span style={{ color:T.dim, fontWeight:400 }}>(shown to operator)</span>
+                        </label>
+                        <input value={job.duration_hint||""} onChange={e=>updateRefresh(i,"duration_hint",e.target.value)}
+                          placeholder="5–7 min" style={inp}/>
                       </div>
                     </div>
                     <div style={{ display:"flex", gap:8, alignItems:"flex-end" }}>
                       <div style={{ flex:1 }}>
                         <label style={{ fontSize:10, fontWeight:600, color:T.muted, display:"block", marginBottom:2 }}>
-                          Trigger URL <span style={{ color:T.dim, fontWeight:400 }}>(optional)</span>
+                          API Trigger URL <span style={{ color:T.dim, fontWeight:400 }}>(future automation — leave blank for now)</span>
                         </label>
                         <input value={job.url||""} onChange={e=>updateRefresh(i,"url",e.target.value)}
                           placeholder="https://..." style={inp}/>
@@ -9310,69 +9383,577 @@ function SopGatePanel({ gateNum, token, decision, label, checks = [], gateTimeou
   );
 }
 
-function SopChecklist({ title, items = [], icon, type, T }) {
-  const [checked, setChecked] = React.useState({});
-  if (!items?.length) return null;
-  // Auto-check items that were triggered by the backend
-  const autoChecked = items.filter(i=>i.paused||i.triggered).length;
-  const manualDone  = Object.values(checked).filter(Boolean).length;
-  const done        = Math.max(autoChecked, manualDone);
-
+// ── Gate 1: Notify panel ──────────────────────────────────────────────────────
+function SopNotifyPanel({ config, slackSent, T }) {
+  const channel  = config?.notify_channel  || "#dev-python-support";
+  const primary  = config?.notify_primary  || "@Abhiraj, @Abhishek Sindagi, @Sairam Ganna";
+  const [acked, setAcked] = React.useState(false);
   return (
     <Card style={{ padding:"14px 18px", marginBottom:10 }}>
       <div style={{ display:"flex", alignItems:"center", gap:8, marginBottom:10 }}>
-        <span style={{ fontSize:16 }}>{icon}</span>
-        <span style={{ fontSize:12, fontWeight:700, color:T.text }}>{title}</span>
-        {autoChecked > 0 && (
-          <Badge label="auto-triggered" color={T.purple}/>
-        )}
-        <span style={{ fontSize:11, color:T.muted, marginLeft:"auto" }}>
-          {done}/{items.length} done
-        </span>
+        <span style={{ fontSize:16 }}>📣</span>
+        <span style={{ fontSize:12, fontWeight:700, color:T.text }}>Notify Team</span>
+        {slackSent && <Badge label="Slack sent" color={T.green}/>}
+      </div>
+      <div style={{ display:"flex", flexDirection:"column", gap:6, fontSize:11 }}>
+        <div style={{ display:"flex", gap:8, alignItems:"center" }}>
+          <span style={{ color:T.muted, width:90, flexShrink:0 }}>Channel</span>
+          <span style={{ color:T.cyan, fontFamily:"monospace" }}>{channel}</span>
+        </div>
+        <div style={{ display:"flex", gap:8, alignItems:"flex-start" }}>
+          <span style={{ color:T.muted, width:90, flexShrink:0 }}>Tag</span>
+          <span style={{ color:T.text }}>{primary}</span>
+        </div>
+        <div style={{ marginTop:6, padding:"8px 10px", borderRadius:6,
+          background:`${T.accent}06`, border:`1px solid ${T.accent}20`,
+          fontSize:10, color:T.muted, fontStyle:"italic" }}>
+          🚨 Ads data not available by 4:00 PM IST. Initiating SOP. Tagging {primary} — please fix ASAP.
+        </div>
+        <div onClick={()=>setAcked(p=>!p)}
+          style={{ display:"flex", alignItems:"center", gap:8, marginTop:4,
+            cursor:"pointer", padding:"6px 8px", borderRadius:6,
+            background:acked?`${T.green}08`:"transparent" }}>
+          <div style={{ width:16, height:16, borderRadius:4, flexShrink:0,
+            border:`1.5px solid ${acked?T.green:T.border2}`,
+            background:acked?T.green:"transparent",
+            display:"flex", alignItems:"center", justifyContent:"center" }}>
+            {acked && <Check size={10} color="white" strokeWidth={3}/>}
+          </div>
+          <span style={{ fontSize:11, color:acked?T.muted:T.text,
+            textDecoration:acked?"line-through":"none" }}>
+            Confirmed Slack message sent to {channel}
+          </span>
+        </div>
+      </div>
+    </Card>
+  );
+}
+
+// ── Gate 2: Pause Mage panel ───────────────────────────────────────────────────
+function SopMagePausePanel({ config, mageChecklist, T }) {
+  const packages = config?.mage_packages || [];
+  const [checked, setChecked] = React.useState({});
+  const toggle = (id) => setChecked(p => ({...p, [id]: !p[id]}));
+  if (!packages.length) return null;
+  const done = packages.filter(pkg => {
+    const auto = (mageChecklist||[]).find(m=>m.name===pkg.name)?.paused;
+    return auto || checked[pkg.id];
+  }).length;
+  return (
+    <Card style={{ padding:"14px 18px", marginBottom:10 }}>
+      <div style={{ display:"flex", alignItems:"center", gap:8, marginBottom:10 }}>
+        <span style={{ fontSize:16 }}>⏸</span>
+        <span style={{ fontSize:12, fontWeight:700, color:T.text }}>Pause Mage Packages — Manual Action Required</span>
+        <span style={{ fontSize:11, color:T.muted, marginLeft:"auto" }}>{done}/{packages.length} done</span>
       </div>
       <div style={{ display:"flex", flexDirection:"column", gap:5 }}>
-        {items.map((item, i) => {
-          const isAutoTriggered = item.paused || item.triggered;
-          const isDone = isAutoTriggered || checked[i];
+        {packages.map(pkg => {
+          const autoItem = (mageChecklist||[]).find(m=>m.name===pkg.name);
+          const isAuto = !!autoItem?.paused;
+          const isDone = isAuto || !!checked[pkg.id];
           return (
-            <div key={i} onClick={()=>!isAutoTriggered&&setChecked(p=>({...p,[i]:!p[i]}))}
+            <div key={pkg.id}
+              onClick={()=>!isAuto && toggle(pkg.id)}
               style={{ display:"flex", alignItems:"flex-start", gap:10,
-                cursor:isAutoTriggered?"default":"pointer",
-                padding:"8px 10px", borderRadius:6, transition:"background 0.1s",
-                background:isDone?`${T.green}08`:"transparent" }}
-              onMouseEnter={e=>{ if(!isAutoTriggered) e.currentTarget.style.background=isDone?`${T.green}10`:`${T.accent}06`; }}
+                cursor:isAuto?"default":"pointer", padding:"8px 10px",
+                borderRadius:6, background:isDone?`${T.green}08`:"transparent",
+                border:`1px solid ${isDone?T.green+"20":"transparent"}`,
+                transition:"background 0.1s" }}
+              onMouseEnter={e=>{ if(!isAuto) e.currentTarget.style.background=isDone?`${T.green}10`:`${T.accent}06`; }}
               onMouseLeave={e=>e.currentTarget.style.background=isDone?`${T.green}08`:"transparent"}>
-              <div style={{ width:16, height:16, borderRadius:4, flexShrink:0, marginTop:1,
+              <div style={{ width:16, height:16, borderRadius:4, flexShrink:0, marginTop:2,
                 border:`1.5px solid ${isDone?T.green:T.border2}`,
                 background:isDone?T.green:"transparent",
-                display:"flex", alignItems:"center", justifyContent:"center",
-                transition:"all 0.15s" }}>
+                display:"flex", alignItems:"center", justifyContent:"center" }}>
                 {isDone && <Check size={10} color="white" strokeWidth={3}/>}
               </div>
-              <div style={{ flex:1 }}>
-                <div style={{ display:"flex", alignItems:"center", gap:8 }}>
+              <div style={{ flex:1, minWidth:0 }}>
+                <div style={{ display:"flex", alignItems:"center", gap:8, flexWrap:"wrap" }}>
                   <span style={{ fontSize:12, color:isDone?T.muted:T.text,
-                    textDecoration:isDone?"line-through":"none" }}>
-                    {item.name}
-                  </span>
-                  {item.org && <Badge label={item.org} color={item.org==="Bluewheel"?T.cyan:T.purple}/>}
-
+                    textDecoration:isDone?"line-through":"none" }}>{pkg.name}</span>
+                  {pkg.org && <Badge label={pkg.org} color={pkg.org==="Bluewheel"?T.cyan:T.purple}/>}
+                  {isAuto && <Badge label="auto-paused" color={T.green}/>}
                 </div>
-                <div style={{ fontSize:10, color:T.dim, marginTop:2, display:"flex", gap:12, flexWrap:"wrap" }}>
-                  {item.expected    && <span>Expected: {item.expected}</span>}
-                  {item.pause_by    && <span style={{color:T.orange}}>Pause by: {item.pause_by}</span>}
-                  {item.type        && <span>Type: {item.type}</span>}
-                  {item.region      && <span>Region: {item.region}</span>}
-                  {item.destination && <span>→ {item.destination}</span>}
-                  {item.paused_at   && <span style={{color:T.green}}>Paused at: {item.paused_at}</span>}
-                  {item.triggered_at&& <span style={{color:T.green}}>Triggered at: {item.triggered_at}</span>}
-                  {item.note        && <span style={{color:T.dim,fontStyle:"italic"}}>{item.note}</span>}
+                <div style={{ fontSize:10, color:T.dim, marginTop:3, display:"flex", gap:12, flexWrap:"wrap", alignItems:"center" }}>
+                  {pkg.pause_by && <span style={{ color:T.orange }}>⏱ Pause by: {pkg.pause_by}</span>}
+                  {pkg.expected && <span>Expected: {pkg.expected}</span>}
+                  {autoItem?.paused_at && <span style={{ color:T.green }}>Paused at: {autoItem.paused_at}</span>}
+                  {pkg.open_url && (
+                    <a href={pkg.open_url} target="_blank" rel="noreferrer"
+                      onClick={e=>e.stopPropagation()}
+                      style={{ color:T.accent, textDecoration:"none", display:"flex", alignItems:"center", gap:3,
+                        padding:"1px 7px", borderRadius:99, border:`1px solid ${T.accent}40`,
+                        background:`${T.accent}08` }}>
+                      Open in Mage →
+                    </a>
+                  )}
                 </div>
               </div>
             </div>
           );
         })}
       </div>
+    </Card>
+  );
+}
+
+// ── Gate 3: Escalation countdown timer panel ───────────────────────────────────
+function SopEscalationTimer({ config, gateToken, escalationWebhook, escalationMin: escalationMinProp, slackEscalationFired, onEscalationFire, T }) {
+  const waitMin  = escalationMinProp || config?.notify_escalation_wait || 30;
+  const contacts = config?.notify_escalation || "@Zubair, @raghavendra";
+  const channel  = config?.notify_channel || "#dev-python-support";
+  // Timer: count down from waitMin minutes since component mount (gate became visible)
+  const startRef = React.useRef(Date.now());
+  const [secsLeft, setSecsLeft] = React.useState(waitMin * 60);
+  const [fired, setFired] = React.useState(slackEscalationFired || false);
+  React.useEffect(() => {
+    const id = setInterval(() => {
+      const elapsed = Math.floor((Date.now() - startRef.current) / 1000);
+      const remaining = Math.max(0, waitMin * 60 - elapsed);
+      setSecsLeft(remaining);
+      if (remaining === 0 && !fired) {
+        setFired(true);
+        onEscalationFire && onEscalationFire();
+      }
+    }, 1000);
+    return () => clearInterval(id);
+  }, [waitMin, fired, onEscalationFire]);
+  const pct = Math.round((1 - secsLeft / (waitMin * 60)) * 100);
+  const mins = Math.floor(secsLeft / 60);
+  const secs = secsLeft % 60;
+  const urgent = secsLeft < 300; // <5 min
+  const color = fired ? T.red : urgent ? T.orange : T.accent;
+  return (
+    <Card style={{ padding:"14px 18px", marginBottom:10 }}>
+      <div style={{ display:"flex", alignItems:"center", gap:8, marginBottom:10 }}>
+        <span style={{ fontSize:16 }}>⏳</span>
+        <span style={{ fontSize:12, fontWeight:700, color:T.text }}>Await Ads Team — Escalation Timer</span>
+        {fired && <Badge label="escalated" color={T.red}/>}
+      </div>
+      {/* Progress bar */}
+      <div style={{ height:4, borderRadius:2, background:T.border, marginBottom:10, overflow:"hidden" }}>
+        <div style={{ height:"100%", width:`${pct}%`, background:color,
+          borderRadius:2, transition:"width 1s linear" }}/>
+      </div>
+      <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom:10 }}>
+        <span style={{ fontSize:11, color:T.muted }}>
+          {fired ? "Escalation window elapsed" : `Escalating in ${mins}m ${String(secs).padStart(2,"0")}s`}
+        </span>
+        <span style={{ fontSize:10, fontWeight:700, color:color }}>
+          {pct}% elapsed
+        </span>
+      </div>
+      <div style={{ display:"flex", flexDirection:"column", gap:5, fontSize:11 }}>
+        <div style={{ display:"flex", gap:8, alignItems:"flex-start" }}>
+          <span style={{ color:T.muted, width:90, flexShrink:0 }}>Escalate to</span>
+          <span style={{ color:T.text }}>{contacts}</span>
+        </div>
+        <div style={{ display:"flex", gap:8 }}>
+          <span style={{ color:T.muted, width:90, flexShrink:0 }}>Channel</span>
+          <span style={{ color:T.cyan, fontFamily:"monospace" }}>{channel}</span>
+        </div>
+        <div style={{ display:"flex", gap:8, alignItems:"center" }}>
+          <span style={{ color:T.muted, width:90, flexShrink:0 }}>Webhook</span>
+          {escalationWebhook
+            ? <Badge label="configured" color={T.green}/>
+            : <Badge label="not set — configure in settings" color={T.orange}/>}
+        </div>
+        {fired && (
+          <div style={{ marginTop:6, padding:"8px 10px", borderRadius:6,
+            background:`${T.red}08`, border:`1px solid ${T.red}30`,
+            fontSize:10, color:T.red, fontStyle:"italic" }}>
+            🚨 Escalation Slack sent to {contacts} — {waitMin} min window elapsed with no resolution.
+          </div>
+        )}
+      </div>
+    </Card>
+  );
+}
+
+// ── Gate 5: Refresh jobs panel ─────────────────────────────────────────────────
+function SopRefreshPanel({ config, refreshChecklist, T }) {
+  const jobs = config?.aws_refresh_jobs || [];
+  const [checked, setChecked] = React.useState({});
+  const toggle = (id) => setChecked(p => ({...p, [id]: !p[id]}));
+  if (!jobs.length) return null;
+
+  // IST time-based NA vs NON-NA detection (afternoon IST >= 12:00 = NA run)
+  const istHour = new Date().toLocaleString("en-US", { hour:"numeric", hour12:false, timeZone:"Asia/Kolkata" });
+  const isAfternoonIST = parseInt(istHour, 10) >= 12;
+
+  const done = jobs.filter(j => {
+    const auto = (refreshChecklist||[]).find(r=>r.name===j.name)?.triggered;
+    return auto || checked[j.id];
+  }).length;
+
+  return (
+    <Card style={{ padding:"14px 18px", marginBottom:10 }}>
+      <div style={{ display:"flex", alignItems:"center", gap:8, marginBottom:6 }}>
+        <span style={{ fontSize:16 }}>🔄</span>
+        <span style={{ fontSize:12, fontWeight:700, color:T.text }}>Trigger Refreshes — Manual Action Required</span>
+        <span style={{ fontSize:11, color:T.muted, marginLeft:"auto" }}>{done}/{jobs.length} done</span>
+      </div>
+      <div style={{ fontSize:10, color:T.muted, marginBottom:10, display:"flex", gap:6, alignItems:"center" }}>
+        <span>IST time detected:</span>
+        <Badge label={isAfternoonIST ? "Afternoon → NA run" : "Morning → NON-NA run"} color={isAfternoonIST?T.cyan:T.purple}/>
+        <span style={{ color:T.dim }}>Product Summary highlighted accordingly</span>
+      </div>
+      <div style={{ display:"flex", flexDirection:"column", gap:5 }}>
+        {jobs.map((job, idx) => {
+          const autoItem = (refreshChecklist||[]).find(r=>r.name===job.name);
+          const isAuto = !!autoItem?.triggered;
+          const isDone = isAuto || !!checked[job.id];
+
+          // Grey out the non-applicable Product Summary variant
+          const isNaJob  = job.name.includes("NA Refresh") && !job.name.includes("NON");
+          const isNonNaJob = job.name.includes("NON NA");
+          const isGreyed = (isNaJob && !isAfternoonIST) || (isNonNaJob && isAfternoonIST);
+
+          return (
+            <div key={job.id}
+              onClick={()=>{ if(!isAuto && !isGreyed) toggle(job.id); }}
+              style={{ display:"flex", alignItems:"flex-start", gap:10,
+                cursor:(isAuto||isGreyed)?"default":"pointer", padding:"8px 10px",
+                borderRadius:6, opacity:isGreyed?0.35:1,
+                background:isDone?`${T.green}08`:"transparent",
+                border:`1px solid ${isDone?T.green+"20":"transparent"}`,
+                transition:"background 0.1s" }}
+              onMouseEnter={e=>{ if(!isAuto&&!isGreyed) e.currentTarget.style.background=isDone?`${T.green}10`:`${T.accent}06`; }}
+              onMouseLeave={e=>e.currentTarget.style.background=isDone?`${T.green}08`:"transparent"}>
+              <div style={{ width:16, height:16, borderRadius:4, flexShrink:0, marginTop:2,
+                border:`1.5px solid ${isDone?T.green:isGreyed?T.border:T.border2}`,
+                background:isDone?T.green:"transparent",
+                display:"flex", alignItems:"center", justifyContent:"center" }}>
+                {isDone && <Check size={10} color="white" strokeWidth={3}/>}
+              </div>
+              <div style={{ flex:1, minWidth:0 }}>
+                <div style={{ display:"flex", alignItems:"center", gap:8, flexWrap:"wrap" }}>
+                  <span style={{ fontSize:11, fontWeight:600, color:T.muted,
+                    marginRight:-4, minWidth:18 }}>{idx+1}.</span>
+                  <span style={{ fontSize:12, color:isDone?T.muted:T.text,
+                    textDecoration:isDone?"line-through":"none" }}>{job.name}</span>
+                  {isGreyed && <Badge label="skip" color={T.dim}/>}
+                  {isAuto && <Badge label="auto-triggered" color={T.green}/>}
+                </div>
+                <div style={{ fontSize:10, color:T.dim, marginTop:3, display:"flex", gap:12, flexWrap:"wrap", alignItems:"center" }}>
+                  {job.duration_hint && <span>⏱ {job.duration_hint}</span>}
+                  {job.type && <span style={{ textTransform:"uppercase", letterSpacing:".03em" }}>{job.type}</span>}
+                  {autoItem?.triggered_at && <span style={{ color:T.green }}>Triggered at: {autoItem.triggered_at}</span>}
+                  {job.console_url && (
+                    <a href={job.console_url} target="_blank" rel="noreferrer"
+                      onClick={e=>e.stopPropagation()}
+                      style={{ color:T.accent, textDecoration:"none", display:"flex", alignItems:"center", gap:3,
+                        padding:"1px 7px", borderRadius:99, border:`1px solid ${T.accent}40`,
+                        background:`${T.accent}08` }}>
+                      Open in AWS →
+                    </a>
+                  )}
+                </div>
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    </Card>
+  );
+}
+
+// ── Post Gate 5: Resume & GDS Copy panel ───────────────────────────────────────
+function SopCopyPanel({ config, copyChecklist, T }) {
+  const jobs = config?.gds_copy_jobs || [];
+  const [checked, setChecked] = React.useState({});
+  const toggle = (id) => setChecked(p => ({...p, [id]: !p[id]}));
+  if (!jobs.length) return null;
+
+  const istHour = parseInt(new Date().toLocaleString("en-US", { hour:"numeric", hour12:false, timeZone:"Asia/Kolkata" }), 10);
+  const isLateEvening = istHour >= 19;
+
+  const done = jobs.filter(j => {
+    const auto = (copyChecklist||[]).find(c=>c.name===j.name)?.triggered;
+    return auto || checked[j.id];
+  }).length;
+
+  return (
+    <Card style={{ padding:"14px 18px", marginBottom:10 }}>
+      <div style={{ display:"flex", alignItems:"center", gap:8, marginBottom:10 }}>
+        <span style={{ fontSize:16 }}>▶</span>
+        <span style={{ fontSize:12, fontWeight:700, color:T.text }}>Resume Mage &amp; GDS BigQuery Copies</span>
+        <span style={{ fontSize:11, color:T.muted, marginLeft:"auto" }}>{done}/{jobs.length} done</span>
+      </div>
+      {isLateEvening && (
+        <div style={{ marginBottom:10, padding:"8px 10px", borderRadius:6,
+          background:`${T.orange}08`, border:`1px solid ${T.orange}30`,
+          fontSize:10, color:T.orange, display:"flex", gap:6, alignItems:"center" }}>
+          🌙 <strong>Post-7 PM IST:</strong>&nbsp;Run the re-run path — trigger each GDS copy job fresh to catch late data.
+        </div>
+      )}
+      <div style={{ display:"flex", flexDirection:"column", gap:5 }}>
+        {jobs.map((job, idx) => {
+          const autoItem = (copyChecklist||[]).find(c=>c.name===job.name);
+          const isAuto = !!autoItem?.triggered;
+          const isDone = isAuto || !!checked[job.id];
+          return (
+            <div key={job.id}
+              onClick={()=>!isAuto && toggle(job.id)}
+              style={{ display:"flex", alignItems:"flex-start", gap:10,
+                cursor:isAuto?"default":"pointer", padding:"8px 10px",
+                borderRadius:6, background:isDone?`${T.green}08`:"transparent",
+                border:`1px solid ${isDone?T.green+"20":"transparent"}`,
+                transition:"background 0.1s" }}
+              onMouseEnter={e=>{ if(!isAuto) e.currentTarget.style.background=isDone?`${T.green}10`:`${T.accent}06`; }}
+              onMouseLeave={e=>e.currentTarget.style.background=isDone?`${T.green}08`:"transparent"}>
+              <div style={{ width:16, height:16, borderRadius:4, flexShrink:0, marginTop:2,
+                border:`1.5px solid ${isDone?T.green:T.border2}`,
+                background:isDone?T.green:"transparent",
+                display:"flex", alignItems:"center", justifyContent:"center" }}>
+                {isDone && <Check size={10} color="white" strokeWidth={3}/>}
+              </div>
+              <div style={{ flex:1, minWidth:0 }}>
+                <div style={{ display:"flex", alignItems:"center", gap:8, flexWrap:"wrap" }}>
+                  <span style={{ fontSize:11, fontWeight:600, color:T.muted,
+                    marginRight:-4, minWidth:18 }}>{idx+1}.</span>
+                  <span style={{ fontSize:12, color:isDone?T.muted:T.text,
+                    textDecoration:isDone?"line-through":"none" }}>{job.name}</span>
+                  {job.destination && <Badge label={job.destination} color={T.cyan}/>}
+                  {isAuto && <Badge label="auto-triggered" color={T.green}/>}
+                </div>
+                <div style={{ fontSize:10, color:T.dim, marginTop:3, display:"flex", gap:12, flexWrap:"wrap", alignItems:"center" }}>
+                  {autoItem?.triggered_at && <span style={{ color:T.green }}>Triggered at: {autoItem.triggered_at}</span>}
+                  {job.pipeline_url && (
+                    <a href={job.pipeline_url} target="_blank" rel="noreferrer"
+                      onClick={e=>e.stopPropagation()}
+                      style={{ color:T.accent, textDecoration:"none", display:"flex", alignItems:"center", gap:3,
+                        padding:"1px 7px", borderRadius:99, border:`1px solid ${T.accent}40`,
+                        background:`${T.accent}08` }}>
+                      Open Pipeline →
+                    </a>
+                  )}
+                </div>
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    </Card>
+  );
+}
+
+// ── AI: Run Diagnosis panel ────────────────────────────────────────────────────
+function SopAiDiagnosis({ detectionResult, history, T }) {
+  const [diagnosis, setDiagnosis] = React.useState(null);
+  const [loading,   setLoading]   = React.useState(false);
+  const [open,      setOpen]      = React.useState(false);
+  const hasRun = React.useRef(false);
+
+  const failedChecks = (detectionResult?.details || []).filter(d => d.status !== "PASS");
+
+  // Build 10-day pattern string for each failed check
+  const buildPattern = () => {
+    const lines = failedChecks.map(d => {
+      const hist = (history||[]).slice(0,10).map(run => {
+        const entry = (run.detection_details||[]).find(x=>x.check===d.check);
+        return entry ? (entry.status==="PASS"?"✅":"❌") : "—";
+      }).join(" ");
+      return `- ${d.check} [${d.severity||"medium"}]: today=${d.status}, detail="${d.detail||""}", last 10 runs: ${hist}`;
+    }).join("\n");
+    return lines;
+  };
+
+  const runDiagnosis = async () => {
+    if (loading) return;
+    setLoading(true); setOpen(true); hasRun.current = true;
+    const pattern = buildPattern();
+    const prompt = `You are an expert data engineer diagnosing a daily ads data pipeline failure.
+
+Failed checks today:
+${pattern}
+
+Based on the check names, failure details, and historical pass/fail pattern above:
+1. Give a 1-sentence root cause hypothesis (be specific — mention the table, pipeline, or system likely at fault).
+2. Classify the failure: transient (likely self-resolves in <30min) OR persistent (requires manual action).
+3. Give one concrete next step for the on-call engineer.
+
+Reply in this exact JSON format (no markdown, no preamble):
+{"hypothesis":"...","type":"transient|persistent","next_step":"...","confidence":"high|medium|low"}`;
+
+    try {
+      const res = await fetch("https://api.anthropic.com/v1/messages", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          model: "claude-sonnet-4-20250514",
+          max_tokens: 1000,
+          messages: [{ role: "user", content: prompt }]
+        })
+      });
+      const data = await res.json();
+      const text = (data.content||[]).map(c=>c.text||"").join("").trim();
+      const clean = text.replace(/```json|```/g,"").trim();
+      const parsed = JSON.parse(clean);
+      setDiagnosis(parsed);
+    } catch(e) {
+      setDiagnosis({ hypothesis: "Unable to generate diagnosis — check API key or network.", type: "unknown", next_step: "Review failed checks manually.", confidence: "low" });
+    }
+    setLoading(false);
+  };
+
+  if (!failedChecks.length) return null;
+
+  const typeColor = diagnosis?.type === "transient" ? T.yellow : diagnosis?.type === "persistent" ? T.red : T.muted;
+  const confColor = diagnosis?.confidence === "high" ? T.green : diagnosis?.confidence === "medium" ? T.yellow : T.muted;
+
+  return (
+    <Card style={{ padding:"14px 18px", marginBottom:10,
+      borderColor:`${T.purple}30`, background:`${T.purple}05` }}>
+      <div style={{ display:"flex", alignItems:"center", gap:8 }}>
+        <span style={{ fontSize:15 }}>🤖</span>
+        <span style={{ fontSize:12, fontWeight:700, color:T.text }}>AI Diagnosis</span>
+        {diagnosis && (
+          <>
+            <Badge label={diagnosis.type} color={typeColor}/>
+            <Badge label={`${diagnosis.confidence} confidence`} color={confColor}/>
+          </>
+        )}
+        <div style={{ marginLeft:"auto", display:"flex", gap:6 }}>
+          {diagnosis && (
+            <Btn size="sm" variant="ghost" style={{ fontSize:10, color:T.muted }}
+              onClick={()=>setOpen(p=>!p)}>
+              {open ? "▲ Hide" : "▼ Show"}
+            </Btn>
+          )}
+          <Btn size="sm" variant="ghost"
+            style={{ fontSize:10, color:T.purple, borderColor:`${T.purple}40`,
+              background:`${T.purple}08` }}
+            onClick={runDiagnosis} disabled={loading}>
+            {loading ? <><Spinner size={9}/> Analyzing…</> : diagnosis ? "↺ Re-run" : "✦ Diagnose"}
+          </Btn>
+        </div>
+      </div>
+      {open && diagnosis && (
+        <div style={{ marginTop:12, display:"flex", flexDirection:"column", gap:8 }}>
+          <div style={{ padding:"10px 12px", borderRadius:7,
+            background:`${T.surface}`, border:`1px solid ${T.border}` }}>
+            <div style={{ fontSize:10, color:T.muted, textTransform:"uppercase",
+              letterSpacing:".05em", marginBottom:4 }}>Root Cause Hypothesis</div>
+            <div style={{ fontSize:12, color:T.text, lineHeight:1.5 }}>{diagnosis.hypothesis}</div>
+          </div>
+          <div style={{ padding:"10px 12px", borderRadius:7,
+            background:`${T.surface}`, border:`1px solid ${T.border}` }}>
+            <div style={{ fontSize:10, color:T.muted, textTransform:"uppercase",
+              letterSpacing:".05em", marginBottom:4 }}>Recommended Next Step</div>
+            <div style={{ fontSize:12, color:T.text, lineHeight:1.5 }}>{diagnosis.next_step}</div>
+          </div>
+          {diagnosis.type === "transient" && (
+            <div style={{ fontSize:10, color:T.yellow, padding:"6px 10px", borderRadius:6,
+              background:`${T.yellow}08`, border:`1px solid ${T.yellow}25` }}>
+              ⏱ Transient failure detected — consider waiting 15–30 min and retrying checks before proceeding with full SOP.
+            </div>
+          )}
+        </div>
+      )}
+    </Card>
+  );
+}
+
+// ── AI: Gate Decision Assist ───────────────────────────────────────────────────
+function SopAiGateAssist({ gateNum, validationResults, historyData, T }) {
+  const [assist,  setAssist]  = React.useState(null);
+  const [loading, setLoading] = React.useState(false);
+  const [open,    setOpen]    = React.useState(false);
+
+  const hasResults = (validationResults||[]).length > 0;
+
+  const buildContext = () => {
+    const rows = (validationResults||[]).map(r => {
+      const trend = (historyData||[]).slice(0,10).map(run => {
+        const entry = (run.validation_results||[]).find(x=>(x.short||x.name)===(r.short||r.name));
+        return entry ? `${entry.coverage_pct??"-"}%` : "—";
+      }).join(", ");
+      return `- ${r.short||r.name}: status=${r.status}, today_count=${r.today_count??"-"}, baseline_avg=${r.baseline_avg??"-"}, coverage=${r.coverage_pct??"-"}%, last 10: [${trend}]`;
+    }).join("\n");
+    return rows;
+  };
+
+  const runAssist = async () => {
+    if (loading || !hasResults) return;
+    setLoading(true); setOpen(true);
+    const context = buildContext();
+    const prompt = `You are reviewing Gate ${gateNum} of a daily ads data pipeline SOP.
+
+Validation results:
+${context}
+
+Based on row counts vs baselines and historical coverage patterns:
+1. Give a recommendation: APPROVE or REJECT this gate.
+2. Give a confidence level: high / medium / low.
+3. Give a 1-sentence reason.
+4. Flag any specific table that looks concerning (or say "none").
+
+Reply in this exact JSON format only (no markdown):
+{"recommendation":"APPROVE|REJECT","confidence":"high|medium|low","reason":"...","concern":"..."}`;
+
+    try {
+      const res = await fetch("https://api.anthropic.com/v1/messages", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          model: "claude-sonnet-4-20250514",
+          max_tokens: 1000,
+          messages: [{ role: "user", content: prompt }]
+        })
+      });
+      const data = await res.json();
+      const text = (data.content||[]).map(c=>c.text||"").join("").trim();
+      const parsed = JSON.parse(text.replace(/```json|```/g,"").trim());
+      setAssist(parsed);
+    } catch(e) {
+      setAssist({ recommendation:"UNKNOWN", confidence:"low", reason:"Could not generate assist — check API.", concern:"none" });
+    }
+    setLoading(false);
+  };
+
+  if (!hasResults) return null;
+
+  const recColor = assist?.recommendation === "APPROVE" ? T.green : assist?.recommendation === "REJECT" ? T.red : T.muted;
+
+  return (
+    <Card style={{ padding:"12px 16px", marginBottom:8,
+      borderColor:`${T.purple}25`, background:`${T.purple}04` }}>
+      <div style={{ display:"flex", alignItems:"center", gap:8 }}>
+        <span style={{ fontSize:13 }}>🤖</span>
+        <span style={{ fontSize:11, fontWeight:700, color:T.text }}>AI Gate Assist</span>
+        {assist && (
+          <>
+            <Badge label={assist.recommendation} color={recColor}/>
+            <Badge label={`${assist.confidence} confidence`}
+              color={assist.confidence==="high"?T.green:assist.confidence==="medium"?T.yellow:T.muted}/>
+          </>
+        )}
+        <div style={{ marginLeft:"auto", display:"flex", gap:6 }}>
+          {assist && (
+            <Btn size="sm" variant="ghost" style={{ fontSize:10, color:T.muted }}
+              onClick={()=>setOpen(p=>!p)}>
+              {open ? "▲ Hide" : "▼ Show"}
+            </Btn>
+          )}
+          <Btn size="sm" variant="ghost"
+            style={{ fontSize:10, color:T.purple, borderColor:`${T.purple}40`, background:`${T.purple}08` }}
+            onClick={runAssist} disabled={loading}>
+            {loading ? <><Spinner size={9}/> Analyzing…</> : assist ? "↺ Re-run" : "✦ Assist"}
+          </Btn>
+        </div>
+      </div>
+      {open && assist && (
+        <div style={{ marginTop:10, display:"flex", flexDirection:"column", gap:6, fontSize:11 }}>
+          <div style={{ color:T.text, lineHeight:1.5 }}>{assist.reason}</div>
+          {assist.concern && assist.concern !== "none" && (
+            <div style={{ color:T.orange, fontSize:10 }}>⚠ Concern: {assist.concern}</div>
+          )}
+          <div style={{ fontSize:10, color:T.dim, fontStyle:"italic" }}>
+            AI recommendation only — final decision is yours.
+          </div>
+        </div>
+      )}
     </Card>
   );
 }
@@ -9487,12 +10068,78 @@ function AdsSopTab() {
   const [elapsedMin, setElapsedMin] = React.useState(0);
 
   const [result,     setResult]    = useSession("wz_sopResult", null);
+  const slackNotifiedRef = React.useRef(false); // prevent duplicate Slack fires per run
+
+  const sendSlackNotify = React.useCallback((cfg) => {
+    const slackUrl = localStorage.getItem("wz_slack") || "";
+    if (!slackUrl || slackNotifiedRef.current) return;
+    slackNotifiedRef.current = true;
+    const channel  = cfg?.notify_channel  || "#dev-python-support";
+    const primary  = cfg?.notify_primary  || "@Abhiraj, @Abhishek Sindagi, @Sairam Ganna";
+    const now = new Date().toLocaleTimeString("en-IN", {hour:"2-digit",minute:"2-digit",timeZone:"Asia/Kolkata"});
+    fetch(slackUrl, {
+      method:"POST", headers:{"Content-Type":"application/json"},
+      body: JSON.stringify({
+        text: `🚨 *Ads Data Availability Issue Detected* — ${now} IST\nData not available as expected. Initiating SOP runbook.\n${primary} — please investigate and fix ASAP.\nChannel: ${channel}`
+      })
+    }).catch(()=>{});
+  }, []);
+
+  // AI-generated Slack summary on run completion
+  const sendAiSlackSummary = React.useCallback(async (runResult, cfg) => {
+    const slackUrl = localStorage.getItem("wz_slack") || "";
+    if (!slackUrl || !runResult) return;
+    const sd = runResult.summary_data || {};
+    const failedChecks = (runResult.detection_result?.details||[])
+      .filter(d=>d.status!=="PASS")
+      .map(d=>`${d.check} (${d.severity||"medium"}): ${d.detail||""}`)
+      .join("; ") || "none";
+    const valResults = (runResult.validation_results||[])
+      .map(r=>`${r.short||r.name}: ${r.status}, coverage=${r.coverage_pct??"-"}%`)
+      .join("; ") || "none";
+    const prompt = `Write a concise Slack message summarising a completed daily ads data availability SOP run.
+
+Run details:
+- Status: ${runResult.status}
+- Duration: ${sd.duration||"unknown"}
+- Gates approved: ${sd.gates_approved??"-"}/${sd.gates_total??5}
+- Detection failures: ${failedChecks}
+- Validation: ${valResults}
+- Mage jobs paused: ${sd.mage_count??"-"}
+- Refreshes triggered: ${sd.refresh_count??"-"}
+- GDS copies: ${sd.gds_count??"-"}
+
+Write 3–5 lines max. Use plain text with minimal emoji. Start with a status emoji (✅ if complete, ⚠ if stopped/error). Include what failed, what was done, and duration. No headers. No bullet points.`;
+
+    try {
+      const res = await fetch("https://api.anthropic.com/v1/messages", {
+        method:"POST", headers:{"Content-Type":"application/json"},
+        body: JSON.stringify({
+          model: "claude-sonnet-4-20250514",
+          max_tokens: 1000,
+          messages: [{ role:"user", content: prompt }]
+        })
+      });
+      const data = await res.json();
+      const summary = (data.content||[]).map(c=>c.text||"").join("").trim();
+      if (!summary) return;
+      await fetch(slackUrl, {
+        method:"POST", headers:{"Content-Type":"application/json"},
+        body: JSON.stringify({ text: `*Daily Ads Check — Run Complete*\n${summary}` })
+      });
+    } catch(e) {}
+  }, []);
 
   const pollState = React.useCallback(async (rid) => {
     try {
       const res  = await fetch(`${API}/api/workflow/ads-sop/${rid}`);
       const data = await res.json();
       if (data.error) return;
+      // Auto-notify Slack on first detection failure
+      if (data.detection_result?.missing && !slackNotifiedRef.current) {
+        const cfg = (() => { try { return JSON.parse(localStorage.getItem("wz_sop_config")||"{}"); } catch { return {}; } })();
+        sendSlackNotify(cfg);
+      }
       // Merge: preserve any optimistic gate decisions already set locally
       // (backend may lag behind optimistic UI update)
       setResult(prev => {
@@ -9512,9 +10159,14 @@ function AdsSopTab() {
       if (terminal.includes(data.status)) {
         setRunning(false);
         if (pollRef.current) { clearTimeout(pollRef.current); clearInterval(pollRef.current); pollRef.current = null; }
+        // Send AI-generated Slack summary on completion
+        if (data.status === "complete" || data.status === "complete_no_issues") {
+          const cfg = (() => { try { return JSON.parse(localStorage.getItem("wz_sop_config")||"{}"); } catch { return {}; } })();
+          sendAiSlackSummary(data, cfg);
+        }
       }
     } catch(e) {}
-  }, []);
+  }, [sendAiSlackSummary]);
 
   // Adaptive poll interval: 8s for first 5min, 20s up to 20min, 45s after
   const getAdaptiveInterval = React.useCallback(() => {
@@ -9569,23 +10221,23 @@ function AdsSopTab() {
   const currentPhase = React.useMemo(() => {
     if (!result) return null;
     const g = result;
-    if (g.gate5_decision === "approved")  return "finalize";
-    if (g.gate5_decision === "pending")   return "finalize";
-    if (g.gate4_decision === "approved")  return "resume_copy";
-    if (g.gate4_decision === "pending")   return "resume_copy";
-    if (g.gate3_decision === "approved")  return "refresh";
-    if (g.gate3_decision === "pending")   return "refresh";
-    if (g.gate2_decision === "approved")  return "validation";
-    if (g.gate2_decision === "pending")   return "confirm";
+    if (g.gate5_decision === "approved")  return "resume_copy";
+    if (g.gate5_decision === "pending")   return "refresh";
+    if (g.gate4_decision === "approved")  return "refresh";
+    if (g.gate4_decision === "pending")   return "validation";
+    if (g.gate3_decision === "approved")  return "validation";
+    if (g.gate3_decision === "pending")   return "confirm";
+    if (g.gate2_decision === "approved")  return "confirm";
+    if (g.gate2_decision === "pending")   return "pause";
     if (g.gate1_decision === "approved")  return "pause";
-    if (g.gate1_decision === "pending")   return "pause";
+    if (g.gate1_decision === "pending")   return "notify";
     if (result.detection_result)          return "detection";
     return null;
   }, [result]);
 
   const phaseStatus = (phaseId) => {
     if (!result) return "idle";
-    const order = ["detection","pause","confirm","validation","refresh","resume_copy","finalize"];
+    const order = ["detection","notify","pause","confirm","validation","refresh","resume_copy"];
     const ci = order.indexOf(currentPhase);
     const pi = order.indexOf(phaseId);
     if (pi < ci)  return "done";
@@ -9705,6 +10357,7 @@ function AdsSopTab() {
   const runSop = async () => {
     setRunning(true); setResult(null); setRunId(null);
     runStartRef.current = Date.now();
+    slackNotifiedRef.current = false; // reset per run
     setElapsedMin(0);
     if (pollRef.current) { clearTimeout(pollRef.current); clearInterval(pollRef.current); pollRef.current = null; }
     try {
@@ -10230,8 +10883,8 @@ function AdsSopTab() {
               const statusLabel = run.status==="complete"?"✓ Complete":run.status==="complete_no_issues"?"✓ No issues":run.status==="stopped"?"⛔ Stopped":run.status==="error"?"✗ Error":run.status?.replace(/_/g," ");
               // Per-phase timings if available
               const phaseTimings = run.phase_timings || null; // {detection:2, pause:5, validation:8, ...}
-              const phaseOrder = ["detection","pause","confirm","validation","refresh","resume_copy","finalize"];
-              const phaseIcons = {detection:"🔍",pause:"⏸",confirm:"✅",validation:"🔬",refresh:"🔄",resume_copy:"▶",finalize:"🎉"};
+              const phaseOrder = ["detection","notify","pause","confirm","validation","refresh","resume_copy"];
+              const phaseIcons = {detection:"🔍",notify:"📣",pause:"⏸",confirm:"⏳",validation:"🔬",refresh:"🔄",resume_copy:"▶"};
               return (
                 <div key={run.run_id||i} style={{ padding:"9px 12px", borderRadius:8,
                   border:`1px solid ${statusColor}25`, background:`${statusColor}05` }}>
@@ -10330,14 +10983,17 @@ function AdsSopTab() {
 
       {/* Running state banner */}
       {running && result && (() => {
-        const PHASE_ORDER = ["detection","pause","confirm","validation","refresh","resume_copy","finalize"];
+        const PHASE_ORDER = ["detection","notify","pause","confirm","validation","refresh","resume_copy"];
         const phaseIdx = PHASE_ORDER.indexOf(currentPhase);
         const phasePct = phaseIdx >= 0 ? Math.round(((phaseIdx) / (PHASE_ORDER.length - 1)) * 100) : 0;
         const PHASE_LABELS = {
-          detection:"🔍 Detecting issues", pause:"⏸ Pausing Mage jobs",
-          confirm:"✅ Awaiting Gate 2", validation:"🔬 Validating tables",
-          refresh:"🔄 Triggering refreshes", resume_copy:"▶ Resuming & copying",
-          finalize:"🎉 Finalising"
+          detection:   "🔍 Detecting issues",
+          notify:      "📣 Notifying team & escalating",
+          pause:       "⏸ Pausing Mage jobs",
+          confirm:     "⏳ Awaiting ads team confirmation",
+          validation:  "🔬 Validating data in Redshift",
+          refresh:     "🔄 Triggering sequential refreshes",
+          resume_copy: "▶ Resuming Mage & running GDS copies",
         };
         return (
           <Card style={{ padding:"12px 18px", marginBottom:14,
@@ -10430,23 +11086,13 @@ function AdsSopTab() {
                         {sevLabel}
                       </span>
                     )}
-                    {!result.detection_result.missing && result.status==="complete_no_issues" && (
-                      <Btn size="sm" variant="ghost"
-                        onClick={async ()=>{
-                          setRunning(true); setResult(null); setRunId(null);
-                          if (pollRef.current){ clearInterval(pollRef.current); pollRef.current=null; }
-                          try {
-                            const res = await fetch(`${API}/api/workflow/ads-sop`,{
-                              method:"POST", headers:{"Content-Type":"application/json"},
-                              body:JSON.stringify({gate_timeout_min:Number(gateTimeout), force_full:true})
-                            });
-                            const data = await res.json();
-                            if (!data.error){ setRunId(data.run_id); runStartRef.current=Date.now(); startAdaptivePoll(data.run_id); }
-                          } catch(e){ setRunning(false); }
-                        }}
-                        style={{ marginLeft:"auto", fontSize:10, color:T.accent }}>
-                        ▶ Run Full Check Anyway
-                      </Btn>
+                    {/* Slack auto-notify confirmation */}
+                    {result.detection_result.missing && slackNotifiedRef.current && (
+                      <span style={{ fontSize:10, fontWeight:600, color:T.green,
+                        background:`${T.green}12`, padding:"2px 8px", borderRadius:99,
+                        border:`1px solid ${T.green}30`, marginLeft:"auto" }}>
+                        📣 Slack notified
+                      </span>
                     )}
                   </div>
                   <div style={{ display:"flex", flexDirection:"column", gap:6 }}>
@@ -10523,6 +11169,12 @@ function AdsSopTab() {
               );
             })()}
 
+            {/* AI Diagnosis — shown when detection finds issues */}
+            {result.detection_result?.missing && (
+              <SopAiDiagnosis detectionResult={result.detection_result}
+                history={enrichedHistory} T={T}/>
+            )}
+
             {/* Gates and checklists — shown in real time */}
             {running && (
               <div style={{ padding:"8px 14px", borderRadius:8, marginBottom:8,
@@ -10532,39 +11184,55 @@ function AdsSopTab() {
                 Check is running — gates will appear as each step completes. Approve or reject inline below.
               </div>
             )}
+            {/* Gate 1 — Notify */}
+            <SopNotifyPanel config={config} slackSent={slackNotifiedRef.current} T={T}/>
             <SopGatePanel gateNum={1} token={result.gate1_token}
-              decision={result.gate1_decision} label="Pause Mage Jobs"
+              decision={result.gate1_decision} label="Confirm issue & Slack sent"
               checks={result.gate1_checks||[]} gateTimeout={gateTimeout} perGateTimeouts={perGateTimeouts}
               submitGate={submitGate} submitting={submitting} running={running} T={T}/>
 
-            <SopChecklist title="Pause Mage Packages — Manual Action Required"
-              icon="⏸" items={result.mage_checklist} T={T}/>
-
+            {/* Gate 2 — Pause Mage */}
+            <SopMagePausePanel config={config} mageChecklist={result.mage_checklist} T={T}/>
             <SopGatePanel gateNum={2} token={result.gate2_token}
-              decision={result.gate2_decision} label="Data Available"
+              decision={result.gate2_decision} label="Mage packages paused"
               checks={result.gate2_checks||[]} gateTimeout={gateTimeout} perGateTimeouts={perGateTimeouts}
               submitGate={submitGate} submitting={submitting} running={running} T={T}/>
 
+            {/* Gate 3 — Await Ads Team (escalation timer) */}
+            <SopEscalationTimer config={config} gateToken={result.gate2_token}
+              escalationWebhook={escalationCh} escalationMin={escalationMin}
+              slackEscalationFired={false}
+              onEscalationFire={()=>{
+                if (!escalationCh) return;
+                const contacts = config?.notify_escalation || "@Zubair, @raghavendra";
+                const channel  = config?.notify_channel || "#dev-python-support";
+                fetch(escalationCh, { method:"POST", headers:{"Content-Type":"application/json"},
+                  body: JSON.stringify({ text:`🚨 *Escalation: Ads Data SOP* — ${escalationMin}m elapsed with no resolution.\nEscalating to ${contacts}.\nChannel: ${channel}` })
+                }).catch(()=>{});
+              }} T={T}/>
             <SopValidationTable results={result.validation_results} T={T} historyData={enrichedHistory}/>
-
+            {/* AI Gate Assist — validation confidence before Gate 3 */}
+            {result.validation_results?.length > 0 && (
+              <SopAiGateAssist gateNum={3}
+                validationResults={result.validation_results}
+                historyData={enrichedHistory} T={T}/>
+            )}
             <SopGatePanel gateNum={3} token={result.gate3_token}
-              decision={result.gate3_decision} label="Proceed with Refreshes"
+              decision={result.gate3_decision} label="Ads team confirmed data in Redshift"
               checks={result.gate3_checks||[]} gateTimeout={gateTimeout} perGateTimeouts={perGateTimeouts}
               submitGate={submitGate} submitting={submitting} running={running} T={T}/>
 
-            <SopChecklist title="Trigger Refreshes — Manual Action Required"
-              icon="🔄" items={result.refresh_checklist} T={T}/>
-
+            {/* Gate 4 — Refresh jobs */}
+            <SopRefreshPanel config={config} refreshChecklist={result.refresh_checklist} T={T}/>
             <SopGatePanel gateNum={4} token={result.gate4_token}
-              decision={result.gate4_decision} label="Run Product Summary"
+              decision={result.gate4_decision} label="Redshift validation passed"
               checks={result.gate4_checks||[]} gateTimeout={gateTimeout} perGateTimeouts={perGateTimeouts}
               submitGate={submitGate} submitting={submitting} running={running} T={T}/>
 
-            <SopChecklist title="Resume Mage & GDS BigQuery Copies"
-              icon="▶" items={result.copy_checklist} T={T}/>
-
+            {/* Post Gate 5 — Resume & GDS Copies */}
+            <SopCopyPanel config={config} copyChecklist={result.copy_checklist} T={T}/>
             <SopGatePanel gateNum={5} token={result.gate5_token}
-              decision={result.gate5_decision} label="Resume Mage & GDS Copies"
+              decision={result.gate5_decision} label="All refreshes complete"
               checks={result.gate5_checks||[]} gateTimeout={gateTimeout} perGateTimeouts={perGateTimeouts}
               submitGate={submitGate} submitting={submitting} running={running} T={T}/>
 
@@ -10782,6 +11450,52 @@ const BUILTIN_WFS = [
 
 // ── Built-in Workflow Template Library ────────────────────────────────────────
 const BUILTIN_TEMPLATES = [
+  {
+    id:"tpl-ads-data-availability",
+    name:"Multi-Gate SOP Runbook",
+    icon:"🚨",
+    color:"#f97316",
+    desc:"Reusable runbook template for any data availability incident — detection, team notification, upstream job pause, data validation, sequential refreshes, and copy jobs. Pre-filled with an ads data example; customize contacts, URLs, and jobs for your use case.",
+    tags:["sop","runbook","availability","multi-gate","template"],
+    sop_type:"ads_availability",
+    phases:["Detection","Notify & Escalate","Pause Mage Jobs","Await Ads Team","Validate Redshift","Trigger Refreshes","Resume & GDS Copies"],
+    gates:["Confirm issue & Slack sent","Mage packages paused","Ads team confirmed data in Redshift","Redshift validation passed","All refreshes complete"],
+    detection_checks:[
+      {name:"Campaign Report — yesterday's data present",   sql:"SELECT report_date, COUNT(DISTINCT profile_id) AS profiles FROM public.tbl_amzn_campaign_report WHERE report_date = CURRENT_DATE - 1 GROUP BY 1",   pass_condition:"rows > 0", severity:"critical"},
+      {name:"Product Ad Report — yesterday's data present", sql:"SELECT report_date, COUNT(DISTINCT profile_id) AS profiles FROM public.tbl_amzn_product_ad_report WHERE report_date = CURRENT_DATE - 1 GROUP BY 1",  pass_condition:"rows > 0", severity:"critical"},
+      {name:"Keyword Report — yesterday's data present",    sql:"SELECT report_date, COUNT(DISTINCT profile_id) AS profiles FROM public.tbl_amzn_keyword_report WHERE report_date = CURRENT_DATE - 1 GROUP BY 1",    pass_condition:"rows > 0", severity:"critical"},
+      {name:"Targets Report — yesterday's data present",    sql:"SELECT report_date, COUNT(DISTINCT profile_id) AS profiles FROM public.tbl_amzn_targets_report WHERE report_date = CURRENT_DATE - 1 GROUP BY 1",    pass_condition:"rows > 0", severity:"high"},
+    ],
+    sop_config:{
+      notify_channel:"#dev-python-support",
+      notify_primary:"@Abhiraj, @Abhishek Sindagi, @Sairam Ganna",
+      notify_escalation:"@Zubair, @raghavendra",
+      notify_escalation_wait:30,
+      mage_packages:[
+        {id:"mp1", org:"Bluewheel", name:"Campaign Summary",           expected:"4:35 PM", pause_by:"4:20 PM", open_url:"", pause_url:""},
+        {id:"mp2", org:"Bluewheel", name:"Advertised Product Summary", expected:"4:50 PM", pause_by:"4:20 PM", open_url:"", pause_url:""},
+        {id:"mp3", org:"Bluewheel", name:"Product Summary",            expected:"6:30 PM", pause_by:"4:45 PM", open_url:"", pause_url:""},
+        {id:"mp4", org:"Maryruth",  name:"Advertised Product Summary", expected:"—",       pause_by:"4:30 PM", open_url:"http://172.30.100.24:31479/pipelines/maryruth_custom_incremental_load_pipeline/triggers/16934", pause_url:""},
+        {id:"mp5", org:"Maryruth",  name:"Campaign Summary",           expected:"—",       pause_by:"4:30 PM", open_url:"http://172.30.100.24:31479/pipelines/maryruth_custom_incremental_load_pipeline/triggers/16933", pause_url:""},
+      ],
+      aws_refresh_jobs:[
+        {id:"rf1", name:"Campaign, Targets & Label Summary Refresh", type:"step_function", region:"us-east-1", console_url:"", url:"", duration_hint:"5–7 min"},
+        {id:"rf2", name:"Keyword & Searchterm Summary Refresh",      type:"step_function", region:"us-east-1", console_url:"", url:"", duration_hint:"8–10 min"},
+        {id:"rf3", name:"Account Summary Refresh",                   type:"step_function", region:"us-east-1", console_url:"", url:"", duration_hint:"10–15 min"},
+        {id:"rf4", name:"Advertised Product Summary Refresh",        type:"redshift_query", region:"us-east-1", console_url:"", url:"", duration_hint:"5–10 min"},
+        {id:"rf5", name:"Product Summary — NA Refresh",              type:"step_function", region:"us-east-1", console_url:"", url:"", duration_hint:"45–50 min"},
+        {id:"rf6", name:"Product Summary — NON NA Refresh",          type:"step_function", region:"us-east-1", console_url:"", url:"", duration_hint:"60–75 min"},
+      ],
+      gds_copy_jobs:[
+        {id:"gds1", name:"Advertised Product Summary", destination:"BigQuery", pipeline_url:""},
+        {id:"gds2", name:"Product Target Summary",     destination:"BigQuery", pipeline_url:""},
+        {id:"gds3", name:"Product Summary",            destination:"BigQuery", pipeline_url:""},
+        {id:"gds4", name:"Account Summary",            destination:"BigQuery", pipeline_url:""},
+        {id:"gds5", name:"Campaign Summary",           destination:"BigQuery", pipeline_url:""},
+        {id:"gds6", name:"Keyword Summary",            destination:"BigQuery", pipeline_url:""},
+      ],
+    },
+  },
   {
     id:"tpl-orders-inventory",
     name:"Orders & Inventory Health",
@@ -13201,10 +13915,39 @@ Rules: 3-5 checks, use ONLY real columns from the schema above, pass_condition m
       desc:"Full download failure runbook — detection through validation, refresh, and GDS copy jobs. Uses approval gates.",
       schedule:"manual",
       checks:[
-        {name:"Amazon Ads Data Available", sql:"SELECT COUNT(*) FROM mws.report WHERE download_date=CURRENT_DATE AND status='processed'", pass_condition:"rows > 0", severity:"critical"},
-        {name:"Stuck Copies", sql:"SELECT COUNT(*) FROM mws.report WHERE status='processed' AND copy_status!='REPLICATED' AND download_date>=CURRENT_DATE-1", pass_condition:"rows = 0", severity:"high"},
+        {name:"Campaign Report — yesterday's data present",    sql:"SELECT report_date, COUNT(DISTINCT profile_id) AS profiles FROM public.tbl_amzn_campaign_report WHERE report_date = CURRENT_DATE - 1 GROUP BY 1", pass_condition:"rows > 0", severity:"critical"},
+        {name:"Product Ad Report — yesterday's data present",  sql:"SELECT report_date, COUNT(DISTINCT profile_id) AS profiles FROM public.tbl_amzn_product_ad_report WHERE report_date = CURRENT_DATE - 1 GROUP BY 1", pass_condition:"rows > 0", severity:"critical"},
+        {name:"Keyword Report — yesterday's data present",     sql:"SELECT report_date, COUNT(DISTINCT profile_id) AS profiles FROM public.tbl_amzn_keyword_report WHERE report_date = CURRENT_DATE - 1 GROUP BY 1", pass_condition:"rows > 0", severity:"critical"},
+        {name:"Targets Report — yesterday's data present",     sql:"SELECT report_date, COUNT(DISTINCT profile_id) AS profiles FROM public.tbl_amzn_targets_report WHERE report_date = CURRENT_DATE - 1 GROUP BY 1", pass_condition:"rows > 0", severity:"high"},
       ],
-      tables:["mws.report"], agents:[], db_key:"default",
+      tables:["public.tbl_amzn_campaign_report","public.tbl_amzn_product_ad_report","public.tbl_amzn_keyword_report","public.tbl_amzn_targets_report"], agents:[], db_key:"default",
+      notify_channel:"#dev-python-support",
+      notify_primary:"@Abhiraj, @Abhishek Sindagi, @Sairam Ganna",
+      notify_escalation:"@Zubair, @raghavendra",
+      notify_escalation_wait:30,
+      mage_packages:[
+        {id:"mp1", org:"Bluewheel", name:"Campaign Summary",            expected:"4:35 PM", pause_by:"4:20 PM", open_url:"", pause_url:""},
+        {id:"mp2", org:"Bluewheel", name:"Advertised Product Summary",  expected:"4:50 PM", pause_by:"4:20 PM", open_url:"", pause_url:""},
+        {id:"mp3", org:"Bluewheel", name:"Product Summary",             expected:"6:30 PM", pause_by:"4:45 PM", open_url:"", pause_url:""},
+        {id:"mp4", org:"Maryruth",  name:"Advertised Product Summary",  expected:"—",       pause_by:"4:30 PM", open_url:"http://172.30.100.24:31479/pipelines/maryruth_custom_incremental_load_pipeline/triggers/16934", pause_url:""},
+        {id:"mp5", org:"Maryruth",  name:"Campaign Summary",            expected:"—",       pause_by:"4:30 PM", open_url:"http://172.30.100.24:31479/pipelines/maryruth_custom_incremental_load_pipeline/triggers/16933", pause_url:""},
+      ],
+      aws_refresh_jobs:[
+        {id:"rf1", name:"Campaign, Targets & Label Summary Refresh",  type:"step_function", region:"us-east-1", console_url:"", url:"", duration_hint:"5–7 min"},
+        {id:"rf2", name:"Keyword & Searchterm Summary Refresh",       type:"step_function", region:"us-east-1", console_url:"", url:"", duration_hint:"8–10 min"},
+        {id:"rf3", name:"Account Summary Refresh",                    type:"step_function", region:"us-east-1", console_url:"", url:"", duration_hint:"10–15 min"},
+        {id:"rf4", name:"Advertised Product Summary Refresh",         type:"redshift_query", region:"us-east-1", console_url:"", url:"", duration_hint:"5–10 min"},
+        {id:"rf5", name:"Product Summary — NA Refresh",               type:"step_function", region:"us-east-1", console_url:"", url:"", duration_hint:"45–50 min"},
+        {id:"rf6", name:"Product Summary — NON NA Refresh",           type:"step_function", region:"us-east-1", console_url:"", url:"", duration_hint:"60–75 min"},
+      ],
+      gds_copy_jobs:[
+        {id:"gds1", name:"Advertised Product Summary", destination:"BigQuery", pipeline_url:""},
+        {id:"gds2", name:"Product Target Summary",     destination:"BigQuery", pipeline_url:""},
+        {id:"gds3", name:"Product Summary",            destination:"BigQuery", pipeline_url:""},
+        {id:"gds4", name:"Account Summary",            destination:"BigQuery", pipeline_url:""},
+        {id:"gds5", name:"Campaign Summary",           destination:"BigQuery", pipeline_url:""},
+        {id:"gds6", name:"Keyword Summary",            destination:"BigQuery", pipeline_url:""},
+      ],
     },
   ];
 
@@ -13732,6 +14475,10 @@ Respond with ONLY this JSON array (no other text, no backticks):
                         </div>
                         <div style={{ fontSize:9, color:T.dim, marginBottom:10 }}>
                           {tpl.phases.length} phases · {tpl.gates.length} approval gates · {tpl.detection_checks.length} checks
+                          {tpl.sop_config && <span style={{ marginLeft:6, padding:"1px 6px", borderRadius:99,
+                            background:`${tpl.color}15`, color:tpl.color, fontWeight:700, fontSize:9 }}>
+                            ⚙ Full SOP config
+                          </span>}
                         </div>
                         {isActive
                           ? <Badge label="Active" color={tpl.color}/>
@@ -13882,12 +14629,14 @@ Respond with ONLY this JSON array (no other text, no backticks):
                           Open Check
                         </Btn>
                       )}
-                      <Btn onClick={()=>{
-                          const backendWf = workflows.find(w=>w.id===wf.id);
-                          setEditing(backendWf ? {...wf,...backendWf} : wf);
-                          setView("builder");
-                        }}
-                        size="sm" variant="ghost">✏ Edit</Btn>
+                      {wf.id!=="ads-sop" && (
+                        <Btn onClick={()=>{
+                            const backendWf = workflows.find(w=>w.id===wf.id);
+                            setEditing(backendWf ? {...wf,...backendWf} : wf);
+                            setView("builder");
+                          }}
+                          size="sm" variant="ghost">✏ Edit</Btn>
+                      )}
                       <Btn onClick={()=>{ setDetail(wf); setLiveRun(null); setView("detail"); }}
                         size="sm" variant="ghost"><Eye size={10}/> History</Btn>
                       {/* Enable/disable toggle */}
@@ -14471,6 +15220,16 @@ Create a remediation runbook.`}],
                     slack_channel: setupCfg.slack_channel||"",
                     builtin_type:"template", template_id:tpl.id, color:tpl.color,
                     linked_runbook_id: linkedRunbookId,
+                    ...(tpl.sop_config ? {
+                      sop_type: tpl.sop_type||"ads_availability",
+                      notify_channel:    tpl.sop_config.notify_channel||"",
+                      notify_primary:    tpl.sop_config.notify_primary||"",
+                      notify_escalation: tpl.sop_config.notify_escalation||"",
+                      notify_escalation_wait: tpl.sop_config.notify_escalation_wait||30,
+                      mage_packages:   (tpl.sop_config.mage_packages||[]).map(p=>({...p, id:p.id+"-"+Date.now()})),
+                      aws_refresh_jobs:(tpl.sop_config.aws_refresh_jobs||[]).map(j=>({...j, id:j.id+"-"+Date.now()})),
+                      gds_copy_jobs:   (tpl.sop_config.gds_copy_jobs||[]).map(j=>({...j, id:j.id+"-"+Date.now()})),
+                    } : {}),
                   };
                   await fetch(`${API}/api/custom-workflows/save/v2`,{
                     method:"POST", headers:{"Content-Type":"application/json"},
@@ -14534,6 +15293,11 @@ Create a remediation runbook.`}],
                   { label:"Phases",        value:previewTpl.phases.length,            icon:"📋" },
                   { label:"Approval Gates",value:previewTpl.gates.length,             icon:"🔒" },
                   { label:"SQL Checks",    value:previewTpl.detection_checks.length,  icon:"🔍" },
+                  ...(previewTpl.sop_config ? [
+                    { label:"Mage Packages",  value:previewTpl.sop_config.mage_packages?.length||0,    icon:"⏸" },
+                    { label:"Refresh Jobs",   value:previewTpl.sop_config.aws_refresh_jobs?.length||0,  icon:"🔄" },
+                    { label:"GDS Copy Jobs",  value:previewTpl.sop_config.gds_copy_jobs?.length||0,     icon:"▶" },
+                  ] : []),
                 ].map(s=>(
                   <div key={s.label} style={{ padding:"12px 14px", borderRadius:10,
                     background:T.surface, border:`1px solid ${T.border}`,

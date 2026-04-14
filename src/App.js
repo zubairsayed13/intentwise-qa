@@ -55,6 +55,7 @@ class ErrorBoundary extends React.Component {
 
 
 const API = "https://intentwise-backend-production.up.railway.app";
+window.__API = API;
 
 // ─── AI fetch interceptor — auto-tracks all /api/ai/chat calls ───────────────
 (function() {
@@ -9739,60 +9740,113 @@ function SopCopyPanel({ config, copyChecklist, T }) {
 }
 
 // ── AI: Run Diagnosis panel ────────────────────────────────────────────────────
+const SOP_PATTERNS_KEY = "wz_sop_patterns_v1";
+
+function sopPatternsLoad() {
+  try { return JSON.parse(localStorage.getItem(SOP_PATTERNS_KEY) || "{}"); } catch { return {}; }
+}
+function sopPatternsSave(patterns) {
+  try { localStorage.setItem(SOP_PATTERNS_KEY, JSON.stringify(patterns)); } catch {}
+}
+
+// Called on every completed run — updates learned patterns per check
+function sopPatternsLearn(runResult) {
+  if (!runResult?.detection_result?.details) return;
+  const patterns = sopPatternsLoad();
+  const now = new Date().toISOString();
+  (runResult.detection_result.details || []).forEach(d => {
+    const key = d.check;
+    if (!patterns[key]) patterns[key] = { pass: 0, fail: 0, lastFail: null, lastPass: null, failReasons: [], diagnoses: [] };
+    if (d.status === "PASS") {
+      patterns[key].pass++;
+      patterns[key].lastPass = now;
+    } else {
+      patterns[key].fail++;
+      patterns[key].lastFail = now;
+      if (d.detail && !patterns[key].failReasons.includes(d.detail)) {
+        patterns[key].failReasons = [...patterns[key].failReasons, d.detail].slice(-10);
+      }
+    }
+  });
+  sopPatternsSave(patterns);
+}
+
+// Called after AI diagnosis — store the hypothesis for future context
+function sopPatternsStoreDiagnosis(checkName, diagnosis) {
+  const patterns = sopPatternsLoad();
+  if (!patterns[checkName]) patterns[checkName] = { pass:0, fail:0, lastFail:null, lastPass:null, failReasons:[], diagnoses:[] };
+  patterns[checkName].diagnoses = [
+    { ts: new Date().toISOString(), type: diagnosis.type, hypothesis: diagnosis.hypothesis },
+    ...(patterns[checkName].diagnoses || [])
+  ].slice(0, 5);
+  sopPatternsSave(patterns);
+}
+
 function SopAiDiagnosis({ detectionResult, history, T }) {
   const [diagnosis, setDiagnosis] = React.useState(null);
   const [loading,   setLoading]   = React.useState(false);
   const [open,      setOpen]      = React.useState(false);
-  const hasRun = React.useRef(false);
 
   const failedChecks = (detectionResult?.details || []).filter(d => d.status !== "PASS");
 
-  // Build 10-day pattern string for each failed check
   const buildPattern = () => {
-    const lines = failedChecks.map(d => {
+    const patterns = sopPatternsLoad();
+    return failedChecks.map(d => {
       const hist = (history||[]).slice(0,10).map(run => {
         const entry = (run.detection_details||[]).find(x=>x.check===d.check);
-        return entry ? (entry.status==="PASS"?"✅":"❌") : "—";
+        return entry ? (entry.status==="PASS" ? "✅" : "❌") : "—";
       }).join(" ");
-      return `- ${d.check} [${d.severity||"medium"}]: today=${d.status}, detail="${d.detail||""}", last 10 runs: ${hist}`;
+      const p = patterns[d.check] || {};
+      const totalRuns = (p.pass||0) + (p.fail||0);
+      const failRate  = totalRuns > 0 ? Math.round((p.fail||0)/totalRuns*100) : null;
+      const prevDiag  = (p.diagnoses||[])[0]?.hypothesis || null;
+      const prevReasons = (p.failReasons||[]).slice(-3).join("; ");
+      return [
+        `- ${d.check} [${d.severity||"medium"}]: today=${d.status}, detail="${d.detail||""}"`,
+        `  last 10 runs: ${hist}`,
+        failRate !== null ? `  historical fail rate: ${failRate}% (${p.fail||0}/${totalRuns} runs)` : "",
+        prevReasons ? `  past fail reasons: ${prevReasons}` : "",
+        prevDiag    ? `  last AI hypothesis: ${prevDiag}` : "",
+      ].filter(Boolean).join("\n");
     }).join("\n");
-    return lines;
   };
 
   const runDiagnosis = async () => {
     if (loading) return;
-    setLoading(true); setOpen(true); hasRun.current = true;
+    setLoading(true); setOpen(true);
     const pattern = buildPattern();
-    const prompt = `You are an expert data engineer diagnosing a daily ads data pipeline failure.
+    const prompt = `You are an expert data engineer diagnosing a daily ads data pipeline failure. You have access to historical failure patterns learned from previous runs.
 
 Failed checks today:
 ${pattern}
 
-Based on the check names, failure details, and historical pass/fail pattern above:
+Based on check names, failure details, historical pass/fail rates, past fail reasons, and any prior AI hypotheses:
 1. Give a 1-sentence root cause hypothesis (be specific — mention the table, pipeline, or system likely at fault).
-2. Classify the failure: transient (likely self-resolves in <30min) OR persistent (requires manual action).
-3. Give one concrete next step for the on-call engineer.
+2. Classify: transient (self-resolves <30min) OR persistent (requires manual action).
+3. Give one concrete next step.
+4. Note if this matches a known recurring pattern (or say "new pattern").
 
-Reply in this exact JSON format (no markdown, no preamble):
-{"hypothesis":"...","type":"transient|persistent","next_step":"...","confidence":"high|medium|low"}`;
+Reply in this exact JSON only (no markdown):
+{"hypothesis":"...","type":"transient|persistent","next_step":"...","confidence":"high|medium|low","pattern":"recurring|new pattern"}`;
 
     try {
-      const res = await fetch("https://api.anthropic.com/v1/messages", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
+      const res = await fetch(`${API}/api/ai/chat`, {
+        method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          model: "claude-sonnet-4-20250514",
+          system: "You are a data pipeline operations expert. Return only valid JSON, no markdown.",
+          messages: [{ role: "user", content: prompt }],
           max_tokens: 1000,
-          messages: [{ role: "user", content: prompt }]
+          temperature: 0.2
         })
       });
       const data = await res.json();
       const text = (data.content||[]).map(c=>c.text||"").join("").trim();
-      const clean = text.replace(/```json|```/g,"").trim();
-      const parsed = JSON.parse(clean);
+      const parsed = JSON.parse(text.replace(/```json|```/g,"").trim());
       setDiagnosis(parsed);
+      // Learn: store this diagnosis against all failed checks
+      failedChecks.forEach(d => sopPatternsStoreDiagnosis(d.check, parsed));
     } catch(e) {
-      setDiagnosis({ hypothesis: "Unable to generate diagnosis — check API key or network.", type: "unknown", next_step: "Review failed checks manually.", confidence: "low" });
+      setDiagnosis({ hypothesis: "Unable to generate diagnosis — check backend AI config.", type: "unknown", next_step: "Review failed checks manually.", confidence: "low", pattern: "unknown" });
     }
     setLoading(false);
   };
@@ -9801,6 +9855,17 @@ Reply in this exact JSON format (no markdown, no preamble):
 
   const typeColor = diagnosis?.type === "transient" ? T.yellow : diagnosis?.type === "persistent" ? T.red : T.muted;
   const confColor = diagnosis?.confidence === "high" ? T.green : diagnosis?.confidence === "medium" ? T.yellow : T.muted;
+
+  // Show learned pattern hint even before diagnosis is run
+  const patterns = sopPatternsLoad();
+  const patternHints = failedChecks.map(d => {
+    const p = patterns[d.check];
+    if (!p) return null;
+    const total = (p.pass||0) + (p.fail||0);
+    if (total < 3) return null;
+    const failRate = Math.round((p.fail||0)/total*100);
+    return failRate >= 50 ? `${d.check}: fails ${failRate}% of the time` : null;
+  }).filter(Boolean);
 
   return (
     <Card style={{ padding:"14px 18px", marginBottom:10,
@@ -9812,6 +9877,7 @@ Reply in this exact JSON format (no markdown, no preamble):
           <>
             <Badge label={diagnosis.type} color={typeColor}/>
             <Badge label={`${diagnosis.confidence} confidence`} color={confColor}/>
+            {diagnosis.pattern === "recurring" && <Badge label="recurring pattern" color={T.orange}/>}
           </>
         )}
         <div style={{ marginLeft:"auto", display:"flex", gap:6 }}>
@@ -9822,31 +9888,31 @@ Reply in this exact JSON format (no markdown, no preamble):
             </Btn>
           )}
           <Btn size="sm" variant="ghost"
-            style={{ fontSize:10, color:T.purple, borderColor:`${T.purple}40`,
-              background:`${T.purple}08` }}
+            style={{ fontSize:10, color:T.purple, borderColor:`${T.purple}40`, background:`${T.purple}08` }}
             onClick={runDiagnosis} disabled={loading}>
             {loading ? <><Spinner size={9}/> Analyzing…</> : diagnosis ? "↺ Re-run" : "✦ Diagnose"}
           </Btn>
         </div>
       </div>
+      {/* Learned pattern hints — shown before diagnosis runs */}
+      {!diagnosis && patternHints.length > 0 && (
+        <div style={{ marginTop:8, fontSize:10, color:T.orange, display:"flex", flexDirection:"column", gap:2 }}>
+          {patternHints.map((h,i) => <span key={i}>⚠ Learned: {h}</span>)}
+        </div>
+      )}
       {open && diagnosis && (
         <div style={{ marginTop:12, display:"flex", flexDirection:"column", gap:8 }}>
-          <div style={{ padding:"10px 12px", borderRadius:7,
-            background:`${T.surface}`, border:`1px solid ${T.border}` }}>
-            <div style={{ fontSize:10, color:T.muted, textTransform:"uppercase",
-              letterSpacing:".05em", marginBottom:4 }}>Root Cause Hypothesis</div>
+          <div style={{ padding:"10px 12px", borderRadius:7, background:T.surface, border:`1px solid ${T.border}` }}>
+            <div style={{ fontSize:10, color:T.muted, textTransform:"uppercase", letterSpacing:".05em", marginBottom:4 }}>Root Cause Hypothesis</div>
             <div style={{ fontSize:12, color:T.text, lineHeight:1.5 }}>{diagnosis.hypothesis}</div>
           </div>
-          <div style={{ padding:"10px 12px", borderRadius:7,
-            background:`${T.surface}`, border:`1px solid ${T.border}` }}>
-            <div style={{ fontSize:10, color:T.muted, textTransform:"uppercase",
-              letterSpacing:".05em", marginBottom:4 }}>Recommended Next Step</div>
+          <div style={{ padding:"10px 12px", borderRadius:7, background:T.surface, border:`1px solid ${T.border}` }}>
+            <div style={{ fontSize:10, color:T.muted, textTransform:"uppercase", letterSpacing:".05em", marginBottom:4 }}>Recommended Next Step</div>
             <div style={{ fontSize:12, color:T.text, lineHeight:1.5 }}>{diagnosis.next_step}</div>
           </div>
           {diagnosis.type === "transient" && (
-            <div style={{ fontSize:10, color:T.yellow, padding:"6px 10px", borderRadius:6,
-              background:`${T.yellow}08`, border:`1px solid ${T.yellow}25` }}>
-              ⏱ Transient failure detected — consider waiting 15–30 min and retrying checks before proceeding with full SOP.
+            <div style={{ fontSize:10, color:T.yellow, padding:"6px 10px", borderRadius:6, background:`${T.yellow}08`, border:`1px solid ${T.yellow}25` }}>
+              ⏱ Transient — consider waiting 15–30 min and retrying before full SOP.
             </div>
           )}
         </div>
@@ -9893,13 +9959,13 @@ Reply in this exact JSON format only (no markdown):
 {"recommendation":"APPROVE|REJECT","confidence":"high|medium|low","reason":"...","concern":"..."}`;
 
     try {
-      const res = await fetch("https://api.anthropic.com/v1/messages", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
+      const res = await fetch(`${API}/api/ai/chat`, {
+        method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          model: "claude-sonnet-4-20250514",
+          system: "You are a data pipeline operations expert reviewing validation results. Return only valid JSON, no markdown.",
+          messages: [{ role: "user", content: prompt }],
           max_tokens: 1000,
-          messages: [{ role: "user", content: prompt }]
+          temperature: 0.2
         })
       });
       const data = await res.json();
@@ -9907,7 +9973,7 @@ Reply in this exact JSON format only (no markdown):
       const parsed = JSON.parse(text.replace(/```json|```/g,"").trim());
       setAssist(parsed);
     } catch(e) {
-      setAssist({ recommendation:"UNKNOWN", confidence:"low", reason:"Could not generate assist — check API.", concern:"none" });
+      setAssist({ recommendation:"UNKNOWN", confidence:"low", reason:"Could not generate assist — check backend AI config.", concern:"none" });
     }
     setLoading(false);
   };
@@ -9955,6 +10021,166 @@ Reply in this exact JSON format only (no markdown):
         </div>
       )}
     </Card>
+  );
+}
+
+// ── Incident memory store ─────────────────────────────────────────────────────
+const SOP_INCIDENTS_KEY = "wz_sop_incidents_v1";
+function sopIncidentsLoad() {
+  try { return JSON.parse(localStorage.getItem(SOP_INCIDENTS_KEY) || "[]"); } catch { return []; }
+}
+async function sopIncidentWrite(runResult) {
+  if (!runResult?.detection_result?.details) return;
+  const existing = sopIncidentsLoad();
+  if (existing.some(i => i.run_id === runResult.run_id)) return;
+  // Build incident summary via AI
+  const failedChecks = (runResult.detection_result.details||[])
+    .filter(d=>d.status!=="PASS")
+    .map(d=>`${d.check} (${d.severity||"medium"}): ${d.detail||""}`)
+    .join("; ");
+  const sd = runResult.summary_data || {};
+  const prompt = `Summarise this data pipeline incident in 2 sentences for future reference. Be specific about what failed and how it was resolved.
+
+Failed checks: ${failedChecks||"none"}
+Status: ${runResult.status}
+Duration: ${sd.duration||"unknown"}
+Gates approved: ${sd.gates_approved??"-"}/${sd.gates_total??5}
+
+Reply with only a JSON object: {"summary":"...","root_cause":"...","resolution":"..."}`;
+  let note = { summary: `${failedChecks||"No failures"} — ${runResult.status}`, root_cause: "unknown", resolution: runResult.status };
+  try {
+    const res = await fetch(`${window.__API||"https://intentwise-backend-production.up.railway.app"}/api/ai/chat`, {
+      method:"POST", headers:{"Content-Type":"application/json"},
+      body: JSON.stringify({ system:"Return only valid JSON, no markdown.", messages:[{role:"user",content:prompt}], max_tokens:300, temperature:0.2 })
+    });
+    const data = await res.json();
+    const text = (data.content||[]).map(c=>c.text||"").join("").trim();
+    note = JSON.parse(text.replace(/```json|```/g,"").trim());
+  } catch(e) {}
+  const incident = {
+    run_id: runResult.run_id,
+    ts: new Date().toISOString(),
+    status: runResult.status,
+    failed_checks: (runResult.detection_result.details||[]).filter(d=>d.status!=="PASS").map(d=>d.check),
+    duration_min: sd.duration ? parseInt(sd.duration) : null,
+    ...note
+  };
+  try { localStorage.setItem(SOP_INCIDENTS_KEY, JSON.stringify([incident, ...existing].slice(0, 50))); } catch {}
+}
+
+// ── Pre-run risk banner ────────────────────────────────────────────────────────
+function SopPreRunRisk({ T }) {
+  const [risk, setRisk] = React.useState(null);
+  React.useEffect(() => {
+    const patterns = sopPatternsLoad();
+    const incidents = sopIncidentsLoad();
+    const keys = Object.keys(patterns);
+    if (!keys.length) return;
+    // IST day-of-week
+    const istDate = new Date(Date.now() + (5.5*60 - new Date().getTimezoneOffset()) * 60000);
+    const dow = ["sunday","monday","tuesday","wednesday","thursday","friday","saturday"][istDate.getDay()];
+    const risks = [];
+    keys.forEach(check => {
+      const p = patterns[check];
+      const total = (p.pass||0) + (p.fail||0);
+      if (total < 3) return;
+      const failRate = Math.round((p.fail||0)/total*100);
+      if (failRate >= 40) {
+        risks.push({ check, failRate, total, lastFail: p.lastFail });
+      }
+    });
+    // Check incidents for recurring day-of-week pattern
+    const dowIncidents = incidents.filter(inc => {
+      if (!inc.ts) return false;
+      const d = new Date(inc.ts);
+      const incDow = ["sunday","monday","tuesday","wednesday","thursday","friday","saturday"][d.getDay()];
+      return incDow === dow && inc.failed_checks?.length > 0;
+    });
+    if (risks.length === 0 && dowIncidents.length < 2) return;
+    setRisk({ risks, dowIncidents: dowIncidents.length, dow });
+  }, []);
+
+  if (!risk) return null;
+  return (
+    <div style={{ marginBottom:14, padding:"10px 14px", borderRadius:8,
+      border:`1px solid ${T.orange}35`, background:`${T.orange}06`,
+      display:"flex", flexDirection:"column", gap:5 }}>
+      <div style={{ display:"flex", alignItems:"center", gap:8 }}>
+        <span style={{ fontSize:13 }}>⚠️</span>
+        <span style={{ fontSize:12, fontWeight:700, color:T.orange }}>Pre-Run Risk Assessment</span>
+        <span style={{ fontSize:10, color:T.dim, marginLeft:"auto" }}>learned from past runs</span>
+      </div>
+      {risk.risks.map((r,i) => (
+        <div key={i} style={{ fontSize:11, color:T.text2 }}>
+          <span style={{ color:T.orange, fontWeight:600 }}>{r.check}</span>
+          {" "}fails {r.failRate}% of the time ({r.fail||"?"}/{r.total} runs)
+          {r.lastFail && <span style={{ color:T.dim }}> · last: {r.lastFail.slice(0,10)}</span>}
+        </div>
+      ))}
+      {risk.dowIncidents >= 2 && (
+        <div style={{ fontSize:11, color:T.orange }}>
+          📅 {risk.dowIncidents} past incidents on {risk.dow}s — historically higher risk today.
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ── AI config suggestions banner ──────────────────────────────────────────────
+function SopAiConfigSuggestions({ config, T }) {
+  const [suggestion, setSuggestion] = React.useState(null);
+  const [dismissed,  setDismissed]  = React.useState(false);
+  const [loading,    setLoading]    = React.useState(false);
+  React.useEffect(() => {
+    const patterns = sopPatternsLoad();
+    const total = Object.values(patterns).reduce((s,p)=>(s+(p.pass||0)+(p.fail||0)),0);
+    if (total < 10) return; // need enough data
+    // Check if suggestion already dismissed this week
+    try {
+      const d = localStorage.getItem("wz_sop_cfg_suggest_dismissed");
+      if (d && (Date.now() - new Date(d).getTime()) < 7*24*3600*1000) { setDismissed(true); return; }
+    } catch {}
+    setLoading(true);
+    const patternSummary = Object.entries(patterns).map(([check,p]) => {
+      const tot = (p.pass||0)+(p.fail||0);
+      return `${check}: ${p.fail||0}/${tot} failures, fail reasons: ${(p.failReasons||[]).slice(-3).join("; ")||"none"}`;
+    }).join("\n");
+    const pkgSummary = (config?.mage_packages||[]).map(p=>`${p.name} (${p.org}): pause_by=${p.pause_by}, expected=${p.expected}`).join("; ");
+    const prompt = `You are reviewing a data pipeline SOP configuration. Based on historical failure patterns, suggest one specific improvement.
+
+Mage packages: ${pkgSummary||"none configured"}
+Historical patterns:
+${patternSummary}
+
+If you see an actionable improvement (e.g. adjust pause_by time, add a missing check, change escalation wait), suggest it in one sentence.
+If patterns look fine, say so.
+
+Reply JSON only: {"has_suggestion":true|false,"suggestion":"...","field":"pause_by|escalation_wait|notify_primary|none"}`;
+    fetch(`${API}/api/ai/chat`, {
+      method:"POST", headers:{"Content-Type":"application/json"},
+      body: JSON.stringify({ system:"Return only valid JSON, no markdown.", messages:[{role:"user",content:prompt}], max_tokens:200, temperature:0.3 })
+    }).then(r=>r.json()).then(data => {
+      const text = (data.content||[]).map(c=>c.text||"").join("").trim();
+      const parsed = JSON.parse(text.replace(/```json|```/g,"").trim());
+      if (parsed.has_suggestion) setSuggestion(parsed.suggestion);
+    }).catch(()=>{}).finally(()=>setLoading(false));
+  }, []);
+
+  if (dismissed || !suggestion || loading) return null;
+  return (
+    <div style={{ marginBottom:10, padding:"10px 14px", borderRadius:8,
+      border:`1px solid ${T.purple}30`, background:`${T.purple}05`,
+      display:"flex", gap:10, alignItems:"flex-start" }}>
+      <span style={{ fontSize:13, flexShrink:0 }}>💡</span>
+      <div style={{ flex:1 }}>
+        <span style={{ fontSize:11, fontWeight:700, color:T.purple }}>AI Config Suggestion · </span>
+        <span style={{ fontSize:11, color:T.text2 }}>{suggestion}</span>
+      </div>
+      <Btn size="sm" variant="ghost" style={{ fontSize:10, color:T.muted, flexShrink:0 }}
+        onClick={()=>{ setDismissed(true); try { localStorage.setItem("wz_sop_cfg_suggest_dismissed", new Date().toISOString()); } catch {} }}>
+        Dismiss
+      </Btn>
+    </div>
   );
 }
 
@@ -10070,19 +10296,47 @@ function AdsSopTab() {
   const [result,     setResult]    = useSession("wz_sopResult", null);
   const slackNotifiedRef = React.useRef(false); // prevent duplicate Slack fires per run
 
-  const sendSlackNotify = React.useCallback((cfg) => {
+  const [smartRetryActive, setSmartRetryActive] = React.useState(false);
+  const [smartRetryCountdown, setSmartRetryCountdown] = React.useState(0);
+  const smartRetryRef = React.useRef(null);
+
+  // AI-written Slack notify message (replaces hardcoded template)
+  const sendSlackNotify = React.useCallback(async (cfg) => {
     const slackUrl = localStorage.getItem("wz_slack") || "";
     if (!slackUrl || slackNotifiedRef.current) return;
     slackNotifiedRef.current = true;
-    const channel  = cfg?.notify_channel  || "#dev-python-support";
-    const primary  = cfg?.notify_primary  || "@Abhiraj, @Abhishek Sindagi, @Sairam Ganna";
+    const channel = cfg?.notify_channel || "#dev-python-support";
+    const primary = cfg?.notify_primary || "@Abhiraj, @Abhishek Sindagi, @Sairam Ganna";
     const now = new Date().toLocaleTimeString("en-IN", {hour:"2-digit",minute:"2-digit",timeZone:"Asia/Kolkata"});
-    fetch(slackUrl, {
-      method:"POST", headers:{"Content-Type":"application/json"},
-      body: JSON.stringify({
-        text: `🚨 *Ads Data Availability Issue Detected* — ${now} IST\nData not available as expected. Initiating SOP runbook.\n${primary} — please investigate and fix ASAP.\nChannel: ${channel}`
-      })
-    }).catch(()=>{});
+    // Try AI-written message; fall back to template if it fails
+    let text = `🚨 *Ads Data Availability Issue Detected* — ${now} IST\nData not available as expected. Initiating SOP runbook.\n${primary} — please investigate and fix ASAP.\nChannel: ${channel}`;
+    try {
+      const patterns = sopPatternsLoad();
+      const patternHints = Object.entries(patterns)
+        .filter(([,p]) => ((p.pass||0)+(p.fail||0)) >= 3 && Math.round((p.fail||0)/((p.pass||0)+(p.fail||0))*100) >= 40)
+        .map(([check,p]) => `${check} fails ${Math.round((p.fail||0)/((p.pass||0)+(p.fail||0))*100)}% historically`)
+        .join("; ");
+      const incidents = sopIncidentsLoad().slice(0,3)
+        .map(i=>i.resolution||i.summary||"").filter(Boolean).join("; ");
+      const prompt = `Write a Slack alert message for a daily ads data pipeline failure. Be specific and actionable.
+
+Time: ${now} IST
+On-call: ${primary}
+Channel: ${channel}
+Historical pattern: ${patternHints||"no prior data"}
+Recent incident resolutions: ${incidents||"none"}
+
+Write 2-3 lines. Start with 🚨. Tag on-call. Name the most likely cause based on patterns. Suggest the first thing to check. Plain text, no markdown headers.`;
+      const res = await fetch(`${API}/api/ai/chat`, {
+        method:"POST", headers:{"Content-Type":"application/json"},
+        body: JSON.stringify({ system:"Write concise Slack alert messages. Plain text only.", messages:[{role:"user",content:prompt}], max_tokens:200, temperature:0.3 })
+      });
+      const data = await res.json();
+      const aiText = (data.content||[]).map(c=>c.text||"").join("").trim();
+      if (aiText) text = aiText;
+    } catch(e) {}
+    fetch(slackUrl, { method:"POST", headers:{"Content-Type":"application/json"},
+      body: JSON.stringify({ text }) }).catch(()=>{});
   }, []);
 
   // AI-generated Slack summary on run completion
@@ -10112,12 +10366,13 @@ Run details:
 Write 3–5 lines max. Use plain text with minimal emoji. Start with a status emoji (✅ if complete, ⚠ if stopped/error). Include what failed, what was done, and duration. No headers. No bullet points.`;
 
     try {
-      const res = await fetch("https://api.anthropic.com/v1/messages", {
+      const res = await fetch(`${API}/api/ai/chat`, {
         method:"POST", headers:{"Content-Type":"application/json"},
         body: JSON.stringify({
-          model: "claude-sonnet-4-20250514",
+          system: "You are a data ops assistant writing concise Slack summaries. Return plain text only, no JSON, no markdown headers.",
+          messages: [{ role:"user", content: prompt }],
           max_tokens: 1000,
-          messages: [{ role:"user", content: prompt }]
+          temperature: 0.3
         })
       });
       const data = await res.json();
@@ -10163,6 +10418,24 @@ Write 3–5 lines max. Use plain text with minimal emoji. Start with a status em
         if (data.status === "complete" || data.status === "complete_no_issues") {
           const cfg = (() => { try { return JSON.parse(localStorage.getItem("wz_sop_config")||"{}"); } catch { return {}; } })();
           sendAiSlackSummary(data, cfg);
+        }
+        // Self-evolve: learn patterns + resolution time from this run
+        sopPatternsLearn(data);
+        // Track resolution time per check for dynamic timeout tuning
+        if (data.summary_data?.duration) {
+          const durMin = parseInt(data.summary_data.duration);
+          if (!isNaN(durMin)) {
+            const pats = sopPatternsLoad();
+            (data.detection_result?.details||[]).filter(d=>d.status!=="PASS").forEach(d => {
+              if (!pats[d.check]) return;
+              const prev = pats[d.check].avgResolutionMin || durMin;
+              pats[d.check].avgResolutionMin = Math.round((prev + durMin) / 2);
+              // Track transient: if resolved within 20 min, count as transient
+              if (!pats[d.check].transientCount) pats[d.check].transientCount = 0;
+              if (durMin <= 20) pats[d.check].transientCount++;
+            });
+            sopPatternsSave(pats);
+          }
         }
       }
     } catch(e) {}
@@ -10357,18 +10630,31 @@ Write 3–5 lines max. Use plain text with minimal emoji. Start with a status em
   const runSop = async () => {
     setRunning(true); setResult(null); setRunId(null);
     runStartRef.current = Date.now();
-    slackNotifiedRef.current = false; // reset per run
+    slackNotifiedRef.current = false;
     setElapsedMin(0);
     if (pollRef.current) { clearTimeout(pollRef.current); clearInterval(pollRef.current); pollRef.current = null; }
+    // Dynamic gate timeout: AI picks based on patterns + time of day
+    let dynamicTimeout = Number(gateTimeout);
     try {
-      const res  = await fetch(`${API}/api/workflow/ads-sop`, {
+      const patterns = sopPatternsLoad();
+      const avgResolution = Object.values(patterns)
+        .filter(p => (p.fail||0) > 0 && p.lastFail)
+        .map(p => p.avgResolutionMin || null)
+        .filter(Boolean);
+      if (avgResolution.length > 0) {
+        const avg = Math.round(avgResolution.reduce((s,v)=>s+v,0)/avgResolution.length);
+        dynamicTimeout = Math.max(15, Math.min(90, avg + 10));
+        addNotif?.(`⚡ Gate timeout auto-set to ${dynamicTimeout}m based on historical resolution times`, "info");
+      }
+    } catch(e) {}
+    try {
+      const res = await fetch(`${API}/api/workflow/ads-sop`, {
         method:"POST", headers:{"Content-Type":"application/json"},
-        body:JSON.stringify({ gate_timeout_min: Number(gateTimeout) })
+        body:JSON.stringify({ gate_timeout_min: dynamicTimeout })
       });
       const data = await res.json();
       if (data.error) throw new Error(data.error);
       setRunId(data.run_id);
-      // Start polling
       runStartRef.current = Date.now(); startAdaptivePoll(data.run_id);
     } catch(e) {
       setResult({ error:e.message, status:"error", trace:[{node:"sop",ts:"",msg:e.message,level:"error"}] });
@@ -10436,17 +10722,42 @@ Write 3–5 lines max. Use plain text with minimal emoji. Start with a status em
     setSubmitting(p => ({...p,[token]:false}));
   }, [runId, addNotif, startAdaptivePoll, setResult, setSubmitting]);
 
-  // ── Auto-approve gate if all checks pass and feature is enabled ─────────────
+  // ── AI confidence-scored auto-approve ─────────────────────────────────────
+  const [autoApproveThreshold] = useLocal("wz_sop_auto_approve_threshold", 85);
   const tryAutoApprove = React.useCallback(async (token, gateNum, checks) => {
     if (!autoApproveOnClean || !token) return false;
     const hasCriticalFail = (checks||[]).some(c => !c.passed && (c.severity==="critical" || c.severity==="high"));
     const anyFail = (checks||[]).some(c => !c.passed);
-    if (anyFail || hasCriticalFail) return false;
-    // All checks passed — auto-approve
-    addNotif?.(`⚡ Gate ${gateNum} auto-approved — all checks clean`, "success");
-    await submitGate(token, "approve");
-    return true;
-  }, [autoApproveOnClean, submitGate, addNotif]);
+    if (hasCriticalFail) return false;
+    const hasRowData = (checks||[]).some(c => c.row_count != null || c.coverage_pct != null);
+    if (hasRowData && !anyFail) {
+      try {
+        const checkSummary = (checks||[]).map(c=>`${c.name||c.check}: passed=${c.passed}, rows=${c.row_count??"-"}, coverage=${c.coverage_pct??"-"}%`).join("; ");
+        const res = await fetch(`${API}/api/ai/chat`, {
+          method:"POST", headers:{"Content-Type":"application/json"},
+          body: JSON.stringify({
+            system:"You are a data quality reviewer. Return only a JSON object, no markdown.",
+            messages:[{role:"user",content:`Rate confidence (0-100) that Gate ${gateNum} is safe to auto-approve:\n${checkSummary}\n\nReply: {"confidence":0-100,"reason":"..."}`}],
+            max_tokens:150, temperature:0.1
+          })
+        });
+        const data = await res.json();
+        const parsed = JSON.parse((data.content||[]).map(c=>c.text||"").join("").trim().replace(/```json|```/g,"").trim());
+        const confidence = parsed.confidence ?? (anyFail ? 0 : 100);
+        if (confidence >= autoApproveThreshold) {
+          addNotif?.(`⚡ Gate ${gateNum} auto-approved — AI confidence ${confidence}% ≥ ${autoApproveThreshold}%`, "success");
+          await submitGate(token, "approve"); return true;
+        }
+        if (confidence >= 60) addNotif?.(`⚠ Gate ${gateNum}: AI confidence ${confidence}% — human review needed`, "warning");
+        return false;
+      } catch(e) {}
+    }
+    if (!anyFail) {
+      addNotif?.(`⚡ Gate ${gateNum} auto-approved — all checks clean`, "success");
+      await submitGate(token, "approve"); return true;
+    }
+    return false;
+  }, [autoApproveOnClean, autoApproveThreshold, submitGate, addNotif]);
 
   // ── Severity routing: returns "halt" | "warn" | "log" ───────────────────────
   const checkSeverityAction = (checks) => {
@@ -10497,6 +10808,45 @@ Write 3–5 lines max. Use plain text with minimal emoji. Start with a status em
     }, escalationMin * 60000);
     return () => { if (escalationRef.current) { clearTimeout(escalationRef.current); escalationRef.current = null; } };
   }, [result?.gate2_decision, escalationCh, escalationMin]);
+
+  // ── Smart retry: check if failure is likely transient before full SOP ────────
+  React.useEffect(() => {
+    if (!result?.detection_result?.missing) return;
+    if (result.gate1_decision && result.gate1_decision !== "pending") return; // already past gate 1
+    const patterns = sopPatternsLoad();
+    const failedChecks = (result.detection_result?.details||[]).filter(d=>d.status!=="PASS");
+    const transientCount = failedChecks.filter(d => {
+      const p = patterns[d.check];
+      if (!p) return false;
+      const total = (p.pass||0)+(p.fail||0);
+      if (total < 3) return false;
+      // Consider transient if >60% of past failures had short resolution or were one-off
+      return (p.transientCount||0) / Math.max(p.fail||1, 1) > 0.6;
+    }).length;
+    if (transientCount > 0 && !smartRetryActive) {
+      const waitMin = 15;
+      setSmartRetryActive(true);
+      setSmartRetryCountdown(waitMin * 60);
+      addNotif?.(`⏱ Smart retry: ${transientCount} check(s) match transient pattern — waiting ${waitMin}m before proceeding`, "info");
+      const countdown = setInterval(() => {
+        setSmartRetryCountdown(p => {
+          if (p <= 1) { clearInterval(countdown); setSmartRetryActive(false); return 0; }
+          return p - 1;
+        });
+      }, 1000);
+      smartRetryRef.current = countdown;
+      return () => clearInterval(countdown);
+    }
+  }, [result?.detection_result?.missing]);
+
+  // ── Incident memory: write on every terminal run ─────────────────────────────
+  React.useEffect(() => {
+    if (!result) return;
+    const terminal = ["complete","complete_no_issues","stopped","error"];
+    if (!terminal.includes(result.status)) return;
+    if (!result.run_id) return;
+    sopIncidentWrite(result);
+  }, [result?.status]);
 
   // ── Data window awareness (IST) ──────────────────────────────────────────
   const dataWindowWarning = React.useMemo(() => {
@@ -10591,6 +10941,21 @@ Write 3–5 lines max. Use plain text with minimal emoji. Start with a status em
               Auto-approve clean
             </span>
           </div>
+          {/* AI confidence threshold — only shown when auto-approve is on */}
+          {autoApproveOnClean && (
+            <div style={{ display:"flex", alignItems:"center", gap:5, padding:"3px 8px",
+              borderRadius:6, border:`1px solid ${T.purple}40`, background:`${T.purple}08` }}
+              title="AI confidence score required to auto-approve a gate">
+              <span style={{ fontSize:10, color:T.purple }}>🤖</span>
+              <span style={{ fontSize:10, color:T.purple }}>≥</span>
+              <select value={autoApproveThreshold}
+                onChange={e=>{ try { localStorage.setItem("wz_sop_auto_approve_threshold", e.target.value); } catch {} }}
+                style={{ fontSize:10, padding:"1px 4px", borderRadius:4, border:`1px solid ${T.purple}40`,
+                  background:"transparent", color:T.purple, cursor:"pointer" }}>
+                {[60,70,75,80,85,90,95].map(v=><option key={v} value={v}>{v}%</option>)}
+              </select>
+            </div>
+          )}
           {/* Global + per-gate timeouts */}
           <div style={{ display:"flex", alignItems:"center", gap:5 }}>
             <span style={{ fontSize:10, color:T.muted }}>Timeout:</span>
@@ -10652,6 +11017,12 @@ Write 3–5 lines max. Use plain text with minimal emoji. Start with a status em
           </Btn>
         </div>
       </div>
+
+      {/* Pre-run risk assessment — shown when no active run */}
+      {!result && !running && <SopPreRunRisk T={T}/>}
+
+      {/* AI config suggestions — shown when no active run */}
+      {!result && !running && <SopAiConfigSuggestions config={config} T={T}/>}
 
       {/* Data window awareness banner */}
       {dataWindowWarning && !result && (
@@ -11173,6 +11544,26 @@ Write 3–5 lines max. Use plain text with minimal emoji. Start with a status em
             {result.detection_result?.missing && (
               <SopAiDiagnosis detectionResult={result.detection_result}
                 history={enrichedHistory} T={T}/>
+            )}
+
+            {/* Smart retry banner — transient pattern detected */}
+            {smartRetryActive && (
+              <div style={{ padding:"10px 14px", borderRadius:8, marginBottom:8,
+                background:`${T.yellow}08`, border:`1px solid ${T.yellow}30`,
+                display:"flex", alignItems:"center", gap:10 }}>
+                <Spinner size={10} color={T.yellow}/>
+                <div style={{ flex:1 }}>
+                  <span style={{ fontSize:11, fontWeight:700, color:T.yellow }}>Smart Retry Active — </span>
+                  <span style={{ fontSize:11, color:T.text2 }}>
+                    Transient pattern detected. Waiting {Math.ceil(smartRetryCountdown/60)}m {smartRetryCountdown%60}s before proceeding with SOP.
+                  </span>
+                </div>
+                <Btn size="sm" variant="ghost"
+                  style={{ fontSize:10, color:T.muted, flexShrink:0 }}
+                  onClick={()=>{ setSmartRetryActive(false); if(smartRetryRef.current) clearInterval(smartRetryRef.current); }}>
+                  Skip wait
+                </Btn>
+              </div>
             )}
 
             {/* Gates and checklists — shown in real time */}

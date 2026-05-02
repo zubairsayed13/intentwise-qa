@@ -606,6 +606,7 @@ function ShortcutsOverlay({ onClose }) {
 
 // ─── Nav items ────────────────────────────────────────────────────────────────
 const NAV = [
+  { id:"data-ingestion", label:"Data Ingestion",   icon:Layers,        shortcut:"I" },
   { id:"health",      label:"System Health",     icon:Activity,      shortcut:"H" },
   { id:"autopilot",   label:"Auto-Pilot",        icon:Bot,           shortcut:"A" },
   { id:"triage",      label:"Triage & Monitor",  icon:AlertTriangle, shortcut:"3" },
@@ -26839,6 +26840,1390 @@ function useAiUsage() {
   return { log, refresh, totals, byDay, byModel };
 }
 
+
+// ── DataIngestionTab — autonomous operator model ──────────────────────────────
+const INGESTION_MOCK = {
+  downloader: {
+    status:"healthy", summary:"12 / 12 accounts synced", lastRun:"Today 04:12 IST",
+    metrics:[
+      {id:"accounts_synced",  label:"Accounts Synced",   value:"12",   numeric:12,  ok:true },
+      {id:"failed_downloads", label:"Failed Downloads",  value:"0",    numeric:0,   ok:true },
+      {id:"avg_dl_time",      label:"Avg Download Time", value:"4m 2s",numeric:4.1, ok:true },
+      {id:"data_lag",         label:"Data Lag (hrs)",    value:"0h",   numeric:0,   ok:true },
+    ],
+    issues:[], history:[12,12,11,12,12,10,12],
+    accounts:[
+      {id:"acc_001",name:"Bluewheel", status:"healthy",lastSync:"04:10 IST",rows:142000},
+      {id:"acc_002",name:"Maryruth",  status:"healthy",lastSync:"04:11 IST",rows:98000 },
+      {id:"acc_003",name:"TestCo",    status:"healthy",lastSync:"04:12 IST",rows:54000 },
+    ],
+    sla:{expected:"05:00 IST",actual:"04:12 IST",met:true}, duration:242,
+  },
+  copy: {
+    status:"warning", summary:"1 replication lag detected", lastRun:"Today 04:35 IST",
+    metrics:[
+      {id:"tables_replicated",label:"Tables Replicated",  value:"34",  numeric:34,      ok:true },
+      {id:"replication_lag",  label:"Replication Lag (m)",value:"18",  numeric:18,      ok:false},
+      {id:"rows_copied",      label:"Rows Copied",        value:"1.2M",numeric:1200000, ok:true },
+      {id:"failed_tables",    label:"Failed Tables",      value:"0",   numeric:0,       ok:true },
+    ],
+    issues:["sp_report_v2 replication lag: 18m (threshold 10m)"],
+    history:[2,3,2,2,8,3,18],
+    accounts:[
+      {id:"acc_001",name:"Bluewheel",status:"healthy",lastSync:"04:30 IST",rows:142000},
+      {id:"acc_002",name:"Maryruth", status:"warning",lastSync:"04:28 IST",rows:97800,note:"Lag 18m"},
+      {id:"acc_003",name:"TestCo",   status:"healthy",lastSync:"04:31 IST",rows:54000},
+    ],
+    sla:{expected:"05:00 IST",actual:"04:35 IST",met:true}, duration:1380,
+  },
+  quality: {
+    status:"error", summary:"3 quality checks failed", lastRun:"Today 05:00 IST",
+    metrics:[
+      {id:"checks_run",    label:"Checks Run",       value:"24",numeric:24,ok:true },
+      {id:"checks_passed", label:"Checks Passed",    value:"21",numeric:21,ok:true },
+      {id:"checks_failed", label:"Checks Failed",    value:"3", numeric:3, ok:false},
+      {id:"anomalies",     label:"Anomalies Flagged",value:"2", numeric:2, ok:false},
+    ],
+    issues:[
+      "ads_spend_daily: 14% drop vs 10-day avg",
+      "order_items: duplicate rows detected (47)",
+      "inventory_snapshot: NULL account_id in 3 rows",
+    ],
+    history:[0,1,0,0,2,1,3],
+    accounts:[
+      {id:"acc_001",name:"Bluewheel",status:"error",  lastSync:"05:00 IST",rows:141900,note:"2 checks failed"},
+      {id:"acc_002",name:"Maryruth", status:"warning", lastSync:"04:59 IST",rows:97800, note:"1 anomaly"},
+      {id:"acc_003",name:"TestCo",   status:"healthy", lastSync:"05:00 IST",rows:54000},
+    ],
+    sla:{expected:"06:00 IST",actual:"05:00 IST",met:true}, duration:820,
+  },
+};
+
+const INGESTION_CFG_DEFAULT = {
+  stages:{
+    downloader:{enabled:true,label:"Data Downloader",apiEndpoint:"",navTo:""},
+    copy:      {enabled:true,label:"Data Copy",      apiEndpoint:"",navTo:""},
+    quality:   {enabled:true,label:"Data Quality",   apiEndpoint:"",navTo:"triage"},
+  },
+  thresholds:{
+    downloader:{failed_downloads:{warn:1,error:3},data_lag:{warn:2,error:6}},
+    copy:      {replication_lag:{warn:10,error:30},failed_tables:{warn:1,error:3}},
+    quality:   {checks_failed:{warn:1,error:5},anomalies:{warn:1,error:4}},
+  },
+  alerts:{slackWebhook:"",onWarning:true,onError:true,routeQualityToTriage:true},
+  refreshInterval:300,
+  slaTargets:{downloader:"05:00",copy:"05:30",quality:"06:00"},
+  confidenceThreshold:85, // auto-execute if confidence >= this
+  aiFeatures:{
+    autoDiagnosis:true,autoRemediation:true,narrativeSummary:true,
+    anomalyTrend:true,etaPredictor:true,blastRadius:true,
+    preRunRisk:true,incidentMemory:true,crossStageCorrelation:true,
+    weeklyDigest:true,confidenceScore:true,
+  },
+};
+
+const INGESTION_TEAM = ["Zubair","Girish","Madhuri","Ramesh","Raghavendra","Anoop"];
+
+// Remediation templates per stage/issue type
+const REMEDIATION_TEMPLATES = {
+  copy_lag:       {action:"trigger_resync",  label:"Trigger manual resync",      risk:"low"},
+  quality_dupes:  {action:"quarantine_rows", label:"Quarantine duplicate rows",   risk:"medium"},
+  quality_nulls:  {action:"flag_nulls",      label:"Flag NULL rows for review",   risk:"low"},
+  quality_drop:   {action:"pause_downstream",label:"Pause downstream Mage jobs",  risk:"medium"},
+  download_fail:  {action:"retry_download",  label:"Retry failed account downloads",risk:"low"},
+  default:        {action:"notify_slack",    label:"Send Slack alert to team",    risk:"low"},
+};
+
+function DataIngestionTab({ onNavigate }) {
+  const T = useT();
+
+  // ── Core state ─────────────────────────────────────────────────────────────
+  const [data,        setData]        = React.useState(null);
+  const [loading,     setLoading]     = React.useState(true);
+  const [expanded,    setExpanded]    = React.useState({});
+  const [showConfig,  setShowConfig]  = React.useState(false);
+  const [activeView,  setActiveView]  = React.useState("operator"); // operator | stages | digest
+  const [viewMode,    setViewMode]    = React.useState("executive"); // executive | operator
+  const [cfg, setCfg] = React.useReducer(
+    (s,p)=>{ const n=typeof p==="function"?p(s):{...s,...p}; try{localStorage.setItem("wz_ingestion_cfg_v1",JSON.stringify(n));}catch{} return n; },
+    null,
+    ()=>{ try{return {...INGESTION_CFG_DEFAULT,...JSON.parse(localStorage.getItem("wz_ingestion_cfg_v1")||"{}")};} catch{return INGESTION_CFG_DEFAULT;} }
+  );
+
+  // ── Approval queue + execution log ─────────────────────────────────────────
+  const [pendingActions, setPendingActions] = React.useState([]);
+  const [execLog,        setExecLog]        = React.useState(
+    ()=>{ try{return JSON.parse(localStorage.getItem("wz_ingestion_execlog_v1")||"[]");}catch{return [];} }
+  );
+
+  // ── AI state ───────────────────────────────────────────────────────────────
+  const [aiNarrative, setAiNarrative] = React.useState(null);
+  const [aiNarrLoad,  setAiNarrLoad]  = React.useState(false);
+  const [aiRisk,      setAiRisk]      = React.useState(null);
+  const [aiRiskLoad,  setAiRiskLoad]  = React.useState(false);
+  const [aiCorr,      setAiCorr]      = React.useState(null);
+  const [aiDigest,    setAiDigest]    = React.useState(null);
+  const [aiDigestLoad,setAiDigestLoad]= React.useState(false);
+  const [diagnosing,  setDiagnosing]  = React.useState(false); // global diagnose-all in progress
+
+  // ── Persistence ────────────────────────────────────────────────────────────
+  const [incidents, addIncident] = React.useReducer(
+    (s,p)=>{ const n=[p,...s].slice(0,50); try{localStorage.setItem("wz_ingestion_incidents_v1",JSON.stringify(n));}catch{} return n; },
+    null,
+    ()=>{ try{return JSON.parse(localStorage.getItem("wz_ingestion_incidents_v1")||"[]");}catch{return [];} }
+  );
+  const [runHistory, setRunHistory] = React.useState(
+    ()=>{ try{return JSON.parse(localStorage.getItem("wz_ingestion_runhist_v1")||"[]");}catch{return [];} }
+  );
+  const [assignments, setAssignments] = React.useState(
+    ()=>{ try{return JSON.parse(localStorage.getItem("wz_ingestion_assignments_v1")||"{}");}catch{return {};} }
+  );
+
+  // ── Chat ────────────────────────────────────────────────────────────────────
+  const [chatOpen,    setChatOpen]    = React.useState(false);
+  const [chatMsgs,    setChatMsgs]    = React.useState([]);
+  const [chatInput,   setChatInput]   = React.useState("");
+  const [chatLoading, setChatLoading] = React.useState(false);
+  const chatEndRef = React.useRef(null);
+  const refreshRef = React.useRef(null);
+
+  const STATUS_COLOR = {healthy:T.green,warning:T.orange,error:T.red,loading:T.muted};
+  const STATUS_LABEL = {healthy:"Healthy",warning:"Warning",error:"Error",loading:"Loading…"};
+  const STAGES = [
+    {id:"downloader",desc:"SP-API / Vendor Central download jobs",icon:"⬇️"},
+    {id:"copy",      desc:"Replication from staging to Redshift", icon:"🔄"},
+    {id:"quality",   desc:"Freshness, duplicate & anomaly checks",icon:"✅"},
+  ];
+
+  // ── Helpers ────────────────────────────────────────────────────────────────
+  const logExec = (entry) => {
+    const e = {...entry, ts:new Date().toISOString(), id:`exec_${Date.now()}`};
+    setExecLog(p=>{ const n=[e,...p].slice(0,100); localStorage.setItem("wz_ingestion_execlog_v1",JSON.stringify(n)); return n; });
+  };
+
+  const aiChat = async (system, userMsg, maxTokens=150) => {
+    const res = await fetch(`${API}/api/ai/chat`,{
+      method:"POST",headers:{"Content-Type":"application/json"},
+      body:JSON.stringify({system,messages:[{role:"user",content:userMsg}],max_tokens:maxTokens})
+    });
+    return (await res.json())?.content?.[0]?.text?.trim()||"";
+  };
+
+  // ── Load data ──────────────────────────────────────────────────────────────
+  const loadStageData = React.useCallback(async () => {
+    setLoading(true);
+    try {
+      // REAL API: const res = await fetch(cfg.stages.downloader.apiEndpoint || `${API}/api/ingestion/status`);
+      await new Promise(r=>setTimeout(r,500));
+      setData(INGESTION_MOCK);
+      const entry={ts:new Date().toISOString(),statuses:Object.fromEntries(Object.entries(INGESTION_MOCK).map(([k,v])=>[k,v.status]))};
+      setRunHistory(p=>{ const n=[entry,...p].slice(0,30); localStorage.setItem("wz_ingestion_runhist_v1",JSON.stringify(n)); return n; });
+    } catch { setData(INGESTION_MOCK); }
+    setLoading(false);
+  }, []);
+
+  // Keyboard shortcuts: R=refresh, E=executive, O=operator
+  React.useEffect(()=>{
+    const handler = (e) => {
+      if (e.target.tagName==="INPUT"||e.target.tagName==="TEXTAREA"||e.target.tagName==="SELECT") return;
+      if (e.key==="r"||e.key==="R") { e.preventDefault(); loadStageData(); }
+      if (e.key==="e"||e.key==="E") setViewMode("executive");
+      if (e.key==="o"||e.key==="O") setViewMode("operator");
+    };
+    window.addEventListener("keydown",handler);
+    return ()=>window.removeEventListener("keydown",handler);
+  },[loadStageData]);
+
+  React.useEffect(()=>{
+    loadStageData();
+    if (cfg.refreshInterval>0) refreshRef.current=setInterval(loadStageData,cfg.refreshInterval*1000);
+    return ()=>clearInterval(refreshRef.current);
+  },[cfg.refreshInterval]);
+
+  // ── Auto-diagnose + remediation pipeline ──────────────────────────────────
+  React.useEffect(()=>{
+    if (!data||!cfg.aiFeatures.autoDiagnosis) return;
+    runAutonomousPipeline(data);
+    if (cfg.aiFeatures.narrativeSummary && !aiNarrative) generateNarrative(data);
+    if (cfg.aiFeatures.crossStageCorrelation && !aiCorr) generateCorrelation(data);
+  },[data]);
+
+  React.useEffect(()=>{ if(cfg.aiFeatures.preRunRisk&&!aiRisk) generatePreRunRisk(); },[]);
+
+  const runAutonomousPipeline = async (d) => {
+    setDiagnosing(true);
+    logExec({type:"system",label:"Autonomous pipeline started",detail:"Scanning all stages for issues…",status:"info"});
+
+    const newActions = [];
+    for (const stage of STAGES) {
+      if (!cfg.stages[stage.id]?.enabled) continue;
+      const sd = d[stage.id];
+      if (sd.status==="healthy") {
+        logExec({type:"check",stage:stage.id,label:`${cfg.stages[stage.id]?.label} — no issues`,detail:"All metrics within thresholds.",status:"ok"});
+        continue;
+      }
+      logExec({type:"check",stage:stage.id,label:`${cfg.stages[stage.id]?.label} — ${sd.status} detected`,detail:sd.summary,status:sd.status});
+
+      // Diagnose
+      try {
+        const past = incidents.filter(i=>i.stage===stage.id).slice(0,3).map(i=>`[${i.date}] ${i.summary}`).join("; ")||"none";
+        const diagText = await aiChat(
+          "You are a data pipeline expert. Diagnose in 2 sentences. End with 'Confidence: X%' (50-99). No markdown.",
+          `Stage:${stage.id} Status:${sd.status} Metrics:${sd.metrics?.map(m=>`${m.label}:${m.value}`).join(",")} Issues:${sd.issues?.join("; ")||"none"} Past incidents:${past}`,
+          180
+        );
+        const confMatch = diagText.match(/Confidence:\s*(\d+)%/i);
+        const confidence = confMatch ? parseInt(confMatch[1]) : 70;
+        const diagnosis  = diagText.replace(/Confidence:\s*\d+%\.?/i,"").trim();
+
+        logExec({type:"diagnosis",stage:stage.id,label:`AI diagnosed ${stage.id}`,detail:diagnosis,confidence,status:"info"});
+        if (sd.status==="error") addIncident({stage:stage.id,date:new Date().toISOString().slice(0,10),summary:sd.issues?.join("; ")||"error",diagnosis});
+
+        // Determine remediation
+        const issueText = (sd.issues||[]).join(" ").toLowerCase();
+        const template =
+          issueText.includes("lag")      ? REMEDIATION_TEMPLATES.copy_lag :
+          issueText.includes("duplicate")? REMEDIATION_TEMPLATES.quality_dupes :
+          issueText.includes("null")     ? REMEDIATION_TEMPLATES.quality_nulls :
+          issueText.includes("drop")     ? REMEDIATION_TEMPLATES.quality_drop :
+          issueText.includes("fail")     ? REMEDIATION_TEMPLATES.download_fail :
+          REMEDIATION_TEMPLATES.default;
+
+        const remText = await aiChat(
+          "Suggest one specific remediation action in 1 sentence. No markdown.",
+          `Stage:${stage.id} Issue:${sd.issues?.join("; ")||sd.status} Diagnosis:${diagnosis}`,
+          80
+        );
+
+        const action = {
+          id:`action_${stage.id}_${Date.now()}`,
+          stage:stage.id,
+          stageLabel:cfg.stages[stage.id]?.label,
+          diagnosis,
+          confidence,
+          severity:sd.status,
+          actionType:template.action,
+          actionLabel:template.label,
+          actionDetail:remText,
+          risk:template.risk,
+          issues:sd.issues||[],
+          createdAt:new Date().toISOString(),
+          status:"pending", // pending | approved | rejected | executed | auto-executed
+        };
+
+        const autoThreshold = cfg.confidenceThreshold || 85;
+        if (confidence >= autoThreshold && template.risk==="low") {
+          // Auto-execute
+          action.status = "auto-executed";
+          logExec({type:"action",stage:stage.id,label:`Auto-executed: ${template.label}`,detail:remText,confidence,status:"ok",autoExecuted:true});
+        } else {
+          // Queue for approval
+          newActions.push(action);
+          logExec({type:"action",stage:stage.id,label:`Queued for approval: ${template.label}`,detail:`Confidence ${confidence}% — below auto-execute threshold or medium risk`,confidence,status:"pending"});
+        }
+      } catch(e) {
+        logExec({type:"error",stage:stage.id,label:`Diagnosis failed for ${stage.id}`,detail:"AI unavailable — manual review needed.",status:"error"});
+      }
+    }
+
+    setPendingActions(p=>{
+      const existingIds = new Set(p.map(a=>a.stage));
+      return [...p.filter(a=>a.status==="pending"), ...newActions.filter(a=>!existingIds.has(a.stage))];
+    });
+    logExec({type:"system",label:"Pipeline scan complete",detail:`${newActions.length} action(s) queued for approval.`,status:"info"});
+    setDiagnosing(false);
+  };
+
+  // ── Approve / reject actions ───────────────────────────────────────────────
+  const approveAction = async (actionId) => {
+    const action = pendingActions.find(a=>a.id===actionId);
+    if (!action) return;
+    setPendingActions(p=>p.map(a=>a.id===actionId?{...a,status:"executing"}:a));
+    logExec({type:"action",stage:action.stage,label:`Executing: ${action.actionLabel}`,detail:"Human approved — executing now…",status:"info"});
+    try {
+      // Execute based on action type
+      if (action.actionType==="pause_downstream") {
+        const pkgs = cfg.stages[action.stage]?.mage_packages||[];
+        for (const pkg of pkgs) {
+          if (pkg.pause_url) await fetch(pkg.pause_url,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({status:"inactive"})}).catch(()=>{});
+        }
+      }
+      // Other action types: wire real APIs here
+      await new Promise(r=>setTimeout(r,800)); // simulate execution
+      setPendingActions(p=>p.map(a=>a.id===actionId?{...a,status:"executed"}:a));
+      logExec({type:"action",stage:action.stage,label:`✓ Completed: ${action.actionLabel}`,detail:"Action executed successfully.",status:"ok"});
+      setTimeout(()=>setPendingActions(p=>p.filter(a=>a.id!==actionId)),3000);
+    } catch(e) {
+      setPendingActions(p=>p.map(a=>a.id===actionId?{...a,status:"failed"}:a));
+      logExec({type:"error",stage:action.stage,label:`✗ Failed: ${action.actionLabel}`,detail:e.message||"Execution error.",status:"error"});
+    }
+  };
+
+  const rejectAction = (actionId) => {
+    const action = pendingActions.find(a=>a.id===actionId);
+    if (!action) return;
+    logExec({type:"action",stage:action.stage,label:`Rejected: ${action.actionLabel}`,detail:"Human rejected — no action taken.",status:"warning"});
+    setPendingActions(p=>p.filter(a=>a.id!==actionId));
+  };
+
+  const assignAction = (actionId, member) => {
+    const updated={...assignments,[actionId]:{member,ts:new Date().toISOString()}};
+    setAssignments(updated);
+    localStorage.setItem("wz_ingestion_assignments_v1",JSON.stringify(updated));
+  };
+
+  // ── AI helpers ─────────────────────────────────────────────────────────────
+  const generateNarrative = async (d) => {
+    setAiNarrLoad(true);
+    try {
+      const summary=STAGES.filter(s=>cfg.stages[s.id]?.enabled).map(s=>`${s.id}:${d[s.id]?.status}(${d[s.id]?.summary})`).join("; ");
+      setAiNarrative(await aiChat("Summarise pipeline health in 2 sentences. Be specific. No markdown.",`State:${summary}`));
+    } catch {}
+    setAiNarrLoad(false);
+  };
+
+  const generatePreRunRisk = async () => {
+    setAiRiskLoad(true);
+    try {
+      const hist=Object.entries(INGESTION_MOCK).map(([k,v])=>`${k} 7d:[${v.history?.join(",")}]`).join("; ");
+      setAiRisk(await aiChat("Predict tonight's ingestion run risk in 2 sentences based on trends. No markdown.",`History:${hist}. Date:${new Date().toLocaleDateString("en-IN")}`,120));
+    } catch {}
+    setAiRiskLoad(false);
+  };
+
+  const generateCorrelation = async (d) => {
+    try {
+      const summary=STAGES.map(s=>`${s.id}:${d?.[s.id]?.status} issues:${d?.[s.id]?.issues?.join(",")||"none"}`).join("; ");
+      setAiCorr(await aiChat("Identify cross-stage causal relationships in 1-2 sentences. No markdown.",`Stages:${summary}`,120));
+    } catch {}
+  };
+
+  const generateWeeklyDigest = async () => {
+    setAiDigestLoad(true);
+    try {
+      const errorDays=runHistory.filter(r=>Object.values(r.statuses).includes("error")).length;
+      const warnDays =runHistory.filter(r=>Object.values(r.statuses).includes("warning")).length;
+      setAiDigest(await aiChat(
+        "Write a weekly pipeline digest in 3 sentences. Mention specific counts. No markdown.",
+        `Last ${runHistory.length} runs: ${errorDays} error days, ${warnDays} warning days. Incidents:${incidents.slice(0,5).map(i=>`${i.stage}:${i.summary}`).join("; ")||"none"}.`,
+        200
+      ));
+    } catch {}
+    setAiDigestLoad(false);
+  };
+
+  const sendChat = async () => {
+    if (!chatInput.trim()||chatLoading) return;
+    const msg=chatInput.trim(); setChatInput("");
+    setChatMsgs(p=>[...p,{role:"user",text:msg}]);
+    setChatLoading(true);
+    try {
+      const ctx=STAGES.filter(s=>cfg.stages[s.id]?.enabled).map(s=>`${s.id}:${data?.[s.id]?.status}(${data?.[s.id]?.summary})`).join("; ");
+      const history=chatMsgs.slice(-6).map(m=>({role:m.role==="user"?"user":"assistant",content:m.text}));
+      const text=await aiChat("You are a data pipeline assistant. Answer concisely in max 3 sentences. No markdown.",`Context:${ctx}\n\nQuestion:${msg}`,200);
+      setChatMsgs(p=>[...p,{role:"assistant",text}]);
+    } catch { setChatMsgs(p=>[...p,{role:"assistant",text:"Error — try again."}]); }
+    setChatLoading(false);
+    setTimeout(()=>chatEndRef.current?.scrollIntoView({behavior:"smooth"}),80);
+  };
+
+  const exportCSV = () => {
+    if (!data) return;
+    const rows=[["Stage","Metric","Value","Status"]];
+    STAGES.forEach(s=>(data[s.id]?.metrics||[]).forEach(m=>rows.push([s.id,m.label,m.value,m.ok?"ok":"fail"])));
+    const a=document.createElement("a"); a.href="data:text/csv;charset=utf-8,"+encodeURIComponent(rows.map(r=>r.join(",")).join("\n"));
+    a.download=`ingestion_${new Date().toISOString().slice(0,10)}.csv`; a.click();
+  };
+
+  const overallStatus = !data?"loading"
+    :STAGES.some(s=>cfg.stages[s.id]?.enabled&&data[s.id]?.status==="error")  ?"error"
+    :STAGES.some(s=>cfg.stages[s.id]?.enabled&&data[s.id]?.status==="warning")?"warning"
+    :"healthy";
+
+  // ── Config Panel ───────────────────────────────────────────────────────────
+  const TestSlackBtn = ({webhook, T}) => {
+    const [state, setState] = React.useState("idle"); // idle | sending | ok | error
+    const test = async () => {
+      if (!webhook) return;
+      setState("sending");
+      try {
+        await fetch(webhook,{method:"POST",headers:{"Content-Type":"application/json"},
+          body:JSON.stringify({text:"✅ WiziAgent — Slack webhook test successful."})});
+        setState("ok");
+      } catch { setState("error"); }
+      setTimeout(()=>setState("idle"),3000);
+    };
+    const label = state==="sending"?"…":state==="ok"?"✓":state==="error"?"✗":"Test";
+    const col   = state==="ok"?T.green:state==="error"?T.red:T.muted;
+    return (
+      <button onClick={test} disabled={!webhook||state==="sending"} style={{
+        fontSize:11,color:col,background:"none",border:`1px solid ${col}40`,
+        borderRadius:6,padding:"5px 10px",cursor:webhook?"pointer":"not-allowed",
+        whiteSpace:"nowrap",flexShrink:0,transition:"color 0.2s"}}>
+        {label}
+      </button>
+    );
+  };
+
+  const ConfigPanel = () => {
+    const [lc,setLc]=React.useState(()=>JSON.parse(JSON.stringify(cfg)));
+    const setStage =(sid,k,v)=>setLc(p=>({...p,stages:{...p.stages,[sid]:{...p.stages[sid],[k]:v}}}));
+    const setThresh=(sid,mid,k,v)=>setLc(p=>({...p,thresholds:{...p.thresholds,[sid]:{...p.thresholds[sid],[mid]:{...p.thresholds[sid]?.[mid],[k]:Number(v)}}}  }));
+    const setAlert =(k,v)=>setLc(p=>({...p,alerts:{...p.alerts,[k]:v}}));
+    const setAiF   =(k,v)=>setLc(p=>({...p,aiFeatures:{...p.aiFeatures,[k]:v}}));
+    const inp=(val,onChange,type="text")=>(
+      <input type={type} value={val} onChange={e=>onChange(e.target.value)} style={{
+        background:T.bg,border:`1px solid ${T.border}`,borderRadius:6,
+        padding:"5px 9px",fontSize:12,color:T.text,width:"100%"}}/>
+    );
+    const tog=(val,onChange)=>(
+      <div onClick={()=>onChange(!val)} style={{width:34,height:18,borderRadius:99,
+        background:val?T.accent:T.border,position:"relative",cursor:"pointer",flexShrink:0,transition:"background 0.2s"}}>
+        <div style={{position:"absolute",top:2,left:val?16:2,width:14,height:14,borderRadius:"50%",background:"#fff",transition:"left 0.2s"}}/>
+      </div>
+    );
+    const Sec=({title,children})=>(
+      <section>
+        <div style={{fontSize:11,fontWeight:700,color:T.muted,textTransform:"uppercase",letterSpacing:"0.07em",marginBottom:10}}>{title}</div>
+        {children}
+      </section>
+    );
+    return (
+      <div style={{position:"fixed",top:0,right:0,bottom:0,width:430,background:T.surface,
+        borderLeft:`1px solid ${T.border}`,zIndex:200,overflowY:"auto"}}>
+        <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",
+          padding:"18px 20px",borderBottom:`1px solid ${T.border}`,position:"sticky",top:0,background:T.surface}}>
+          <span style={{fontSize:15,fontWeight:700,color:T.text}}>⚙ Ingestion Config</span>
+          <div style={{display:"flex",gap:8}}>
+            <button onClick={()=>{setCfg(lc);setShowConfig(false);}} style={{background:T.accent,color:"#fff",border:"none",borderRadius:7,padding:"6px 14px",fontSize:12,fontWeight:600,cursor:"pointer"}}>Save</button>
+            <button onClick={()=>setShowConfig(false)} style={{background:T.bg,border:`1px solid ${T.border}`,borderRadius:7,padding:"6px 14px",fontSize:12,color:T.muted,cursor:"pointer"}}>Cancel</button>
+          </div>
+        </div>
+        <div style={{padding:"16px 20px",display:"flex",flexDirection:"column",gap:20}}>
+          <Sec title="Autonomous AI">
+            <div style={{background:T.bg,borderRadius:8,padding:"12px 14px",border:`1px solid ${T.border}`,display:"flex",flexDirection:"column",gap:10}}>
+              <div>
+                <div style={{fontSize:10,color:T.muted,marginBottom:4}}>Auto-execute threshold (confidence %)</div>
+                {inp(lc.confidenceThreshold||85,v=>setLc(p=>({...p,confidenceThreshold:Number(v)})),"number")}
+                <div style={{fontSize:10,color:T.muted,marginTop:4}}>Low-risk actions above this confidence auto-execute without approval.</div>
+              </div>
+              {[["autoDiagnosis","🤖 Auto-Diagnosis"],["autoRemediation","⚡ Auto-Remediation"],["narrativeSummary","📝 Narrative Summary"],
+                ["anomalyTrend","📈 Anomaly Trend"],["blastRadius","💥 Blast Radius"],["preRunRisk","⚠️ Pre-Run Risk"],
+                ["incidentMemory","🧠 Incident Memory"],["crossStageCorrelation","🔗 Cross-Stage Correlation"],
+                ["weeklyDigest","📊 Weekly Digest"],["confidenceScore","🎯 Confidence Scoring"],
+              ].map(([k,label])=>(
+                <div key={k} style={{display:"flex",alignItems:"center",justifyContent:"space-between"}}>
+                  <span style={{fontSize:12,color:T.text}}>{label}</span>
+                  {tog(lc.aiFeatures?.[k]??true,v=>setAiF(k,v))}
+                </div>
+              ))}
+            </div>
+          </Sec>
+          <Sec title="Stages">
+            {STAGES.map(s=>(
+              <div key={s.id} style={{background:T.bg,borderRadius:8,padding:"12px 14px",border:`1px solid ${T.border}`,marginBottom:8}}>
+                <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:8}}>
+                  {tog(lc.stages[s.id]?.enabled,v=>setStage(s.id,"enabled",v))}
+                  <span style={{fontSize:13,fontWeight:600,color:T.text}}>{s.icon} {lc.stages[s.id]?.label}</span>
+                </div>
+                {[["Label","label"],["API Endpoint","apiEndpoint"],["Navigate To","navTo"],["SLA Target (HH:MM)","slaTarget"]].map(([lbl,k])=>(
+                  <div key={k} style={{marginBottom:6}}>
+                    <div style={{fontSize:10,color:T.muted,marginBottom:3}}>{lbl}</div>
+                    {inp(lc.stages[s.id]?.[k]||"",v=>setStage(s.id,k,v))}
+                  </div>
+                ))}
+              </div>
+            ))}
+          </Sec>
+          <Sec title="Metric Thresholds">
+            {STAGES.map(s=>Object.entries(lc.thresholds?.[s.id]||{}).map(([mid,vals])=>(
+              <div key={s.id+mid} style={{background:T.bg,borderRadius:8,padding:"10px 14px",border:`1px solid ${T.border}`,marginBottom:6}}>
+                <div style={{fontSize:12,fontWeight:600,color:T.text,marginBottom:6}}>{s.id} / {mid}</div>
+                <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8}}>
+                  {[["⚠ Warn ≥",T.orange,"warn"],["✕ Error ≥",T.red,"error"]].map(([lbl,col,k])=>(
+                    <div key={k}><div style={{fontSize:10,color:col,marginBottom:3}}>{lbl}</div>{inp(vals[k],v=>setThresh(s.id,mid,k,v),"number")}</div>
+                  ))}
+                </div>
+              </div>
+            )))}
+          </Sec>
+          <Sec title="Alert Routing">
+            <div style={{background:T.bg,borderRadius:8,padding:"12px 14px",border:`1px solid ${T.border}`,display:"flex",flexDirection:"column",gap:8}}>
+              <div>
+                <div style={{fontSize:10,color:T.muted,marginBottom:3}}>Slack Webhook URL</div>
+                <div style={{display:"flex",gap:6}}>
+                  <div style={{flex:1}}>{inp(lc.alerts?.slackWebhook||"",v=>setAlert("slackWebhook",v))}</div>
+                  <TestSlackBtn webhook={lc.alerts?.slackWebhook} T={T}/>
+                </div>
+              </div>
+              {[["onWarning","Alert on Warning"],["onError","Alert on Error"],["routeQualityToTriage","Route Quality → Triage"]].map(([k,label])=>(
+                <div key={k} style={{display:"flex",alignItems:"center",justifyContent:"space-between"}}>
+                  <span style={{fontSize:12,color:T.text}}>{label}</span>{tog(lc.alerts?.[k]??true,v=>setAlert(k,v))}
+                </div>
+              ))}
+            </div>
+          </Sec>
+          <Sec title="Auto Refresh">
+            <div style={{background:T.bg,borderRadius:8,padding:"12px 14px",border:`1px solid ${T.border}`}}>
+              <div style={{fontSize:10,color:T.muted,marginBottom:6}}>Interval seconds (0 = manual)</div>
+              {inp(lc.refreshInterval??300,v=>setLc(p=>({...p,refreshInterval:Number(v)})),"number")}
+            </div>
+          </Sec>
+          <button onClick={()=>setLc(JSON.parse(JSON.stringify(INGESTION_CFG_DEFAULT)))} style={{background:"none",border:`1px solid ${T.border}`,borderRadius:7,padding:"7px",fontSize:11,color:T.muted,cursor:"pointer"}}>Reset to defaults</button>
+        </div>
+      </div>
+    );
+  };
+
+  // ── Pending Action Card ────────────────────────────────────────────────────
+  const ActionCard = ({action}) => {
+    const sevColor = action.severity==="error"?T.red:action.severity==="warning"?T.orange:T.muted;
+    const riskColor= action.risk==="medium"?T.orange:action.risk==="high"?T.red:T.green;
+    const isExecuting = action.status==="executing";
+    const isExecuted  = action.status==="executed";
+    const assigned = assignments[action.id];
+    return (
+      <div style={{background:T.surface,border:`1px solid ${sevColor}40`,borderRadius:10,
+        padding:"14px 16px",marginBottom:10,
+        opacity:isExecuted?0.5:1,transition:"opacity 0.4s"}}>
+        {/* Header */}
+        <div style={{display:"flex",alignItems:"flex-start",justifyContent:"space-between",marginBottom:8,gap:8}}>
+          <div style={{flex:1}}>
+            <div style={{display:"flex",alignItems:"center",gap:6,marginBottom:4,flexWrap:"wrap"}}>
+              <span style={{fontSize:10,fontWeight:700,color:sevColor,background:`${sevColor}15`,
+                padding:"2px 8px",borderRadius:99,textTransform:"uppercase"}}>{action.severity}</span>
+              <span style={{fontSize:10,color:T.muted}}>{action.stageLabel}</span>
+              <span style={{fontSize:10,fontWeight:700,color:riskColor,background:`${riskColor}12`,
+                padding:"2px 8px",borderRadius:99}}>{action.risk} risk</span>
+              {cfg.aiFeatures.confidenceScore && (
+                <span style={{fontSize:10,color:T.accent}}>🎯 {action.confidence}% confident</span>
+              )}
+              {action.createdAt && (()=>{
+                const mins = Math.round((Date.now()-new Date(action.createdAt).getTime())/60000);
+                const label = mins<1?"just now":mins<60?`${mins}m ago`:`${Math.round(mins/60)}h ago`;
+                const urgentColor = mins>30?T.red:mins>10?T.orange:T.muted;
+                return <span style={{fontSize:10,color:urgentColor,marginLeft:"auto"}}>⏱ Pending {label}</span>;
+              })()}
+            </div>
+            <div style={{fontSize:13,fontWeight:700,color:T.text,marginBottom:4}}>{action.actionLabel}</div>
+            <div style={{fontSize:12,color:T.muted,lineHeight:1.5}}>{action.actionDetail}</div>
+          </div>
+        </div>
+        {/* Diagnosis */}
+        <div style={{fontSize:11,color:T.muted,lineHeight:1.5,marginBottom:10,
+          padding:"8px 10px",background:`${T.accent}08`,borderRadius:6,
+          borderLeft:`3px solid ${T.accent}40`}}>
+          <span style={{fontWeight:700,color:T.accent}}>Diagnosis: </span>{action.diagnosis}
+        </div>
+        {/* Issues */}
+        {action.issues?.length>0 && (
+          <div style={{marginBottom:10}}>
+            {action.issues.map((iss,i)=>(
+              <div key={i} style={{fontSize:11,color:T.muted,padding:"3px 0",display:"flex",gap:6}}>
+                <span style={{color:sevColor}}>•</span><span>{iss}</span>
+              </div>
+            ))}
+          </div>
+        )}
+        {/* Actions row */}
+        <div style={{display:"flex",gap:8,alignItems:"center",flexWrap:"wrap"}}>
+          {!isExecuted && !isExecuting && action.status==="pending" && (<>
+            <button onClick={()=>approveAction(action.id)} style={{
+              background:T.green,color:"#fff",border:"none",borderRadius:8,
+              padding:"9px 20px",fontSize:13,fontWeight:800,cursor:"pointer",
+              flex:1,
+              animation:action.severity==="error"?"wz-pulse-btn 1.8s ease-in-out infinite":"none",
+              boxShadow:`0 2px 8px ${T.green}40`}}>
+              ✓ Approve & Execute
+            </button>
+            <button onClick={()=>rejectAction(action.id)} style={{
+              background:`${T.red}15`,border:`1px solid ${T.red}30`,borderRadius:7,
+              padding:"6px 14px",fontSize:12,color:T.red,cursor:"pointer",fontWeight:600}}>
+              ✗ Reject
+            </button>
+            <button onClick={()=>onNavigate?.("workflows")} style={{
+              background:T.surface,border:`1px solid ${T.border}`,borderRadius:7,
+              padding:"6px 14px",fontSize:12,color:T.text,cursor:"pointer"}}>
+              ▶ Run SOP
+            </button>
+          </>)}
+          {isExecuting && <span style={{fontSize:12,color:T.accent}}>⚡ Executing…</span>}
+          {isExecuted  && <span style={{fontSize:12,color:T.green}}>✓ Executed</span>}
+          <select value={assigned?.member||""} onChange={e=>assignAction(action.id,e.target.value)}
+            style={{fontSize:11,background:T.bg,border:`1px solid ${T.border}`,borderRadius:5,
+              padding:"4px 8px",color:T.text,cursor:"pointer",marginLeft:"auto"}}>
+            <option value="">👤 Assign…</option>
+            {INGESTION_TEAM.map(m=><option key={m} value={m}>{m}</option>)}
+          </select>
+          {assigned?.member && <span style={{fontSize:11,color:T.green}}>→ {assigned.member}</span>}
+        </div>
+      </div>
+    );
+  };
+
+  // ── Execution log entry ────────────────────────────────────────────────────
+  const logColor = (status) =>
+    status==="ok"?"#10b981":status==="error"?T.red:status==="warning"?T.orange:status==="pending"?T.accent:T.muted;
+
+  const logIcon = (type,status) => {
+    if (type==="system")    return "⚙";
+    if (type==="check")     return status==="ok"?"✓":"⚠";
+    if (type==="diagnosis") return "🤖";
+    if (type==="action")    return status==="ok"?"✓":status==="pending"?"⏳":"⚡";
+    if (type==="error")     return "✗";
+    return "•";
+  };
+
+  // ── Stage detail (collapsed secondary) ────────────────────────────────────
+  const StageRow = ({stage}) => {
+    const sd=data?.[stage.id];
+    const status=sd?.status||"loading";
+    const color=STATUS_COLOR[status];
+    const isOpen=expanded[stage.id];
+    return (
+      <div style={{background:T.surface,border:`1px solid ${isOpen?color:T.border}`,borderRadius:10,marginBottom:8,overflow:"hidden"}}>
+        <div style={{display:"flex",alignItems:"center",gap:10,padding:"12px 16px",cursor:"pointer",
+          borderBottom:isOpen?`1px solid ${T.border}`:"none"}}
+          onClick={()=>setExpanded(p=>({...p,[stage.id]:!p[stage.id]}))}>
+          <span style={{fontSize:16}}>{stage.icon}</span>
+          <span style={{fontSize:13,fontWeight:700,color:T.text,flex:1}}>{cfg.stages[stage.id]?.label}</span>
+          <span style={{fontSize:10,fontWeight:700,color,background:`${color}18`,padding:"2px 8px",borderRadius:99}}>● {STATUS_LABEL[status]}</span>
+          {sd?.duration>0&&<span style={{fontSize:10,color:T.muted,background:`${T.border}60`,padding:"2px 8px",borderRadius:99}}>ran in {sd.duration>=60?`${Math.round(sd.duration/60)}m ${sd.duration%60}s`:`${sd.duration}s`}</span>}
+          <span style={{fontSize:11,color:T.muted,marginLeft:8}}>{sd?.summary}</span>
+          <span style={{fontSize:11,color:T.muted,marginLeft:8}}>{isOpen?"▲":"▼"}</span>
+        </div>
+        {isOpen && (
+          <div style={{padding:"14px 16px"}}>
+            <div style={{display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:8,marginBottom:12}}>
+              {(sd?.metrics||[]).map((m,i)=>(
+                <div key={i} style={{background:T.bg,borderRadius:7,padding:"9px 11px",border:`1px solid ${m.ok?T.border:T.red+"40"}`}}>
+                  <div style={{fontSize:16,fontWeight:800,color:m.ok?T.text:T.red}}>{m.value}</div>
+                  <div style={{fontSize:10,color:T.muted,marginTop:2}}>{m.label}</div>
+                </div>
+              ))}
+            </div>
+            {/* Trend sparkline */}
+            {cfg.aiFeatures.anomalyTrend && sd?.history && (
+              <div style={{marginBottom:10,padding:"8px 10px",background:T.bg,borderRadius:7,border:`1px solid ${T.border}`}}>
+                <div style={{fontSize:9,fontWeight:700,color:T.muted,textTransform:"uppercase",letterSpacing:"0.07em",marginBottom:5}}>7-Day Trend</div>
+                <div style={{display:"flex",alignItems:"flex-end",gap:2,height:24}}>
+                  {sd.history.map((v,i)=>{
+                    const max=Math.max(...sd.history,1),h=Math.max(3,Math.round((v/max)*24)),isLast=i===sd.history.length-1;
+                    return <div key={i} style={{flex:1,height:h,borderRadius:2,background:isLast?(status==="error"?T.red:status==="warning"?T.orange:T.green):T.accent+"50"}}/>;
+                  })}
+                </div>
+              </div>
+            )}
+            {/* Per-account */}
+            {(sd?.accounts||[]).map((acc,i)=>(
+              <div key={i} style={{display:"flex",alignItems:"center",gap:8,padding:"7px 10px",
+                borderRadius:6,marginBottom:4,background:T.bg,border:`1px solid ${T.border}`}}>
+                <div style={{width:7,height:7,borderRadius:"50%",background:STATUS_COLOR[acc.status]||T.muted,flexShrink:0}}/>
+                <span style={{fontSize:12,color:T.text,flex:1}}>{acc.name}</span>
+                {acc.note&&<span style={{fontSize:11,color:T.orange}}>{acc.note}</span>}
+                <span style={{fontSize:11,color:T.muted}}>{acc.lastSync}</span>
+                <span style={{fontSize:11,color:T.muted}}>{acc.rows?.toLocaleString()} rows</span>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+    );
+  };
+
+  // ── Digest view ────────────────────────────────────────────────────────────
+  const DigestView = () => {
+    // Build 14-day chart from run history
+    const last14 = Array.from({length:14},(_,i)=>{
+      const d = new Date(); d.setDate(d.getDate()-(13-i));
+      const dateStr = d.toDateString();
+      const run = runHistory.find(r=>new Date(r.ts).toDateString()===dateStr);
+      const status = !run?null:Object.values(run.statuses||{}).includes("error")?"error":Object.values(run.statuses||{}).includes("warning")?"warning":"healthy";
+      return {date:d,dateStr,status,dayLabel:d.toLocaleDateString("en-IN",{day:"numeric",month:"short"})};
+    });
+    const errorDays  = last14.filter(d=>d.status==="error").length;
+    const warnDays   = last14.filter(d=>d.status==="warning").length;
+    const healthDays = last14.filter(d=>d.status==="healthy").length;
+    const noDataDays = last14.filter(d=>d.status===null).length;
+
+    // Send to Slack
+    const [slackSending, setSlackSending] = React.useState(false);
+    const [slackResult,  setSlackResult]  = React.useState(null);
+    const sendToSlack = async () => {
+      const webhook = cfg.alerts?.slackWebhook;
+      if (!webhook||!aiDigest) return;
+      setSlackSending(true); setSlackResult(null);
+      try {
+        await fetch(webhook,{method:"POST",headers:{"Content-Type":"application/json"},
+          body:JSON.stringify({text:`*WiziAgent — Weekly Pipeline Digest*
+${aiDigest}
+
+Last 14 days: ✅ ${healthDays} healthy, ⚠️ ${warnDays} warnings, 🔴 ${errorDays} errors.`})});
+        setSlackResult("sent");
+      } catch { setSlackResult("error"); }
+      setSlackSending(false);
+    };
+
+    return (
+    <div>
+      {/* 14-day run chart */}
+      <div style={{background:T.surface,borderRadius:10,padding:"16px",border:`1px solid ${T.border}`,marginBottom:14}}>
+        <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:12}}>
+          <div style={{fontSize:11,fontWeight:700,color:T.text}}>📅 14-Day Pipeline History</div>
+          <div style={{display:"flex",gap:12,fontSize:10,color:T.muted}}>
+            {[[T.green,"Healthy"],[T.orange,"Warning"],[T.red,"Error"]].map(([c,l])=>(
+              <span key={l} style={{display:"flex",alignItems:"center",gap:4}}>
+                <span style={{width:8,height:8,borderRadius:2,background:c,display:"inline-block"}}/>
+                {l}
+              </span>
+            ))}
+          </div>
+        </div>
+        <div style={{display:"flex",alignItems:"flex-end",gap:4,height:48,marginBottom:6}}>
+          {last14.map((d,i)=>{
+            const barColor = d.status==="error"?T.red:d.status==="warning"?T.orange:d.status==="healthy"?T.green:`${T.border}60`;
+            const h = d.status?40:12;
+            const isToday = i===13;
+            return (
+              <div key={i} title={`${d.dayLabel}: ${d.status||"no data"}`}
+                style={{flex:1,display:"flex",flexDirection:"column",alignItems:"center",gap:3}}>
+                <div style={{width:"100%",height:h,borderRadius:3,background:barColor,
+                  outline:isToday?`2px solid ${T.accent}`:"none",
+                  outlineOffset:1,transition:"height 0.3s"}}/>
+              </div>
+            );
+          })}
+        </div>
+        <div style={{display:"flex",justifyContent:"space-between",fontSize:9,color:T.muted}}>
+          <span>{last14[0].dayLabel}</span>
+          <span>Today</span>
+        </div>
+        {/* Summary counts */}
+        <div style={{display:"flex",gap:16,marginTop:12,paddingTop:12,borderTop:`1px solid ${T.border}`}}>
+          {[[T.green,healthDays,"healthy days"],[T.orange,warnDays,"warning days"],[T.red,errorDays,"error days"],[T.muted,noDataDays,"no data"]].map(([c,v,l])=>(
+            <div key={l} style={{textAlign:"center"}}>
+              <div style={{fontSize:18,fontWeight:800,color:c}}>{v}</div>
+              <div style={{fontSize:10,color:T.muted}}>{l}</div>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      {/* AI Weekly digest + send to Slack */}
+      <div style={{marginBottom:14,padding:"14px 16px",background:`${T.accent}08`,borderRadius:10,border:`1px solid ${T.accent}20`}}>
+        <div style={{fontSize:11,fontWeight:700,color:T.accent,marginBottom:8,display:"flex",alignItems:"center",justifyContent:"space-between",gap:8,flexWrap:"wrap"}}>
+          <span>📊 Weekly Digest</span>
+          <div style={{display:"flex",gap:6}}>
+            <button onClick={generateWeeklyDigest} style={{fontSize:11,color:T.accent,background:"none",border:`1px solid ${T.accent}40`,borderRadius:5,padding:"2px 8px",cursor:"pointer"}}>{aiDigestLoad?"Generating…":"Generate"}</button>
+            {aiDigest && cfg.alerts?.slackWebhook && (
+              <button onClick={sendToSlack} disabled={slackSending} style={{fontSize:11,
+                color:slackResult==="sent"?T.green:slackResult==="error"?T.red:T.muted,
+                background:"none",border:`1px solid ${T.border}`,borderRadius:5,
+                padding:"2px 8px",cursor:"pointer"}}>
+                {slackSending?"Sending…":slackResult==="sent"?"✓ Sent to Slack":slackResult==="error"?"✗ Failed":"📤 Send to Slack"}
+              </button>
+            )}
+          </div>
+        </div>
+        {aiDigest?<div style={{fontSize:13,color:T.text,lineHeight:1.6}}>{aiDigest}</div>
+          :<div style={{fontSize:12,color:T.muted}}>Click Generate for an AI-written weekly summary.</div>}
+      </div>
+
+      {/* Incident list */}
+      <div style={{fontSize:11,fontWeight:700,color:T.muted,textTransform:"uppercase",letterSpacing:"0.07em",marginBottom:10}}>Recent Incidents</div>
+      {incidents.slice(0,10).map((inc,i)=>(
+        <div key={i} style={{background:T.surface,border:`1px solid ${T.border}`,borderRadius:8,padding:"10px 14px",marginBottom:6}}>
+          <div style={{display:"flex",gap:10,alignItems:"flex-start"}}>
+            <span style={{fontSize:10,fontWeight:700,color:T.orange,background:`${T.orange}15`,padding:"2px 8px",borderRadius:99,flexShrink:0}}>{inc.stage}</span>
+            <div style={{flex:1}}>
+              <div style={{fontSize:12,color:T.text}}>{inc.summary}</div>
+              <div style={{fontSize:10,color:T.muted,marginTop:3}}>{inc.date}</div>
+            </div>
+          </div>
+        </div>
+      ))}
+      {incidents.length===0&&<div style={{fontSize:12,color:T.muted}}>No incidents recorded yet.</div>}
+    </div>
+    );
+  };
+
+
+  // ── Executive View ────────────────────────────────────────────────────────
+  const ExecutiveView = () => {
+    const pending   = pendingActions.filter(a=>a.status==="pending");
+    const autoExec  = execLog.filter(e=>e.autoExecuted);
+
+    // Plain-English stage summaries
+    const stageSummaries = STAGES.filter(s=>cfg.stages[s.id]?.enabled).map(s=>{
+      const sd=data?.[s.id];
+      const label=cfg.stages[s.id]?.label;
+      const status=sd?.status||"loading";
+      const color=STATUS_COLOR[status];
+      return {id:s.id,label,status,color,summary:sd?.summary||"—",issues:sd?.issues||[],
+        accounts:sd?.accounts||[], lastRun:sd?.lastRun||"—", duration:sd?.duration||0};
+    });
+
+    // Overall headline
+    const headline = overallStatus==="healthy"
+      ? "All data pipelines are running normally."
+      : overallStatus==="warning"
+        ? "One or more pipelines need attention."
+        : "Data pipeline has failures. AI is taking action.";
+
+    const headlineColor = STATUS_COLOR[overallStatus];
+
+    // ── Insight 1: 7-day health streak ──────────────────────────────────────
+    const healthStreak = runHistory.slice(0,7).reverse().map(r=>{
+      const s = Object.values(r.statuses||{});
+      return s.includes("error")?"error":s.includes("warning")?"warning":"healthy";
+    });
+    // Pad to 7 if fewer runs
+    while (healthStreak.length<7) healthStreak.unshift(null);
+
+    // ── Insight 2: Data freshness ────────────────────────────────────────────
+    const freshnessItems = stageSummaries.map(s=>{
+      const timeStr = s.lastRun; // e.g. "Today 04:12 IST"
+      const match = timeStr.match(/(\d{1,2}):(\d{2})/);
+      if (!match) return {label:s.label,hoursAgo:null};
+      const runHour=parseInt(match[1]), runMin=parseInt(match[2]);
+      const now=new Date(), nowH=now.getHours(), nowM=now.getMinutes();
+      const minsAgo=(nowH*60+nowM)-(runHour*60+runMin);
+      const hoursAgo=minsAgo>0?Math.round(minsAgo/60):null;
+      return {label:s.label,hoursAgo,status:s.status};
+    });
+    const maxFreshness = freshnessItems.reduce((a,b)=>((b.hoursAgo||0)>(a.hoursAgo||0)?b:a),freshnessItems[0]);
+
+    // ── Insight 3: Accounts at risk ──────────────────────────────────────────
+    const allAccounts = stageSummaries.flatMap(s=>s.accounts);
+    const atRisk = [...new Map(
+      allAccounts.filter(a=>a.status!=="healthy").map(a=>[a.name,a])
+    ).values()];
+    const totalAccounts = [...new Map(allAccounts.map(a=>[a.name,a])).values()].length;
+
+    // ── Insight 4: Time to resolution ───────────────────────────────────────
+    const avgResolutionMins = (() => {
+      if (overallStatus==="healthy") return null;
+      // Use historical avg duration of failing stages as proxy
+      const failingDurations = stageSummaries
+        .filter(s=>s.status!=="healthy")
+        .map(s=>s.duration||0);
+      if (!failingDurations.length) return null;
+      const avg = failingDurations.reduce((a,b)=>a+b,0)/failingDurations.length;
+      return Math.round(avg/60)+15; // add 15min buffer
+    })();
+    const etaTime = avgResolutionMins ? (() => {
+      const d=new Date(Date.now()+avgResolutionMins*60000);
+      return d.toLocaleTimeString("en-IN",{hour:"2-digit",minute:"2-digit"})+" IST";
+    })() : null;
+
+    // ── Insight 5: Today vs yesterday ───────────────────────────────────────
+    const todayRun     = runHistory[0];
+    const yesterdayRun = runHistory[1];
+    const vsYesterday  = (() => {
+      if (!todayRun||!yesterdayRun) return null;
+      const score = r => Object.values(r.statuses||{}).reduce((a,s)=>a+(s==="error"?2:s==="warning"?1:0),0);
+      const diff = score(todayRun)-score(yesterdayRun);
+      if (diff===0) return {label:"Same as yesterday",color:T.muted,icon:"→"};
+      if (diff<0)   return {label:"Better than yesterday",color:T.green,icon:"↑"};
+      return       {label:"More issues than yesterday",color:T.red,icon:"↓"};
+    })();
+
+    // Empty state
+    if (!loading && !data) return (
+      <div style={{maxWidth:600,margin:"0 auto",textAlign:"center",padding:"60px 20px"}}>
+        <div style={{fontSize:40,marginBottom:16}}>📡</div>
+        <div style={{fontSize:17,fontWeight:700,color:T.text,marginBottom:8}}>No pipeline data yet</div>
+        <div style={{fontSize:13,color:T.muted,marginBottom:20,lineHeight:1.6}}>
+          Hit Refresh to run the first scan. AI will diagnose and report back here.
+        </div>
+        <button onClick={loadStageData} style={{background:T.accent,color:"#fff",border:"none",
+          borderRadius:8,padding:"10px 24px",fontSize:13,fontWeight:700,cursor:"pointer"}}>
+          ↻ Run First Scan
+        </button>
+      </div>
+    );
+
+    return (
+      <div style={{maxWidth:760,margin:"0 auto"}}>
+
+        {/* Status bar */}
+        <div style={{background:`${headlineColor}12`,border:`1.5px solid ${headlineColor}40`,
+          borderRadius:12,padding:"16px 24px",marginBottom:20,
+          display:"flex",alignItems:"center",gap:16}}>
+          <div style={{width:10,height:10,borderRadius:"50%",background:headlineColor,
+            flexShrink:0,boxShadow:`0 0 0 4px ${headlineColor}25`}}/>
+          <div style={{flex:1}}>
+            <div style={{fontSize:17,fontWeight:800,color:T.text,letterSpacing:"-0.01em"}}>
+              {loading?"Checking pipeline…":headline}
+            </div>
+            {aiNarrative&&<div style={{fontSize:13,color:T.muted,lineHeight:1.5,marginTop:4}}>{aiNarrative}</div>}
+          </div>
+          <div style={{textAlign:"right",flexShrink:0}}>
+            <div style={{fontSize:10,color:T.muted,textTransform:"uppercase",letterSpacing:"0.07em"}}>Last checked</div>
+            <div style={{fontSize:13,fontWeight:600,color:T.text,marginTop:2}}>{data?.quality?.lastRun||"—"}</div>
+            {execLog.find(e=>e.type==="action"&&e.status==="ok"&&!e.autoExecuted)&&(
+              <div style={{fontSize:10,color:T.green,marginTop:4}}>✓ Slack alerted</div>
+            )}
+          </div>
+        </div>
+
+        {/* Pipeline flow */}
+        <div style={{display:"flex",alignItems:"stretch",gap:0,marginBottom:20}}>
+          {stageSummaries.map((s,i)=>(
+            <React.Fragment key={s.id}>
+              <div style={{flex:1,background:T.surface,border:`1.5px solid ${s.color}50`,
+                borderRadius:10,padding:"14px 16px",cursor:"pointer",position:"relative",
+                transition:"box-shadow 0.15s"}}
+                onClick={()=>{ setViewMode("operator"); setActiveView("stages"); setExpanded(p=>({...p,[s.id]:true})); }}
+                onMouseEnter={e=>e.currentTarget.style.boxShadow=`0 0 0 3px ${s.color}30`}
+                onMouseLeave={e=>e.currentTarget.style.boxShadow="none"}>
+                <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:6}}>
+                  <span style={{fontSize:11,fontWeight:700,color:s.color,textTransform:"uppercase",letterSpacing:"0.07em"}}>
+                    {s.status==="healthy"?"✓ On track":s.status==="warning"?"⚠ Attention":"✗ Issue"}
+                  </span>
+                  <span style={{fontSize:9,color:T.muted}}>↗</span>
+                </div>
+                <div style={{fontSize:14,fontWeight:700,color:T.text,marginBottom:4}}>{s.label}</div>
+                <div style={{fontSize:11,color:T.muted,marginBottom:s.issues.length>0?6:0}}>{s.summary}</div>
+                {s.issues.length>0&&(
+                  <div style={{fontSize:11,color:s.color,lineHeight:1.4,padding:"5px 8px",background:`${s.color}10`,borderRadius:6}}>
+                    {s.issues[0]}{s.issues.length>1&&<span style={{color:T.muted}}> +{s.issues.length-1}</span>}
+                  </div>
+                )}
+                <div style={{position:"absolute",top:8,right:8,width:16,height:16,borderRadius:"50%",
+                  background:`${s.color}20`,display:"flex",alignItems:"center",justifyContent:"center",
+                  fontSize:9,fontWeight:700,color:s.color}}>{i+1}</div>
+              </div>
+              {i<stageSummaries.length-1&&(
+                <div style={{display:"flex",alignItems:"center",padding:"0 4px",color:T.muted,fontSize:18,flexShrink:0}}>→</div>
+              )}
+            </React.Fragment>
+          ))}
+        </div>
+
+        {/* AI actions summary */}
+        <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:12,marginBottom:20}}>
+          {/* Auto-handled */}
+          <div style={{background:T.surface,borderRadius:12,padding:"16px",border:`1px solid ${T.border}`}}>
+            <div style={{fontSize:11,fontWeight:700,color:T.green,marginBottom:8}}>
+              ✓ AI handled automatically
+            </div>
+            {autoExec.length===0
+              ? <div style={{fontSize:12,color:T.muted}}>Nothing needed yet.</div>
+              : autoExec.slice(0,3).map((e,i)=>(
+                  <div key={i} style={{fontSize:12,color:T.text,marginBottom:4,
+                    display:"flex",gap:6,alignItems:"flex-start"}}>
+                    <span style={{color:T.green,flexShrink:0}}>•</span>
+                    <span>{e.label.replace("Auto-executed: ","")}</span>
+                  </div>
+                ))
+            }
+            {autoExec.length>3&&<div style={{fontSize:11,color:T.muted,marginTop:4}}>+{autoExec.length-3} more actions</div>}
+          </div>
+
+          {/* Needs your input */}
+          <div style={{background:T.surface,borderRadius:12,padding:"16px",
+            border:`1px solid ${pending.length>0?T.orange+"60":T.border}`}}>
+            <div style={{fontSize:11,fontWeight:700,color:pending.length>0?T.orange:T.muted,marginBottom:8}}>
+              {pending.length>0?"⏳ Needs your approval":"✓ No approvals needed"}
+            </div>
+            {pending.length===0
+              ? <div style={{fontSize:12,color:T.muted}}>AI is handling everything.</div>
+              : pending.slice(0,3).map((a,i)=>(
+                  <div key={i} style={{marginBottom:10}}>
+                    <div style={{fontSize:12,color:T.text,fontWeight:600,marginBottom:4}}>{a.actionLabel}</div>
+                    <div style={{fontSize:11,color:T.muted,marginBottom:6}}>{a.actionDetail}</div>
+                    <div style={{display:"flex",gap:6}}>
+                      <button onClick={()=>approveAction(a.id)} style={{
+                        background:T.green,color:"#fff",border:"none",borderRadius:6,
+                        padding:"5px 12px",fontSize:11,fontWeight:700,cursor:"pointer"}}>
+                        Approve
+                      </button>
+                      <button onClick={()=>rejectAction(a.id)} style={{
+                        background:"none",border:`1px solid ${T.border}`,borderRadius:6,
+                        padding:"5px 12px",fontSize:11,color:T.muted,cursor:"pointer"}}>
+                        Dismiss
+                      </button>
+                    </div>
+                  </div>
+                ))
+            }
+          </div>
+        </div>
+
+        {/* Pre-run risk if present */}
+        {cfg.aiFeatures.preRunRisk && aiRisk && (
+          <div style={{background:`${T.orange}08`,borderRadius:12,padding:"16px",
+            border:`1px solid ${T.orange}25`,marginBottom:20}}>
+            <div style={{fontSize:11,fontWeight:700,color:T.orange,marginBottom:6}}>
+              ⚠️ Tonight's run — early warning
+            </div>
+            <div style={{fontSize:13,color:T.text,lineHeight:1.6}}>{aiRisk}</div>
+          </div>
+        )}
+
+        {/* ── Row: streak + vs-yesterday + freshness ── */}
+        <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:12,marginBottom:16}}>
+
+          {/* 7-day streak */}
+          <div style={{background:T.surface,borderRadius:12,padding:"14px 16px",border:`1px solid ${T.border}`}}>
+            <div style={{fontSize:10,fontWeight:700,color:T.muted,textTransform:"uppercase",letterSpacing:"0.07em",marginBottom:10}}>
+              📅 Last 7 Days
+            </div>
+            <div style={{display:"flex",gap:5,alignItems:"flex-end",marginBottom:6}}>
+              {healthStreak.map((s,i)=>(
+                <div key={i} title={s||"No data"} style={{
+                  flex:1,height:s?20:8,borderRadius:4,
+                  background:!s?`${T.border}60`:s==="healthy"?T.green:s==="warning"?T.orange:T.red,
+                  opacity:i===6?1:0.5+i*0.08,
+                  transition:"height 0.3s"}}/>
+              ))}
+            </div>
+            <div style={{display:"flex",justifyContent:"space-between"}}>
+              <span style={{fontSize:9,color:T.muted}}>7d ago</span>
+              <span style={{fontSize:9,color:T.muted}}>Today</span>
+            </div>
+          </div>
+
+          {/* Vs yesterday */}
+          <div style={{background:T.surface,borderRadius:12,padding:"14px 16px",border:`1px solid ${T.border}`,
+            display:"flex",flexDirection:"column",justifyContent:"center",alignItems:"center",textAlign:"center"}}>
+            <div style={{fontSize:10,fontWeight:700,color:T.muted,textTransform:"uppercase",letterSpacing:"0.07em",marginBottom:8}}>
+              📊 Trend
+            </div>
+            {vsYesterday
+              ? <>
+                  <div style={{fontSize:28,fontWeight:800,color:vsYesterday.color,letterSpacing:"-0.02em"}}>
+                    {vsYesterday.icon}
+                  </div>
+                  <div style={{fontSize:12,color:vsYesterday.color,fontWeight:600,marginTop:4}}>
+                    {vsYesterday.label}
+                  </div>
+                </>
+              : <div style={{fontSize:12,color:T.muted}}>Not enough history yet</div>
+            }
+          </div>
+
+          {/* Data freshness */}
+          <div style={{background:T.surface,borderRadius:12,padding:"14px 16px",border:`1px solid ${T.border}`}}>
+            <div style={{fontSize:10,fontWeight:700,color:T.muted,textTransform:"uppercase",letterSpacing:"0.07em",marginBottom:8}}>
+              🕐 Data Freshness
+            </div>
+            {freshnessItems.map((f,i)=>(
+              <div key={i} style={{display:"flex",alignItems:"center",justifyContent:"space-between",
+                marginBottom:i<freshnessItems.length-1?6:0}}>
+                <span style={{fontSize:11,color:T.muted}}>{f.label}</span>
+                <span style={{fontSize:11,fontWeight:700,
+                  color:!f.hoursAgo?T.muted:f.hoursAgo<=2?T.green:f.hoursAgo<=6?T.orange:T.red}}>
+                  {f.hoursAgo!=null?`${f.hoursAgo}h ago`:"—"}
+                </span>
+              </div>
+            ))}
+          </div>
+        </div>
+
+        {/* ── Row: accounts at risk + time to resolution ── */}
+        <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:12,marginBottom:16}}>
+
+          {/* Accounts at risk */}
+          <div style={{background:T.surface,borderRadius:12,padding:"14px 16px",border:`1px solid ${atRisk.length>0?T.orange+"50":T.border}`}}>
+            <div style={{fontSize:10,fontWeight:700,color:T.muted,textTransform:"uppercase",letterSpacing:"0.07em",marginBottom:8}}>
+              👥 Accounts
+            </div>
+            {atRisk.length===0
+              ? <div style={{display:"flex",alignItems:"center",gap:8}}>
+                  <span style={{fontSize:22,fontWeight:800,color:T.green}}>{totalAccounts}</span>
+                  <span style={{fontSize:12,color:T.muted}}>of {totalAccounts} accounts healthy</span>
+                </div>
+              : <>
+                  <div style={{display:"flex",alignItems:"baseline",gap:6,marginBottom:6}}>
+                    <span style={{fontSize:22,fontWeight:800,color:T.orange}}>{atRisk.length}</span>
+                    <span style={{fontSize:12,color:T.muted}}>of {totalAccounts} accounts affected</span>
+                  </div>
+                  {atRisk.slice(0,3).map((a,i)=>(
+                    <div key={i} style={{display:"flex",alignItems:"center",gap:6,marginBottom:3}}>
+                      <div style={{width:6,height:6,borderRadius:"50%",flexShrink:0,
+                        background:a.status==="error"?T.red:T.orange}}/>
+                      <span style={{fontSize:11,color:T.text}}>{a.name}</span>
+                      {a.note&&<span style={{fontSize:10,color:T.muted}}>— {a.note}</span>}
+                    </div>
+                  ))}
+                  {atRisk.length>3&&<div style={{fontSize:10,color:T.muted,marginTop:4}}>+{atRisk.length-3} more</div>}
+                </>
+            }
+          </div>
+
+          {/* Time to resolution */}
+          <div style={{background:T.surface,borderRadius:12,padding:"14px 16px",border:`1px solid ${T.border}`,
+            display:"flex",flexDirection:"column",justifyContent:"center"}}>
+            <div style={{fontSize:10,fontWeight:700,color:T.muted,textTransform:"uppercase",letterSpacing:"0.07em",marginBottom:8}}>
+              ⏱ Expected Resolution
+            </div>
+            {overallStatus==="healthy"
+              ? <div style={{display:"flex",alignItems:"center",gap:8}}>
+                  <span style={{fontSize:20}}>✓</span>
+                  <span style={{fontSize:13,color:T.green,fontWeight:600}}>No issues to resolve</span>
+                </div>
+              : etaTime
+                ? <>
+                    <div style={{fontSize:22,fontWeight:800,color:T.text,letterSpacing:"-0.02em",marginBottom:4}}>
+                      {etaTime}
+                    </div>
+                    <div style={{fontSize:11,color:T.muted,lineHeight:1.5}}>
+                      Estimated based on typical fix times. AI is working on it now.
+                    </div>
+                  </>
+                : <div style={{fontSize:12,color:T.muted}}>Estimating…</div>
+            }
+          </div>
+        </div>
+
+        {/* Footer note */}
+        <div style={{textAlign:"center",fontSize:11,color:T.muted,paddingBottom:8}}>
+          AI is monitoring continuously.{cfg.refreshInterval>0&&` Refreshing every ${cfg.refreshInterval}s.`}
+        </div>
+      </div>
+    );
+  };
+
+  // ── Main render ────────────────────────────────────────────────────────────
+  return (
+    <div style={{padding:"20px 24px",maxWidth:1100,margin:"0 auto",position:"relative"}}>
+      {showConfig&&<ConfigPanel/>}
+      <style>{`
+        @keyframes wz-pulse-btn {
+          0%,100% { box-shadow: 0 2px 8px rgba(16,185,129,0.4); transform: scale(1); }
+          50%      { box-shadow: 0 4px 16px rgba(16,185,129,0.7); transform: scale(1.02); }
+        }
+        @keyframes wz-shimmer {
+          0%   { background-position: -400px 0; }
+          100% { background-position: 400px 0; }
+        }
+        .wz-skel {
+          background: linear-gradient(90deg, var(--wz-border,#333) 25%, var(--wz-surface,#444) 50%, var(--wz-border,#333) 75%);
+          background-size: 400px 100%;
+          animation: wz-shimmer 1.4s ease infinite;
+          border-radius: 6px;
+        }
+      `}</style>
+
+      {/* Header */}
+      <div style={{display:"flex",alignItems:"flex-start",justifyContent:"space-between",marginBottom:14,flexWrap:"wrap",gap:10}}>
+        <div>
+          <div style={{fontSize:20,fontWeight:800,color:T.text,letterSpacing:"-0.02em",display:"flex",alignItems:"center",gap:10}}>
+            Data Ingestion
+            {diagnosing&&<span style={{fontSize:11,color:T.accent,fontWeight:400,animation:"pulse 1.5s infinite"}}>🤖 AI scanning…</span>}
+          </div>
+          <div style={{marginTop:8,display:"flex",background:T.bg,border:`1px solid ${T.border}`,borderRadius:8,padding:2,gap:1,width:"fit-content"}}>
+            {[["executive","👤 Executive"],["operator","⚙ Operator"]].map(([m,label])=>(
+              <button key={m} onClick={()=>setViewMode(m)} style={{
+                padding:"5px 16px",fontSize:12,fontWeight:viewMode===m?700:400,
+                color:viewMode===m?"#fff":T.muted,
+                background:viewMode===m?T.accent:"none",
+                border:"none",borderRadius:6,cursor:"pointer",
+                transition:"all 0.15s"}}>
+                {label}
+              </button>
+            ))}
+          </div>
+        </div>
+        <div style={{display:"flex",alignItems:"center",gap:7,flexWrap:"wrap"}}>
+          <span style={{fontSize:11,fontWeight:700,padding:"4px 12px",borderRadius:99,
+            background:`${STATUS_COLOR[overallStatus]}18`,color:STATUS_COLOR[overallStatus],
+            border:`1px solid ${STATUS_COLOR[overallStatus]}30`}}>
+            ● {STATUS_LABEL[overallStatus]}
+          </span>
+          <button onClick={loadStageData} style={{background:T.surface,border:`1px solid ${T.border}`,borderRadius:7,padding:"5px 12px",fontSize:12,color:T.text,cursor:"pointer",fontWeight:600}}>↻</button>
+          <button onClick={()=>setChatOpen(p=>!p)} style={{background:chatOpen?T.accent:T.surface,border:`1px solid ${chatOpen?T.accent:T.border}`,borderRadius:7,padding:"5px 12px",fontSize:12,color:chatOpen?"#fff":T.text,cursor:"pointer",fontWeight:600}}>💬</button>
+          <button onClick={exportCSV} style={{background:T.surface,border:`1px solid ${T.border}`,borderRadius:7,padding:"5px 12px",fontSize:12,color:T.text,cursor:"pointer"}}>⬇ CSV</button>
+          <button onClick={()=>window.print()} style={{background:T.surface,border:`1px solid ${T.border}`,borderRadius:7,padding:"5px 12px",fontSize:12,color:T.text,cursor:"pointer"}}>🖨</button>
+          <button onClick={()=>setShowConfig(true)} style={{background:T.surface,border:`1px solid ${T.border}`,borderRadius:7,padding:"5px 12px",fontSize:12,color:T.text,cursor:"pointer"}}>⚙</button>
+        </div>
+      </div>
+
+      {/* AI banners + operator content — hidden in executive mode */}
+      {viewMode==="executive" && <ExecutiveView/>}
+      {viewMode==="operator" && <>
+      {/* AI banners */}
+      <div style={{display:"flex",gap:10,marginBottom:14,flexWrap:"wrap"}}>
+        {cfg.aiFeatures.narrativeSummary && (
+          <div style={{flex:1,minWidth:200,padding:"10px 14px",background:`${T.accent}08`,borderRadius:9,border:`1px solid ${T.accent}20`}}>
+            <div style={{fontSize:9,fontWeight:700,color:T.accent,textTransform:"uppercase",letterSpacing:"0.07em",marginBottom:4}}>📝 Summary</div>
+            {aiNarrLoad?<div style={{fontSize:11,color:T.muted}}>Generating…</div>
+              :aiNarrative?<div style={{fontSize:12,color:T.text,lineHeight:1.5}}>{aiNarrative}</div>
+              :<button onClick={()=>data&&generateNarrative(data)} style={{fontSize:11,color:T.accent,background:"none",border:`1px solid ${T.accent}40`,borderRadius:5,padding:"2px 8px",cursor:"pointer"}}>Generate</button>}
+          </div>
+        )}
+        {cfg.aiFeatures.preRunRisk && (
+          <div style={{flex:1,minWidth:200,padding:"10px 14px",background:`${T.orange}08`,borderRadius:9,border:`1px solid ${T.orange}25`}}>
+            <div style={{fontSize:9,fontWeight:700,color:T.orange,textTransform:"uppercase",letterSpacing:"0.07em",marginBottom:4}}>⚠️ Pre-Run Risk</div>
+            {aiRiskLoad?<div style={{fontSize:11,color:T.muted}}>Assessing…</div>
+              :aiRisk?<div style={{fontSize:12,color:T.text,lineHeight:1.5}}>{aiRisk}</div>
+              :<button onClick={generatePreRunRisk} style={{fontSize:11,color:T.orange,background:"none",border:`1px solid ${T.orange}40`,borderRadius:5,padding:"2px 8px",cursor:"pointer"}}>Assess</button>}
+          </div>
+        )}
+        {cfg.aiFeatures.crossStageCorrelation && aiCorr && (
+          <div style={{flex:1,minWidth:200,padding:"10px 14px",background:`${T.green||"#10b981"}08`,borderRadius:9,border:`1px solid ${T.green||"#10b981"}25`}}>
+            <div style={{fontSize:9,fontWeight:700,color:T.green||"#10b981",textTransform:"uppercase",letterSpacing:"0.07em",marginBottom:4}}>🔗 Correlation</div>
+            <div style={{fontSize:12,color:T.text,lineHeight:1.5}}>{aiCorr}</div>
+          </div>
+        )}
+      </div>
+
+      {/* View tabs */}
+      <div style={{display:"flex",borderBottom:`1px solid ${T.border}`,marginBottom:16}}>
+        {[["operator","⚡ Operator"],["stages","🔍 Stages"],["digest","📊 Digest"]].map(([v,label])=>(
+          <button key={v} onClick={()=>setActiveView(v)} style={{
+            padding:"7px 16px",fontSize:12,fontWeight:activeView===v?700:400,
+            color:activeView===v?T.accent:T.muted,background:"none",border:"none",
+            borderBottom:activeView===v?`2px solid ${T.accent}`:"2px solid transparent",
+            cursor:"pointer"}}>
+            {label}
+            {v==="operator"&&pendingActions.filter(a=>a.status==="pending").length>0&&(
+              <span style={{marginLeft:6,background:T.red,color:"#fff",borderRadius:99,
+                fontSize:10,padding:"1px 6px",fontWeight:700}}>
+                {pendingActions.filter(a=>a.status==="pending").length}
+              </span>
+            )}
+          </button>
+        ))}
+      </div>
+
+      {/* ── OPERATOR VIEW ── */}
+      {activeView==="operator" && (
+        <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:16}}>
+
+          {/* LEFT: Approval queue */}
+          <div>
+            <div style={{fontSize:12,fontWeight:700,color:T.text,marginBottom:10,display:"flex",alignItems:"center",gap:8}}>
+              <span>⏳ Pending Approval</span>
+              <span style={{fontSize:11,color:T.muted,fontWeight:400}}>
+                ({pendingActions.filter(a=>a.status==="pending").length} actions)
+              </span>
+            </div>
+            {pendingActions.length===0 && !diagnosing && (
+              <div style={{padding:"32px 20px",textAlign:"center",background:T.surface,
+                borderRadius:10,border:`1px solid ${T.border}`}}>
+                <div style={{fontSize:24,marginBottom:8}}>✓</div>
+                <div style={{fontSize:13,fontWeight:600,color:T.text,marginBottom:4}}>All clear</div>
+                <div style={{fontSize:12,color:T.muted}}>No actions pending. AI is monitoring.</div>
+              </div>
+            )}
+            {diagnosing && pendingActions.length===0 && (
+              <div style={{padding:"32px 20px",textAlign:"center",background:T.surface,
+                borderRadius:10,border:`1px solid ${T.border}`}}>
+                <div style={{fontSize:12,color:T.accent}}>🤖 AI is scanning pipeline…</div>
+              </div>
+            )}
+            {pendingActions.map(action=><ActionCard key={action.id} action={action}/>)}
+          </div>
+
+          {/* RIGHT: Execution log */}
+          <div>
+            <div style={{fontSize:12,fontWeight:700,color:T.text,marginBottom:10,display:"flex",alignItems:"center",justifyContent:"space-between"}}>
+              <span>📋 Execution Log</span>
+              <button onClick={()=>{setExecLog([]);localStorage.removeItem("wz_ingestion_execlog_v1");}}
+                style={{fontSize:10,color:T.muted,background:"none",border:"none",cursor:"pointer"}}>Clear</button>
+            </div>
+            <div style={{background:T.surface,borderRadius:10,border:`1px solid ${T.border}`,
+              maxHeight:520,overflowY:"auto",padding:"8px 0"}}>
+              {execLog.length===0 && (
+                <div style={{padding:"32px 20px",textAlign:"center",fontSize:12,color:T.muted}}>
+                  Log is empty. Refresh to run the pipeline.
+                </div>
+              )}
+              {(()=>{
+                const today = new Date().toDateString();
+                let lastGroup = null;
+                return execLog.map((entry,i)=>{
+                  const entryDate = new Date(entry.ts).toDateString();
+                  const group = entryDate===today?"Today":"Earlier";
+                  const showHeader = group!==lastGroup;
+                  lastGroup = group;
+                  return (
+                    <React.Fragment key={entry.id||i}>
+                      {showHeader&&(
+                        <div style={{padding:"6px 14px 4px",fontSize:9,fontWeight:700,
+                          color:T.muted,textTransform:"uppercase",letterSpacing:"0.08em",
+                          background:T.bg,borderBottom:`1px solid ${T.border}20`,
+                          position:"sticky",top:0}}>
+                          {group}
+                        </div>
+                      )}
+                      <div style={{display:"flex",gap:10,padding:"8px 14px",
+                        borderBottom:i<execLog.length-1?`1px solid ${T.border}20`:"none",
+                        background:i===0?`${T.accent}04`:"none"}}>
+                        <div style={{fontSize:13,flexShrink:0,marginTop:1,color:logColor(entry.status),
+                          width:18,textAlign:"center"}}>
+                          {logIcon(entry.type,entry.status)}
+                        </div>
+                        <div style={{flex:1,minWidth:0}}>
+                          <div style={{display:"flex",alignItems:"center",gap:6,flexWrap:"wrap"}}>
+                            <span style={{fontSize:12,fontWeight:600,color:T.text}}>{entry.label}</span>
+                            {entry.stage&&<span style={{fontSize:10,color:T.muted,background:`${T.border}60`,padding:"1px 6px",borderRadius:99}}>{entry.stage}</span>}
+                            {entry.autoExecuted&&<span style={{fontSize:10,color:T.green,background:`${T.green}15`,padding:"1px 6px",borderRadius:99}}>auto</span>}
+                            {entry.confidence&&cfg.aiFeatures.confidenceScore&&<span style={{fontSize:10,color:T.accent}}>🎯{entry.confidence}%</span>}
+                          </div>
+                          {entry.detail&&<div style={{fontSize:11,color:T.muted,marginTop:2,lineHeight:1.4}}>{entry.detail}</div>}
+                          <div style={{fontSize:10,color:T.muted,marginTop:2}}>{new Date(entry.ts).toLocaleTimeString("en-IN")}</div>
+                        </div>
+                      </div>
+                    </React.Fragment>
+                  );
+                });
+              })()}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ── STAGES VIEW ── */}
+      {activeView==="stages" && (
+        <div>
+          {STAGES.filter(s=>cfg.stages[s.id]?.enabled).map(s=><StageRow key={s.id} stage={s}/>)}
+        </div>
+      )}
+
+      {/* ── DIGEST VIEW ── */}
+      {activeView==="digest" && <DigestView/>}
+
+      {/* Chat */}
+      {chatOpen && (
+        <div style={{marginTop:16,background:T.surface,borderRadius:12,border:`1px solid ${T.border}`,overflow:"hidden"}}>
+          <div style={{padding:"10px 16px",borderBottom:`1px solid ${T.border}`,fontSize:13,fontWeight:700,color:T.text}}>💬 Ask the Pipeline</div>
+          <div style={{height:180,overflowY:"auto",padding:"12px 16px",display:"flex",flexDirection:"column",gap:8}}>
+            {chatMsgs.length===0&&<div style={{fontSize:12,color:T.muted}}>Ask anything about the ingestion pipeline…</div>}
+            {chatMsgs.map((m,i)=>(
+              <div key={i} style={{display:"flex",justifyContent:m.role==="user"?"flex-end":"flex-start"}}>
+                <div style={{maxWidth:"80%",padding:"7px 12px",borderRadius:10,fontSize:12,
+                  background:m.role==="user"?T.accent:`${T.border}60`,color:m.role==="user"?"#fff":T.text}}>
+                  {m.text}
+                </div>
+              </div>
+            ))}
+            {chatLoading&&<div style={{fontSize:12,color:T.muted}}>Thinking…</div>}
+            <div ref={chatEndRef}/>
+          </div>
+          <div style={{display:"flex",gap:8,padding:"8px 14px",borderTop:`1px solid ${T.border}`}}>
+            <input value={chatInput} onChange={e=>setChatInput(e.target.value)} onKeyDown={e=>e.key==="Enter"&&sendChat()}
+              placeholder="e.g. why is copy lagging today?"
+              style={{flex:1,background:T.bg,border:`1px solid ${T.border}`,borderRadius:7,padding:"6px 10px",fontSize:12,color:T.text}}/>
+            <button onClick={sendChat} disabled={chatLoading} style={{background:T.accent,color:"#fff",border:"none",borderRadius:7,padding:"6px 14px",fontSize:12,fontWeight:600,cursor:"pointer",opacity:chatLoading?0.6:1}}>Send</button>
+          </div>
+        </div>
+      )}
+
+      </>
+      }
+      <div style={{marginTop:14,fontSize:10,color:T.muted,textAlign:"center"}}>
+        Mock data active — wire <code style={{color:T.accent}}>/api/ingestion/status</code> in <code style={{color:T.accent}}>loadStageData()</code> · Auto-threshold: {cfg.confidenceThreshold||85}% confidence
+        {cfg.refreshInterval>0&&` · Refreshing every ${cfg.refreshInterval}s`}
+      </div>
+    </div>
+  );
+}
+
+
 // ── SystemHealthTab — global cross-tab health dashboard ──────────────────────
 function SystemHealthTab({ onNavigate }) {
   const T = useT();
@@ -27998,6 +29383,7 @@ export default function WiziAgentApp() {
           {activeTab==="triage"       && <ErrorBoundary key="triage"><TriageTab initialIssues={issues}/></ErrorBoundary>}
           {activeTab==="workflows"    && <ErrorBoundary key="workflows"><WorkflowsTab navigateTo={navigateTo}/></ErrorBoundary>}
           {activeTab==="pipeline-runs"&& <ErrorBoundary key="pipeline-runs"><PipelineRunsTab onNavigate={navigateTo}/></ErrorBoundary>}
+          {activeTab==="data-ingestion" && <ErrorBoundary key="data-ingestion"><DataIngestionTab onNavigate={navigateTo}/></ErrorBoundary>}
           {activeTab==="health"       && <ErrorBoundary key="health"><SystemHealthTab onNavigate={navigateTo}/></ErrorBoundary>}
           {activeTab==="config"       && <ErrorBoundary key="config"><ConfigureTab/></ErrorBoundary>}
           {activeTab==="query"        && <ErrorBoundary key="query"><QueryTab/></ErrorBoundary>}

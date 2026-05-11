@@ -54,7 +54,7 @@ class ErrorBoundary extends React.Component {
 }
 
 
-const API = "https://intentwise-backend-production.up.railway.app";
+const API = "https://division-everyday-jawed.ngrok-free.dev";
 window.__API = API;
 
 // ─── AI fetch interceptor — auto-tracks all /api/ai/chat calls ───────────────
@@ -10050,7 +10050,7 @@ Gates approved: ${sd.gates_approved??"-"}/${sd.gates_total??5}
 Reply with only a JSON object: {"summary":"...","root_cause":"...","resolution":"..."}`;
   let note = { summary: `${failedChecks||"No failures"} — ${runResult.status}`, root_cause: "unknown", resolution: runResult.status };
   try {
-    const res = await fetch(`${window.__API||"https://intentwise-backend-production.up.railway.app"}/api/ai/chat`, {
+    const res = await fetch(`${window.__API||"https://division-everyday-jawed.ngrok-free.dev"}/api/ai/chat`, {
       method:"POST", headers:{"Content-Type":"application/json"},
       body: JSON.stringify({ system:"Return only valid JSON, no markdown.", messages:[{role:"user",content:prompt}], max_tokens:300, temperature:0.2 })
     });

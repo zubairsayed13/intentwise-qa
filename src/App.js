@@ -1,3 +1,4 @@
+// TEST123
 import React from 'react';
 import {
   Sun, Moon, Bell, Settings, Database, Search, MessageSquare,
@@ -13,29 +14,75 @@ import {
 class ErrorBoundary extends React.Component {
   constructor(props) {
     super(props);
-    this.state = { error: null };
+    this.state = { error: null, info: null, copied: false };
   }
   static getDerivedStateFromError(error) {
     return { error };
   }
   componentDidCatch(error, info) {
+    this.setState({ info });
     console.error("[WiziAgent] Tab render error:", error, info);
   }
   render() {
     if (this.state.error) {
-      const T = this.props.theme || { accent:"#6366f1", text:"#0D1117", surface:"#FFFFFF",
-        border:"#E8ECF0", muted:"#6B7280", red:"#EF4444", card:"#FFFFFF" };
+      const T = this.props.theme || { accent:"#6366f1", text:"#F0F2F7", surface:"#141720",
+        border:"#252832", muted:"#7B8099", red:"#F87171", bg:"#0D0F12", green:"#22C55E" };
+      const err   = this.state.error;
+      const info  = this.state.info;
+      const stack = err?.stack || err?.message || "Unknown error";
+      const tree  = info?.componentStack || "";
+      const full  = "=== ERROR ===\n"+stack+"\n\n=== COMPONENT TREE ==="+tree;
+      const copy  = () => { navigator.clipboard?.writeText(full).then(()=>{
+        this.setState({copied:true}); setTimeout(()=>this.setState({copied:false}),2000);
+      }); };
       return (
-        <div style={{ padding:"40px 32px", display:"flex", flexDirection:"column",
-          alignItems:"center", justifyContent:"center", minHeight:300,
-          gap:12, textAlign:"center" }}>
-          <div style={{ fontSize:28 }}>⚠️</div>
-          <div style={{ fontSize:15, fontWeight:700, color:T.text }}>
-            Something went wrong in this tab
+        <div style={{ padding:"32px", display:"flex", flexDirection:"column",
+          height:"100%", gap:16, background:T.bg||T.surface, overflowY:"auto" }}>
+          {/* Header */}
+          <div style={{display:"flex",alignItems:"center",gap:10}}>
+            <span style={{fontSize:20}}>🔴</span>
+            <div>
+              <div style={{fontSize:14,fontWeight:700,color:T.text}}>Runtime Error</div>
+              <div style={{fontSize:11,color:T.muted}}>Copy the details below and share with your developer</div>
+            </div>
+            <button onClick={copy}
+              style={{marginLeft:"auto",background:this.state.copied?T.green:T.accent,
+                color:"#fff",border:"none",borderRadius:7,padding:"7px 16px",
+                fontSize:11,fontWeight:700,cursor:"pointer",flexShrink:0}}>
+              {this.state.copied?"✓ Copied!":"📋 Copy Error"}
+            </button>
           </div>
-          <div style={{ fontSize:12, color:T.muted, maxWidth:420, lineHeight:1.6 }}>
-            {this.state.error?.message || "An unexpected error occurred."}
+          {/* Error message */}
+          <div style={{background:T.red+"10",border:"1px solid "+T.red+"30",
+            borderRadius:8,padding:"12px 16px"}}>
+            <div style={{fontSize:10,fontWeight:700,color:T.red,marginBottom:4,
+              textTransform:"uppercase",letterSpacing:"0.06em"}}>Error Message</div>
+            <div style={{fontSize:12,color:T.text,fontFamily:"monospace",lineHeight:1.5}}>
+              {err?.message||"Unknown error"}
+            </div>
           </div>
+          {/* Stack trace */}
+          <div style={{background:T.surface,border:"1px solid "+T.border,
+            borderRadius:8,overflow:"hidden",flex:"1 1 auto"}}>
+            <div style={{padding:"8px 14px",borderBottom:"1px solid "+T.border,
+              fontSize:10,fontWeight:700,color:T.muted,textTransform:"uppercase",
+              letterSpacing:"0.06em"}}>Stack Trace</div>
+            <pre style={{margin:0,padding:"12px 16px",fontSize:10,color:T.muted,
+              fontFamily:"monospace",whiteSpace:"pre-wrap",lineHeight:1.6,
+              maxHeight:200,overflowY:"auto"}}>{stack}</pre>
+          </div>
+          {/* Component tree */}
+          {tree&&(
+            <div style={{background:T.surface,border:"1px solid "+T.border,
+              borderRadius:8,overflow:"hidden"}}>
+              <div style={{padding:"8px 14px",borderBottom:"1px solid "+T.border,
+                fontSize:10,fontWeight:700,color:T.muted,textTransform:"uppercase",
+                letterSpacing:"0.06em"}}>Component Tree</div>
+              <pre style={{margin:0,padding:"12px 16px",fontSize:10,color:T.muted,
+                fontFamily:"monospace",whiteSpace:"pre-wrap",lineHeight:1.6,
+                maxHeight:160,overflowY:"auto"}}>{tree}</pre>
+            </div>
+          )}
           <button
             onClick={() => this.setState({ error: null })}
             style={{ marginTop:8, padding:"7px 18px", borderRadius:7, border:"none",
@@ -55,13 +102,36 @@ class ErrorBoundary extends React.Component {
 
 
 const API = "http://localhost:8000";
+const NGROK_HEADER = { "ngrok-skip-browser-warning": "true" };
+// ─── Slack proxy — routes all notifications through backend to avoid CORS ─────
+const slackNotify = async ({ text, channel, blocks, attachments, webhookUrl }) => {
+  try {
+    await apiFetch(`${API}/api/notify/slack`, {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        text,
+        channel:     channel     || undefined,
+        blocks:      blocks      || undefined,
+        attachments: attachments || undefined,
+        webhook_url: webhookUrl  || undefined,
+      })
+    });
+  } catch(e) {}
+};
+
+const apiFetch = (url, options = {}) => {
+  const headers = { ...NGROK_HEADER, ...(options.headers || {}) };
+  return fetch(url, { ...options, headers });
+};
 window.__API = API;
 
 // ─── AI fetch interceptor — auto-tracks all /api/ai/chat calls ───────────────
 (function() {
   const _fetch = window.fetch;
   window.fetch = async function(url, opts={}) {
-    const res = await _fetch(url, opts);
+    let res;
+    try { res = await _fetch(url, opts); }
+    catch(e) { throw e; } // rethrow so callers can handle, but don't add extra unhandled layer
     if (typeof url === "string" && url.includes("/api/ai/chat")) {
       try {
         const clone = res.clone();
@@ -606,13 +676,13 @@ function ShortcutsOverlay({ onClose }) {
 
 // ─── Nav items ────────────────────────────────────────────────────────────────
 const NAV = [
-  { id:"data-ingestion", label:"Data Ingestion",   icon:Layers,        shortcut:"I" },
   { id:"health",      label:"System Health",     icon:Activity,      shortcut:"H" },
   { id:"autopilot",   label:"Auto-Pilot",        icon:Bot,           shortcut:"A" },
+  { id:"observability", label:"Data Observability", icon:Activity,    shortcut:"O" },
   { id:"triage",      label:"Triage & Monitor",  icon:AlertTriangle, shortcut:"3" },
   { id:"workflows",   label:"Workflows",         icon:GitBranch,     shortcut:"4" },
   { id:"pipeline-runs",label:"Pipeline Runs",    icon:Layers,        shortcut:"5" },
-  { id:"reporting",   label:"Reporting",         icon:BarChart2,     shortcut:"R" },
+  { id:"results",     label:"Results",           icon:BarChart2,     shortcut:"R" },
   { id:"query",       label:"Data Explorer",     icon:Database,      shortcut:"8" },
   { id:"config",      label:"Configure",         icon:Settings,      shortcut:"7" },
   { id:"demo",        label:"Demo Validation",   icon:Shield,        shortcut:"D" },
@@ -726,6 +796,8 @@ function useConfirm() {
 function CommandPalette({ onNavigate, onClose }) {
   const T = useT();
   const [query, setQuery] = React.useState("");
+  const [anomalyFlags] = React.useState([]);
+  const [aiExplain, setAiExplain] = React.useState(null);
   const inputRef = React.useRef(null);
 
   React.useEffect(() => { inputRef.current?.focus(); }, []);
@@ -738,7 +810,6 @@ function CommandPalette({ onNavigate, onClose }) {
   }, [onClose]);
 
   const COMMANDS = [
-    { label:"Daily Brief",       tab:"brief",      icon:"⚡", desc:"Pipeline health + AI brief" },
     { label:"Triage",            tab:"triage",     icon:"🔍", desc:"Scan tables, fix issues" },
     { label:"Workflows",         tab:"workflows",  icon:"🔀", desc:"Run and manage workflows" },
     { label:"Dataflows",         tab:"dataflows",  icon:"⬡",  desc:"Dataflow checks and runs" },
@@ -966,22 +1037,16 @@ function Sidebar({ active, setActive, pendingCount, themeKey, setThemeKey }) {
               return h.filter(r => r.total_issues > 0).length;
             } catch { return 0; }
           })();
-          const briefHealthScore = (() => {
-            try {
-              const br = JSON.parse(sessionStorage.getItem("wz_brief")||"null");
-              return br?.health_score ?? null;
-            } catch { return null; }
-          })();
+          const briefHealthScore = null;
           const badgeCount =
             item.id === "approvals" ? pendingCount :
             item.id === "triage"    ? pendingCount :
-            item.id === "brief"     ? anomalyCount :
             item.id === "workflows" ? cwfIssueCount :
             item.id === "activity"  ? (pendingCount + anomalyCount) :
             0;
           const hasBadge = badgeCount > 0;
-          const showHealthDot = item.id === "brief" && briefHealthScore !== null && !hasBadge;
-          const healthDotColor = briefHealthScore >= 80 ? "#34D399" : briefHealthScore >= 60 ? "#FBBF24" : "#F87171";
+          const showHealthDot = false;
+          const healthDotColor = "#34D399";
           return (
             <button key={item.id}
               onClick={() => setActive(item.id)}
@@ -1206,20 +1271,51 @@ function HealthSparkline({ brief, isHealthy, T }) {
 
 // ─── Recharts CDN loader (no build-time dependency) ─────────────────────────
 let _rechartsCache = null;
+let _rechartsSubscribers = [];
+let _rechartsLoading = false;
+
+function _notifyRecharts(rc) {
+  _rechartsCache = rc;
+  _rechartsSubscribers.forEach(fn => fn(rc));
+  _rechartsSubscribers = [];
+}
+
+function _loadRechartsOnce() {
+  if (_rechartsCache || _rechartsLoading) return;
+  _rechartsLoading = true;
+  if (!window.React) window.React = React;
+  if (!window.ReactDOM) try { window.ReactDOM = require("react-dom"); } catch(e) {}
+
+  const doLoad = () => {
+    if (window.Recharts) { _notifyRecharts(window.Recharts); return; }
+    const s = document.createElement("script");
+    s.src = "https://cdnjs.cloudflare.com/ajax/libs/recharts/2.12.7/Recharts.min.js";
+    s.onload = () => _notifyRecharts(window.Recharts);
+    s.onerror = () => { _rechartsLoading = false; };
+    document.head.appendChild(s);
+  };
+
+  if (window.PropTypes) {
+    doLoad();
+  } else {
+    const pt = document.createElement("script");
+    pt.src = "https://cdnjs.cloudflare.com/ajax/libs/prop-types/15.8.1/prop-types.min.js";
+    pt.onload = doLoad;
+    pt.onerror = doLoad;
+    document.head.appendChild(pt);
+  }
+}
+
 function useRecharts() {
   const [rc, setRc] = React.useState(_rechartsCache);
   React.useEffect(() => {
     if (_rechartsCache) { setRc(_rechartsCache); return; }
-    // Load recharts from CDN if not already available
-    if (window.Recharts) { _rechartsCache = window.Recharts; setRc(window.Recharts); return; }
-    const s = document.createElement('script');
-    s.src = 'https://cdnjs.cloudflare.com/ajax/libs/recharts/2.12.7/Recharts.min.js';
-    s.onload = () => {
-      _rechartsCache = window.Recharts;
-      setRc(window.Recharts);
+    // Subscribe to be notified when Recharts loads
+    _rechartsSubscribers.push(setRc);
+    _loadRechartsOnce();
+    return () => {
+      _rechartsSubscribers = _rechartsSubscribers.filter(fn => fn !== setRc);
     };
-    s.onerror = () => {};
-    document.head.appendChild(s);
   }, []);
   return rc;
 }
@@ -1245,7 +1341,7 @@ function WidgetBuilder({ initial, onSave, onCancel }) {
     if (!w.sql.trim()) return;
     setTesting(true); setTestResult(null);
     try {
-      const res  = await fetch(`${API}/api/query?sql=${encodeURIComponent(w.sql + " LIMIT 5")}`);
+      const res  = await apiFetch(`${API}/api/query?sql=${encodeURIComponent(w.sql + " LIMIT 5")}`);
       const data = await res.json();
       setTestResult(data);
       // Auto-suggest columns
@@ -1259,7 +1355,7 @@ function WidgetBuilder({ initial, onSave, onCancel }) {
     if (!aiDesc.trim()) return;
     setAiLoading(true);
     try {
-      const res  = await fetch(`${API}/api/ai/chat`, {
+      const res  = await apiFetch(`${API}/api/ai/chat`, {
         method:"POST", headers:{"Content-Type":"application/json"},
         body: JSON.stringify({
           system:`You are WiziAgent writing Redshift SQL for a dashboard widget.
@@ -1285,7 +1381,7 @@ Rules: SELECT only, include column aliases, max 2-3 columns, GROUP BY if aggrega
       if (obj.sql) {
         setTesting(true); setTestResult(null);
         try {
-          const tr = await fetch(`${API}/api/query?sql=${encodeURIComponent(obj.sql+" LIMIT 5")}`);
+          const tr = await apiFetch(`${API}/api/query?sql=${encodeURIComponent(obj.sql+" LIMIT 5")}`);
           const td = await tr.json();
           setTestResult(td);
           if (td.columns?.length>=1&&!obj.x_col) setW(p=>({...p,x_col:td.columns[0]}));
@@ -1535,6 +1631,7 @@ function DashboardTab({ onNavigate }) {
   const [accountId,   setAccountId]  = React.useState("all");
   const [healthHist,  setHealthHist] = React.useState([]);
   const [loading,     setLoading]    = React.useState(true);
+  const [lastRefreshed, setLastRefreshed] = React.useState(null);
   const [kpiNarrative,setKpiNarrative]= React.useState(null);
   const [kpiNarrLoading,setKpiNarrLoading]= React.useState(false);
   const [welcomeDismissed, setWelcomeDismissed] = useLocal("wz_welcome_dismissed", false);
@@ -1548,12 +1645,12 @@ function DashboardTab({ onNavigate }) {
   const assistantEndRef = React.useRef(null);
 
   const generateKpiNarrative = React.useCallback(async (kpisData, triageData) => {
-    if (!kpisData || kpiNarrative) return;
+    if (!kpisData) return;
     setKpiNarrLoading(true);
     try {
       const o = kpisData.orders||{}, s = kpisData.sales||{}, inv = kpisData.inventory||{};
       const issues = triageData?.issues?.filter(i=>i.severity==="critical"||i.severity==="high").length||0;
-      const res = await fetch(`${API}/api/ai/chat`, {
+      const res = await apiFetch(`${API}/api/ai/chat`, {
         method:"POST", headers:{"Content-Type":"application/json"},
         body:JSON.stringify({
           system:"You are a concise ecommerce analytics assistant. Write exactly 2 sentences summarising the current data health. Mention specific numbers. Lead with the most important insight.",
@@ -1579,7 +1676,7 @@ function DashboardTab({ onNavigate }) {
       if (prevO.total&&o.total)     { const d=o.total-prevO.total; if(Math.abs(d)>=1) deltas.push(`Orders ${d>0?"+":""}${d} vs last session`); }
       if (prevInv.out_of_stock!==undefined&&inv.out_of_stock!==undefined) { const d=inv.out_of_stock-prevInv.out_of_stock; if(d!==0) deltas.push(`OOS SKUs ${d>0?"+":""}${d}`); }
       if (!deltas.length&&!prev.orders) { setWhatChanged({text:null,loading:false}); return; }
-      const r = await fetch(`${API}/api/ai/chat`, {
+      const r = await apiFetch(`${API}/api/ai/chat`, {
         method:"POST", headers:{"Content-Type":"application/json"},
         body: JSON.stringify({
           system:"You are a concise ecommerce ops assistant. Write ONE sentence starting with 'Since your last visit,' highlighting the most important change. Be specific. No markdown.",
@@ -1605,7 +1702,7 @@ function DashboardTab({ onNavigate }) {
       const wfSummary=cwfHistory.slice(0,5).map(r=>`${r.workflow_name||"?"}:${r.status||"?"}`).join(";")||"no runs";
       const ctx=`Orders:${o.total||0}, Revenue:$${Math.round(o.revenue||0).toLocaleString()}, OOS:${inv.out_of_stock||0}. Issues:${openIssues}. Workflows:${wfSummary}.`;
       const history=assistantMsgs.slice(-6).map(m=>({role:m.role==="user"?"user":"assistant",content:m.text}));
-      const r = await fetch(`${API}/api/ai/chat`, {
+      const r = await apiFetch(`${API}/api/ai/chat`, {
         method:"POST", headers:{"Content-Type":"application/json"},
         body: JSON.stringify({
           system:"You are a dashboard assistant for an Amazon Seller analytics platform. Answer using the provided KPI/issue context. Be specific with numbers. Max 3 sentences. No markdown.",
@@ -1643,7 +1740,7 @@ Question: ${msg}`}],
   // ── Load widget definitions ───────────────────────────────────────────────
   const loadWidgets = async () => {
     try {
-      const res  = await fetch(`${API}/api/dashboard/widgets`);
+      const res  = await apiFetch(`${API}/api/dashboard/widgets`);
       const data = await res.json();
       if (data.widgets) setWidgets(data.widgets.filter(w=>w.visible!==false));
     } catch(e) {}
@@ -1654,14 +1751,28 @@ Question: ${msg}`}],
     setLoading(true);
     try {
       const [k, tg, cwf] = await Promise.all([
-        fetch(`${API}/api/kpis?account_id=${acc}`).then(r=>r.json()),
-        fetch(`${API}/api/report/triage?account_id=${acc}`).then(r=>r.json()),
-        fetch(`${API}/api/custom-workflows/history`).then(r=>r.json()),
+        apiFetch(`${API}/api/kpis?account_id=${acc}`).then(r=>r.json()),
+        apiFetch(`${API}/api/report/triage?account_id=${acc}`).then(r=>r.json()),
+        apiFetch(`${API}/api/custom-workflows/history`).then(r=>r.json()),
       ]);
       if (!k.error) {
+        // Read prev BEFORE overwriting so trend comparison works
+        const prevKpis = (()=>{try{return JSON.parse(localStorage.getItem("wz_dash_prev_kpis")||"null");}catch{return null;}})();
         setKpis(k);
         generateKpiNarrative(k, tg);
         localStorage.setItem("wz_dash_prev_kpis", JSON.stringify(k));
+        // Auto-generate "what changed" silently on load if prev data exists
+        if (prevKpis) setTimeout(generateWhatChanged, 800);
+        // Write health score to history (issues count as negative signal)
+        const critCount = (tg?.issues||[]).filter(i=>i.severity==="critical"&&i.count>0).length;
+        const highCount = (tg?.issues||[]).filter(i=>i.severity==="high"&&i.count>0).length;
+        const score = Math.max(0, 100 - critCount*20 - highCount*8);
+        const hist = (()=>{try{return JSON.parse(localStorage.getItem("wz_healthHistory")||"[]");}catch{return [];}})();
+        const today = new Date().toDateString();
+        const filtered = hist.filter(e=>e.date!==today);
+        const updated = [...filtered,{score,date:today}].slice(-14);
+        localStorage.setItem("wz_healthHistory", JSON.stringify(updated));
+        setHealthHist(updated.map((e,i)=>({day:`-${updated.length-1-i}d`,score:e.score,date:e.date})));
       }
       if (!tg.error) setTriage(tg);
       if (Array.isArray(cwf) && cwf.length > 0) {
@@ -1673,6 +1784,7 @@ Question: ${msg}`}],
       }
     } catch(e) {}
     setLoading(false);
+    setLastRefreshed(new Date());
   }, []);
 
   // ── Run SQL for a custom widget ───────────────────────────────────────────
@@ -1680,7 +1792,7 @@ Question: ${msg}`}],
     if (!w.sql?.trim() || w.builtin) return;
     setWData(p=>({...p,[w.id]:{loading:true}}));
     try {
-      const res  = await fetch(`${API}/api/query?sql=${encodeURIComponent(w.sql)}`);
+      const res  = await apiFetch(`${API}/api/query?sql=${encodeURIComponent(w.sql)}`);
       const data = await res.json();
       setWData(p=>({...p,[w.id]:{...data, loading:false}}));
     } catch(e) {
@@ -1693,7 +1805,7 @@ Question: ${msg}`}],
   };
 
   React.useEffect(() => {
-    fetch(`${API}/api/accounts`).then(r=>r.json()).then(d=>{
+    apiFetch(`${API}/api/accounts`).then(r=>r.json()).then(d=>{
       if (Array.isArray(d)) setAccounts(d);
     }).catch(()=>{});
     try {
@@ -1704,7 +1816,11 @@ Question: ${msg}`}],
     loadBase("all");
   }, []);
 
-  React.useEffect(() => { loadBase(accountId); }, [accountId]);
+  React.useEffect(() => {
+    setKpiNarrative(null); // clear so it regenerates for new account
+    setKpiNarrLoading(false);
+    loadBase(accountId);
+  }, [accountId]);
 
   // Run custom widgets when widget list loads
   React.useEffect(() => {
@@ -1717,7 +1833,7 @@ Question: ${msg}`}],
     const order = widgets.length;
     const full  = {...w, order, visible:true};
     try {
-      await fetch(`${API}/api/dashboard/widgets`, {
+      await apiFetch(`${API}/api/dashboard/widgets`, {
         method:"POST", headers:{"Content-Type":"application/json"},
         body:JSON.stringify(full)
       });
@@ -1731,7 +1847,7 @@ Question: ${msg}`}],
   };
 
   const hideWidget = async (wid) => {
-    await fetch(`${API}/api/dashboard/widgets/${wid}`, {method:"DELETE"}).catch(()=>{});
+    await apiFetch(`${API}/api/dashboard/widgets/${wid}`, {method:"DELETE"}).catch(()=>{});
     setWidgets(p=>p.filter(w=>w.id!==wid));
   };
 
@@ -1743,7 +1859,7 @@ Question: ${msg}`}],
     const reordered = arr.map((w,i)=>({...w,order:i}));
     setWidgets(reordered);
     try {
-      await fetch(`${API}/api/dashboard/widgets/reorder`, {
+      await apiFetch(`${API}/api/dashboard/widgets/reorder`, {
         method:"POST", headers:{"Content-Type":"application/json"},
         body:JSON.stringify({order: reordered.map(w=>w.id)})
       });
@@ -1755,7 +1871,7 @@ Question: ${msg}`}],
     if (!w) return;
     const updated = {...w, size};
     setWidgets(p=>p.map(x=>x.id===wid?updated:x));
-    await fetch(`${API}/api/dashboard/widgets`, {
+    await apiFetch(`${API}/api/dashboard/widgets`, {
       method:"POST", headers:{"Content-Type":"application/json"},
       body:JSON.stringify(updated)
     }).catch(()=>{});
@@ -1795,7 +1911,17 @@ Question: ${msg}`}],
 
   const wfChartData = cwfHistory.map((r,i)=>({
     name:r.workflow_name?.slice(0,10)||`Run${i+1}`,
-    issues:r.total_issues||0, status:r.status,
+    issues:r.total_issues||0,
+    status:r.status,
+    statusLabel: r.status==="clean"||r.status==="completed"||r.status==="passed"?"✓ Passed"
+      :r.status==="failed"||r.status==="error"?"✗ Failed"
+      :r.status==="running"?"⟳ Running"
+      :r.status==="skipped"?"— Skipped"
+      :r.status||"Unknown",
+    statusColor: r.status==="clean"||r.status==="completed"||r.status==="passed"?T.green
+      :r.status==="failed"||r.status==="error"?T.red
+      :r.status==="running"?T.accent
+      :T.muted,
   }));
 
   const inventoryData = kpis ? [
@@ -1833,15 +1959,20 @@ Question: ${msg}`}],
       const isIssue = w.kpi_key==="triage.issue_count";
       const isOOS   = w.kpi_key==="inventory.out_of_stock";
       const dispColor = (isIssue&&val!=="0"&&val!=="—")?T.orange:(isOOS&&val!=="0"&&val!=="—")?T.red:color;
-      // Trend: compare to previous health history entry
+      // Trend: compare current KPI to previous session's KPI value
       const trend = (() => {
-        if (!healthHist||healthHist.length<2) return null;
-        if (!w.kpi_key.includes("revenue")&&!w.kpi_key.includes("orders")) return null;
-        const prev = healthHist[healthHist.length-2]?.score;
-        const curr = healthHist[healthHist.length-1]?.score;
-        if (!prev||!curr) return null;
-        const d = curr - prev;
-        return { dir: d>=0?"↑":"↓", pct: Math.abs(d), color: d>=0?T.green:T.red };
+        const prevKpis = (()=>{try{return JSON.parse(localStorage.getItem("wz_dash_prev_kpis")||"null");}catch{return null;}})();
+        if (!prevKpis||!kpis) return null;
+        const [section,field] = w.kpi_key.split(".");
+        if (!section||!field) return null;
+        const cur = Number(kpis[section]?.[field]);
+        const prv = Number(prevKpis[section]?.[field]);
+        if (!cur||!prv||isNaN(cur)||isNaN(prv)||prv===0) return null;
+        const pct = Math.round(((cur-prv)/Math.abs(prv))*100);
+        if (Math.abs(pct)<1) return null;
+        const isPositiveGood = !["out_of_stock","alerts","canceled","unshipped"].includes(field);
+        const isGood = isPositiveGood ? pct>0 : pct<0;
+        return { dir: pct>0?"↑":"↓", pct: Math.abs(pct), color: isGood?T.green:T.red };
       })();
       return (
         <div style={{ display:"flex", flexDirection:"column", height:"100%",
@@ -1999,15 +2130,31 @@ Question: ${msg}`}],
     // Bar (builtin workflow history)
     if (w.type==="bar" && w.wf_chart) {
       if (!wfChartData.length) return <div style={{color:T.dim,fontSize:12,paddingTop:20,textAlign:"center"}}>No workflow runs yet</div>;
+      const WfTooltip = ({active,payload,label}) => {
+        if (!active||!payload?.length) return null;
+        const entry = wfChartData.find(d=>d.name===label);
+        return (
+          <div style={{background:T.surface,border:`1px solid ${T.border}`,borderRadius:8,padding:"8px 12px",fontSize:11}}>
+            <div style={{fontWeight:700,color:T.text,marginBottom:4}}>{label}</div>
+            <div style={{display:"flex",alignItems:"center",gap:6,marginBottom:3}}>
+              <span style={{fontSize:10,fontWeight:700,color:entry?.statusColor,
+                background:`${entry?.statusColor}15`,padding:"1px 7px",borderRadius:99}}>
+                {entry?.statusLabel}
+              </span>
+            </div>
+            <div style={{color:T.muted}}>{payload[0]?.value} issue{payload[0]?.value!==1?"s":""}</div>
+          </div>
+        );
+      };
       return (
         <ResponsiveContainer width="100%" height="100%">
           <BarChart data={wfChartData} margin={{top:5,right:5,bottom:30,left:0}}>
             <CartesianGrid strokeDasharray="3 3" stroke={T.border} vertical={false}/>
             <XAxis dataKey="name" tick={{fontSize:8,fill:T.muted}} angle={-30} textAnchor="end" axisLine={false} tickLine={false}/>
             <YAxis tick={{fontSize:9,fill:T.dim}} axisLine={false} tickLine={false}/>
-            <Tooltip content={<CustomTooltip/>}/>
+            <Tooltip content={<WfTooltip/>}/>
             <Bar dataKey="issues" name="Issues" radius={[4,4,0,0]}>
-              {wfChartData.map((e,i)=><Cell key={i} fill={e.issues===0?T.green:e.issues<5?T.yellow:T.orange}/>)}
+              {wfChartData.map((e,i)=><Cell key={i} fill={e.statusColor||e.issues===0?T.green:e.issues<5?T.yellow:T.orange}/>)}
             </Bar>
           </BarChart>
         </ResponsiveContainer>
@@ -2161,7 +2308,7 @@ Question: ${msg}`}],
   const SIZE_SPAN = {small:1, medium:2, large:3, full:4};
 
   return (
-    <div className="fade-in" style={{ overflowY:"auto", padding:"24px 28px", maxWidth:1280, overflowY:"auto" }}>
+    <div className="fade-in" style={{ overflowY:"auto", padding:"24px 28px", maxWidth:1280 }}>
 
       {/* Onboarding welcome card */}
       {!welcomeDismissed && (
@@ -2176,46 +2323,41 @@ Question: ${msg}`}],
             </div>
             <div style={{ fontSize:12, color:T.muted, lineHeight:1.6 }}>
               Your AI-powered Amazon Seller data quality platform.
-              Run a <strong style={{color:T.text}}>Daily Brief</strong> to scan for issues,
-              use <strong style={{color:T.text}}>Workflows</strong> to automate checks with approval gates,
+              Use <strong style={{color:T.text}}>Workflows</strong> to automate checks with approval gates,
               or let <strong style={{color:T.text}}>Auto-Pilot</strong> monitor and fix issues autonomously.
             </div>
           </div>
-          <div style={{ display:"flex", gap:8, flexShrink:0 }}>
-            <Btn size="sm" onClick={()=>onNavigate("brief")}
-              style={{ background:`linear-gradient(135deg,${T.accent},${T.purple})`,
-                color:"white", border:"none" }}>
-              <Play size={10}/> Run Brief
-            </Btn>
-            <Btn size="sm" variant="ghost" onClick={()=>setWelcomeDismissed(true)}
-              style={{ fontSize:10 }}>
-              Dismiss
-            </Btn>
-          </div>
+          <Btn size="sm" variant="ghost" onClick={()=>setWelcomeDismissed(true)} style={{ fontSize:10, flexShrink:0 }}>
+            Dismiss
+          </Btn>
         </div>
       )}
 
-      {/* ── Cross-tab status strip ─────────────────────────────────────────── */}
+      {/* ── Cross-tab status strip — always visible ───────────────────────── */}
       {(()=>{
         const apHistory = (()=>{ try{return JSON.parse(localStorage.getItem("wz_ap_history_v2")||"[]");}catch{return [];} })();
         const apLast = apHistory[0];
         const apIssues = apLast?(apLast.issues?.length||0):null;
         const wfLast = cwfHistory[0];
         const wfAge = wfLast?.started_at?Math.round((Date.now()-new Date(wfLast.started_at).getTime())/60000):null;
-        const briefAge = (()=>{ const t=localStorage.getItem("wz_briefTs"); return t?Math.round((Date.now()-new Date(t).getTime())/3600000):null; })();
+
+        // Ingestion status from run history
+
+        // Always show all 4 pills — use placeholder if no data yet
         const strips = [
-          apIssues!==null&&{label:"AutoPilot",value:apIssues===0?"✓ Clean":`${apIssues} issue${apIssues!==1?"s":""}`,color:apIssues===0?T.green:T.red,nav:"autopilot"},
-          wfAge!==null&&{label:"Last Workflow",value:wfAge<60?`${wfAge}m ago`:`${Math.round(wfAge/60)}h ago`,color:wfLast?.status==="clean"?T.green:T.orange,nav:"workflows"},
-          briefAge!==null&&{label:"Daily Brief",value:briefAge<2?"Recent":`${briefAge}h ago`,color:briefAge>12?T.orange:T.green,nav:"brief"},
-        ].filter(Boolean);
-        if (!strips.length) return null;
+          {label:"AutoPilot",      value:apIssues===null?"Not run yet":apIssues===0?"✓ Clean":`${apIssues} issue${apIssues!==1?"s":""}`,
+            color:apIssues===null?T.muted:apIssues===0?T.green:T.red, nav:"autopilot"},
+          {label:"Last Workflow",  value:wfAge===null?"Not run yet":wfAge<60?`${wfAge}m ago`:`${Math.round(wfAge/60)}h ago`,
+            color:wfAge===null?T.muted:wfLast?.status==="clean"?T.green:T.orange, nav:"workflows"},
+        ];
         return (
           <div style={{display:"flex",gap:6,marginBottom:14,flexWrap:"wrap"}}>
             {strips.map((s,i)=>(
               <button key={i} onClick={()=>onNavigate&&onNavigate(s.nav)}
                 style={{display:"flex",alignItems:"center",gap:6,padding:"5px 10px",borderRadius:7,
                   background:T.card,border:`1px solid ${s.color}30`,cursor:"pointer",
-                  fontSize:10,color:T.muted,transition:"all .15s"}}>
+                  fontSize:10,color:T.muted,transition:"all .15s",
+                  opacity:s.color===T.muted?0.6:1}}>
                 <div style={{width:6,height:6,borderRadius:"50%",background:s.color,flexShrink:0}}/>
                 <span style={{color:T.muted}}>{s.label}:</span>
                 <span style={{fontWeight:700,color:s.color}}>{s.value}</span>
@@ -2236,25 +2378,19 @@ Question: ${msg}`}],
           </div>
         </div>
         <div style={{ display:"flex", alignItems:"center", gap:8 }}>
-          <select value={accountId} onChange={e=>{ const v=e.target.value; setTimeout(()=>setAccountId(v),50); }}
-            style={{ padding:"6px 12px", borderRadius:8, fontSize:12,
-              border:`1px solid ${T.border}`, background:T.surface, color:T.text, outline:"none" }}>
-            <option value="all">All Accounts</option>
-            {accounts.map(a=>(
-              <option key={a.account_id} value={a.account_id}>{a.seller_id||a.account_id}</option>
-            ))}
-          </select>
-          {!kpiNarrative&&(
-            <Btn onClick={()=>generateKpiNarrative(kpis,triage)} size="sm" variant="ghost"
-              disabled={kpiNarrLoading||!kpis} style={{color:T.accent,borderColor:`${T.accent}40`}}>
-              {kpiNarrLoading?<Spinner size={10}/>:"✨"} Summarise
-            </Btn>
-          )}
-          <Btn onClick={generateWhatChanged} size="sm" variant="ghost"
-            disabled={!kpis||whatChanged?.loading}
-            style={{color:T.purple,borderColor:`${T.purple}30`}}>
-            {whatChanged?.loading?<Spinner size={10}/>:"↔"} What changed?
-          </Btn>
+          <div style={{position:"relative",display:"inline-flex",alignItems:"center"}}>
+            <select value={accountId} onChange={e=>{ const v=e.target.value; setTimeout(()=>setAccountId(v),50); }}
+              style={{ padding:"6px 32px 6px 12px", borderRadius:8, fontSize:12, fontWeight:500,
+                border:`1px solid ${T.border}`, background:T.surface, color:T.text,
+                outline:"none", appearance:"none", cursor:"pointer",
+                boxShadow:`0 1px 3px rgba(0,0,0,0.08)` }}>
+              <option value="all">🏢 All Accounts</option>
+              {accounts.map(a=>(
+                <option key={a.account_id} value={a.account_id}>{a.seller_id||a.account_id}</option>
+              ))}
+            </select>
+            <span style={{position:"absolute",right:10,pointerEvents:"none",fontSize:10,color:T.muted}}>▾</span>
+          </div>
           <Btn onClick={()=>setShowAssistant(p=>!p)} size="sm" variant="ghost"
             style={{color:showAssistant?T.accent:T.muted,borderColor:showAssistant?`${T.accent}40`:T.border}}>
             💬 Ask AI
@@ -2268,6 +2404,11 @@ Question: ${msg}`}],
             style={{color:editMode?T.orange:T.muted}}>
             {editMode?"✓ Done":"✏ Edit"}
           </Btn>
+          {lastRefreshed&&!loading&&(
+            <span style={{fontSize:10,color:T.muted,marginRight:-4}}>
+              {(()=>{ const m=Math.round((Date.now()-lastRefreshed.getTime())/60000); return m<1?"just now":m<60?`${m}m ago`:`${Math.round(m/60)}h ago`; })()}
+            </span>
+          )}
           <Btn onClick={()=>{ loadBase(accountId); runAllCustom(widgets); }} size="sm" variant="ghost" disabled={loading}>
             {loading?<Spinner size={10}/>:<RefreshCw size={10}/>}
           </Btn>
@@ -2381,9 +2522,20 @@ Question: ${msg}`}],
                 {/* Widget header */}
                 <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between",
                   marginBottom: w.type==="kpi" ? 0 : 10, flexShrink:0 }}>
-                  <div style={{ fontSize:11, fontWeight:700, color:T.muted,
-                    textTransform:"uppercase", letterSpacing:"0.05em" }}>
-                    {w.type!=="kpi" && w.title}
+                  <div style={{display:"flex",alignItems:"center",gap:6,flex:1,minWidth:0}}>
+                    <div style={{ fontSize:11, fontWeight:700, color:T.muted,
+                      textTransform:"uppercase", letterSpacing:"0.05em",
+                      overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap" }}>
+                      {w.type!=="kpi" && w.title}
+                    </div>
+                    {widgetAnomaly[w.id]&&!editMode&&(
+                      <span style={{fontSize:9,fontWeight:700,padding:"1px 6px",borderRadius:99,flexShrink:0,
+                        background:widgetAnomaly[w.id].direction==="up"?`${T.green}15`:`${T.red}15`,
+                        color:widgetAnomaly[w.id].direction==="up"?T.green:T.red,
+                        border:`1px solid ${widgetAnomaly[w.id].direction==="up"?T.green:T.red}30`}}>
+                        {widgetAnomaly[w.id].label}
+                      </span>
+                    )}
                   </div>
                   {editMode && (
                     <div style={{ display:"flex", gap:3 }}>
@@ -2419,16 +2571,14 @@ Question: ${msg}`}],
 
                 {/* Widget content */}
                 <div style={{ flex:1, minHeight:0, position:"relative" }}>
-                  {renderWidgetContent(w, data)}
-                  {widgetAnomaly[w.id]&&!editMode&&(
-                    <div style={{position:"absolute",top:0,right:0,
-                      fontSize:9,fontWeight:700,padding:"2px 7px",borderRadius:99,
-                      background:widgetAnomaly[w.id].direction==="up"?`${T.green}15`:`${T.red}15`,
-                      color:widgetAnomaly[w.id].direction==="up"?T.green:T.red,
-                      border:`1px solid ${widgetAnomaly[w.id].direction==="up"?T.green:T.red}30`}}>
-                      {widgetAnomaly[w.id].label}
+                  {loading && !data ? (
+                    <div style={{height:"100%",display:"flex",flexDirection:"column",gap:8,justifyContent:"center"}}>
+                      <div className="wz-skel" style={{height:w.type==="kpi"?36:16,borderRadius:6,width:w.type==="kpi"?"60%":"90%"}}/>
+                      {w.type!=="kpi"&&<div className="wz-skel" style={{height:12,borderRadius:6,width:"70%"}}/>}
+                      {w.type!=="kpi"&&<div className="wz-skel" style={{height:12,borderRadius:6,width:"50%"}}/>}
                     </div>
-                  )}
+                  ) : renderWidgetContent(w, data)}
+
                 </div>
 
                 {/* Accent bar at bottom */}
@@ -2441,15 +2591,28 @@ Question: ${msg}`}],
         })}
 
           {widgets.length===0&&(
-            <div style={{textAlign:"center",padding:"60px 0",gridColumn:"span 4"}}>
-              <BarChart2 size={40} color={T.border} style={{margin:"0 auto 12px",display:"block"}}/>
-              <div style={{fontSize:16,fontWeight:700,color:T.text,marginBottom:6}}>No widgets yet</div>
-              <div style={{fontSize:13,color:T.muted,marginBottom:16}}>
-                Describe what you want to see and AI will write the SQL
+            <div style={{gridColumn:"span 4",padding:"40px 24px",
+              background:T.surface,borderRadius:12,border:`2px dashed ${T.border}`,
+              display:"flex",flexDirection:"column",alignItems:"center",textAlign:"center"}}>
+              <BarChart2 size={36} color={T.border} style={{marginBottom:12}}/>
+              <div style={{fontSize:15,fontWeight:700,color:T.text,marginBottom:6}}>Build your dashboard</div>
+              <div style={{fontSize:12,color:T.muted,marginBottom:20,maxWidth:360,lineHeight:1.6}}>
+                Add widgets to track the metrics that matter. Describe what you want in plain English — AI will write the SQL.
               </div>
-              <div style={{display:"flex",gap:8,justifyContent:"center"}}>
-                <Btn onClick={()=>setBuilder({initial:null})} size="sm"><Plus size={11}/> Add Widget</Btn>
-                <Btn onClick={()=>{setBuilder({initial:null});}} size="sm" variant="ghost"
+              {/* Quick-start suggestions */}
+              <div style={{display:"flex",gap:8,flexWrap:"wrap",justifyContent:"center",marginBottom:20}}>
+                {["Total orders today","Revenue this week","Out-of-stock SKUs","Top 10 accounts by spend"].map(prompt=>(
+                  <button key={prompt} onClick={()=>setBuilder({initial:prompt})} style={{
+                    fontSize:11,padding:"6px 12px",borderRadius:99,cursor:"pointer",
+                    background:`${T.accent}10`,border:`1px solid ${T.accent}30`,
+                    color:T.accent,fontWeight:500}}>
+                    + {prompt}
+                  </button>
+                ))}
+              </div>
+              <div style={{display:"flex",gap:8}}>
+                <Btn onClick={()=>setBuilder({initial:null})} size="sm"><Plus size={11}/> Custom Widget</Btn>
+                <Btn onClick={()=>setBuilder({initial:null})} size="sm" variant="ghost"
                   style={{color:T.purple,borderColor:`${T.purple}40`}}>✦ Build with AI</Btn>
               </div>
             </div>
@@ -2471,11 +2634,20 @@ Question: ${msg}`}],
             </div>
             <div style={{flex:1,overflowY:"auto",padding:"10px 12px",minHeight:0}}>
               {assistantMsgs.length===0&&(
-                <div style={{fontSize:10,color:T.muted,lineHeight:1.8}}>
-                  Ask questions about your data:<br/>
-                  <span style={{color:T.accent}}>· "Why are orders down?"</span><br/>
-                  <span style={{color:T.accent}}>· "What's causing out-of-stock issues?"</span><br/>
-                  <span style={{color:T.accent}}>· "When did revenue last drop?"</span>
+                <div>
+                  <div style={{fontSize:10,color:T.muted,marginBottom:8}}>Try asking:</div>
+                  {["Why are orders down?","Any critical issues right now?","Summarise today's data","What changed since yesterday?"].map(q=>(
+                    <button key={q} onClick={()=>{ setAssistantInput(q); }}
+                      style={{display:"block",width:"100%",textAlign:"left",
+                        padding:"7px 10px",marginBottom:5,borderRadius:7,cursor:"pointer",
+                        fontSize:11,color:T.accent,background:`${T.accent}08`,
+                        border:`1px solid ${T.accent}20`,fontWeight:500,
+                        transition:"background 0.15s"}}
+                      onMouseEnter={e=>e.currentTarget.style.background=`${T.accent}15`}
+                      onMouseLeave={e=>e.currentTarget.style.background=`${T.accent}08`}>
+                      {q}
+                    </button>
+                  ))}
                 </div>
               )}
               {assistantMsgs.map((m,i)=>(
@@ -2518,608 +2690,6 @@ Question: ${msg}`}],
 }
 
 
-function MorningBriefTab({ onNavigate, onIssueFound }) {
-  const T = useT();
-  const [activeBriefView, setActiveBriefView] = React.useState("brief"); // brief | sla
-  const [checklist, setChecklist] = useLocal("wz_onboarding", {
-    scanned:false, monitored:false, slack:false, workflow:false, triage:false
-  });
-  const [checklistDismissed, setChecklistDismissed] = useLocal("wz_onboarding_done", false);
-
-  const allDone = Object.values(checklist).every(Boolean);
-  const [brief,       setBrief]       = useSession("wz_brief", null);
-  const [loading,     setLoading]     = React.useState(!brief);
-  const [error,       setError]       = React.useState(null);
-  const [lastFetch,   setLastFetch]   = useLocal("wz_briefTs", null);
-  const [fixHistory,  setFixHistory]  = useLocal("wz_history", []);
-  const [monTables,   setMonTables]   = useLocal("wz_monTables",
-    [{ schema:"mws", table:"report", label:"mws.report", primary:true, checks:[] }]
-  );
-  const [tableResults,setTableResults]= useSession("wz_monResults", {});
-  const [slackUrl]                    = useLocal("wz_slack", "");
-  const [anomalies,    setAnomalies]   = useSession("wz_anomalies", null);
-  const [anomalyLoading, setAnomalyLoading] = React.useState(false);
-
-  const runAnomalyCheck = async () => {
-    setAnomalyLoading(true);
-    try {
-      const res  = await fetch(`${API}/api/anomaly/check`);
-      const data = await res.json();
-      setAnomalies(data);
-    } catch(e) {}
-    setAnomalyLoading(false);
-  };
-
-  const buildBaselines = async () => {
-    setAnomalyLoading(true);
-    try {
-      await fetch(`${API}/api/anomaly/baseline`, { method:"POST",
-        headers:{"Content-Type":"application/json"},
-        body:JSON.stringify({}) });
-      await runAnomalyCheck();
-    } catch(e) {}
-    setAnomalyLoading(false);
-  };
-
-  // ── Compute time since last fetch ────────────────────────────────────────
-  const [ageSec, setAgeSec] = React.useState(0);
-  React.useEffect(() => {
-    const id = setInterval(() => {
-      if (lastFetch) setAgeSec(Math.floor((Date.now() - new Date(lastFetch)) / 1000));
-    }, 10000);
-    if (lastFetch) setAgeSec(Math.floor((Date.now() - new Date(lastFetch)) / 1000));
-    return () => clearInterval(id);
-  }, [lastFetch]);
-
-  const ageLabel = ageSec < 60 ? "just now"
-    : ageSec < 3600 ? `${Math.floor(ageSec/60)}m ago`
-    : `${Math.floor(ageSec/3600)}h ago`;
-
-  // ── Compute time-to-fix from history ─────────────────────────────────────
-  const avgFixMin = React.useMemo(() => {
-    const timed = fixHistory.filter(h => h.durationMs);
-    if (!timed.length) return null;
-    return Math.round(timed.reduce((s,h) => s + h.durationMs, 0) / timed.length / 60000);
-  }, [fixHistory]);
-
-  // ── Build Slack preview message ───────────────────────────────────────────
-  const slackPreview = React.useMemo(() => {
-    if (!brief) return null;
-    const issues = brief.issues || [];
-    if (issues.length === 0) return `✅ mws.report is healthy — all checks passed (${brief.total_rows?.toLocaleString()} rows scanned)`;
-    return `⚠️ mws.report: ${issues.length} issue(s) — ` + issues.map(i=>`${i.id}: ${i.count} rows`).join(", ");
-  }, [brief]);
-
-  const load = React.useCallback(async () => {
-    setLoading(true); setError(null);
-    try {
-      const res  = await fetch(`${API}/api/report/triage`);
-      const data = await res.json();
-      if (data.error) throw new Error(data.error);
-      setBrief(data);
-      setLastFetch(new Date().toISOString());
-      setChecklist(p => ({...p, scanned:true}));
-      // Save health data point for sparkline
-      try {
-        const hist = JSON.parse(localStorage.getItem("wz_healthHistory")||"[]");
-        hist.push({ clean:!data.issues?.length, issueCount:data.issues?.length||0,
-          ts:new Date().toISOString() });
-        localStorage.setItem("wz_healthHistory", JSON.stringify(hist.slice(-14)));
-      } catch {}
-      if (data.issues?.length > 0 && onIssueFound) onIssueFound(data.issues);
-    } catch(e) { setError(e.message); }
-    setLoading(false);
-  }, []);
-
-  React.useEffect(() => { load(); }, []);
-
-  const issues     = brief?.issues || [];
-  const totalRows  = brief?.total_rows || 0;
-  const isHealthy  = issues.length === 0 && !loading && brief;
-  const scannedAt  = brief?.scanned_at ? new Date(brief.scanned_at).toLocaleTimeString() : null;
-  const SEV_COLOR  = { critical:T.red, high:T.orange, medium:T.yellow, low:T.cyan };
-  const SEV_RANK   = { critical:0, high:1, medium:2, low:3 };
-  const sorted     = [...issues].sort((a,b)=>(SEV_RANK[a.severity]||9)-(SEV_RANK[b.severity]||9));
-
-  // Non-primary monitored tables
-  const otherTables = monTables.filter(t => !t.primary);
-
-  // ── Unified health score ──────────────────────────────────────────────────
-  // Combines mws.report issues + monitored table results + anomalies
-  const unifiedHealthScore = React.useMemo(() => {
-    if (!brief) return null;
-    let score = 100;
-    // Deduct for mws.report issues
-    issues.forEach(i => {
-      if (i.severity === "critical") score -= 20;
-      else if (i.severity === "high") score -= 12;
-      else if (i.severity === "medium") score -= 6;
-      else score -= 3;
-    });
-    // Deduct for other monitored tables with issues
-    otherTables.forEach(t => {
-      const key = `${t.schema}.${t.table}`;
-      const res = tableResults[key];
-      if (res?.alerts?.length > 0) {
-        score -= Math.min(15, res.alerts.length * 5);
-      }
-    });
-    // Deduct for anomalies
-    if (anomalies?.tables_with_anomalies > 0) {
-      score -= Math.min(20, anomalies.tables_with_anomalies * 7);
-    }
-    const finalScore = Math.max(0, Math.min(100, Math.round(score)));
-    // Write unified score to wz_brief so WiziAgent context picks it up
-    try {
-      const stored = JSON.parse(sessionStorage.getItem("wz_brief")||"null");
-      if (stored) {
-        stored.health_score = finalScore;
-        stored.monitored_tables_count = otherTables.length;
-        stored.monitored_tables_issues = otherTables.filter(t => {
-          const res = tableResults[`${t.schema}.${t.table}`];
-          return res?.alerts?.length > 0;
-        }).length;
-        stored.stale_tables = otherTables
-          .filter(t => !tableResults[`${t.schema}.${t.table}`])
-          .map(t => `${t.schema}.${t.table}`);
-        sessionStorage.setItem("wz_brief", JSON.stringify(stored));
-      }
-    } catch {}
-    return finalScore;
-  }, [brief, issues, tableResults, anomalies, otherTables]);
-
-  return (
-    <div className="fade-in" style={{ display:"flex", flexDirection:"column", minHeight:"100%" }}>
-      {/* Sub-view bar */}
-      <div style={{ display:"flex", gap:0, borderBottom:`1px solid ${T.border}`, flexShrink:0, paddingLeft:28 }}>
-        {[{id:"brief",label:"Daily Brief"},{id:"sla",label:"SLA Tracker"}].map(tab=>(
-          <button key={tab.id} onClick={()=>setActiveBriefView(tab.id)}
-            style={{ padding:"5px 14px", fontSize:12, fontWeight:activeBriefView===tab.id?600:400,
-              color:activeBriefView===tab.id?"white":T.muted,
-              background:activeBriefView===tab.id?T.accent:"transparent",
-              border:"none", cursor:"pointer", borderRadius:99,
-              transition:"all 0.15s" }}>
-            {tab.label}
-          </button>
-        ))}
-      </div>
-      {activeBriefView==="sla" ? <SlaTracker/> : (
-      <div style={{ flex:1, overflowY:"auto", padding:"28px 32px", maxWidth:1000 }}>
-      {/* Header row */}
-      <div style={{ display:"flex", alignItems:"flex-start", justifyContent:"space-between", marginBottom:28 }}>
-        <div>
-          <div style={{ fontSize:24, fontWeight:800, color:T.text, letterSpacing:"-0.03em" }}>
-            Daily Brief
-          </div>
-          <div style={{ fontSize:13, color:T.muted, marginTop:4, display:"flex", alignItems:"center", gap:10 }}>
-            {loading ? "Scanning mws.report…" : scannedAt
-              ? <><span>Scanned at {scannedAt}</span><span style={{color:T.dim}}>·</span><span>{ageLabel}</span></>
-              : "mws.report health overview"
-            }
-            {avgFixMin !== null && (
-              <span style={{ padding:"1px 8px", borderRadius:99, fontSize:10,
-                background:`${T.green}12`, color:T.green, fontWeight:600 }}>
-                avg fix: {avgFixMin}m
-              </span>
-            )}
-          </div>
-        </div>
-        <Btn onClick={load} disabled={loading} variant="ghost" size="sm">
-          {loading ? <Spinner size={12}/> : <RefreshCw size={12}/>}
-          {loading ? "Scanning…" : "Refresh"}
-        </Btn>
-      </div>
-
-      {/* ── Onboarding checklist ── */}
-      {!checklistDismissed && (
-        <Card style={{ padding:"18px 22px", marginBottom:20,
-          borderColor: allDone ? `${T.green}40` : `${T.accent}30`,
-          background: allDone ? `${T.green}05` : `${T.accent}04` }}>
-          <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom:12 }}>
-            <div style={{ display:"flex", alignItems:"center", gap:8 }}>
-              {allDone
-                ? <CheckCircle size={15} color={T.green}/>
-                : <Zap size={15} color={T.accent}/>}
-              <span style={{ fontSize:13, fontWeight:700, color: allDone ? T.green : T.text }}>
-                {allDone ? "You're all set! 🎉" : "Getting started with WiziAgent"}
-              </span>
-              <span style={{ fontSize:11, color:T.muted }}>
-                {Object.values(checklist).filter(Boolean).length}/{Object.values(checklist).length} done
-              </span>
-            </div>
-            <button onClick={()=>setChecklistDismissed(true)}
-              style={{ background:"none", border:"none", cursor:"pointer",
-                color:T.muted, fontSize:14 }}>×</button>
-          </div>
-          <div style={{ display:"flex", flexDirection:"column", gap:6 }}>
-            {[
-              { key:"scanned",   label:"Run your first scan",          desc:"Click Refresh to scan mws.report",          tab:"brief",     done:checklist.scanned },
-              { key:"monitored", label:"Add a table to Monitor",       desc:"Go to Monitor → Add Table",                  tab:"monitor",   done:checklist.monitored },
-              { key:"slack",     label:"Set up Slack notifications",   desc:"Go to Configure → Slack Notifications",     tab:"config",    done:checklist.slack },
-              { key:"workflow",  label:"Schedule your first workflow", desc:"Go to Workflows → New Workflow",            tab:"workflows", done:checklist.workflow },
-              { key:"triage",    label:"Triage an issue",              desc:"Go to Triage → Scan → fix an issue",        tab:"triage",    done:checklist.triage },
-            ].map(step => (
-              <div key={step.key} style={{ display:"flex", alignItems:"center", gap:10,
-                padding:"7px 10px", borderRadius:7, cursor: step.done ? "default" : "pointer",
-                background: step.done ? `${T.green}08` : T.surface,
-                border:`1px solid ${step.done ? T.green+"30" : T.border}`,
-                opacity: step.done ? 0.7 : 1,
-              }}
-                onClick={() => { if (!step.done) onNavigate(step.tab); }}>
-                <div style={{ width:18, height:18, borderRadius:99, flexShrink:0,
-                  background: step.done ? T.green : T.border,
-                  display:"flex", alignItems:"center", justifyContent:"center" }}>
-                  {step.done
-                    ? <Check size={10} color="white"/>
-                    : <span style={{ width:6, height:6, borderRadius:99,
-                        background:"white", display:"block" }}/>}
-                </div>
-                <div style={{ flex:1 }}>
-                  <div style={{ fontSize:12, fontWeight:600,
-                    color: step.done ? T.green : T.text,
-                    textDecoration: step.done ? "line-through" : "none" }}>
-                    {step.label}
-                  </div>
-                  {!step.done && (
-                    <div style={{ fontSize:10, color:T.muted }}>{step.desc}</div>
-                  )}
-                </div>
-                {!step.done && <ArrowRight size={11} color={T.muted}/>}
-                {step.done && (
-                  <button onClick={e=>{e.stopPropagation(); setChecklist(p=>({...p,[step.key]:false}));}}
-                    style={{ background:"none", border:"none", cursor:"pointer",
-                      fontSize:10, color:T.dim }}>undo</button>
-                )}
-              </div>
-            ))}
-          </div>
-        </Card>
-      )}
-
-      {error && (
-        <Card style={{ padding:"14px 18px", marginBottom:20,
-          borderColor:`${T.red}40`, background:`${T.red}06` }}>
-          <div style={{ display:"flex", gap:10, alignItems:"center" }}>
-            <XCircle size={16} color={T.red}/>
-            <div style={{ fontSize:12, color:T.red }}>{error}</div>
-            <Btn onClick={load} size="sm" variant="ghost" style={{ marginLeft:"auto" }}>Retry</Btn>
-          </div>
-        </Card>
-      )}
-
-      {/* Summary banner — unified health */}
-      {!loading && brief && (
-        <Card style={{ padding:"18px 22px", marginBottom:20,
-          background: isHealthy ? `${T.green}08` : `${T.red}06`,
-          borderColor: isHealthy ? `${T.green}30` : `${T.red}30` }}>
-          <div style={{ display:"flex", alignItems:"center", gap:14 }}>
-            {isHealthy
-              ? <CheckCircle size={26} color={T.green} strokeWidth={1.5}/>
-              : <AlertTriangle size={26} color={T.red} strokeWidth={1.5}/>
-            }
-            <div style={{ flex:1 }}>
-              <div style={{ fontSize:15, fontWeight:700,
-                color: isHealthy ? T.green : T.red }}>
-                {isHealthy ? "All checks passed — mws.report is healthy"
-                           : `${issues.length} issue${issues.length>1?"s":""} require attention`}
-              </div>
-              <div style={{ fontSize:12, color:T.muted, marginTop:2 }}>
-                {totalRows.toLocaleString()} rows · {scannedAt}
-                {otherTables.length > 0 && (
-                  <span> · {otherTables.length} table{otherTables.length>1?"s":""} monitored</span>
-                )}
-              </div>
-            </div>
-            {/* Unified health score badge */}
-            {unifiedHealthScore !== null && (
-              <div style={{ textAlign:"center", flexShrink:0 }}>
-                <div style={{ fontSize:28, fontWeight:800, lineHeight:1,
-                  color: unifiedHealthScore>=80?T.green:unifiedHealthScore>=60?T.orange:T.red,
-                  fontFamily:"monospace" }}>
-                  {unifiedHealthScore}
-                </div>
-                <div style={{ fontSize:9, color:T.muted, textTransform:"uppercase",
-                  letterSpacing:"0.05em", marginTop:2 }}>
-                  health score
-                </div>
-                <div style={{ fontSize:8, color:T.dim, marginTop:1 }}>
-                  {otherTables.length > 0 ? "mws + monitored" : "mws.report"}
-                </div>
-              </div>
-            )}
-            {!isHealthy && (
-              <Btn onClick={()=>onNavigate("triage")} size="sm">
-                Review Issues <ArrowRight size={12}/>
-              </Btn>
-            )}
-          </div>
-        </Card>
-      )}
-
-      {/* Loading skeletons */}
-      {loading && !brief && (
-        <div style={{ display:"flex", flexDirection:"column", gap:12 }}>
-          {[1,2,3,4].map(i => (
-            <div key={i} style={{ height:72, borderRadius:10, background:T.border,
-              animation:"pulse 1.5s infinite", animationDelay:`${i*0.12}s`,
-              opacity: 1 - (i-1)*0.15 }}/>
-          ))}
-          <div style={{ fontSize:11, color:T.dim, textAlign:"center", marginTop:4 }}>
-            Scanning mws.report for issues…
-          </div>
-        </div>
-      )}
-
-      {/* First-run empty state */}
-      {!loading && !brief && (
-        <div style={{ textAlign:"center", padding:"60px 20px" }}>
-          <div style={{ fontSize:48, marginBottom:16 }}>🔍</div>
-          <div style={{ fontSize:18, fontWeight:800, color:T.text, marginBottom:8,
-            letterSpacing:"-0.02em" }}>
-            No brief yet for today
-          </div>
-          <div style={{ fontSize:13, color:T.muted, maxWidth:380, margin:"0 auto 24px",
-            lineHeight:1.6 }}>
-            Run a scan to see data quality issues, pipeline health, and AI-generated insights
-            for your Amazon Seller data.
-          </div>
-          <Btn onClick={load} size="sm"
-            style={{ background:`linear-gradient(135deg,${T.accent},${T.purple})`,
-              color:"white", border:"none", padding:"8px 20px" }}>
-            <Play size={12}/> Run Scan Now
-          </Btn>
-        </div>
-      )}
-
-      {/* Issue cards */}
-      {!loading && sorted.length > 0 && (
-        <div className="wz-stagger" style={{ display:"flex", flexDirection:"column", gap:10, marginBottom:20 }}>
-          {sorted.map(issue => {
-            const color = SEV_COLOR[issue.severity] || T.muted;
-            return (
-              <Card key={issue.id} hoverable style={{ padding:"14px 18px" }}>
-                <div style={{ display:"flex", alignItems:"center", gap:14 }}>
-                  <div style={{ width:38, height:38, borderRadius:9, flexShrink:0,
-                    background:`${color}12`,
-                    display:"flex", alignItems:"center", justifyContent:"center" }}>
-                    <AlertTriangle size={17} color={color} strokeWidth={1.5}/>
-                  </div>
-                  <div style={{ flex:1, minWidth:0 }}>
-                    <div style={{ display:"flex", alignItems:"center", gap:8, marginBottom:3 }}>
-                      <span style={{ fontSize:13, fontWeight:600, color:T.text }}>{issue.title}</span>
-                      <Badge label={issue.severity} color={color}/>
-                      <span style={{ fontSize:10, color:T.dim, fontFamily:T.monoFont }}>{issue.id}</span>
-                    </div>
-                    <div style={{ fontSize:12, color:T.muted }}>{issue.description}</div>
-                    {issue.breakdown?.length > 0 && (
-                      <div style={{ display:"flex", gap:5, marginTop:5, flexWrap:"wrap" }}>
-                        {issue.breakdown.map(b => (
-                          <span key={b.status} style={{ fontSize:10, padding:"1px 7px",
-                            background:T.border, color:T.muted, borderRadius:4,
-                            fontFamily:T.monoFont }}>{b.status}: {b.count}</span>
-                        ))}
-                      </div>
-                    )}
-                  </div>
-                  <div style={{ textAlign:"right", flexShrink:0 }}>
-                    <div style={{ fontSize:22, fontWeight:700, color,
-                      fontFamily:T.monoFont }}>{issue.count.toLocaleString()}</div>
-                    <div style={{ fontSize:9, color:T.muted, textTransform:"uppercase",
-                      letterSpacing:"0.04em" }}>rows</div>
-                  </div>
-                  <div style={{ display:"flex", flexDirection:"column", gap:5, marginLeft:6 }}>
-                    <Btn size="sm" onClick={()=>onNavigate("triage")}>
-                      Fix <ArrowRight size={11}/>
-                    </Btn>
-                    <Btn size="sm" variant="ghost" onClick={()=>onNavigate("chat")}>
-                      Ask AI
-                    </Btn>
-                  </div>
-                </div>
-              </Card>
-            );
-          })}
-        </div>
-      )}
-
-      {/* Health score trend sparkline */}
-      {!loading && brief && (
-        <Card style={{ padding:"14px 20px", marginBottom:14 }}>
-          <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom:8 }}>
-            <div style={{ fontSize:11, fontWeight:700, color:T.muted,
-              textTransform:"uppercase", letterSpacing:"0.06em" }}>
-              mws.report Health — Last 7 Scans
-            </div>
-            <span style={{ fontSize:11, color:isHealthy?T.green:T.orange, fontWeight:600 }}>
-              {isHealthy?"100":"<100"} / 100
-            </span>
-          </div>
-          <HealthSparkline brief={brief} isHealthy={isHealthy} T={T}/>
-        </Card>
-      )}
-
-      {/* Bottom grid: Health checks + Multi-table summary + Slack preview */}
-      {!loading && brief && (
-        <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:14 }}>
-          {/* Health checks */}
-          <Card style={{ padding:"16px 20px" }}>
-            <div style={{ fontSize:11, fontWeight:700, color:T.muted, marginBottom:12,
-              textTransform:"uppercase", letterSpacing:"0.06em" }}>
-              Health Checks — mws.report
-            </div>
-            <div style={{ display:"flex", flexDirection:"column", gap:8 }}>
-              {[
-                { label:"All status = processed",        pass:!issues.find(i=>i.id==="RPT-001"), check:"status != 'processed'" },
-                { label:"All copy_status = REPLICATED",  pass:!issues.find(i=>i.id==="RPT-002"), check:"copy_status != 'REPLICATED'" },
-                { label:"No reports stuck in copy >2h",  pass:!issues.find(i=>i.id==="RPT-003"), check:"processed, copy pending >2h" },
-              ].map(c => (
-                <div key={c.label} style={{ display:"flex", alignItems:"center", gap:10,
-                  padding:"8px 12px", borderRadius:7,
-                  background: c.pass ? `${T.green}08` : `${T.red}06`,
-                  border:`1px solid ${c.pass ? T.green : T.red}20` }}>
-                  {c.pass
-                    ? <CheckCircle size={13} color={T.green} strokeWidth={2}/>
-                    : <XCircle size={13} color={T.red} strokeWidth={2}/>
-                  }
-                  <div style={{ flex:1 }}>
-                    <div style={{ fontSize:11, fontWeight:600,
-                      color: c.pass ? T.green : T.red }}>{c.label}</div>
-                    <div style={{ fontSize:9, color:T.dim, fontFamily:T.monoFont, marginTop:1 }}>
-                      {c.check}
-                    </div>
-                  </div>
-                  <StatusDot status={c.pass?"healthy":"critical"}/>
-                </div>
-              ))}
-            </div>
-          </Card>
-
-          <div style={{ display:"flex", flexDirection:"column", gap:14 }}>
-            {/* Other monitored tables */}
-            {otherTables.length > 0 && (
-              <Card style={{ padding:"16px 20px" }}>
-                <div style={{ fontSize:11, fontWeight:700, color:T.muted, marginBottom:12,
-                  textTransform:"uppercase", letterSpacing:"0.06em" }}>
-                  Other Monitored Tables
-                </div>
-                <div style={{ display:"flex", flexDirection:"column", gap:6 }}>
-                  {otherTables.map(t => {
-                    const key    = `${t.schema}.${t.table}`;
-                    const res    = tableResults[key];
-                    const alerts = res?.alerts?.length || 0;
-                    const status = !res ? "idle" : alerts > 0 ? "warning" : "healthy";
-                    return (
-                      <div key={key} style={{ display:"flex", alignItems:"center", gap:8 }}>
-                        <StatusDot status={status}/>
-                        <span style={{ fontSize:12, color:T.text, fontFamily:T.monoFont, flex:1 }}>{key}</span>
-                        {res && (
-                          <span style={{ fontSize:11, color: alerts>0?T.orange:T.green }}>
-                            {alerts > 0 ? `${alerts} issue${alerts>1?"s":""}` : "clean"}
-                          </span>
-                        )}
-                        {!res && <span style={{ fontSize:11, color:T.dim }}>not scanned</span>}
-                      </div>
-                    );
-                  })}
-                </div>
-              </Card>
-            )}
-
-            {/* Anomaly Detection */}
-            <Card style={{ padding:"16px 20px",
-              borderColor: anomalies?.tables_with_anomalies > 0 ? `${T.orange}40` : `${T.purple}20`,
-              background: anomalies?.tables_with_anomalies > 0 ? `${T.orange}04` : `${T.purple}03` }}>
-              <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom:10 }}>
-                <div style={{ fontSize:11, fontWeight:700, color:T.muted,
-                  textTransform:"uppercase", letterSpacing:"0.06em" }}>
-                  Anomaly Detection
-                </div>
-                <div style={{ display:"flex", gap:6 }}>
-                  {!anomalies && (
-                    <Btn size="sm" variant="ghost" onClick={buildBaselines} disabled={anomalyLoading}
-                      style={{ fontSize:10, color:T.purple, borderColor:`${T.purple}40` }}>
-                      {anomalyLoading ? <Spinner size={10}/> : null}
-                      {anomalyLoading ? "Building…" : "Build Baselines"}
-                    </Btn>
-                  )}
-                  {anomalies && (
-                    <Btn size="sm" variant="ghost" onClick={runAnomalyCheck} disabled={anomalyLoading}
-                      style={{ fontSize:10 }}>
-                      {anomalyLoading ? <Spinner size={10}/> : <RefreshCw size={10}/>}
-                      Re-check
-                    </Btn>
-                  )}
-                </div>
-              </div>
-
-              {!anomalies && !anomalyLoading && (
-                <div style={{ fontSize:11, color:T.dim }}>
-                  No baselines yet. Click "Build Baselines" to profile all tables and enable statistical anomaly detection.
-                </div>
-              )}
-              {anomalyLoading && !anomalies && (
-                <div style={{ fontSize:11, color:T.muted, display:"flex", alignItems:"center", gap:6 }}>
-                  <Spinner size={11}/> Profiling tables…
-                </div>
-              )}
-              {anomalies && (
-                <>
-                  {anomalies.tables_with_anomalies === 0 ? (
-                    <div style={{ fontSize:12, color:T.green, display:"flex", alignItems:"center", gap:6 }}>
-                      <CheckCircle size={13} color={T.green}/>
-                      All {anomalies.tables_checked} table(s) within normal range
-                    </div>
-                  ) : (
-                    <>
-                      {anomalies.summary && (
-                        <div style={{ fontSize:12, color:T.text2, marginBottom:10,
-                          padding:"8px 12px", borderRadius:6,
-                          background:`${T.orange}08`, border:`1px solid ${T.orange}20` }}>
-                          {anomalies.summary}
-                        </div>
-                      )}
-                      {anomalies.anomalies?.map((ta, i) => (
-                        <div key={ta.table||i} style={{ marginBottom:8 }}>
-                          <div style={{ fontSize:11, fontWeight:600, color:T.text,
-                            fontFamily:"monospace", marginBottom:4 }}>{ta.table}</div>
-                          {ta.anomalies?.map((a, j) => (
-                            <div key={j} style={{ display:"flex", alignItems:"center", gap:8,
-                              padding:"5px 10px", borderRadius:5, marginBottom:3,
-                              background:`${T.orange}08`, border:`1px solid ${T.orange}20` }}>
-                              <Badge label={a.severity}
-                                color={{critical:T.red,high:T.orange,medium:T.yellow}[a.severity]||T.muted}/>
-                              <span style={{ fontSize:11, color:T.text, flex:1 }}>
-                                {a.column === "_row_count"
-                                  ? `Row count ${a.type==="row_count_spike"?"spike":"drop"}: ${a.baseline_value?.toLocaleString()} → ${a.current_value?.toLocaleString()}`
-                                  : a.type === "null_rate_increase"
-                                    ? `NULLs in \`${a.column}\` up ${a.deviation_pct}pp (${a.baseline_value}% → ${a.current_value}%)`
-                                    : `${a.type} on \`${a.column}\``}
-                              </span>
-                              <span style={{ fontSize:10, fontFamily:"monospace", color:T.orange }}>
-                                +{a.deviation_pct}%
-                              </span>
-                            </div>
-                          ))}
-                        </div>
-                      ))}
-                    </>
-                  )}
-                  <div style={{ fontSize:9, color:T.dim, marginTop:6 }}>
-                    Last checked: {new Date(anomalies.checked_at).toLocaleTimeString()}
-                    {" · "}{anomalies.tables_checked} table(s) checked
-                  </div>
-                </>
-              )}
-            </Card>
-
-            {/* Slack preview */}
-            {slackPreview && (
-              <Card style={{ padding:"16px 20px" }}>
-                <div style={{ fontSize:11, fontWeight:700, color:T.muted, marginBottom:10,
-                  textTransform:"uppercase", letterSpacing:"0.06em" }}>
-                  Slack Digest Preview
-                  {slackUrl
-                    ? <Badge label="webhook set" color={T.green} style={{ marginLeft:8 }}/>
-                    : <span style={{ marginLeft:8, fontSize:9, color:T.dim }}>(no webhook configured)</span>
-                  }
-                </div>
-                <div style={{ padding:"10px 12px", borderRadius:7,
-                  background: T.isDark ? "#0D1117" : "#F8FAFC",
-                  border:`1px solid ${T.border}`,
-                  fontSize:11, color:T.text2, fontFamily:T.monoFont,
-                  lineHeight:1.6 }}>
-                  {slackPreview}
-                </div>
-              </Card>
-            )}
-          </div>
-        </div>
-      )}
-      </div>
-      )}
-    </div>
-  );
-}
 
 function TriageTab({ initialIssues }) {
   const T = useT();
@@ -3132,7 +2702,7 @@ function TriageTab({ initialIssues }) {
 
   // Load table list for selector
   React.useEffect(() => {
-    fetch(`${API}/api/tables`)
+    apiFetch(`${API}/api/tables`)
       .then(r => r.json())
       .then(data => {
         if (Array.isArray(data)) {
@@ -3197,12 +2767,12 @@ function TriageTab({ initialIssues }) {
   // Build scan URL based on selected table
   const fetchTriage = async (table) => {
     if (table === "mws.report") {
-      const res  = await fetch(`${API}/api/report/triage`);
+      const res  = await apiFetch(`${API}/api/report/triage`);
       return res.json();
     }
     // Generic table agent for any other table
     const [schema, tbl] = table.includes(".") ? table.split(".") : ["mws", table];
-    const res = await fetch(`${API}/api/wizi-agent/run-table`, {
+    const res = await apiFetch(`${API}/api/wizi-agent/run-table`, {
       method:"POST", headers:{"Content-Type":"application/json"},
       body:JSON.stringify({ schema, table:tbl, dry_run:true })
     }).catch(()=>{});
@@ -3258,7 +2828,7 @@ function TriageTab({ initialIssues }) {
   const dryRun = async (issue) => {
     setDryRuns(p => ({...p,[issue.id]:"loading"}));
     try {
-      const res  = await fetch(`${API}/api/report/fix`, {
+      const res  = await apiFetch(`${API}/api/report/fix`, {
         method:"POST", headers:{"Content-Type":"application/json"},
         body:JSON.stringify({ fix_action:issue.fix_action, dry_run:true })
       });
@@ -3285,7 +2855,7 @@ function TriageTab({ initialIssues }) {
     const fixStart = Date.now();
     addLog(`Executing fix: ${issue.fix_action}…`);
     try {
-      const res  = await fetch(`${API}/api/report/fix`, {
+      const res  = await apiFetch(`${API}/api/report/fix`, {
         method:"POST", headers:{"Content-Type":"application/json"},
         body:JSON.stringify({ fix_action:issue.fix_action, dry_run:false })
       });
@@ -3338,7 +2908,7 @@ function TriageTab({ initialIssues }) {
     setAgentRunning(true); setAgentResult(null);
     addLog("✨ WiziAgent starting…");
     try {
-      const res  = await fetch(`${API}/api/wizi-agent/run`, {
+      const res  = await apiFetch(`${API}/api/wizi-agent/run`, {
         method:"POST", headers:{"Content-Type":"application/json"},
         body:JSON.stringify({ threshold:50 })
       });
@@ -3355,7 +2925,7 @@ function TriageTab({ initialIssues }) {
   const approveAgent = async (decision) => {
     const token = agentResult?.approval_token;
     if (!token) return;
-    await fetch(`${API}/api/wizi-agent/approve`, {
+    await apiFetch(`${API}/api/wizi-agent/approve`, {
       method:"POST", headers:{"Content-Type":"application/json"},
       body:JSON.stringify({ token, decision })
     }).catch(()=>{});
@@ -3396,7 +2966,7 @@ function TriageTab({ initialIssues }) {
     const [schema, tbl] = tblStr.includes(".")
       ? tblStr.split(".") : ["mws", tblStr];
     try {
-      const res  = await fetch(`${API}/api/preview?schema=${schema}&table=${tbl}&limit=${limit}`);
+      const res  = await apiFetch(`${API}/api/preview?schema=${schema}&table=${tbl}&limit=${limit}`);
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const data = await res.json();
       if (data.error) throw new Error(data.error);
@@ -3432,7 +3002,7 @@ function TriageTab({ initialIssues }) {
     if (aiExplanations[issue.id] || aiExplLoading[issue.id]) return;
     setAiExplLoading(p=>({...p,[issue.id]:true}));
     try {
-      const res = await fetch(`${API}/api/ai/chat`, {
+      const res = await apiFetch(`${API}/api/ai/chat`, {
         method:"POST", headers:{"Content-Type":"application/json"},
         body: JSON.stringify({
           system:`You are a data ops assistant. Given a data quality issue, write 1-2 plain-English sentences explaining:
@@ -3462,7 +3032,7 @@ Be direct and specific. Max 30 words.`,
     // Only score up to 5 issues, batch into one call to save tokens
     const top = issueList.slice(0,5);
     try {
-      const res = await fetch(`${API}/api/ai/chat`, {
+      const res = await apiFetch(`${API}/api/ai/chat`, {
         method:"POST", headers:{"Content-Type":"application/json"},
         body:JSON.stringify({
           system:"You are a data quality triage assistant. Given a list of data issues, return a JSON object mapping each issue id to {priority:1-5, action:'fix_now'|'monitor'|'investigate'|'ignore'}. Be concise, no explanation.",
@@ -4044,7 +3614,7 @@ Be direct and specific. Max 30 words.`,
                             {aiExplanations[issue.id]}
                           </div>
                         </div>
-                        <button onClick={()=>setExplanations(p=>({...p,[issue.id]:null}))}
+                        <button onClick={()=>setAiExplanations(p=>({...p,[issue.id]:null}))}
                           style={{ background:"none", border:"none", cursor:"pointer",
                             color:T.dim, fontSize:14 }}>×</button>
                       </div>
@@ -4394,7 +3964,7 @@ function ActivityTab({ onNavigate }) {
 
   React.useEffect(() => {
     // Also try API to get any newer runs not yet in localStorage
-    fetch(`${API}/api/custom-workflows/history`)
+    apiFetch(`${API}/api/custom-workflows/history`)
       .then(r=>r.json()).then(d=>{
         if (Array.isArray(d) && d.length > 0) setCwfHistory(d);
       }).catch(()=>{});
@@ -4460,7 +4030,7 @@ function ActivityTab({ onNavigate }) {
             detail: worst.column==="_row_count"
               ? `Row ${worst.type==="row_count_spike"?"spike":"drop"}: ${worst.baseline_value?.toLocaleString()} → ${worst.current_value?.toLocaleString()}`
               : `NULLs in ${worst.column} up ${worst.deviation_pct}pp`,
-            action:{ label:"Go to Brief", tab:"brief" },
+
           });
         }
       });
@@ -4504,7 +4074,7 @@ function ActivityTab({ onNavigate }) {
         `${h.action} on ${h.table} (${h.ts?.slice(0,10)})`
       ).join("; ");
 
-      const res = await fetch(`${API}/api/ai/chat`, {
+      const res = await apiFetch(`${API}/api/ai/chat`, {
         method:"POST", headers:{"Content-Type":"application/json"},
         body:JSON.stringify({
           system:"You are a pipeline health analyst. Write a concise 3-4 sentence weekly summary for a data team. Cover: overall health trend, most common failure type, any recurring pattern (day/time), and ONE top recommendation. Be specific with table names and numbers. No bullet points.",
@@ -4832,7 +4402,7 @@ function CheckSetBuilder({ table, initial, onSave, onCancel }) {
     if (!aiDesc.trim()) return;
     setAiLoading(true);
     try {
-      const res = await fetch(`${API}/api/ai/chat`, {
+      const res = await apiFetch(`${API}/api/ai/chat`, {
         method:"POST", headers:{"Content-Type":"application/json"},
         body: JSON.stringify({
           system: `You are WiziAgent helping a data engineer write SQL checks for Redshift.
@@ -5012,6 +4582,7 @@ Rules: only SELECT queries, use exact table name, pass_condition is one of: "row
 
 function MonitorTab() {
   const T = useT();
+  const dbSchema = useSchema();
   const [tables,     setTables]     = useLocal("wz_monTables",
     [{ schema:"mws", table:"report", label:"mws.report", primary:true,
        checkSets:[], checks:[] }]
@@ -5030,7 +4601,7 @@ function MonitorTab() {
   const runCheckSet = async (cs, tableKey) => {
     setCsRunning(p=>({...p,[cs.id]:true}));
     try {
-      const res = await fetch(`${API}/api/monitor/run-checks`, {
+      const res = await apiFetch(`${API}/api/monitor/run-checks`, {
         method:"POST", headers:{"Content-Type":"application/json"},
         body:JSON.stringify({ checks: cs.checks })
       });
@@ -5059,7 +4630,7 @@ function MonitorTab() {
     const key = `${t.schema}.${t.table}`;
     setScanning(p=>({...p,[key]:true}));
     try {
-      const res = await fetch(`${API}/api/wizi-agent/run-table`, {
+      const res = await apiFetch(`${API}/api/wizi-agent/run-table`, {
         method:"POST", headers:{"Content-Type":"application/json"},
         body:JSON.stringify({ schema:t.schema, table:t.table, dry_run:true })
       });
@@ -5207,7 +4778,7 @@ function MonitorTab() {
                       const schCols = dbSchema
                         ? (dbSchema.split(";").find(s=>s.toLowerCase().includes(newTable.table.toLowerCase()))||"")
                         : "";
-                      const res = await fetch(`${API}/api/ai/chat`, {
+                      const res = await apiFetch(`${API}/api/ai/chat`, {
                         method:"POST", headers:{"Content-Type":"application/json"},
                         body:JSON.stringify({
                           system:`Generate 3 data quality check SQL queries for ${tbl}. Columns: ${schCols}. Return JSON array: [{"name":"...","sql":"SELECT ...","pass_condition":"rows = 0","severity":"high"}]. No markdown.`,
@@ -5523,6 +5094,8 @@ function MonitorTab() {
 // ─── Evals Tab ───────────────────────────────────────────────────────────────
 function EvalsInline() {
   const T = useT();
+  const [genLoading, setGenLoading] = React.useState(false);
+  const [genResult,  setGenResult]  = React.useState(null);
   const [suite,      setSuite]      = React.useState(null);
   const [activeRun,  setActiveRun]  = React.useState(null);
   const [running,    setRunning]    = React.useState(false);
@@ -5530,8 +5103,8 @@ function EvalsInline() {
   const [targetAgent,setTargetAgent]= React.useState("all");
 
   React.useEffect(() => {
-    fetch(`${API}/api/evals/suite`).then(r=>r.json()).then(setSuite).catch(()=>{});
-    fetch(`${API}/api/evals/history`).then(r=>r.json()).then(d=>{
+    apiFetch(`${API}/api/evals/suite`).then(r=>r.json()).then(setSuite).catch(()=>{});
+    apiFetch(`${API}/api/evals/history`).then(r=>r.json()).then(d=>{
       if (d.runs?.[0]) setActiveRun(d.runs[0]);
     }).catch(()=>{});
   }, []);
@@ -5540,7 +5113,7 @@ function EvalsInline() {
     setRunning(true);
     try {
       const body = targetAgent==="all" ? {} : { agent: targetAgent };
-      const res  = await fetch(`${API}/api/evals/run`, {
+      const res  = await apiFetch(`${API}/api/evals/run`, {
         method:"POST", headers:{"Content-Type":"application/json"},
         body: JSON.stringify(body)
       });
@@ -5667,6 +5240,8 @@ function EvalsInline() {
 
 function EvalsTab() {
   const T = useT();
+  const [genLoading, setGenLoading] = React.useState(false);
+  const [genResult,  setGenResult]  = React.useState(null);
   const [suite,      setSuite]      = React.useState(null);
   const [history,    setHistory]    = React.useState([]);
   const [running,    setRunning]    = React.useState(false);
@@ -5676,9 +5251,9 @@ function EvalsTab() {
 
   React.useEffect(() => {
     // Load suite definition
-    fetch(`${API}/api/evals/suite`).then(r=>r.json()).then(setSuite).catch(()=>{});
+    apiFetch(`${API}/api/evals/suite`).then(r=>r.json()).then(setSuite).catch(()=>{});
     // Load history
-    fetch(`${API}/api/evals/history`).then(r=>r.json()).then(d=>{
+    apiFetch(`${API}/api/evals/history`).then(r=>r.json()).then(d=>{
       if(d.runs) { setHistory(d.runs); if(d.runs[0]) setActiveRun(d.runs[0]); }
     }).catch(()=>{});
   }, []);
@@ -5687,7 +5262,7 @@ function EvalsTab() {
     setRunning(true);
     try {
       const body = targetAgent==="all" ? {} : { agent: targetAgent };
-      const res  = await fetch(`${API}/api/evals/run`, {
+      const res  = await apiFetch(`${API}/api/evals/run`, {
         method:"POST", headers:{"Content-Type":"application/json"},
         body: JSON.stringify(body)
       });
@@ -5750,19 +5325,17 @@ function EvalsTab() {
               ))}
               {/* AI generate new eval cases from recent failures */}
               {(() => {
-                const [genLoading, setGenLoading] = React.useState(false);
-                const [genResult,  setGenResult]  = React.useState(null);
                 const generate = async () => {
                   setGenLoading(true); setGenResult(null);
                   try {
-                    const cwfHist = await fetch(`${API}/api/custom-workflows/history/v2?limit=20`)
+                    const cwfHist = await apiFetch(`${API}/api/custom-workflows/history/v2?limit=20`)
                       .then(r=>r.json()).catch(()=>[]);
                     const failures = (Array.isArray(cwfHist)?cwfHist:[])
                       .filter(r=>r.status!=="clean")
                       .slice(0,5)
                       .map(r=>`${r.workflow_name}: ${(r.check_results||[]).filter(c=>!c.passed).map(c=>c.name).join(", ")}`);
                     if (!failures.length) { setGenResult("No recent failures to generate cases from."); setGenLoading(false); return; }
-                    const res = await fetch(`${API}/api/ai/chat`, {
+                    const res = await apiFetch(`${API}/api/ai/chat`, {
                       method:"POST", headers:{"Content-Type":"application/json"},
                       body:JSON.stringify({
                         system:"You generate eval test case prompts for an AI data quality agent. Each case is a plain-English user message that should trigger a specific tool. Return 3 short prompts as a JSON array of strings.",
@@ -5976,6 +5549,7 @@ function EvalsTab() {
 // ─── DataSourcesCard — multi-source connection manager ────────────────────────
 function DataSourcesCard() {
   const T = useT();
+  const dbSchema = useSchema();
   const [sources,    setSources]   = React.useState([]);
   const [loading,    setLoading]   = React.useState(false);
   const [testing,    setTesting]   = React.useState({});
@@ -5989,7 +5563,7 @@ function DataSourcesCard() {
   const load = async () => {
     setLoading(true);
     try {
-      const r = await fetch(`${API}/api/datasources`);
+      const r = await apiFetch(`${API}/api/datasources`);
       const d = await r.json();
       if (d.sources) setSources(d.sources);
     } catch(e) {}
@@ -6001,7 +5575,7 @@ function DataSourcesCard() {
   const testConn = async (id) => {
     setTesting(p=>({...p,[id]:true})); setTestResult(p=>({...p,[id]:null}));
     try {
-      const r = await fetch(`${API}/api/datasources/${id}/test`, {method:"POST"});
+      const r = await apiFetch(`${API}/api/datasources/${id}/test`, {method:"POST"});
       const d = await r.json();
       setTestResult(p=>({...p,[id]:d}));
     } catch(e) { setTestResult(p=>({...p,[id]:{ok:false,error:e.message}})); }
@@ -6010,7 +5584,7 @@ function DataSourcesCard() {
 
   const deleteSource = async (id) => {
     if (id==="default") return;
-    await fetch(`${API}/api/datasources/${id}`, {method:"DELETE"}).catch(()=>{});
+    await apiFetch(`${API}/api/datasources/${id}`, {method:"DELETE"}).catch(()=>{});
     setSources(p=>p.filter(s=>s.id!==id));
   };
 
@@ -6192,7 +5766,7 @@ function SlaThresholdsCard() {
   const fetch_ = async () => {
     setLoading(true);
     try {
-      const r = await fetch(`${API}/api/sla/suggest`);
+      const r = await apiFetch(`${API}/api/sla/suggest`);
       setSlaData(await r.json());
     } catch(e) {}
     setLoading(false);
@@ -6345,220 +5919,710 @@ function DepMapCard() {
   );
 }
 
-function ConfigureTab() {
-  const T = useT();
-  const [slackUrl, setSlackUrl] = useLocal("wz_slack", "");
-  const [saved,    setSaved]    = React.useState(false);
-  const [threshold,setThreshold]= useLocal("wz_threshold", "50");
+// ── Configure tab helpers ────────────────────────────────────────────────────
+const CFG_SOURCES_KEY = "wz_cfg_sources_v1";
+const CFG_EMAIL_KEY   = "wz_cfg_email_v1";
+const CFG_AI_KEY      = "wz_cfg_ai_v1";
 
-  const save = () => {
-    setSaved(true); setTimeout(()=>setSaved(false), 2000);
-    if (slackUrl) { try { const c=JSON.parse(localStorage.getItem("wz_onboarding")||"{}"); localStorage.setItem("wz_onboarding",JSON.stringify({...c,slack:true})); } catch {} }
-  };
+const CFG_DEFAULT_SOURCES = [
+  { id:"rs_staging", name:"Redshift Staging", type:"Redshift", status:"connected",
+    host:"Railway env", schema:"mws", ssl:true, lastSync:null, builtin:true },
+];
 
-  const [diagLoading, setDiagLoading] = React.useState(false);
-  const [diagResult,  setDiagResult]  = React.useState(null);
+const CFG_DEFAULT_EMAIL = {
+  enabled: false, smtpHost:"", smtpPort:"587",
+  senderEmail:"", recipients:"", password:""
+};
+
+const CFG_DEFAULT_AI = {
+  aiInsightsEnabled: true,
+  evalFrequency: "daily",
+  rules: [
+    { id:"r1", label:"Alert if failure rate > 10%",   field:"failure_rate",   op:">", value:"10",  enabled:true  },
+    { id:"r2", label:"Alert if success rate < 90%",   field:"success_rate",   op:"<", value:"90",  enabled:true  },
+    { id:"r3", label:"Alert if avg tries > 3",         field:"avg_tries",      op:">", value:"3",   enabled:false },
+    { id:"r4", label:"Alert if stale reports > 2 days",field:"days_stale",     op:">", value:"2",   enabled:true  },
+  ]
+};
+
+// ── Toast ─────────────────────────────────────────────────────────────────────
+function CfgToast({ msg, type, onDone }) {
+  React.useEffect(()=>{ const t=setTimeout(onDone,2400); return ()=>clearTimeout(t); },[onDone]);
+  const col = type==="error" ? "#F87171" : type==="warn" ? "#FB923C" : "#22C55E";
+  return (
+    <div style={{position:"fixed",bottom:24,right:24,zIndex:9999,
+      background:"#1A1D24",border:"1px solid "+col+"50",borderRadius:10,
+      padding:"11px 18px",fontSize:12,color:col,fontWeight:600,
+      boxShadow:"0 8px 32px rgba(0,0,0,0.4)",display:"flex",alignItems:"center",gap:8}}>
+      <span>{type==="error"?"✗":type==="warn"?"⚠":"✓"}</span>{msg}
+    </div>
+  );
+}
+
+// ── Data Sources sub-tab ──────────────────────────────────────────────────────
+function CfgDataSources({ T }) {
+  const [sources,    setSources]    = useLocal(CFG_SOURCES_KEY, CFG_DEFAULT_SOURCES);
+  const [diagLoading,setDiagLoading]= React.useState(false);
+  const [diagResult, setDiagResult] = React.useState(null);
+  const [showAdd,    setShowAdd]    = React.useState(false);
+  const [toast,      setToast]      = React.useState(null);
+  const [newSrc,     setNewSrc]     = React.useState({
+    name:"", type:"Redshift", host:"", port:"5439", schema:"", ssl:true, status:"disconnected"
+  });
 
   const runDiagnostics = async () => {
     setDiagLoading(true); setDiagResult(null);
     try {
-      // Test connection health
       const [health, aiTest] = await Promise.all([
-        fetch(`${API}/health`).then(r=>r.json()).catch(()=>({status:"error"})),
-        fetch(`${API}/api/ai/test`).then(r=>r.json()).catch(()=>({status:"error"})),
+        apiFetch(`${API}/health`).then(r=>r.json()).catch(()=>({status:"error"})),
+        apiFetch(`${API}/api/ai/test`).then(r=>r.json()).catch(()=>({status:"error"})),
       ]);
-      setDiagResult({ db: health.status||"ok", ai: aiTest.status||"ok",
-                      db_detail: health.detail||"", ai_detail: aiTest.reason||"" });
+      setDiagResult({ db:health.status||"ok", ai:aiTest.status||"ok",
+                      db_detail:health.detail||"", ai_detail:aiTest.reason||"" });
     } catch(e) { setDiagResult({ db:"error", ai:"error" }); }
     setDiagLoading(false);
   };
 
-  return (
-    <div className="fade-in" style={{ overflowY:"auto", padding:"28px 32px", maxWidth:680 }}>
-      <div style={{ marginBottom:28 }}>
-        <div style={{ fontSize:24, fontWeight:800, color:T.text, letterSpacing:"-0.03em", display:"flex", alignItems:"center" }}>
-          Configure
-          <HelpTip>
-            <strong>Configure</strong> sets up your connections and notification preferences.<br/><br/>
-            <strong>Redshift</strong> — connection is managed via Railway environment variables. No changes needed here unless you're moving environments.<br/>
-            <strong>Slack</strong> — paste your Slack Incoming Webhook URL to receive WiziAgent notifications and approval requests.<br/>
-            <strong>Approval threshold</strong> — fixes affecting more rows than this number require a human to click Approve before executing.
-          </HelpTip>
-        </div>
-        <div style={{ fontSize:13, color:T.muted, marginTop:3 }}>Data sources, notifications and WiziAgent settings</div>
-      </div>
+  const addSource = () => {
+    if (!newSrc.name.trim()) { setToast({msg:"Name is required",type:"error"}); return; }
+    const src = { ...newSrc, id:"src_"+Date.now(), lastSync:null, builtin:false };
+    setSources(p=>[...p, src]);
+    setNewSrc({ name:"", type:"Redshift", host:"", port:"5439", schema:"", ssl:true, status:"disconnected" });
+    setShowAdd(false);
+    setToast({msg:"Data source added",type:"success"});
+  };
 
-      <Card style={{ padding:"20px 24px", marginBottom:14 }}>
-        <div style={{ display:"flex", alignItems:"center", gap:10, marginBottom:12 }}>
-          <Database size={15} color={T.cyan}/>
-          <span style={{ fontSize:13, fontWeight:700, color:T.text }}>Redshift Staging</span>
-          {diagResult
-            ? <Badge label={diagResult.db==="ok"?"connected":"error"} color={diagResult.db==="ok"?T.green:T.red}/>
-            : <Badge label="connected" color={T.green}/>}
-          <Btn size="sm" variant="ghost" onClick={runDiagnostics} disabled={diagLoading}
-            style={{ marginLeft:"auto", fontSize:10 }}>
-            {diagLoading?<Spinner size={9}/>:"✨"} Run Diagnostics
+  const deleteSource = (id) => {
+    setSources(p=>p.filter(s=>s.id!==id));
+    setToast({msg:"Source removed",type:"warn"});
+  };
+
+  const inp = (val,onChange,ph,mono) => (
+    <input value={val||""} onChange={e=>onChange(e.target.value)} placeholder={ph}
+      style={{width:"100%",background:T.bg,border:"1px solid "+T.border,borderRadius:7,
+        padding:"8px 11px",fontSize:12,color:T.text,boxSizing:"border-box",
+        fontFamily:mono?T.monoFont:"inherit",outline:"none"}}
+      onFocus={e=>e.target.style.borderColor=T.accent}
+      onBlur={e=>e.target.style.borderColor=T.border}/>
+  );
+
+  // Connection validator state (lifted out of render to avoid hook violation)
+  const [connStr,   setConnStr]   = React.useState("");
+  const [connParsed,setConnParsed]= React.useState(null);
+  const parseConn = () => {
+    if (!connStr.trim()) return;
+    const result = { valid:true, issues:[], fields:{} };
+    try {
+      const url = new URL(connStr);
+      result.fields = { host:url.hostname, port:url.port||"5439", user:url.username,
+        password:url.password?"✓ set":"✗ missing", database:url.pathname.slice(1)||"✗ missing",
+        ssl:url.searchParams.get("sslmode")||"not specified" };
+      if (!url.hostname) result.issues.push("Missing host");
+      if (!url.username) result.issues.push("Missing username");
+      if (!url.pathname.slice(1)) result.issues.push("Missing database name");
+      if (!url.searchParams.get("sslmode")) result.issues.push("SSL mode not specified — Redshift requires sslmode=require");
+      result.valid = result.issues.length === 0;
+    } catch {
+      const pairs = connStr.match(/(\w+)=([^\s]+)/g)||[];
+      pairs.forEach(p=>{ const [k,v]=p.split("="); result.fields[k]=v; });
+      if (!result.fields.host) result.issues.push("Missing host");
+      if (!result.fields.user) result.issues.push("Missing user");
+      if (!result.fields.dbname) result.issues.push("Missing dbname");
+      if (!result.fields.sslmode) result.issues.push("Recommend sslmode=require");
+      result.valid = result.issues.length === 0;
+    }
+    setConnParsed(result);
+  };
+
+  return (
+    <div style={{display:"flex",flexDirection:"column",gap:16,maxWidth:700}}>
+      {toast&&<CfgToast msg={toast.msg} type={toast.type} onDone={()=>setToast(null)}/>}
+
+      {/* Sources list */}
+      <Card style={{padding:"20px 24px"}}>
+        <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:16}}>
+          <div style={{display:"flex",alignItems:"center",gap:8}}>
+            <Database size={15} color={T.cyan}/>
+            <span style={{fontSize:14,fontWeight:700,color:T.text}}>Data Sources</span>
+            <Badge label={sources.length+" connected"} color={T.green}/>
+          </div>
+          <Btn size="sm" variant="ghost" onClick={()=>setShowAdd(p=>!p)}>
+            {showAdd?"Cancel":"+ Add Source"}
           </Btn>
         </div>
-        <div style={{ fontSize:11, color:T.muted, fontFamily:T.monoFont }}>
-          host: Railway env · schema: mws · ssl: required
-        </div>
-        <div style={{ fontSize:11, color:T.dim, marginTop:5 }}>
-          Managed via Railway environment variables (REDSHIFT_HOST, REDSHIFT_USER, REDSHIFT_PASSWORD, etc.)
-        </div>
-        {/* AI connection string validator */}
-        {(() => {
-          const [connStr,   setConnStr]   = React.useState("");
-          const [connParsed,setConnParsed]= React.useState(null);
-          const parseConn = () => {
-            if (!connStr.trim()) return;
-            // Zero tokens — pure regex parse
-            const result = { valid:true, issues:[], fields:{} };
-            try {
-              // Try postgresql:// format
-              const url = new URL(connStr);
-              result.fields = {
-                host: url.hostname, port: url.port||"5439",
-                user: url.username, password: url.password?"✓ set":"✗ missing",
-                database: url.pathname.slice(1)||"✗ missing",
-                ssl: url.searchParams.get("sslmode")||"not specified",
-              };
-              if (!url.hostname) result.issues.push("Missing host");
-              if (!url.username) result.issues.push("Missing username");
-              if (!url.pathname.slice(1)) result.issues.push("Missing database name");
-              if (!url.searchParams.get("sslmode")) result.issues.push("SSL mode not specified — Redshift requires sslmode=require");
-              result.valid = result.issues.length === 0;
-            } catch(e) {
-              // Try key=value format
-              const pairs = connStr.match(/(\w+)=([^\s]+)/g) || [];
-              pairs.forEach(p => { const [k,v]=p.split("="); result.fields[k]=v; });
-              if (!result.fields.host) result.issues.push("Missing host");
-              if (!result.fields.user) result.issues.push("Missing user");
-              if (!result.fields.dbname) result.issues.push("Missing dbname");
-              if (!result.fields.sslmode) result.issues.push("Recommend adding sslmode=require");
-              result.valid = result.issues.length === 0;
-            }
-            setConnParsed(result);
-          };
-          return (
-            <div style={{ marginTop:14, borderTop:`1px solid ${T.border}`, paddingTop:12 }}>
-              <div style={{ fontSize:10, fontWeight:700, color:T.muted, marginBottom:6,
-                textTransform:"uppercase" }}>✨ Validate Connection String</div>
-              <div style={{ display:"flex", gap:8 }}>
-                <input value={connStr} onChange={e=>setConnStr(e.target.value)}
-                  placeholder="postgresql://user:pass@host:5439/dbname?sslmode=require"
-                  style={{ flex:1, padding:"6px 10px", borderRadius:6, fontSize:10,
-                    border:`1px solid ${T.border}`, background:T.bg, color:T.text,
-                    fontFamily:"monospace", outline:"none" }}/>
-                <Btn size="sm" variant="ghost" onClick={parseConn}
-                  disabled={!connStr.trim()}>Parse</Btn>
-              </div>
-              {connParsed && (
-                <div style={{ marginTop:8, padding:"10px 12px", borderRadius:8,
-                  background:connParsed.valid?`${T.green}08`:`${T.orange}08`,
-                  border:`1px solid ${connParsed.valid?T.green:T.orange}25` }}>
-                  <div style={{ display:"flex", flexWrap:"wrap", gap:12, marginBottom:6 }}>
-                    {Object.entries(connParsed.fields).map(([k,v])=>(
-                      <span key={k} style={{ fontSize:10, color:T.text2 }}>
-                        <strong style={{color:T.muted}}>{k}:</strong> {v}
-                      </span>
-                    ))}
-                  </div>
-                  {connParsed.issues.map((iss,i)=>(
-                    <div key={i} style={{ fontSize:10, color:T.orange }}>⚠ {iss}</div>
-                  ))}
-                  {connParsed.valid && (
-                    <div style={{ fontSize:10, color:T.green }}>✓ Connection string looks valid</div>
-                  )}
+
+        {/* Source rows */}
+        <div style={{display:"flex",flexDirection:"column",gap:8}}>
+          {sources.map(src=>(
+            <div key={src.id} style={{padding:"12px 16px",borderRadius:9,
+              background:T.bg,border:"1px solid "+T.border,
+              display:"flex",alignItems:"center",gap:12}}>
+              <div style={{width:8,height:8,borderRadius:"50%",flexShrink:0,
+                background:src.status==="connected"?T.green:T.orange}}/>
+              <div style={{flex:1,minWidth:0}}>
+                <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:2}}>
+                  <span style={{fontSize:12,fontWeight:700,color:T.text}}>{src.name}</span>
+                  <span style={{fontSize:10,padding:"1px 7px",borderRadius:99,
+                    background:T.border+"50",color:T.muted}}>{src.type}</span>
+                  {src.builtin&&<span style={{fontSize:9,padding:"1px 7px",borderRadius:99,
+                    background:T.accent+"15",color:T.accent,fontWeight:600}}>ACTIVE</span>}
                 </div>
+                <div style={{fontSize:10,color:T.muted,fontFamily:T.monoFont}}>
+                  {src.host}{src.schema?" · schema: "+src.schema:""}
+                  {src.ssl?" · ssl: required":""}
+                  {src.lastSync?" · synced "+src.lastSync:" · managed via env vars"}
+                </div>
+              </div>
+              {src.id==="rs_staging"&&(
+                <Btn size="sm" variant="ghost" onClick={runDiagnostics} disabled={diagLoading}>
+                  {diagLoading?<Spinner size={9}/>:"✨"} Diagnose
+                </Btn>
+              )}
+              {!src.builtin&&(
+                <button onClick={()=>deleteSource(src.id)}
+                  style={{background:"none",border:"none",cursor:"pointer",
+                    color:T.muted,fontSize:16,opacity:0.6}}>✕</button>
               )}
             </div>
-          );
-        })()}
-        {diagResult && (
-          <div style={{ marginTop:10, padding:"10px 12px", borderRadius:8,
-            background:`${diagResult.db==="ok"&&diagResult.ai==="ok"?T.green:T.orange}08`,
-            border:`1px solid ${diagResult.db==="ok"&&diagResult.ai==="ok"?T.green:T.orange}25` }}>
-            <div style={{ fontSize:11, fontWeight:600, color:T.text, marginBottom:4 }}>
-              ✨ Diagnostics
-            </div>
-            <div style={{ display:"flex", gap:12, fontSize:10, color:T.muted }}>
+          ))}
+        </div>
+
+        {/* Diagnostics result */}
+        {diagResult&&(
+          <div style={{marginTop:12,padding:"10px 14px",borderRadius:8,
+            background:(diagResult.db==="ok"&&diagResult.ai==="ok"?T.green:T.orange)+"08",
+            border:"1px solid "+(diagResult.db==="ok"&&diagResult.ai==="ok"?T.green:T.orange)+"25"}}>
+            <div style={{fontSize:11,fontWeight:600,color:T.text,marginBottom:4}}>Diagnostics</div>
+            <div style={{display:"flex",gap:16,fontSize:11,color:T.muted}}>
               <span>🗄 Redshift: <strong style={{color:diagResult.db==="ok"?T.green:T.red}}>{diagResult.db}</strong></span>
-              <span>🤖 AI (GPT-4o): <strong style={{color:diagResult.ai==="ok"?T.green:T.red}}>{diagResult.ai}</strong></span>
+              <span>🤖 AI: <strong style={{color:diagResult.ai==="ok"?T.green:T.red}}>{diagResult.ai}</strong></span>
             </div>
-            {(diagResult.db_detail||diagResult.ai_detail) && (
-              <div style={{ fontSize:10, color:T.red, marginTop:4 }}>
-                {diagResult.db_detail||diagResult.ai_detail}
-              </div>
+            {(diagResult.db_detail||diagResult.ai_detail)&&(
+              <div style={{fontSize:10,color:T.red,marginTop:4}}>{diagResult.db_detail||diagResult.ai_detail}</div>
             )}
+          </div>
+        )}
+
+        {/* Add new source */}
+        {showAdd&&(
+          <div style={{marginTop:14,padding:"16px",borderRadius:9,
+            background:T.surface,border:"1px solid "+T.accent+"25"}}>
+            <div style={{fontSize:12,fontWeight:700,color:T.text,marginBottom:12}}>New Data Source</div>
+            <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10,marginBottom:10}}>
+              <div>
+                <div style={{fontSize:10,fontWeight:600,color:T.muted,marginBottom:4}}>Name *</div>
+                {inp(newSrc.name,v=>setNewSrc(p=>({...p,name:v})),"e.g. Redshift Prod")}
+              </div>
+              <div>
+                <div style={{fontSize:10,fontWeight:600,color:T.muted,marginBottom:4}}>Type</div>
+                <select value={newSrc.type} onChange={e=>setNewSrc(p=>({...p,type:e.target.value}))}
+                  style={{width:"100%",background:T.bg,border:"1px solid "+T.border,borderRadius:7,
+                    padding:"8px 11px",fontSize:12,color:T.text}}>
+                  {["Redshift","PostgreSQL","MySQL","BigQuery","Snowflake","API"].map(t=>(
+                    <option key={t}>{t}</option>
+                  ))}
+                </select>
+              </div>
+              <div>
+                <div style={{fontSize:10,fontWeight:600,color:T.muted,marginBottom:4}}>Host</div>
+                {inp(newSrc.host,v=>setNewSrc(p=>({...p,host:v})),"host or connection string",true)}
+              </div>
+              <div>
+                <div style={{fontSize:10,fontWeight:600,color:T.muted,marginBottom:4}}>Schema</div>
+                {inp(newSrc.schema,v=>setNewSrc(p=>({...p,schema:v})),"e.g. mws")}
+              </div>
+            </div>
+            <div style={{display:"flex",gap:8,justifyContent:"flex-end"}}>
+              <Btn size="sm" variant="ghost" onClick={()=>setShowAdd(false)}>Cancel</Btn>
+              <Btn size="sm" onClick={addSource}>Add Source</Btn>
+            </div>
           </div>
         )}
       </Card>
 
-      {/* SLA Suggestions Card */}
-      <SlaThresholdsCard/>
-
-      <Card style={{ padding:"20px 24px", marginBottom:14 }}>
-        <div style={{ display:"flex", alignItems:"center", gap:10, marginBottom:12 }}>
-          <MessageSquare size={15} color={T.purple}/>
-          <span style={{ fontSize:13, fontWeight:700, color:T.text }}>Slack Notifications</span>
-          <Badge label={slackUrl ? "configured" : "not set"} color={slackUrl?T.green:T.muted}/>
+      {/* Connection string validator */}
+      <Card style={{padding:"20px 24px"}}>
+        <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:12}}>
+          <span style={{fontSize:14}}>✨</span>
+          <span style={{fontSize:14,fontWeight:700,color:T.text}}>Validate Connection String</span>
         </div>
-        <div style={{ display:"flex", gap:8 }}>
-          <input value={slackUrl} onChange={e=>setSlackUrl(e.target.value)}
-            placeholder="https://hooks.slack.com/services/…"
-            style={{ flex:1, padding:"8px 12px", borderRadius:7,
-              border:`1px solid ${T.border}`, background:T.surface,
-              color:T.text, fontSize:12, fontFamily:"inherit", outline:"none" }}
+        <div style={{display:"flex",gap:8}}>
+          <input value={connStr} onChange={e=>setConnStr(e.target.value)}
+            placeholder="postgresql://user:pass@host:5439/dbname?sslmode=require"
+            style={{flex:1,padding:"8px 11px",borderRadius:7,fontSize:11,
+              border:"1px solid "+T.border,background:T.bg,color:T.text,
+              fontFamily:"monospace",outline:"none"}}
             onFocus={e=>e.target.style.borderColor=T.accent}
-            onBlur={e=>e.target.style.borderColor=T.border}
-          />
-          <Btn onClick={save} size="sm" variant={saved?"success":"primary"}>
-            {saved ? <Check size={12}/> : null}{saved ? "Saved" : "Save"}
-          </Btn>
+            onBlur={e=>e.target.style.borderColor=T.border}/>
+          <Btn size="sm" variant="ghost" onClick={parseConn} disabled={!connStr.trim()}>Parse</Btn>
         </div>
-        <div style={{ fontSize:11, color:T.dim, marginTop:8 }}>
-          Also add SLACK_WEBHOOK_URL to Railway env vars for the backend agent.
-        </div>
+        {connParsed&&(
+          <div style={{marginTop:8,padding:"10px 12px",borderRadius:8,
+            background:(connParsed.valid?T.green:T.orange)+"08",
+            border:"1px solid "+(connParsed.valid?T.green:T.orange)+"25"}}>
+            <div style={{display:"flex",flexWrap:"wrap",gap:12,marginBottom:6}}>
+              {Object.entries(connParsed.fields).map(([k,v])=>(
+                <span key={k} style={{fontSize:10,color:T.text2}}>
+                  <strong style={{color:T.muted}}>{k}:</strong> {v}
+                </span>
+              ))}
+            </div>
+            {connParsed.issues.map((iss,i)=>(
+              <div key={i} style={{fontSize:10,color:T.orange}}>⚠ {iss}</div>
+            ))}
+            {connParsed.valid&&<div style={{fontSize:10,color:T.green}}>✓ Connection string looks valid</div>}
+          </div>
+        )}
       </Card>
 
-      <Card style={{ padding:"20px 24px", marginBottom:14 }}>
-        <div style={{ display:"flex", alignItems:"center", gap:10, marginBottom:14 }}>
-          <Zap size={15} color={T.accent}/>
-          <span style={{ fontSize:13, fontWeight:700, color:T.text }}>WiziAgent Settings</span>
+      <SlaThresholdsCard/>
+      <DataSourcesCard/>
+    </div>
+  );
+}
+
+// ── Notifications sub-tab ─────────────────────────────────────────────────────
+function CfgNotifications({ T }) {
+  const [slackUrl,     setSlackUrl]     = useLocal("wz_slack", "");
+  const [slackEnabled, setSlackEnabled] = useLocal("wz_slack_enabled", true);
+  const [slackSev,     setSlackSev]     = useLocal("wz_slack_severity","warning");
+  const [slackChannel, setSlackChannel] = useLocal("wz_slack_channel", "");
+  const [emailCfg,     setEmailCfg]     = useLocal(CFG_EMAIL_KEY, CFG_DEFAULT_EMAIL);
+  const [testing,      setTesting]      = React.useState(null); // null | "slack" | "email"
+  const [testResult,   setTestResult]   = React.useState({}); // {slack?: "ok"|"fail", email?: "ok"|"fail"}
+  const [toast,        setToast]        = React.useState(null);
+  const [saved,        setSaved]        = React.useState({});
+  // Backend credential status
+  const [slackBackend, setSlackBackend] = React.useState(null); // {method, has_token, has_webhook}
+
+  React.useEffect(() => {
+    apiFetch(`${API}/api/notify/slack/status`)
+      .then(r => r.json()).then(setSlackBackend).catch(() => {});
+  }, []);
+
+  const upEmail = (k,v) => setEmailCfg(p=>({...p,[k]:v}));
+
+  const saveSlack = () => {
+    if (slackUrl) {
+      try { const c=JSON.parse(localStorage.getItem("wz_onboarding")||"{}");
+            localStorage.setItem("wz_onboarding",JSON.stringify({...c,slack:true})); } catch {}
+    }
+    setSaved(p=>({...p,slack:true}));
+    setToast({msg:"Slack settings saved",type:"success"});
+    setTimeout(()=>setSaved(p=>({...p,slack:false})),2000);
+  };
+
+  const saveEmail = () => {
+    setSaved(p=>({...p,email:true}));
+    setToast({msg:"Email settings saved",type:"success"});
+    setTimeout(()=>setSaved(p=>({...p,email:false})),2000);
+  };
+
+  const testSlack = async () => {
+    setTesting("slack");
+    try {
+      const r = await apiFetch(`${API}/api/notify/slack`, {
+        method:"POST", headers:{"Content-Type":"application/json"},
+        body: JSON.stringify({
+          text: "✅ *WiziAgent test notification*\nSlack integration is working correctly.",
+          attachments:[{color:"#22C55E",blocks:[
+            {type:"section",text:{type:"mrkdwn",text:"✅ *WiziAgent test notification*\nSlack integration is working correctly."}},
+            {type:"context",elements:[{type:"mrkdwn",text:"Sent from Configure → Notifications"}]}
+          ]}],
+          webhook_url: slackUrl || undefined
+        })
+      });
+      const d = await r.json();
+      setTestResult(p=>({...p,slack:d.ok?"ok":"fail"}));
+      setToast({msg:d.ok?"Test sent to Slack ✓":"Failed: "+(d.error||"unknown"),type:d.ok?"success":"error"});
+    } catch(e) { setTestResult(p=>({...p,slack:"fail"})); setToast({msg:"Failed: "+e.message,type:"error"}); }
+    setTesting(null);
+  };
+
+  const testEmail = async () => {
+    if (!emailCfg.senderEmail||!emailCfg.recipients) { setToast({msg:"Fill in sender and recipient",type:"error"}); return; }
+    setTesting("email");
+    try {
+      const r = await apiFetch(API+"/api/email/test", {
+        method:"POST", headers:{"Content-Type":"application/json"},
+        body: JSON.stringify({ ...emailCfg, subject:"WiziAgent test email", body:"This is a test." })
+      });
+      setTestResult(p=>({...p,email:r.ok?"ok":"fail"}));
+      setToast({msg:r.ok?"Test email sent ✓":"Email send failed — check SMTP settings",type:r.ok?"success":"error"});
+    } catch { setTestResult(p=>({...p,email:"fail"})); setToast({msg:"Request failed",type:"error"}); }
+    setTesting(null);
+  };
+
+  const inp = (val,onChange,ph,type,mono) => (
+    <input type={type||"text"} value={val||""} onChange={e=>onChange(e.target.value)} placeholder={ph}
+      style={{width:"100%",background:T.bg,border:"1px solid "+T.border,borderRadius:7,
+        padding:"8px 11px",fontSize:12,color:T.text,boxSizing:"border-box",
+        fontFamily:mono?T.monoFont:"inherit",outline:"none"}}
+      onFocus={e=>e.target.style.borderColor=T.accent}
+      onBlur={e=>e.target.style.borderColor=T.border}/>
+  );
+
+  return (
+    <div style={{display:"flex",flexDirection:"column",gap:16,maxWidth:700}}>
+      {toast&&<CfgToast msg={toast.msg} type={toast.type} onDone={()=>setToast(null)}/>}
+
+      {/* Slack */}
+      <Card style={{padding:"20px 24px"}}>
+        <div style={{display:"flex",alignItems:"center",gap:10,marginBottom:16,
+          justifyContent:"space-between"}}>
+          <div style={{display:"flex",alignItems:"center",gap:8}}>
+            <span style={{fontSize:16}}>💬</span>
+            <span style={{fontSize:14,fontWeight:700,color:T.text}}>Slack</span>
+            {(() => {
+              const m = slackBackend?.method;
+              const label = m === "bot_token" ? "bot token" : m === "webhook" ? "webhook" : slackUrl && slackEnabled ? "url only" : "not configured";
+              const color = (m === "bot_token" || m === "webhook") ? T.green : slackUrl && slackEnabled ? T.yellow : T.muted;
+              return <Badge label={label} color={color}/>;
+            })()}
+          </div>
+          <div onClick={()=>setSlackEnabled(p=>!p)}
+            style={{width:40,height:22,borderRadius:99,position:"relative",cursor:"pointer",
+              background:slackEnabled?T.accent:T.border+"80",transition:"background 0.2s",flexShrink:0}}>
+            <div style={{position:"absolute",top:3,left:slackEnabled?19:3,width:16,height:16,
+              borderRadius:"50%",background:"#fff",transition:"left 0.2s",
+              boxShadow:"0 1px 3px rgba(0,0,0,0.3)"}}/>
+          </div>
         </div>
-        <div>
-          <label style={{ fontSize:11, fontWeight:600, color:T.text2, display:"block", marginBottom:4 }}>
-            Approval threshold (rows)
-          </label>
-          <input value={threshold} onChange={e=>setThreshold(e.target.value)}
-            style={{ width:100, padding:"6px 10px", borderRadius:6,
-              border:`1px solid ${T.border}`, background:T.surface,
-              color:T.text, fontSize:12, fontFamily:T.monoFont }}/>
-          <div style={{ fontSize:10, color:T.dim, marginTop:4 }}>
-            Fixes affecting more than this many rows require human approval before executing.
+        <div style={{display:"flex",flexDirection:"column",gap:12}}>
+          <div>
+            <div style={{fontSize:11,fontWeight:600,color:T.muted,marginBottom:5}}>Webhook URL</div>
+            <div style={{display:"flex",gap:8}}>
+              {inp(slackUrl,setSlackUrl,"https://hooks.slack.com/services/…","password",true)}
+              <Btn size="sm" onClick={testSlack} disabled={testing==="slack"||(!(slackUrl||slackBackend?.configured))}
+                variant="ghost">
+                {testing==="slack"?"…":"Test"}
+              </Btn>
+            </div>
+            {testResult.slack&&(
+              <div style={{fontSize:10,fontWeight:600,marginTop:4,
+                color:testResult.slack==="ok"?T.green:T.red}}>
+                {testResult.slack==="ok"?"✓ Slack connected":"✗ Failed — check webhook URL is correct"}
+              </div>
+            )}
+          </div>
+          <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10}}>
+            <div>
+              <div style={{fontSize:11,fontWeight:600,color:T.muted,marginBottom:5}}>Channel (optional)</div>
+              {inp(slackChannel,setSlackChannel,"#data-alerts")}
+            </div>
+            <div>
+              <div style={{fontSize:11,fontWeight:600,color:T.muted,marginBottom:5}}>Severity threshold</div>
+              <select value={slackSev} onChange={e=>setSlackSev(e.target.value)}
+                style={{width:"100%",background:T.bg,border:"1px solid "+T.border,borderRadius:7,
+                  padding:"8px 11px",fontSize:12,color:T.text}}>
+                <option value="info">ℹ Info & above</option>
+                <option value="warning">⚠ Warning & above</option>
+                <option value="critical">🔴 Critical only</option>
+              </select>
+            </div>
+          </div>
+          <div style={{fontSize:10,color:T.dim}}>
+            Credentials are read from your backend .env (SLACK_BOT_TOKEN / SLACK_WEBHOOK_URL). The URL field above is an optional override.
+          </div>
+          <div style={{display:"flex",justifyContent:"flex-end"}}>
+            <Btn size="sm" onClick={saveSlack} variant={saved.slack?"success":"primary"}>
+              {saved.slack?<><Check size={11}/> Saved</>:"Save Slack"}
+            </Btn>
           </div>
         </div>
       </Card>
 
-
-
-      <DepMapCard/>
-
-      {/* ── Evals ──────────────────────────────────────────────────────── */}
-      <Card style={{ padding:"20px 24px" }}>
-        <div style={{ fontSize:14, fontWeight:700, color:T.text, marginBottom:4,
-          display:"flex", alignItems:"center", justifyContent:"space-between" }}>
-          <span>Agent Evals</span>
-          <Badge label="QA" color={T.purple}/>
+      {/* Email */}
+      <Card style={{padding:"20px 24px"}}>
+        <div style={{display:"flex",alignItems:"center",gap:10,marginBottom:16,
+          justifyContent:"space-between"}}>
+          <div style={{display:"flex",alignItems:"center",gap:8}}>
+            <span style={{fontSize:16}}>📧</span>
+            <span style={{fontSize:14,fontWeight:700,color:T.text}}>Email</span>
+            <Badge label={emailCfg.enabled&&emailCfg.senderEmail?"configured":"not set"}
+              color={emailCfg.enabled&&emailCfg.senderEmail?T.green:T.muted}/>
+          </div>
+          <div onClick={()=>upEmail("enabled",!emailCfg.enabled)}
+            style={{width:40,height:22,borderRadius:99,position:"relative",cursor:"pointer",
+              background:emailCfg.enabled?T.accent:T.border+"80",transition:"background 0.2s",flexShrink:0}}>
+            <div style={{position:"absolute",top:3,left:emailCfg.enabled?19:3,width:16,height:16,
+              borderRadius:"50%",background:"#fff",transition:"left 0.2s",
+              boxShadow:"0 1px 3px rgba(0,0,0,0.3)"}}/>
+          </div>
         </div>
-        <div style={{ fontSize:12, color:T.muted, marginBottom:16 }}>
+        <div style={{display:"flex",flexDirection:"column",gap:12}}>
+          <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10}}>
+            <div>
+              <div style={{fontSize:11,fontWeight:600,color:T.muted,marginBottom:5}}>SMTP Host</div>
+              {inp(emailCfg.smtpHost,v=>upEmail("smtpHost",v),"smtp.gmail.com",undefined,true)}
+            </div>
+            <div>
+              <div style={{fontSize:11,fontWeight:600,color:T.muted,marginBottom:5}}>Port</div>
+              {inp(emailCfg.smtpPort,v=>upEmail("smtpPort",v),"587")}
+            </div>
+            <div>
+              <div style={{fontSize:11,fontWeight:600,color:T.muted,marginBottom:5}}>Sender Email</div>
+              {inp(emailCfg.senderEmail,v=>upEmail("senderEmail",v),"alerts@yourcompany.com")}
+            </div>
+            <div>
+              <div style={{fontSize:11,fontWeight:600,color:T.muted,marginBottom:5}}>Password</div>
+              {inp(emailCfg.password,v=>upEmail("password",v),"App password","password")}
+            </div>
+          </div>
+          <div>
+            <div style={{fontSize:11,fontWeight:600,color:T.muted,marginBottom:5}}>Recipients (comma-separated)</div>
+            {inp(emailCfg.recipients,v=>upEmail("recipients",v),"team@company.com, eng@company.com")}
+          </div>
+          {testResult.email&&(
+            <div style={{fontSize:10,fontWeight:600,
+              color:testResult.email==="ok"?T.green:T.red}}>
+              {testResult.email==="ok"?"✓ Test email sent":"✗ Failed — check SMTP settings and /api/email/test"}
+            </div>
+          )}
+          <div style={{display:"flex",gap:8,justifyContent:"flex-end"}}>
+            <Btn size="sm" variant="ghost" onClick={testEmail} disabled={testing==="email"}>
+              {testing==="email"?"Sending…":"Test Email"}
+            </Btn>
+            <Btn size="sm" onClick={saveEmail} variant={saved.email?"success":"primary"}>
+              {saved.email?<><Check size={11}/> Saved</>:"Save Email"}
+            </Btn>
+          </div>
+        </div>
+      </Card>
+
+      <DigestPanel/>
+    </div>
+  );
+}
+
+// ── AI Agents & Evals sub-tab ─────────────────────────────────────────────────
+function CfgAiAgents({ T }) {
+  const [cfg,     setCfg]     = useLocal(CFG_AI_KEY, CFG_DEFAULT_AI);
+  const [toast,   setToast]   = React.useState(null);
+  const [saved,   setSaved]   = React.useState(false);
+  const [nlInput, setNlInput] = React.useState("");
+  const [nlBusy,  setNlBusy]  = React.useState(false);
+  const [nlRule,  setNlRule]  = React.useState(null);
+
+  const up = (k,v) => setCfg(p=>({...p,[k]:v}));
+
+  const toggleRule = (id) => setCfg(p=>({...p,
+    rules: p.rules.map(r=>r.id===id?{...r,enabled:!r.enabled}:r)
+  }));
+  const deleteRule = (id) => setCfg(p=>({...p, rules:p.rules.filter(r=>r.id!==id)}));
+  const addRule = (label) => {
+    if (!label.trim()) return;
+    const id = "r"+Date.now();
+    setCfg(p=>({...p, rules:[...p.rules, {id,label,field:"",op:">",value:"",enabled:true}]}));
+    setNlRule(null); setNlInput("");
+  };
+
+  const generateRule = async () => {
+    if (!nlInput.trim()) return;
+    setNlBusy(true);
+    try {
+      const res = await obsAiCall(
+        "You are a data monitoring rules assistant. Given a plain-English rule description, return ONLY a JSON object with keys label, field (one of: failure_rate, success_rate, avg_tries, days_stale, not_replicated), op (one of: >, <, >=), and value (a number). No markdown, no backticks.",
+        nlInput, 100
+      );
+      const parsed = JSON.parse(res.replace(/```json|```/g,"").trim());
+      setNlRule(parsed);
+    } catch { setNlRule({label:nlInput, field:"", op:">", value:""}); }
+    setNlBusy(false);
+  };
+
+  const save = () => {
+    setSaved(true);
+    setToast({msg:"AI settings saved",type:"success"});
+    setTimeout(()=>setSaved(false),2000);
+  };
+
+  return (
+    <div style={{display:"flex",flexDirection:"column",gap:16,maxWidth:700}}>
+      {toast&&<CfgToast msg={toast.msg} type={toast.type} onDone={()=>setToast(null)}/>}
+
+      {/* AI insights toggle */}
+      <Card style={{padding:"20px 24px"}}>
+        <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:16}}>
+          <div style={{display:"flex",alignItems:"center",gap:8}}>
+            <span style={{fontSize:16}}>🤖</span>
+            <span style={{fontSize:14,fontWeight:700,color:T.text}}>AI Insights</span>
+            <Badge label={cfg.aiInsightsEnabled?"enabled":"disabled"}
+              color={cfg.aiInsightsEnabled?T.green:T.muted}/>
+          </div>
+          <div onClick={()=>up("aiInsightsEnabled",!cfg.aiInsightsEnabled)}
+            style={{width:40,height:22,borderRadius:99,position:"relative",cursor:"pointer",
+              background:cfg.aiInsightsEnabled?T.accent:T.border+"80",transition:"background 0.2s"}}>
+            <div style={{position:"absolute",top:3,left:cfg.aiInsightsEnabled?19:3,width:16,height:16,
+              borderRadius:"50%",background:"#fff",transition:"left 0.2s",
+              boxShadow:"0 1px 3px rgba(0,0,0,0.3)"}}/>
+          </div>
+        </div>
+        <div style={{fontSize:12,color:T.muted,lineHeight:1.6,marginBottom:12}}>
+          When enabled, AI automatically analyses data on every page load — generating narrative summaries, detecting anomalies, identifying root causes, and suggesting actions.
+        </div>
+        <div>
+          <div style={{fontSize:11,fontWeight:600,color:T.muted,marginBottom:6}}>Evaluation frequency</div>
+          <div style={{display:"flex",gap:8}}>
+            {["realtime","hourly","daily","manual"].map(f=>(
+              <button key={f} onClick={()=>up("evalFrequency",f)}
+                style={{flex:1,padding:"7px",borderRadius:7,fontSize:11,fontWeight:600,
+                  cursor:"pointer",border:"1px solid "+(cfg.evalFrequency===f?T.accent:T.border),
+                  background:cfg.evalFrequency===f?T.accent+"12":"none",
+                  color:cfg.evalFrequency===f?T.accent:T.muted,textTransform:"capitalize"}}>
+                {f}
+              </button>
+            ))}
+          </div>
+        </div>
+      </Card>
+
+      {/* Eval rules */}
+      <Card style={{padding:"20px 24px"}}>
+        <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:14}}>
+          <div style={{display:"flex",alignItems:"center",gap:8}}>
+            <span style={{fontSize:16}}>📋</span>
+            <span style={{fontSize:14,fontWeight:700,color:T.text}}>Evaluation Rules</span>
+            <Badge label={cfg.rules.filter(r=>r.enabled).length+" active"} color={T.accent}/>
+          </div>
+        </div>
+
+        {/* NL rule builder */}
+        <div style={{background:T.bg,borderRadius:9,padding:"12px 14px",
+          border:"1px solid "+T.accent+"20",marginBottom:14}}>
+          <div style={{fontSize:11,fontWeight:600,color:T.accent,marginBottom:8}}>
+            ✦ Add rule in plain English
+          </div>
+          <div style={{display:"flex",gap:8}}>
+            <input value={nlInput} onChange={e=>setNlInput(e.target.value)}
+              onKeyDown={e=>e.key==="Enter"&&generateRule()}
+              placeholder="e.g. Alert if failure rate exceeds 15%"
+              style={{flex:1,background:T.surface,border:"1px solid "+T.border,borderRadius:7,
+                padding:"8px 11px",fontSize:12,color:T.text,outline:"none"}}
+              onFocus={e=>e.target.style.borderColor=T.accent}
+              onBlur={e=>e.target.style.borderColor=T.border}/>
+            <Btn size="sm" onClick={generateRule} disabled={nlBusy||!nlInput.trim()}>
+              {nlBusy?"…":"Add →"}
+            </Btn>
+          </div>
+          {nlRule&&(
+            <div style={{marginTop:10,padding:"10px 12px",background:T.surface,
+              borderRadius:8,border:"1px solid "+T.green+"30",
+              display:"flex",alignItems:"center",justifyContent:"space-between",gap:10}}>
+              <div>
+                <div style={{fontSize:12,fontWeight:600,color:T.text,marginBottom:2}}>{nlRule.label}</div>
+                {nlRule.field&&<div style={{fontSize:10,color:T.muted,fontFamily:T.monoFont}}>
+                  {nlRule.field} {nlRule.op} {nlRule.value}
+                </div>}
+              </div>
+              <div style={{display:"flex",gap:6}}>
+                <Btn size="sm" onClick={()=>addRule(nlRule.label)}>
+                  <Check size={11}/> Use
+                </Btn>
+                <Btn size="sm" variant="ghost" onClick={()=>setNlRule(null)}>✕</Btn>
+              </div>
+            </div>
+          )}
+        </div>
+
+        {/* Rules list */}
+        <div style={{display:"flex",flexDirection:"column",gap:6}}>
+          {cfg.rules.map(rule=>(
+            <div key={rule.id} style={{display:"flex",alignItems:"center",gap:10,
+              padding:"10px 14px",borderRadius:8,
+              background:rule.enabled?T.bg:T.border+"20",
+              border:"1px solid "+(rule.enabled?T.border:T.border+"50"),
+              opacity:rule.enabled?1:0.6}}>
+              <div onClick={()=>toggleRule(rule.id)}
+                style={{width:36,height:20,borderRadius:99,position:"relative",cursor:"pointer",
+                  background:rule.enabled?T.accent:T.border+"80",transition:"background 0.2s",flexShrink:0}}>
+                <div style={{position:"absolute",top:2,left:rule.enabled?18:2,width:16,height:16,
+                  borderRadius:"50%",background:"#fff",transition:"left 0.2s",
+                  boxShadow:"0 1px 3px rgba(0,0,0,0.3)"}}/>
+              </div>
+              <div style={{flex:1}}>
+                <div style={{fontSize:12,fontWeight:500,color:T.text}}>{rule.label}</div>
+                {rule.field&&<div style={{fontSize:10,color:T.muted,fontFamily:T.monoFont,marginTop:1}}>
+                  {rule.field} {rule.op} {rule.value}
+                </div>}
+              </div>
+              <button onClick={()=>deleteRule(rule.id)}
+                style={{background:"none",border:"none",cursor:"pointer",
+                  color:T.muted,fontSize:14,opacity:0.5}}>✕</button>
+            </div>
+          ))}
+        </div>
+      </Card>
+
+      {/* Agent Evals */}
+      <Card style={{padding:"20px 24px"}}>
+        <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:4}}>
+          <div style={{display:"flex",alignItems:"center",gap:8}}>
+            <span style={{fontSize:16}}>⚡</span>
+            <span style={{fontSize:14,fontWeight:700,color:T.text}}>Agent Evals</span>
+            <Badge label="QA" color={T.purple}/>
+          </div>
+        </div>
+        <div style={{fontSize:12,color:T.muted,marginBottom:16}}>
           Systematic tests measuring agent accuracy, reliability, and reasoning quality
         </div>
         <EvalsInline/>
       </Card>
-      <DigestPanel/>
-      <DataSourcesCard/>
+
+      <DepMapCard/>
+
+      <div style={{display:"flex",justifyContent:"flex-end"}}>
+        <Btn onClick={save} variant={saved?"success":"primary"}>
+          {saved?<><Check size={12}/> Saved</>:"Save AI Settings"}
+        </Btn>
+      </div>
+    </div>
+  );
+}
+
+// ── ConfigureTab — 3-tab shell ────────────────────────────────────────────────
+function ConfigureTab() {
+  const T = useT();
+  const [tab, setTab] = useLocal("wz_cfg_tab_v1", "sources");
+
+  const TABS = [
+    { id:"sources",       label:"Data Sources",       icon:"🗄" },
+    { id:"notifications", label:"Notifications",      icon:"🔔" },
+    { id:"ai",            label:"AI Agents & Evals",  icon:"🤖" },
+  ];
+
+  return (
+    <div className="fade-in" style={{height:"100%",display:"flex",flexDirection:"column",
+      background:"none"}}>
+
+      {/* Header */}
+      <div style={{padding:"24px 32px 0",flexShrink:0}}>
+        <div style={{fontSize:22,fontWeight:800,color:T.text,letterSpacing:"-0.02em",
+          marginBottom:2}}>Configure</div>
+        <div style={{fontSize:13,color:T.muted,marginBottom:16}}>
+          Data sources, notifications and AI agent settings
+        </div>
+        {/* Tab bar */}
+        <div style={{display:"flex",gap:2,borderBottom:"1px solid "+T.border}}>
+          {TABS.map(t=>(
+            <button key={t.id} onClick={()=>setTab(t.id)}
+              style={{display:"flex",alignItems:"center",gap:7,padding:"9px 18px",
+                fontSize:12,fontWeight:600,background:"none",border:"none",
+                cursor:"pointer",color:tab===t.id?T.accent:T.muted,
+                borderBottom:"2px solid "+(tab===t.id?T.accent:"transparent"),
+                marginBottom:-1,transition:"all 0.15s"}}>
+              <span>{t.icon}</span>{t.label}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      {/* Tab content */}
+      <div style={{flex:1,overflowY:"auto",padding:"24px 32px"}}>
+        {tab==="sources"       &&<CfgDataSources T={T}/>}
+        {tab==="notifications" &&<CfgNotifications T={T}/>}
+        {tab==="ai"            &&<CfgAiAgents T={T}/>}
+      </div>
     </div>
   );
 }
@@ -6613,7 +6677,7 @@ function UploadPanel({ onAddToMonitor, onQueryTable }) {
 
   const loadUploads = async () => {
     try {
-      const res  = await fetch(`${API}/api/uploads`);
+      const res  = await apiFetch(`${API}/api/uploads`);
       const data = await res.json();
       if (data.uploads) setUploads(data.uploads);
     } catch(e) {}
@@ -6693,7 +6757,7 @@ function UploadPanel({ onAddToMonitor, onQueryTable }) {
     if (!parsed) return;
     setUploading(true); setError(null);
     try {
-      const res  = await fetch(`${API}/api/uploads`, {
+      const res  = await apiFetch(`${API}/api/uploads`, {
         method:"POST", headers:{"Content-Type":"application/json"},
         body: JSON.stringify({
           filename: parsed.filename,
@@ -6713,7 +6777,7 @@ function UploadPanel({ onAddToMonitor, onQueryTable }) {
   const loadPreview = async (tbl) => {
     setPreviewFor(tbl); setPreviewLoading(true); setPreview(null);
     try {
-      const res  = await fetch(`${API}/api/uploads/${tbl}/preview?limit=50`);
+      const res  = await apiFetch(`${API}/api/uploads/${tbl}/preview?limit=50`);
       const data = await res.json();
       setPreview(data);
     } catch(e) { setPreview({error:e.message}); }
@@ -6722,9 +6786,9 @@ function UploadPanel({ onAddToMonitor, onQueryTable }) {
 
   // ── Delete ────────────────────────────────────────────────────────────────
   const deleteUpload = async (tbl) => {
-    if (!confirm(`Drop staging table wz_uploads.${tbl}? This cannot be undone.`)) return;
+    if (!window.confirm(`Drop staging table wz_uploads.${tbl}? This cannot be undone.`)) return;
     try {
-      await fetch(`${API}/api/uploads/${tbl}`, { method:"DELETE" });
+      await apiFetch(`${API}/api/uploads/${tbl}`, { method:"DELETE" });
       if (previewFor === tbl) { setPreview(null); setPreviewFor(null); }
       await loadUploads();
     } catch(e) {}
@@ -7057,7 +7121,7 @@ function QueryTab() {
     const preview = (results.columns||[]).join(", ") + " | " +
       results.rows.slice(0,3).map(r=>(results.columns||[]).map(c=>r[c]).join(", ")).join(" / ");
     try {
-      const res = await fetch(`${API}/api/ai/chat`, {
+      const res = await apiFetch(`${API}/api/ai/chat`, {
         method:"POST", headers:{"Content-Type":"application/json"},
         body:JSON.stringify({
           system:"You are a data analyst. Given a SQL query and its first few result rows, write 2-3 sentences explaining what the data shows in plain business English. Be specific about numbers and patterns.",
@@ -7079,6 +7143,7 @@ Results (${results.rows.length} rows): ${preview}`}],
   const [richSchema,      setRichSchema]      = React.useState([]); // [{table_schema, table_name, columns}]
   const [richLoading,     setRichLoading]     = React.useState(false);
   const [schemaSearch,    setSchemaSearch]    = React.useState("");
+  const debouncedSearch = schemaSearch.toLowerCase().trim(); // alias used in filtered schema memo
   const [expandedTables,  setExpandedTables]  = React.useState({}); // {schema.table: bool}
   const [tableStats,      setTableStats]      = React.useState({}); // {schema.table: {row_count, scanned_at}}
   const [statsLoading,    setStatsLoading]    = React.useState({});
@@ -7087,7 +7152,7 @@ Results (${results.rows.length} rows): ${preview}`}],
   React.useEffect(() => {
     if (richSchema.length > 0) return;
     setRichLoading(true);
-    fetch(`${API}/api/schema`).then(r=>r.json()).then(data => {
+    apiFetch(`${API}/api/schema`).then(r=>r.json()).then(data => {
       if (Array.isArray(data)) setRichSchema(data);
     }).catch(()=>{}).finally(()=>setRichLoading(false));
   }, []);
@@ -7095,7 +7160,7 @@ Results (${results.rows.length} rows): ${preview}`}],
   // Also load flat schema for backwards compat
   React.useEffect(() => {
     if (schema.length > 0) return;
-    fetch(`${API}/api/tables`).then(r=>r.json()).then(data => {
+    apiFetch(`${API}/api/tables`).then(r=>r.json()).then(data => {
       if (Array.isArray(data)) setSchema(data);
     }).catch(()=>{});
   }, []);
@@ -7104,10 +7169,10 @@ Results (${results.rows.length} rows): ${preview}`}],
     const key = `${schemaName}.${tableName}`;
     setStatsLoading(p=>({...p,[key]:true}));
     try {
-      const res  = await fetch(`${API}/api/preview?schema=${schemaName}&table=${tableName}&limit=3`);
+      const res  = await apiFetch(`${API}/api/preview?schema=${schemaName}&table=${tableName}&limit=3`);
       const data = await res.json();
       // Also get row count
-      const cres = await fetch(`${API}/api/query?sql=${encodeURIComponent(`SELECT COUNT(*) AS cnt FROM ${key}`)}`);
+      const cres = await apiFetch(`${API}/api/query?sql=${encodeURIComponent(`SELECT COUNT(*) AS cnt FROM ${key}`)}`);
       const cdata = await cres.json();
       const cnt = cdata.rows?.[0]?.cnt ?? "?";
       setTableStats(p=>({...p,[key]:{
@@ -7151,7 +7216,7 @@ Results (${results.rows.length} rows): ${preview}`}],
     const q = sqlToRun || sql;
     setRunning(true); setError(null); setResults(null);
     try {
-      const res  = await fetch(`${API}/api/query?sql=${encodeURIComponent(q)}`);
+      const res  = await apiFetch(`${API}/api/query?sql=${encodeURIComponent(q)}`);
       const data = await res.json();
       if (data.error) throw new Error(data.error);
       setResults(data);
@@ -7191,7 +7256,7 @@ Results (${results.rows.length} rows): ${preview}`}],
     setSqlGrounding(null);
     setRunBlocked(false);
     try {
-      const res  = await fetch(`${API}/api/ai/validate-sql`, {
+      const res  = await apiFetch(`${API}/api/ai/validate-sql`, {
         method:"POST", headers:{"Content-Type":"application/json"},
         body:JSON.stringify({ sql: sqlStr })
       });
@@ -7210,7 +7275,7 @@ Results (${results.rows.length} rows): ${preview}`}],
     setAiLoading(true);
     setSqlGrounding(null);
     try {
-      const res  = await fetch(`${API}/api/ai/chat`, {
+      const res  = await apiFetch(`${API}/api/ai/chat`, {
         method:"POST", headers:{"Content-Type":"application/json"},
         body:JSON.stringify({
           system:`You are a Redshift SQL expert for Intentwise.
@@ -7777,7 +7842,7 @@ function CoverageMap() {
     setLoading(true);
     try {
       const acct = account !== "all" ? `&account_id=${account}` : "";
-      const res  = await fetch(`${API}/api/coverage/matrix?days=${days}${acct}`);
+      const res  = await apiFetch(`${API}/api/coverage/matrix?days=${days}${acct}`);
       const d    = await res.json();
       setData(d);
       if (d.accounts) setAccounts(d.accounts);
@@ -7962,7 +8027,7 @@ function SlaTracker() {
   const load = async () => {
     setLoading(true);
     try {
-      const res = await fetch(`${API}/api/digest/preview?days=${days}`);
+      const res = await apiFetch(`${API}/api/digest/preview?days=${days}`);
       const d   = await res.json();
       setData(d);
       setThresh(d.thresholds || {});
@@ -7974,7 +8039,7 @@ function SlaTracker() {
 
   const saveThresholds = async () => {
     setSaving(true);
-    await fetch(`${API}/api/sla/thresholds`, {
+    await apiFetch(`${API}/api/sla/thresholds`, {
       method:"POST", headers:{"Content-Type":"application/json"},
       body:JSON.stringify(thresh)
     }).catch(()=>{});
@@ -8155,7 +8220,7 @@ function CheckLibrary({ onUse, standalone }) {
   const load = async () => {
     setLoading(true);
     try {
-      const res = await fetch(`${API}/api/check-library`);
+      const res = await apiFetch(`${API}/api/check-library`);
       const d   = await res.json();
       if (Array.isArray(d.checks)) setChecks(d.checks);
     } catch(e) {}
@@ -8175,7 +8240,7 @@ function CheckLibrary({ onUse, standalone }) {
     if (!form?.name || !form?.sql) return;
     setSaving(true);
     const payload = { ...form, id: editId || form.id || `chk_${Date.now().toString(36)}` };
-    await fetch(`${API}/api/check-library`, {
+    await apiFetch(`${API}/api/check-library`, {
       method:"POST", headers:{"Content-Type":"application/json"},
       body:JSON.stringify(payload)
     }).catch(()=>{});
@@ -8191,7 +8256,7 @@ function CheckLibrary({ onUse, standalone }) {
   };
 
   const deleteCheck = async (id) => {
-    await fetch(`${API}/api/check-library/${id}`, {method:"DELETE"}).catch(()=>{});
+    await apiFetch(`${API}/api/check-library/${id}`, {method:"DELETE"}).catch(()=>{});
     setChecks(p=>p.filter(c=>c.id!==id));
   };
 
@@ -8354,7 +8419,7 @@ function RunDiff({ runA, runB, onClose }) {
   React.useEffect(()=>{
     if (!runA?.run_id || !runB?.run_id) return;
     setLoading(true); setError(null);
-    fetch(`${API}/api/workflow-runs/diff?run_id_a=${runA.run_id}&run_id_b=${runB.run_id}`)
+    apiFetch(`${API}/api/workflow-runs/diff?run_id_a=${runA.run_id}&run_id_b=${runB.run_id}`)
       .then(r=>r.json())
       .then(d=>{ if(d.error) setError(d.error); else setDiff(d); })
       .catch(e=>setError(e.message))
@@ -8491,13 +8556,13 @@ function DigestPanel() {
   const [days,    setDays]     = React.useState(7);
 
   React.useEffect(()=>{
-    fetch(`${API}/api/digest/preview?days=${days}`)
+    apiFetch(`${API}/api/digest/preview?days=${days}`)
       .then(r=>r.json()).then(setPreview).catch(()=>{});
   }, [days]);
 
   const sendNow = async () => {
     setSending(true); setSent(null);
-    const res  = await fetch(`${API}/api/digest/send`, {
+    const res  = await apiFetch(`${API}/api/digest/send`, {
       method:"POST", headers:{"Content-Type":"application/json"},
       body:JSON.stringify({ days })
     }).catch(()=>({}));
@@ -8569,8 +8634,265 @@ function DigestPanel() {
 // ═══════════════════════════════════════════════════════════════════════════════
 // SOP CONFIG PANEL — configure all steps of the SOP
 // ═══════════════════════════════════════════════════════════════════════════════
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// SOP INSTANCE SYSTEM — create new SOP workflows from BUILTIN_TEMPLATES
+// ═══════════════════════════════════════════════════════════════════════════════
+
+// ── New SOP Wizard ─────────────────────────────────────────────────────────────
+function SopNewWizard({ onDone, onCancel, T }) {
+  const [step,     setStep]     = React.useState(0); // 0=pick, 1=config, 2=review
+  const [tplId,    setTplId]    = React.useState(null);
+  const [name,     setName]     = React.useState("");
+  const [channel,  setChannel]  = React.useState("#data-alerts");
+  const [contacts, setContacts] = React.useState("");
+  const [escalation,setEscalation]=React.useState("");
+
+  const tpl = BUILTIN_TEMPLATES.find(t=>t.id===tplId);
+
+  const create = () => {
+    if (!tpl||!name.trim()) return;
+    const instance = {
+      id: "sop_"+Date.now().toString(36),
+      name: name.trim(),
+      templateId: tpl.id,
+      createdAt: new Date().toISOString(),
+      config: {
+        ...tpl.sop_config,
+        notify_channel: channel,
+        notify_primary: contacts,
+        notify_escalation: escalation,
+      }
+    };
+    const existing = (() => { try { return JSON.parse(localStorage.getItem(WZ_SOP_INSTANCES_KEY)||"[]"); } catch { return []; } })();
+    localStorage.setItem(WZ_SOP_INSTANCES_KEY, JSON.stringify([...existing, instance]));
+    onDone(instance);
+  };
+
+  const inp = {
+    width:"100%", background:T.bg, border:"1px solid "+T.border, borderRadius:8,
+    padding:"9px 12px", fontSize:12, color:T.text, outline:"none",
+    boxSizing:"border-box", fontFamily:"inherit"
+  };
+
+  return (
+    <div style={{position:"fixed",inset:0,background:"rgba(0,0,0,0.55)",
+      zIndex:500,display:"flex",alignItems:"center",justifyContent:"center"}}>
+      <div style={{background:T.surface,borderRadius:16,width:"min(560px,95vw)",
+        border:"1px solid "+T.border,boxShadow:"0 24px 80px rgba(0,0,0,0.3)",
+        display:"flex",flexDirection:"column",maxHeight:"85vh",overflow:"hidden"}}>
+
+        {/* Header */}
+        <div style={{padding:"20px 24px",borderBottom:"1px solid "+T.border,
+          display:"flex",alignItems:"center",justifyContent:"space-between"}}>
+          <div>
+            <div style={{fontSize:16,fontWeight:700,color:T.text}}>
+              {step===0?"Choose a Template":step===1?"Configure SOP":"Review & Create"}
+            </div>
+            <div style={{display:"flex",gap:4,marginTop:6}}>
+              {["Template","Configure","Create"].map((s,i)=>(
+                <div key={i} style={{display:"flex",alignItems:"center",gap:4}}>
+                  <div style={{width:20,height:20,borderRadius:"50%",
+                    display:"flex",alignItems:"center",justifyContent:"center",
+                    fontSize:10,fontWeight:700,
+                    background:i<=step?T.accent:T.border,
+                    color:i<=step?"#fff":T.muted}}>
+                    {i<step?"✓":i+1}
+                  </div>
+                  <span style={{fontSize:10,color:i<=step?T.accent:T.muted}}>{s}</span>
+                  {i<2&&<span style={{color:T.muted,fontSize:10}}>›</span>}
+                </div>
+              ))}
+            </div>
+          </div>
+          <button onClick={onCancel}
+            style={{background:"none",border:"none",cursor:"pointer",
+              color:T.muted,fontSize:20}}>✕</button>
+        </div>
+
+        {/* Body */}
+        <div style={{flex:1,overflowY:"auto",padding:"20px 24px"}}>
+
+          {/* Step 0 — pick template */}
+          {step===0&&(
+            <div style={{display:"flex",flexDirection:"column",gap:10}}>
+              <div style={{fontSize:12,color:T.muted,marginBottom:4}}>
+                Each template comes with pre-built detection checks, gates, and job configurations.
+              </div>
+              {BUILTIN_TEMPLATES.map(t=>(
+                <div key={t.id} onClick={()=>{setTplId(t.id);setName(t.name+" SOP");}}
+                  style={{padding:"14px 16px",borderRadius:10,cursor:"pointer",
+                    border:"2px solid "+(tplId===t.id?t.color||T.accent:T.border),
+                    background:tplId===t.id?(t.color||T.accent)+"08":T.bg,
+                    transition:"all 0.15s"}}>
+                  <div style={{display:"flex",alignItems:"center",gap:10,marginBottom:4}}>
+                    <span style={{fontSize:20}}>{t.icon}</span>
+                    <span style={{fontSize:13,fontWeight:700,color:T.text}}>{t.name}</span>
+                    {tplId===t.id&&<span style={{marginLeft:"auto",color:t.color||T.accent,
+                      fontSize:16}}>✓</span>}
+                  </div>
+                  <div style={{fontSize:11,color:T.muted,lineHeight:1.5}}>{t.desc}</div>
+                  <div style={{display:"flex",gap:4,marginTop:8,flexWrap:"wrap"}}>
+                    {(t.phases||[]).map((ph,i)=>(
+                      <span key={i} style={{fontSize:9,padding:"2px 7px",borderRadius:99,
+                        background:T.border+"50",color:T.muted}}>{ph}</span>
+                    ))}
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+
+          {/* Step 1 — configure basics */}
+          {step===1&&tpl&&(
+            <div style={{display:"flex",flexDirection:"column",gap:14}}>
+              <div style={{padding:"12px 14px",borderRadius:8,
+                background:(tpl.color||T.accent)+"0A",
+                border:"1px solid "+(tpl.color||T.accent)+"25",
+                display:"flex",alignItems:"center",gap:8}}>
+                <span style={{fontSize:18}}>{tpl.icon}</span>
+                <div>
+                  <div style={{fontSize:12,fontWeight:700,color:T.text}}>{tpl.name}</div>
+                  <div style={{fontSize:10,color:T.muted}}>{(tpl.phases||[]).length} phases · {(tpl.gates||[]).length} gates</div>
+                </div>
+              </div>
+              <div>
+                <div style={{fontSize:11,fontWeight:600,color:T.muted,marginBottom:5}}>
+                  SOP Name *
+                </div>
+                <input value={name} onChange={e=>setName(e.target.value)}
+                  placeholder="e.g. Orders Data SOP"
+                  style={inp} autoFocus
+                  onFocus={e=>e.target.style.borderColor=T.accent}
+                  onBlur={e=>e.target.style.borderColor=T.border}/>
+              </div>
+              <div>
+                <div style={{fontSize:11,fontWeight:600,color:T.muted,marginBottom:5}}>
+                  Slack Alert Channel
+                </div>
+                <input value={channel} onChange={e=>setChannel(e.target.value)}
+                  placeholder="#data-alerts"
+                  style={inp}
+                  onFocus={e=>e.target.style.borderColor=T.accent}
+                  onBlur={e=>e.target.style.borderColor=T.border}/>
+              </div>
+              <div>
+                <div style={{fontSize:11,fontWeight:600,color:T.muted,marginBottom:5}}>
+                  Primary Contacts (Slack handles, comma-separated)
+                </div>
+                <input value={contacts} onChange={e=>setContacts(e.target.value)}
+                  placeholder="@person1, @person2"
+                  style={inp}
+                  onFocus={e=>e.target.style.borderColor=T.accent}
+                  onBlur={e=>e.target.style.borderColor=T.border}/>
+              </div>
+              <div>
+                <div style={{fontSize:11,fontWeight:600,color:T.muted,marginBottom:5}}>
+                  Escalation Contacts (optional)
+                </div>
+                <input value={escalation} onChange={e=>setEscalation(e.target.value)}
+                  placeholder="@manager1, @manager2"
+                  style={inp}
+                  onFocus={e=>e.target.style.borderColor=T.accent}
+                  onBlur={e=>e.target.style.borderColor=T.border}/>
+                <div style={{fontSize:10,color:T.muted,marginTop:4}}>
+                  Tagged in Slack if Gate 2 remains unresolved after 30 minutes.
+                </div>
+              </div>
+              <div style={{padding:"12px 14px",borderRadius:8,
+                background:T.bg,border:"1px solid "+T.border}}>
+                <div style={{fontSize:11,fontWeight:600,color:T.muted,marginBottom:6}}>
+                  Pre-configured from template:
+                </div>
+                <div style={{display:"flex",flexDirection:"column",gap:3}}>
+                  {[
+                    ["Detection checks", (tpl.detection_checks||tpl.sop_config?.detection_checks||[]).length+" checks"],
+                    ["Mage packages",    (tpl.sop_config?.mage_packages||[]).length+" packages"],
+                    ["Refresh jobs",     (tpl.sop_config?.aws_refresh_jobs||[]).length+" jobs"],
+                    ["GDS copy jobs",    (tpl.sop_config?.gds_copy_jobs||[]).length+" jobs"],
+                  ].map(([label,val])=>(
+                    <div key={label} style={{display:"flex",justifyContent:"space-between",
+                      fontSize:11}}>
+                      <span style={{color:T.muted}}>{label}</span>
+                      <span style={{color:T.text,fontWeight:600}}>{val}</span>
+                    </div>
+                  ))}
+                </div>
+                <div style={{fontSize:10,color:T.muted,marginTop:8}}>
+                  All can be customised after creation via the Configure panel.
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* Step 2 — review */}
+          {step===2&&tpl&&(
+            <div style={{display:"flex",flexDirection:"column",gap:12}}>
+              <div style={{padding:"14px 16px",borderRadius:10,
+                background:T.green+"08",border:"1px solid "+T.green+"25"}}>
+                <div style={{fontSize:12,fontWeight:700,color:T.green,marginBottom:6}}>
+                  ✓ Ready to create
+                </div>
+                {[
+                  ["Name",         name],
+                  ["Template",     tpl.name],
+                  ["Slack channel",channel||"(not set)"],
+                  ["Contacts",     contacts||"(not set)"],
+                  ["Escalation",   escalation||"(not set)"],
+                ].map(([label,val])=>(
+                  <div key={label} style={{display:"flex",gap:8,marginBottom:4}}>
+                    <span style={{fontSize:11,color:T.muted,width:110,flexShrink:0}}>{label}</span>
+                    <span style={{fontSize:11,color:T.text,fontWeight:500}}>{val}</span>
+                  </div>
+                ))}
+              </div>
+              <div style={{fontSize:11,color:T.muted,lineHeight:1.6}}>
+                The SOP will appear in <strong style={{color:T.text}}>Critical Workflows</strong> alongside the Daily Ads Check. You can customise detection checks, jobs, and gate settings from the Configure panel inside the SOP.
+              </div>
+            </div>
+          )}
+        </div>
+
+        {/* Footer */}
+        <div style={{padding:"14px 24px",borderTop:"1px solid "+T.border,
+          display:"flex",justifyContent:"space-between",alignItems:"center",flexShrink:0}}>
+          <button onClick={step===0?onCancel:()=>setStep(s=>s-1)}
+            style={{background:"none",border:"1px solid "+T.border,borderRadius:8,
+              padding:"8px 18px",fontSize:12,color:T.muted,cursor:"pointer"}}>
+            {step===0?"Cancel":"← Back"}
+          </button>
+          <button
+            disabled={step===0?!tplId:step===1?!name.trim():false}
+            onClick={step===2?create:()=>setStep(s=>s+1)}
+            style={{background:T.accent,color:"#fff",border:"none",borderRadius:8,
+              padding:"8px 22px",fontSize:12,fontWeight:700,
+              cursor:(!tplId&&step===0)||(!name.trim()&&step===1)?"not-allowed":"pointer",
+              opacity:(!tplId&&step===0)||(!name.trim()&&step===1)?0.5:1}}>
+            {step===2?"✓ Create SOP":"Next →"}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ── useSopInstances hook ───────────────────────────────────────────────────────
+function useSopInstances() {
+  const [instances, setInstances] = useLocal(WZ_SOP_INSTANCES_KEY, []);
+  const addInstance    = (inst) => setInstances(p=>[...p, inst]);
+  const removeInstance = (id)   => setInstances(p=>p.filter(i=>i.id!==id));
+  const updateInstance = (id, patch) =>
+    setInstances(p=>p.map(i=>i.id===id?{...i,...patch}:i));
+  return { instances, addInstance, removeInstance, updateInstance };
+}
+
 function SopConfigPanel({ config, setConfig, onSave, saving, msg, onClose, T }) {
-  const [section, setSection] = React.useState("detection"); // detection | mage | refresh | copy | tables | gates
+  const [section, setSection] = React.useState("team");
+  // Derive from config prop — changes go through setConfig to persist correctly
+  const escalationMin    = config?.notify_escalation_wait || 30;
+  const setEscalationMin = (v) => setConfig(p=>({...p, notify_escalation_wait:v}));
+  const escalationCh     = config?.escalation_webhook || "";
+  const setEscalationCh  = (v) => setConfig(p=>({...p, escalation_webhook:v})); // detection | mage | refresh | copy | tables | gates
 
   const inp = {
     width:"100%", padding:"7px 10px", borderRadius:6, fontSize:11,
@@ -8579,17 +8901,12 @@ function SopConfigPanel({ config, setConfig, onSave, saving, msg, onClose, T }) 
   };
   const ta = {...inp, fontFamily:"monospace", resize:"vertical"};
 
+  // 4 logical groups (was 10 flat sections)
   const SECTIONS = [
-    {id:"detection", label:"🔍 Detection Checks"},
-    {id:"notify",    label:"📣 Notify & Escalate"},
-    {id:"gate2",     label:"✅ Gate 4 Validation"},
-    {id:"timing",    label:"⏱ Timing & Trigger"},
-    {id:"alerts",    label:"🔔 Notifications"},
-    {id:"mage",      label:"⏸ Mage Packages"},
-    {id:"refresh",   label:"🔄 Refresh Jobs"},
-    {id:"copy",      label:"▶ GDS Copy Jobs"},
-    {id:"tables",    label:"📊 Ads Tables"},
-    {id:"gates",     label:"🔒 Gate Labels"},
+    {id:"team",   label:"👥 Team & Notifications", sections:["notify","alerts","timing","gates"]},
+    {id:"checks", label:"🔍 Detection Checks",     sections:["detection","gate2"]},
+    {id:"jobs",   label:"⚙ Jobs & Packages",       sections:["mage","refresh","copy"]},
+    {id:"tables", label:"📊 Tables",               sections:["tables"]},
   ];
 
   // ── Detection checks ────────────────────────────────────────────────────────
@@ -8692,27 +9009,25 @@ function SopConfigPanel({ config, setConfig, onSave, saving, msg, onClose, T }) 
 
       <div style={{ display:"flex", flex:1, minHeight:0, overflow:"hidden" }}>
 
-        {/* Left nav */}
-        <div style={{ width:200, flexShrink:0, borderRight:`1px solid ${T.border}`,
-          padding:"8px 0" }}>
-          {SECTIONS.map(s=>(
-            <button key={s.id} onClick={()=>setSection(s.id)}
-              style={{ display:"block", width:"100%", padding:"10px 16px",
-                textAlign:"left", fontSize:12, cursor:"pointer", border:"none",
-                fontWeight:section===s.id?700:400,
-                background:section===s.id?`${T.accent}08`:"transparent",
-                color:section===s.id?T.accent:T.text2,
-                borderLeft:section===s.id?`3px solid ${T.accent}`:"3px solid transparent" }}>
-              {s.label}
-            </button>
-          ))}
-        </div>
-
-        {/* Right content */}
-        <div style={{ flex:1, padding:"16px 20px", overflowY:"auto", maxHeight:500 }}>
+        {/* 4-tab horizontal nav */}
+        <div style={{ width:"100%", display:"flex", flexDirection:"column", minHeight:0 }}>
+          <div style={{ display:"flex", borderBottom:`1px solid ${T.border}`,
+            padding:"0 20px", flexShrink:0 }}>
+            {SECTIONS.map(s=>(
+              <button key={s.id} onClick={()=>setSection(s.id)}
+                style={{ padding:"10px 16px", fontSize:12, fontWeight:600,
+                  cursor:"pointer", border:"none", background:"none",
+                  color:section===s.id?T.accent:T.muted,
+                  borderBottom:`2px solid ${section===s.id?T.accent:"transparent"}`,
+                  marginBottom:-1, whiteSpace:"nowrap" }}>
+                {s.label}
+              </button>
+            ))}
+          </div>
+          <div style={{ flex:1, padding:"20px", overflowY:"auto", maxHeight:420 }}>
 
           {/* ── DETECTION CHECKS ────────────────────────────────────────── */}
-          {section==="detection" && (
+          {(section==="checks") && (
             <div>
               <div style={{ fontSize:11, color:T.muted, marginBottom:12, lineHeight:1.5 }}>
                 SQL checks run at the Detection phase. If any check fails, the the check proceeds.
@@ -8756,7 +9071,7 @@ function SopConfigPanel({ config, setConfig, onSave, saving, msg, onClose, T }) 
           )}
 
           {/* ── NOTIFY & ESCALATE ───────────────────────────────────────── */}
-          {section==="notify" && (
+          {(section==="team") && (
             <div>
               <div style={{ fontSize:11, color:T.muted, marginBottom:12, lineHeight:1.6 }}>
                 Auto Slack notification is sent to the channel below when detection fails.
@@ -8800,7 +9115,7 @@ function SopConfigPanel({ config, setConfig, onSave, saving, msg, onClose, T }) 
           )}
 
           {/* ── MAGE PACKAGES ───────────────────────────────────────────── */}
-          {section==="mage" && (
+          {(section==="jobs") && (
             <div>
               <div style={{ fontSize:11, color:T.muted, marginBottom:12, lineHeight:1.5 }}>
                 Configure Mage packages to pause. Add the trigger page URL so the operator can open it directly and disable the trigger in one click.
@@ -8864,7 +9179,7 @@ function SopConfigPanel({ config, setConfig, onSave, saving, msg, onClose, T }) 
           )}
 
           {/* ── AWS REFRESH JOBS ────────────────────────────────────────── */}
-          {section==="refresh" && (
+          {(section==="jobs") && (
             <div>
               <div style={{ fontSize:11, color:T.muted, marginBottom:12, lineHeight:1.5 }}>
                 AWS Step Function refresh jobs. Add the <strong>AWS Console URL</strong> so the operator can open it and click "New Execution" in one step.
@@ -8927,7 +9242,7 @@ function SopConfigPanel({ config, setConfig, onSave, saving, msg, onClose, T }) 
           )}
 
           {/* ── GDS COPY JOBS ───────────────────────────────────────────── */}
-          {section==="copy" && (
+          {(section==="jobs") && (
             <div>
               <div style={{ fontSize:11, color:T.muted, marginBottom:12 }}>
                 GDS BigQuery copy jobs. Add Mage pipeline URL to trigger automatically.
@@ -8972,7 +9287,7 @@ function SopConfigPanel({ config, setConfig, onSave, saving, msg, onClose, T }) 
 
           {/* ── ADS TABLES ──────────────────────────────────────────────── */}
           {/* ── GATE 2 VALIDATION CHECKS ────────────────────────────────── */}
-          {section==="gate2" && (
+          {(section==="checks") && (
             <div>
               <div style={{ fontSize:11, color:T.muted, marginBottom:12, lineHeight:1.5 }}>
                 Custom SQL checks run at the <strong>Gate 2: Data Available</strong> validation step.
@@ -9038,7 +9353,7 @@ function SopConfigPanel({ config, setConfig, onSave, saving, msg, onClose, T }) 
             </div>
           )}
 
-          {section==="tables" && (
+          {(section==="tables") && (
             <div>
               <div style={{ fontSize:11, color:T.muted, marginBottom:12 }}>
                 Redshift tables checked during validation (one per line).
@@ -9054,7 +9369,7 @@ function SopConfigPanel({ config, setConfig, onSave, saving, msg, onClose, T }) 
           )}
 
           {/* ── GATE LABELS ─────────────────────────────────────────────── */}
-          {section==="gates" && (
+          {(section==="team") && (
             <div>
               <div style={{ fontSize:11, color:T.muted, marginBottom:12 }}>
                 Rename the 5 approval gates to match your team's terminology.
@@ -9078,7 +9393,7 @@ function SopConfigPanel({ config, setConfig, onSave, saving, msg, onClose, T }) 
             </div>
           )}
           {/* ── TIMING & TRIGGER ────────────────────────────────────── */}
-          {section==="timing" && (
+          {(section==="team") && (
             <div style={{ display:"flex", flexDirection:"column", gap:18 }}>
               <div style={{ fontSize:11, color:T.muted, lineHeight:1.5 }}>
                 Configure when the check auto-triggers and how long each gate waits before timing out.
@@ -9148,7 +9463,7 @@ function SopConfigPanel({ config, setConfig, onSave, saving, msg, onClose, T }) 
           )}
 
           {/* ── NOTIFICATIONS ────────────────────────────────────────────── */}
-          {section==="alerts" && (
+          {(section==="team") && (
             <div style={{ display:"flex", flexDirection:"column", gap:16 }}>
               <div style={{ fontSize:11, color:T.muted, lineHeight:1.5 }}>
                 Configure Slack notifications for this check. The webhook URL is set via the
@@ -9224,6 +9539,7 @@ function SopConfigPanel({ config, setConfig, onSave, saving, msg, onClose, T }) 
             </div>
           )}
 
+          </div>
         </div>
       </div>
       </div>
@@ -9260,7 +9576,7 @@ function SopGatePanel({ gateNum, token, decision, label, checks = [], gateTimeou
     const timer = setTimeout(async () => {
       setAiAdviceLoad(true);
       try {
-        const res = await fetch(`${API}/api/ai/chat`, {
+        const res = await apiFetch(`${API}/api/ai/chat`, {
           method: "POST", headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
             system: "You are a data pipeline operations assistant. Given a gate status, give a ONE sentence recommendation: safe to approve, needs investigation, or reject. Be direct and specific.",
@@ -9831,7 +10147,7 @@ Reply in this exact JSON only (no markdown):
 {"hypothesis":"...","type":"transient|persistent","next_step":"...","confidence":"high|medium|low","pattern":"recurring|new pattern"}`;
 
     try {
-      const res = await fetch(`${API}/api/ai/chat`, {
+      const res = await apiFetch(`${API}/api/ai/chat`, {
         method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           system: "You are a data pipeline operations expert. Return only valid JSON, no markdown.",
@@ -9960,7 +10276,7 @@ Reply in this exact JSON format only (no markdown):
 {"recommendation":"APPROVE|REJECT","confidence":"high|medium|low","reason":"...","concern":"..."}`;
 
     try {
-      const res = await fetch(`${API}/api/ai/chat`, {
+      const res = await apiFetch(`${API}/api/ai/chat`, {
         method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           system: "You are a data pipeline operations expert reviewing validation results. Return only valid JSON, no markdown.",
@@ -10050,7 +10366,7 @@ Gates approved: ${sd.gates_approved??"-"}/${sd.gates_total??5}
 Reply with only a JSON object: {"summary":"...","root_cause":"...","resolution":"..."}`;
   let note = { summary: `${failedChecks||"No failures"} — ${runResult.status}`, root_cause: "unknown", resolution: runResult.status };
   try {
-    const res = await fetch(`${window.__API||"http://localhost:8000"}/api/ai/chat`, {
+    const res = await apiFetch(`${window.__API||API}/api/ai/chat`, {
       method:"POST", headers:{"Content-Type":"application/json"},
       body: JSON.stringify({ system:"Return only valid JSON, no markdown.", messages:[{role:"user",content:prompt}], max_tokens:300, temperature:0.2 })
     });
@@ -10157,7 +10473,7 @@ If you see an actionable improvement (e.g. adjust pause_by time, add a missing c
 If patterns look fine, say so.
 
 Reply JSON only: {"has_suggestion":true|false,"suggestion":"...","field":"pause_by|escalation_wait|notify_primary|none"}`;
-    fetch(`${API}/api/ai/chat`, {
+    apiFetch(`${API}/api/ai/chat`, {
       method:"POST", headers:{"Content-Type":"application/json"},
       body: JSON.stringify({ system:"Return only valid JSON, no markdown.", messages:[{role:"user",content:prompt}], max_tokens:200, temperature:0.3 })
     }).then(r=>r.json()).then(data => {
@@ -10286,7 +10602,7 @@ function SopValidationTable({ results, T, historyData }) {
   );
 }
 
-function AdsSopTab() {
+function AdsSopTab({ instanceConfig, instanceId } = {}) {
   const T = useT();
   const [confirmNode, confirm] = useConfirm();
   const { add: addNotif } = useNotif();
@@ -10294,7 +10610,7 @@ function AdsSopTab() {
   const runStartRef = React.useRef(null); // track run start time for adaptive polling
   const [elapsedMin, setElapsedMin] = React.useState(0);
 
-  const [result,     setResult]    = useSession("wz_sopResult", null);
+  const [result,     setResult]    = useSession(instanceId?"wz_sopResult_"+instanceId:"wz_sopResult", null);
   const slackNotifiedRef = React.useRef(false); // prevent duplicate Slack fires per run
 
   const [smartRetryActive, setSmartRetryActive] = React.useState(false);
@@ -10328,7 +10644,7 @@ Historical pattern: ${patternHints||"no prior data"}
 Recent incident resolutions: ${incidents||"none"}
 
 Write 2-3 lines. Start with 🚨. Tag on-call. Name the most likely cause based on patterns. Suggest the first thing to check. Plain text, no markdown headers.`;
-      const res = await fetch(`${API}/api/ai/chat`, {
+      const res = await apiFetch(`${API}/api/ai/chat`, {
         method:"POST", headers:{"Content-Type":"application/json"},
         body: JSON.stringify({ system:"Write concise Slack alert messages. Plain text only.", messages:[{role:"user",content:prompt}], max_tokens:200, temperature:0.3 })
       });
@@ -10336,8 +10652,7 @@ Write 2-3 lines. Start with 🚨. Tag on-call. Name the most likely cause based 
       const aiText = (data.content||[]).map(c=>c.text||"").join("").trim();
       if (aiText) text = aiText;
     } catch(e) {}
-    fetch(slackUrl, { method:"POST", headers:{"Content-Type":"application/json"},
-      body: JSON.stringify({ text }) }).catch(()=>{});
+    slackNotify({ text, webhookUrl: slackUrl });
   }, []);
 
   // AI-generated Slack summary on run completion
@@ -10367,7 +10682,7 @@ Run details:
 Write 3–5 lines max. Use plain text with minimal emoji. Start with a status emoji (✅ if complete, ⚠ if stopped/error). Include what failed, what was done, and duration. No headers. No bullet points.`;
 
     try {
-      const res = await fetch(`${API}/api/ai/chat`, {
+      const res = await apiFetch(`${API}/api/ai/chat`, {
         method:"POST", headers:{"Content-Type":"application/json"},
         body: JSON.stringify({
           system: "You are a data ops assistant writing concise Slack summaries. Return plain text only, no JSON, no markdown headers.",
@@ -10379,16 +10694,13 @@ Write 3–5 lines max. Use plain text with minimal emoji. Start with a status em
       const data = await res.json();
       const summary = (data.content||[]).map(c=>c.text||"").join("").trim();
       if (!summary) return;
-      await fetch(slackUrl, {
-        method:"POST", headers:{"Content-Type":"application/json"},
-        body: JSON.stringify({ text: `*Daily Ads Check — Run Complete*\n${summary}` })
-      });
+      await slackNotify({ text: `*Daily Ads Check — Run Complete*\n${summary}`, webhookUrl: slackUrl });
     } catch(e) {}
   }, []);
 
   const pollState = React.useCallback(async (rid) => {
     try {
-      const res  = await fetch(`${API}/api/workflow/ads-sop/${rid}`);
+      const res  = await apiFetch(`${API}/api/workflow/ads-sop/${rid}`);
       const data = await res.json();
       if (data.error) return;
       // Auto-notify Slack on first detection failure
@@ -10468,24 +10780,36 @@ Write 3–5 lines max. Use plain text with minimal emoji. Start with a status em
   const [configSaving, setConfigSaving] = React.useState(false);
   const [configMsg,  setConfigMsg] = React.useState(null);
 
-  // Load SOP config
+  // Load SOP config — use instanceConfig if provided (new SOP), else load from backend
   React.useEffect(()=>{
-    fetch(`${API}/api/sop/config`).then(r=>r.json()).then(d=>{
+    if (instanceConfig) {
+      setConfig(instanceConfig);
+      return;
+    }
+    apiFetch(`${API}/api/sop/config`).then(r=>r.json()).then(d=>{
       if (!d.error) setConfig(d);
     }).catch(()=>{});
-  }, []);
+  }, [instanceId]);
 
   const saveConfig = async () => {
     if (!config) return;
     setConfigSaving(true); setConfigMsg(null);
     try {
-      const res = await fetch(`${API}/api/sop/config`, {
-        method:"POST", headers:{"Content-Type":"application/json"},
-        body:JSON.stringify(config)
-      });
-      const d = await res.json();
-      if (d.saved) setConfigMsg("✓ Saved");
-      else setConfigMsg("✗ Save failed");
+      if (instanceId) {
+        // Save instance config to localStorage
+        const instances = (() => { try { return JSON.parse(localStorage.getItem(WZ_SOP_INSTANCES_KEY)||"[]"); } catch { return []; } })();
+        const updated = instances.map(i=>i.id===instanceId?{...i,config}:i);
+        localStorage.setItem(WZ_SOP_INSTANCES_KEY, JSON.stringify(updated));
+        setConfigMsg("✓ Saved");
+      } else {
+        const res = await apiFetch(`${API}/api/sop/config`, {
+          method:"POST", headers:{"Content-Type":"application/json"},
+          body:JSON.stringify(config)
+        });
+        const d = await res.json();
+        if (d.saved) setConfigMsg("✓ Saved");
+        else setConfigMsg("✗ Save failed");
+      }
     } catch(e) { setConfigMsg("✗ " + e.message); }
     setConfigSaving(false);
     setTimeout(()=>setConfigMsg(null), 2500);
@@ -10565,7 +10889,7 @@ Write 3–5 lines max. Use plain text with minimal emoji. Start with a status em
 
     const loadSchedules = React.useCallback(async () => {
     try {
-      const r = await fetch(`${API}/api/workflow/ads-sop/schedules`);
+      const r = await apiFetch(`${API}/api/workflow/ads-sop/schedules`);
       const d = await r.json();
       if (d.schedules) setSchedules(d.schedules);
     } catch(e) {}
@@ -10576,7 +10900,7 @@ Write 3–5 lines max. Use plain text with minimal emoji. Start with a status em
   const saveSchedule = async () => {
     const payload = schedEditing ? {...schedForm, id:schedEditing} : schedForm;
     try {
-      await fetch(`${API}/api/workflow/ads-sop/schedules`, {
+      await apiFetch(`${API}/api/workflow/ads-sop/schedules`, {
         method:"POST", headers:{"Content-Type":"application/json"},
         body:JSON.stringify(payload)
       });
@@ -10590,19 +10914,19 @@ Write 3–5 lines max. Use plain text with minimal emoji. Start with a status em
   const deleteSchedule = async (sid) => {
     const ok = await confirm("Delete Schedule", "Are you sure you want to delete this schedule?", "Delete");
     if (!ok) return;
-    await fetch(`${API}/api/workflow/ads-sop/schedules/${sid}`, {method:"DELETE"}).catch(()=>{});
+    await apiFetch(`${API}/api/workflow/ads-sop/schedules/${sid}`, {method:"DELETE"}).catch(()=>{});
     setSchedules(p=>p.filter(s=>s.id!==sid));
   };
 
   const toggleSchedule = async (sid) => {
-    await fetch(`${API}/api/workflow/ads-sop/schedules/${sid}/toggle`, {method:"POST"}).catch(()=>{});
+    await apiFetch(`${API}/api/workflow/ads-sop/schedules/${sid}/toggle`, {method:"POST"}).catch(()=>{});
     setSchedules(p=>p.map(s=>s.id===sid?{...s,enabled:!s.enabled}:s));
   };
 
   const loadHistory = async () => {
     setHistLoading(true);
     try {
-      const r = await fetch(`${API}/api/workflow/ads-sop/history?limit=30`);
+      const r = await apiFetch(`${API}/api/workflow/ads-sop/history?limit=30`);
       const d = await r.json();
       if (d.runs) setHistory(d.runs);
     } catch(e) {}
@@ -10611,7 +10935,7 @@ Write 3–5 lines max. Use plain text with minimal emoji. Start with a status em
 
   // On mount — check if there is an in-progress SOP run
   React.useEffect(() => {
-    fetch(`${API}/api/workflow/ads-sop`)
+    apiFetch(`${API}/api/workflow/ads-sop`)
       .then(r=>r.json())
       .then(data => {
         if (data.run) {
@@ -10649,7 +10973,7 @@ Write 3–5 lines max. Use plain text with minimal emoji. Start with a status em
       }
     } catch(e) {}
     try {
-      const res = await fetch(`${API}/api/workflow/ads-sop`, {
+      const res = await apiFetch(`${API}/api/workflow/ads-sop`, {
         method:"POST", headers:{"Content-Type":"application/json"},
         body:JSON.stringify({ gate_timeout_min: dynamicTimeout })
       });
@@ -10667,7 +10991,7 @@ Write 3–5 lines max. Use plain text with minimal emoji. Start with a status em
     if (!runId) return;
     const ok = await confirm("Force All Gates", "Auto-approve every remaining gate and proceed to completion without manual review?", "Force All");
     if (!ok) return;
-    await fetch(`${API}/api/workflow/sop-gate-force`, {
+    await apiFetch(`${API}/api/workflow/sop-gate-force`, {
       method:"POST", headers:{"Content-Type":"application/json"},
       body:JSON.stringify({ run_id: runId })
     }).catch(()=>{});
@@ -10680,7 +11004,7 @@ Write 3–5 lines max. Use plain text with minimal emoji. Start with a status em
     // Pause polling to prevent overwriting the optimistic update
     if (pollRef.current) { clearTimeout(pollRef.current); clearInterval(pollRef.current); pollRef.current = null; }
     try {
-      const res  = await fetch(`${API}/api/workflow/sop-gate`, {
+      const res  = await apiFetch(`${API}/api/workflow/sop-gate`, {
         method:"POST", headers:{"Content-Type":"application/json"},
         body:JSON.stringify({ token, decision })
       });
@@ -10711,12 +11035,7 @@ Write 3–5 lines max. Use plain text with minimal emoji. Start with a status em
       try {
         const slackUrl = localStorage.getItem("wz_slack") || "";
         if (slackUrl && decision === "approve") {
-          fetch(slackUrl, {
-            method:"POST", headers:{"Content-Type":"application/json"},
-            body: JSON.stringify({
-              text: `✅ Gate ${token?.split("_")[1] || "?"} approved — Daily Ads Check progressing`
-            })
-          }).catch(()=>{});
+          slackNotify({ text: `✅ Gate ${token?.split("_")[1] || "?"} approved — Daily Ads Check progressing`, webhookUrl: slackUrl });
         }
       } catch(e) {}
     } catch(e) { addNotif?.(`Gate submit failed: ${e.message}`, "error"); }
@@ -10734,7 +11053,7 @@ Write 3–5 lines max. Use plain text with minimal emoji. Start with a status em
     if (hasRowData && !anyFail) {
       try {
         const checkSummary = (checks||[]).map(c=>`${c.name||c.check}: passed=${c.passed}, rows=${c.row_count??"-"}, coverage=${c.coverage_pct??"-"}%`).join("; ");
-        const res = await fetch(`${API}/api/ai/chat`, {
+        const res = await apiFetch(`${API}/api/ai/chat`, {
           method:"POST", headers:{"Content-Type":"application/json"},
           body: JSON.stringify({
             system:"You are a data quality reviewer. Return only a JSON object, no markdown.",
@@ -11303,7 +11622,7 @@ Write 3–5 lines max. Use plain text with minimal emoji. Start with a status em
                       <button
                         onClick={async ()=>{
                           try {
-                            const r = await fetch(`${API}/api/workflow/ads-sop/${run.run_id}`);
+                            const r = await apiFetch(`${API}/api/workflow/ads-sop/${run.run_id}`);
                             const d = await r.json();
                             if (!d.error){ setResult(d); setShowHistory(false); }
                           } catch(e) {}
@@ -11517,7 +11836,7 @@ Write 3–5 lines max. Use plain text with minimal emoji. Start with a status em
                               style={{ fontSize:9, color:T.accent, borderColor:`${T.accent}30`, padding:"1px 7px", flexShrink:0 }}
                               onClick={async ()=>{
                                 try {
-                                  const res = await fetch(`${API}/api/workflow/ads-sop/recheck`,{
+                                  const res = await apiFetch(`${API}/api/workflow/ads-sop/recheck`,{
                                     method:"POST", headers:{"Content-Type":"application/json"},
                                     body:JSON.stringify({check_name:d.check, run_id:runId||result.run_id})
                                   });
@@ -11654,7 +11973,7 @@ Write 3–5 lines max. Use plain text with minimal emoji. Start with a status em
                           setRunning(true); setResult(null); setRunId(null);
                           if(pollRef.current){clearTimeout(pollRef.current);clearInterval(pollRef.current);pollRef.current=null;}
                           try {
-                            const res = await fetch(`${API}/api/workflow/ads-sop/resume`,{
+                            const res = await apiFetch(`${API}/api/workflow/ads-sop/resume`,{
                               method:"POST", headers:{"Content-Type":"application/json"},
                               body:JSON.stringify({from_run_id:result.run_id,from_gate:firstPending,gate_timeout_min:Number(gateTimeout)})
                             });
@@ -11672,7 +11991,7 @@ Write 3–5 lines max. Use plain text with minimal emoji. Start with a status em
                             setRunning(true); setResult(null); setRunId(null);
                             if(pollRef.current){clearInterval(pollRef.current);pollRef.current=null;}
                             try {
-                              const res = await fetch(`${API}/api/workflow/ads-sop/resume`,{
+                              const res = await apiFetch(`${API}/api/workflow/ads-sop/resume`,{
                                 method:"POST", headers:{"Content-Type":"application/json"},
                                 body:JSON.stringify({
                                   from_run_id: result.run_id,
@@ -11828,6 +12147,24 @@ Write 3–5 lines max. Use plain text with minimal emoji. Start with a status em
 // ═══════════════════════════════════════════════════════════════════════════════
 
 // ── Shared schedule options ───────────────────────────────────────────────────
+// Persisted enabled state for builtin workflows (BUILTIN_WFS is a constant,
+// so enabled/disabled state is stored separately in localStorage)
+const WF_BUILTIN_ENABLED_KEY = "wz_builtin_wf_enabled_v1";
+const WF_PINNED_KEY       = "wz_wf_pinned_critical_v1";
+const WZ_SOP_INSTANCES_KEY = "wz_sop_instances_v1";
+const getPinnedWfs  = () => { try { return JSON.parse(localStorage.getItem(WF_PINNED_KEY)||"[]"); } catch { return []; } };
+const savePinnedWfs = (wfs) => { try { localStorage.setItem(WF_PINNED_KEY, JSON.stringify(wfs)); } catch {} };
+const getBuiltinEnabled = () => {
+  try { return JSON.parse(localStorage.getItem(WF_BUILTIN_ENABLED_KEY)||"{}"); } catch { return {}; }
+};
+const setBuiltinEnabled = (id, val) => {
+  try {
+    const s = getBuiltinEnabled();
+    s[id] = val;
+    localStorage.setItem(WF_BUILTIN_ENABLED_KEY, JSON.stringify(s));
+  } catch {}
+};
+
 const BUILTIN_WFS = [
   {
     id:"ads-sop", builtin:true,
@@ -12299,7 +12636,7 @@ function RootCauseChainBanner({ cluster, names, minsAgo, T }) {
         return `${r.workflow_name||"Workflow"}: failed checks [${failed}] at ${r.started_at?.slice(11,16)||"?"}`;
       }).join("\n");
 
-      const res = await fetch(`${API}/api/ai/chat`, {
+      const res = await apiFetch(`${API}/api/ai/chat`, {
         method:"POST", headers:{"Content-Type":"application/json"},
         body: JSON.stringify({
           system: `You are a data pipeline root cause analyst. Given correlated workflow failures, produce a causal chain as JSON array. Each item: {"node":"short label","type":"trigger|propagation|symptom","desc":"one sentence explanation"}. Max 5 nodes. Return ONLY the JSON array, no markdown.`,
@@ -12821,7 +13158,7 @@ function RunbookBuilder({ initial, onSave, onCancel, T }) {
     if (!aiPrompt.trim()) return;
     setAiBuilding(true);
     try {
-      const res = await fetch(`${API}/api/ai/chat`, {
+      const res = await apiFetch(`${API}/api/ai/chat`, {
         method:"POST", headers:{"Content-Type":"application/json"},
         body: JSON.stringify({
           system:`You are a senior data engineering runbook designer for an Amazon Seller ecommerce analytics platform running on Redshift.
@@ -12862,7 +13199,7 @@ Return ONLY valid JSON (no markdown, no backticks):
     if (currentSteps.length < 1) return;
     try {
       const stepSummary = currentSteps.map(s=>`${s.type}: ${s.label}`).join(" → ");
-      const res = await fetch(`${API}/api/ai/chat`, {
+      const res = await apiFetch(`${API}/api/ai/chat`, {
         method:"POST", headers:{"Content-Type":"application/json"},
         body: JSON.stringify({
           system:`You are a runbook design assistant. Given the current steps in a data engineering runbook, suggest the single most logical NEXT step. Return ONLY JSON: {"type":"step_type","label":"string","config":{},"on_fail":"continue"} where type is one of: pause_jobs|resume_jobs|trigger_refresh|validate_data|run_sql|wait_condition|send_alert|call_api|escalate. No markdown.`,
@@ -12892,7 +13229,7 @@ Return ONLY valid JSON (no markdown, no backticks):
     setReviewing(true); setReviewNotes(null);
     try {
       const stepSummary = rb.steps.map((s,i)=>`${i+1}. [${s.type}] ${s.label} (on_fail: ${s.on_fail||"continue"})`).join("\n");
-      const res = await fetch(`${API}/api/ai/chat`, {
+      const res = await apiFetch(`${API}/api/ai/chat`, {
         method:"POST", headers:{"Content-Type":"application/json"},
         body: JSON.stringify({
           system:`You are a senior data engineering runbook reviewer. Analyse a runbook for gaps, risks and improvements. Be specific and concise. Return JSON: {"score":85,"issues":[{"severity":"high|medium|low","text":"string"}],"suggestions":[{"text":"string","fix":"string"}]}. No markdown.`,
@@ -12917,7 +13254,7 @@ Return ONLY valid JSON (no markdown, no backticks):
     try {
       const rbSummary = JSON.stringify({ name:rb.name, steps:rb.steps.map(s=>({ type:s.type, label:s.label, on_fail:s.on_fail })) });
       const history = chatMsgs.slice(-6).map(m=>({ role:m.role==="user"?"user":"assistant", content:m.text }));
-      const res = await fetch(`${API}/api/ai/chat`, {
+      const res = await apiFetch(`${API}/api/ai/chat`, {
         method:"POST", headers:{"Content-Type":"application/json"},
         body: JSON.stringify({
           system:`You are an AI runbook design assistant. The user has a runbook they are building and wants to modify it through conversation. When the user asks to change the runbook, return JSON with both a reply and updated steps. Format: {"reply":"what you did","steps":[...updated steps array...]} — only include steps if you're changing them. Steps format: {"id":"s1","type":"step_type","label":"string","config":{},"on_fail":"continue|escalate|stop","retry_count":0}. If no step changes, just: {"reply":"your response"}. No markdown.`,
@@ -13250,7 +13587,7 @@ function SopImportWizard({ onDone, onCancel, T }) {
     if (!inputText.trim()) return;
     setStep("parsing");
     try {
-      const res = await fetch(`${API}/api/ai/chat`, {
+      const res = await apiFetch(`${API}/api/ai/chat`, {
         method:"POST", headers:{"Content-Type":"application/json"},
         body: JSON.stringify({
           system:`You are an expert at converting SOP documents, runbooks, and process descriptions into structured automation configs for a data engineering platform.
@@ -13895,14 +14232,50 @@ function WorkflowsTab({ navigateTo }) {
   const [nlWfText,   setNlWfText]   = React.useState("");
   const [nlWfLoading,setNlWfLoading]= React.useState(false);
   const [nlWfResult, setNlWfResult] = React.useState(null);
+  // Track enabled state for builtin workflows separately (BUILTIN_WFS is a constant)
+  const [builtinEnabled, setBuiltinEnabled_] = React.useState(getBuiltinEnabled);
+  const [pinnedWfs,      setPinnedWfs_]      = React.useState(getPinnedWfs);
+
+  const pinWorkflow = (wf) => {
+    const already = pinnedWfs.find(p=>p.id===wf.id);
+    if (already) return;
+    const pinned = [...pinnedWfs, {...wf, pinned:true, enabled:true}];
+    setPinnedWfs_(pinned);
+    savePinnedWfs(pinned);
+  };
+  const unpinWorkflow = (id) => {
+    const pinned = pinnedWfs.filter(p=>p.id!==id);
+    setPinnedWfs_(pinned);
+    savePinnedWfs(pinned);
+  };
+
+  // SOP instances
+  const { instances: sopInstances, addInstance: addSopInstance,
+    removeInstance: removeSopInstance } = useSopInstances();
+  const [showSopWizard,    setShowSopWizard]    = React.useState(false);
+  const [activeSopInstance,setActiveSopInstance]= React.useState(null); // null = show list
+
+  const toggleBuiltinEnabled = (id) => {
+    const current = builtinEnabled[id] !== false; // default true
+    setBuiltinEnabled_(p=>({...p,[id]:!current}));
+    setBuiltinEnabled(id, !current);
+  };
+
+  // Merge BUILTIN_WFS with persisted enabled state
+  const builtinWfsWithState = React.useMemo(() => {
+    const base = BUILTIN_WFS.map(wf => ({...wf, enabled: builtinEnabled[wf.id] !== false}));
+    const pinned = pinnedWfs.filter(p => !base.find(b=>b.id===p.id))
+      .map(wf => ({...wf, enabled: builtinEnabled[wf.id] !== false, pinned:true}));
+    return [...base, ...pinned];
+  }, [builtinEnabled, pinnedWfs]);
 
   // Load workflows + history from backend
   const load = async (seed=false) => {
     try {
-      if (seed) await fetch(`${API}/api/custom-workflows/load-from-db`).catch(()=>{});
+      if (seed) await apiFetch(`${API}/api/custom-workflows/load-from-db`).catch(()=>{});
       const [wfsRes, histRes] = await Promise.all([
-        fetch(`${API}/api/custom-workflows`).then(r=>r.json()),
-        fetch(`${API}/api/custom-workflows/history/v2?limit=100`).then(r=>r.json()).catch(()=>[]),
+        apiFetch(`${API}/api/custom-workflows`).then(r=>r.json()),
+        apiFetch(`${API}/api/custom-workflows/history/v2?limit=100`).then(r=>r.json()).catch(()=>[]),
       ]);
       if (Array.isArray(wfsRes)) {
         setWfs(wfsRes);
@@ -13910,7 +14283,7 @@ function WorkflowsTab({ navigateTo }) {
           const existingIds = wfsRes.map(w=>w.id);
           await seedBuiltins(existingIds);
           // Reload after seeding
-          const fresh = await fetch(`${API}/api/custom-workflows`).then(r=>r.json()).catch(()=>[]);
+          const fresh = await apiFetch(`${API}/api/custom-workflows`).then(r=>r.json()).catch(()=>[]);
           if (Array.isArray(fresh)) setWfs(fresh);
         }
       }
@@ -13928,7 +14301,7 @@ function WorkflowsTab({ navigateTo }) {
   const saveWf = async (wf) => {
     setSaveError(null);
     try {
-      const res  = await fetch(`${API}/api/custom-workflows/save/v2`, {
+      const res  = await apiFetch(`${API}/api/custom-workflows/save/v2`, {
         method:"POST", headers:{"Content-Type":"application/json"},
         body:JSON.stringify(wf)
       });
@@ -13955,14 +14328,14 @@ function WorkflowsTab({ navigateTo }) {
   }, [undoQueue]);
 
   const deleteWf = async (id) => {
-    const wf = workflows.find(w=>w.id===id) || wfs.find(w=>w.id===id);
+    const wf = workflows.find(w=>w.id===id);
     if (!wf) return;
     // Optimistically remove from UI
     setWfs(p=>p.filter(w=>w.id!==id));
     // Show undo toast
     const undoTimer = setTimeout(async () => {
       // Commit delete after 6s
-      await fetch(`${API}/api/custom-workflows/${id}`, {method:"DELETE"}).catch(()=>{});
+      await apiFetch(`${API}/api/custom-workflows/${id}`, {method:"DELETE"}).catch(()=>{});
       setUndoQueue(q=>q.filter(u=>u.id!==id));
     }, 6000);
     setUndoQueue(q=>[...q, {id, wf, timer:undoTimer}]);
@@ -14001,7 +14374,7 @@ function WorkflowsTab({ navigateTo }) {
     setRunning(p=>({...p,[wf.id]:true}));
     addNotif(`Running: ${wf.name}…`, "run");
     try {
-      const res  = await fetch(`${API}/api/custom-workflows/${wf.id}/run/v2`, {method:"POST"});
+      const res  = await apiFetch(`${API}/api/custom-workflows/${wf.id}/run/v2`, {method:"POST"});
       const data = await res.json();
       if (data.error) {
         addNotif(`${wf.name}: ${data.error}`, "error", {persistent:true});
@@ -14039,14 +14412,7 @@ function WorkflowsTab({ navigateTo }) {
               const slackUrl = wf.slack_channel || localStorage.getItem("wz_slack") || "";
               if (!slackUrl) return;
               const failedNames = alertableFailures.map(c=>c.name).join(", ");
-              fetch(slackUrl, {
-                method:"POST", headers:{"Content-Type":"application/json"},
-                body: JSON.stringify({
-                  text:`🔴 *${wf.name}* — ${failed} check${failed!==1?"s":""} failed
-*Failed:* ${failedNames}
-*Time:* ${new Date().toLocaleString()}`
-                })
-              }).catch(()=>{});
+              slackNotify({ text: `🔴 *${wf.name}* — ${failed} check${failed!==1?"s":""} failed\n*Failed:* ${failedNames}\n*Time:* ${new Date().toLocaleString()}`, webhookUrl: slackUrl });
             } catch(e) {}
           })();
           // ⚡ Signal event-driven pipelines
@@ -14082,7 +14448,7 @@ function WorkflowsTab({ navigateTo }) {
               const failedChecks = (data.check_results||[]).filter(c=>!c.passed);
               if (!failedChecks.length) return;
               const ctx = failedChecks.map(c=>`"${c.name}": ${c.row_count||0} rows affected, current severity: ${c.severity||"high"}`).join("; ");
-              const r = await fetch(`${API}/api/ai/chat`,{
+              const r = await apiFetch(`${API}/api/ai/chat`,{
                 method:"POST",headers:{"Content-Type":"application/json"},
                 body:JSON.stringify({
                   system:`You are a data quality severity classifier. Given failed checks with row counts, return a JSON object mapping check name to recommended severity.
@@ -14104,7 +14470,7 @@ Rules: critical=data loss/corruption risk, high=significant business impact, med
               const hasChanges = updatedChecks.some(c=>c._reclassified);
               if (hasChanges) {
                 const updatedWf = {...wf, checks:updatedChecks.map(c=>{const {_reclassified,...rest}=c;return rest;})};
-                await fetch(`${API}/api/custom-workflows/save/v2`,{
+                await apiFetch(`${API}/api/custom-workflows/save/v2`,{
                   method:"POST",headers:{"Content-Type":"application/json"},
                   body:JSON.stringify(updatedWf)
                 });
@@ -14125,12 +14491,7 @@ Rules: critical=data loss/corruption risk, high=significant business impact, med
             try {
               const slackUrl = wf.slack_channel || "";
               if (!slackUrl) return; // only fire success if workflow has its own channel
-              fetch(slackUrl, {
-                method:"POST", headers:{"Content-Type":"application/json"},
-                body: JSON.stringify({
-                  text:`✅ *${wf.name}* — all ${data.total_checks||0} checks passed · ${new Date().toLocaleTimeString()}`
-                })
-              }).catch(()=>{});
+              slackNotify({ text: `✅ *${wf.name}* — all ${data.total_checks||0} checks passed · ${new Date().toLocaleTimeString()}`, webhookUrl: slackUrl });
             } catch(e) {}
           })();
         }
@@ -14142,8 +14503,14 @@ Rules: critical=data loss/corruption risk, high=significant business impact, med
   };
 
   const toggleEnabled = async (wf) => {
+    if (wf.builtin) {
+      // Builtins: persist to localStorage, update local state
+      toggleBuiltinEnabled(wf.id);
+      return;
+    }
+    // Custom workflows: persist to backend
     const updated = {...wf, enabled: !wf.enabled};
-    await fetch(`${API}/api/custom-workflows/save/v2`, {
+    await apiFetch(`${API}/api/custom-workflows/save/v2`, {
       method:"POST", headers:{"Content-Type":"application/json"},
       body:JSON.stringify(updated)
     }).catch(()=>{});
@@ -14164,14 +14531,14 @@ Rules: critical=data loss/corruption risk, high=significant business impact, med
   const runBulk = async () => {
     if (!selectedWfIds.size || bulkRunning) return;
     setBulkRunning(true);
-    const toRun = BUILTIN_WFS.filter(w => selectedWfIds.has(w.id));
+    const toRun = builtinWfsWithState.filter(w => selectedWfIds.has(w.id));
     addNotif(`Running ${toRun.length} workflow${toRun.length!==1?"s":""}…`, "run");
     await Promise.all(toRun.map(wf => runWf(wf)));
     clearWfSelect();
     setBulkRunning(false);
   };
 
-  const selectAllWfs = () => setSelectedWfIds(new Set(BUILTIN_WFS.map(w => w.id)));
+  const selectAllWfs = () => setSelectedWfIds(new Set(builtinWfsWithState.map(w => w.id)));
 
   // ── Scheduling engine ──────────────────────────────────────────────────────
   // Parse schedule string → interval in ms (null = manual only)
@@ -14206,7 +14573,7 @@ Rules: critical=data loss/corruption risk, high=significant business impact, med
   // Scheduling ticker — check every 60s if any workflow is overdue
   React.useEffect(() => {
     const tick = () => {
-      BUILTIN_WFS.forEach(wf => {
+      BUILTIN_WFS.forEach(wf => { // use original BUILTIN_WFS for seeding
         if (!wf.enabled && wf.enabled !== undefined) return;
         const ms = parseScheduleMs(wf.schedule);
         if (!ms) return;
@@ -14240,7 +14607,7 @@ Rules: critical=data loss/corruption risk, high=significant business impact, med
       if (e.key === "r" || e.key === "R") {
         e.preventDefault();
         if (selectedWfIds.size > 0) { runBulk(); }
-        else if (BUILTIN_WFS.length > 0) { runWf(BUILTIN_WFS[0]); }
+        else if (builtinWfsWithState.length > 0) { runWf(builtinWfsWithState[0]); }
       }
       if (e.key === "Escape") {
         if (selectedWfIds.size > 0) { e.preventDefault(); clearWfSelect(); }
@@ -14265,7 +14632,7 @@ Rules: critical=data loss/corruption risk, high=significant business impact, med
     if (!genTplPrompt.trim()) return;
     setGenTplLoading(true); setGenTplResult(null);
     try {
-      const res = await fetch(`${API}/api/ai/chat`, {
+      const res = await apiFetch(`${API}/api/ai/chat`, {
         method:"POST", headers:{"Content-Type":"application/json"},
         body: JSON.stringify({
           system:`You are a senior data engineering lead. Given a description, generate a built-in workflow template for an Amazon Seller ecommerce analytics platform on Redshift.
@@ -14347,7 +14714,7 @@ Rules: 3-5 checks, use ONLY real columns from the schema above, pass_condition m
   const seedBuiltins = async (existingIds) => {
     for (const seed of BUILTIN_SEEDS) {
       if (!existingIds.includes(seed.id)) {
-        await fetch(`${API}/api/custom-workflows/save/v2`, {
+        await apiFetch(`${API}/api/custom-workflows/save/v2`, {
           method:"POST", headers:{"Content-Type":"application/json"},
           body:JSON.stringify(seed)
         }).catch(()=>{});
@@ -14360,7 +14727,7 @@ Rules: 3-5 checks, use ONLY real columns from the schema above, pass_condition m
       // Always use the full SOP gate workflow for Ads SOP
       setSopRunning(true);
       try {
-        const res  = await fetch(`${API}/api/workflow/ads-sop`, {method:"POST"});
+        const res  = await apiFetch(`${API}/api/workflow/ads-sop`, {method:"POST"});
         const data = await res.json();
         setSopResult(data);
       } catch(e) {}
@@ -14398,7 +14765,7 @@ Rules: 3-5 checks, use ONLY real columns from the schema above, pass_condition m
       const focusArea = FOCUS_AREAS[Math.floor(Math.random() * FOCUS_AREAS.length)];
       const seed = Math.random().toString(36).slice(2,6); // random 4-char seed for variety
 
-      const res = await fetch(`${API}/api/ai/chat`, {
+      const res = await apiFetch(`${API}/api/ai/chat`, {
         method:"POST", headers:{"Content-Type":"application/json"},
         body:JSON.stringify({
           system:`You are a senior data engineering lead specialising in Amazon Seller analytics on Redshift.
@@ -14538,6 +14905,30 @@ Respond with ONLY this JSON array (no other text, no backticks):
     </div>
   );
 
+  // Render active SOP instance (user-created)
+  if (activeSopInstance) return (
+    <div style={{display:"flex",flexDirection:"column",height:"100%",overflow:"hidden"}}>
+      <div style={{padding:"10px 20px",borderBottom:`1px solid ${T.border}`,
+        flexShrink:0,display:"flex",alignItems:"center",gap:10}}>
+        <Btn onClick={()=>setActiveSopInstance(null)} variant="ghost" size="sm">
+          ← Workflows
+        </Btn>
+        <span style={{fontSize:14,fontWeight:700,color:T.text}}>
+          {activeSopInstance.name}
+        </span>
+        <Btn size="sm" variant="muted" style={{marginLeft:"auto",fontSize:10}}
+          onClick={()=>{if(window.confirm("Delete this SOP?"))
+            {removeSopInstance(activeSopInstance.id);setActiveSopInstance(null);}}}>
+          <Trash2 size={10}/> Delete SOP
+        </Btn>
+      </div>
+      <div style={{flex:1,overflow:"hidden"}}>
+        <AdsSopTab instanceConfig={activeSopInstance.config}
+          instanceId={activeSopInstance.id}/>
+      </div>
+    </div>
+  );
+
   if (view==="sop") return (
     <div style={{ display:"flex", flexDirection:"column", height:"100%", overflow:"hidden" }}>
       <div style={{ padding:"10px 20px", borderBottom:`1px solid #E2E8F0`,
@@ -14598,9 +14989,13 @@ Respond with ONLY this JSON array (no other text, no backticks):
         </div>
       </div>
 
-      {/* Sub-nav: Workflows | Runbooks */}
+      {/* Sub-nav: Critical Workflows | Runbooks | My Workflows */}
       <div style={{ display:"flex", gap:0, borderBottom:`1px solid ${T.border}`, marginBottom:20, marginTop:-8 }}>
-        {[["list","📋 Workflows"],["runbooks","🤖 Runbooks"]].map(([id,label])=>(
+        {[
+          ["list",     "⚡ Critical Workflows"],
+          ["runbooks", "📖 Runbooks"],
+          ["custom",   "🔧 My Workflows"],
+        ].map(([id,label])=>(
           <button key={id} onClick={()=>setView(id)}
             style={{ padding:"9px 20px", fontSize:12, fontWeight:700, cursor:"pointer",
               background:"none", border:"none",
@@ -14616,6 +15011,13 @@ Respond with ONLY this JSON array (no other text, no backticks):
         <div style={{ margin:"-24px -28px", height:"calc(100vh - 120px)", overflow:"hidden" }}>
           <RunbooksView onBack={(sig)=>{ if(sig==="sop_ads-sop") setView("sop"); else setView("list"); }} T={T}
             onWorkflowCreated={(wf)=>{ setWfs(p=>[...p, {...wf, id:wf.id||`wf_${Date.now().toString(36)}`, enabled:true}]); }}/>
+        </div>
+      )}
+
+      {/* My Workflows (custom) sub-section */}
+      {view==="custom" && (
+        <div style={{ margin:"-24px -28px", height:"calc(100vh - 120px)", overflow:"hidden", overflowY:"auto" }}>
+          <CustomWorkflowsPanel onNavigate={navigateTo} onPin={pinWorkflow} pinnedIds={pinnedWfs.map(p=>p.id)}/>
         </div>
       )}
 
@@ -14742,7 +15144,7 @@ Respond with ONLY this JSON array (no other text, no backticks):
 
       {/* ── Dependency Graph ─────────────────────────────────────────────── */}
       <WorkflowDependencyGraph
-        workflows={[...BUILTIN_WFS, ...workflows].filter((w,i,a)=>a.findIndex(x=>x.id===w.id)===i)}
+        workflows={[...builtinWfsWithState, ...workflows].filter((w,i,a)=>a.findIndex(x=>x.id===w.id)===i)}
         runHistory={runHistory}
         T={T}
         onOpen={(wf)=>{ setDetail(wf); setLiveRun(null); setView("detail"); }}
@@ -14750,23 +15152,29 @@ Respond with ONLY this JSON array (no other text, no backticks):
 
       {/* ── BUILT-IN WORKFLOWS + TEMPLATE LIBRARY ─────────────────────────── */}
       {(() => {
-        const builtins = BUILTIN_WFS;
+        const builtins = builtinWfsWithState;
         return (
           <div style={{ marginBottom:20 }}>
             <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom:selectedWfIds.size>0?6:10 }}>
               <div style={{ display:"flex", alignItems:"center", gap:8 }}>
                 <div style={{ fontSize:11, fontWeight:700, color:T.muted, textTransform:"uppercase",
-                  letterSpacing:"0.06em" }}>Built-in Workflows</div>
-                <button onClick={()=>selectedWfIds.size===BUILTIN_WFS.length?clearWfSelect():selectAllWfs()}
+                  letterSpacing:"0.06em" }}>⚡ Critical Workflows</div>
+                <button onClick={()=>selectedWfIds.size===builtinWfsWithState.length?clearWfSelect():selectAllWfs()}
                   style={{ fontSize:9, color:T.muted, background:"none", border:`1px solid ${T.border}`,
                     borderRadius:5, padding:"1px 7px", cursor:"pointer" }}>
-                  {selectedWfIds.size===BUILTIN_WFS.length?"Deselect all":"Select all"}
+                  {selectedWfIds.size===builtinWfsWithState.length?"Deselect all":"Select all"}
                 </button>
               </div>
-              <Btn size="sm" variant="ghost" onClick={()=>setShowTemplateLib(p=>!p)}
-                style={{ fontSize:10, color:T.purple, borderColor:`${T.purple}30` }}>
-                {showTemplateLib?"Hide":"＋ Add from Library"}
-              </Btn>
+              <div style={{display:"flex",gap:6}}>
+                <Btn size="sm" variant="ghost" onClick={()=>setShowSopWizard(true)}
+                  style={{ fontSize:10, color:T.accent, borderColor:`${T.accent}30` }}>
+                  ＋ New SOP
+                </Btn>
+                <Btn size="sm" variant="ghost" onClick={()=>setShowTemplateLib(p=>!p)}
+                  style={{ fontSize:10, color:T.purple, borderColor:`${T.purple}30` }}>
+                  {showTemplateLib?"Hide":"＋ Add from Library"}
+                </Btn>
+              </div>
             </div>
             {/* Bulk action bar */}
             {selectedWfIds.size > 0 && (
@@ -15044,6 +15452,13 @@ Respond with ONLY this JSON array (no other text, no backticks):
                             left:wf.enabled===false?"2px":"14px" }}/>
                         </div>
                       </label>
+                      {wf.pinned&&(
+                        <Btn size="sm" variant="muted"
+                          onClick={()=>unpinWorkflow(wf.id)}
+                          style={{fontSize:9,marginLeft:4}} title="Remove from Critical Workflows">
+                          ✕ Unpin
+                        </Btn>
+                      )}
                     </div>
                   </div>
                 );
@@ -15052,6 +15467,48 @@ Respond with ONLY this JSON array (no other text, no backticks):
           </div>
         );
       })()}
+
+      {/* ── User-created SOP instances ─────────────────────────────────────── */}
+      {sopInstances.length>0&&view==="list"&&(
+        <div style={{marginBottom:20}}>
+          <div style={{fontSize:11,fontWeight:700,color:T.muted,
+            textTransform:"uppercase",letterSpacing:"0.06em",marginBottom:10}}>
+            My SOPs
+          </div>
+          <div style={{display:"flex",flexDirection:"column",gap:8}}>
+            {sopInstances.map(inst=>{
+              const tpl = BUILTIN_TEMPLATES.find(t=>t.id===inst.templateId)||{icon:"📋",color:T.accent};
+              return (
+                <div key={inst.id} style={{padding:"14px 18px",borderRadius:10,
+                  background:T.surface,border:"1px solid "+T.border,
+                  display:"flex",alignItems:"center",gap:14}}>
+                  <span style={{fontSize:20,flexShrink:0}}>{tpl.icon}</span>
+                  <div style={{flex:1,minWidth:0}}>
+                    <div style={{fontSize:13,fontWeight:700,color:T.text,marginBottom:2}}>
+                      {inst.name}
+                    </div>
+                    <div style={{fontSize:10,color:T.muted}}>
+                      {tpl.name} · Created {new Date(inst.createdAt).toLocaleDateString("en-IN")}
+                    </div>
+                  </div>
+                  <div style={{display:"flex",gap:6}}>
+                    <Btn size="sm"
+                      style={{background:`linear-gradient(135deg,${tpl.color||T.accent},${T.purple})`,
+                        color:"white",border:"none"}}
+                      onClick={()=>{setActiveSopInstance(inst);setView("list");}}>
+                      <Play size={10}/> Open
+                    </Btn>
+                    <Btn size="sm" variant="muted"
+                      onClick={()=>removeSopInstance(inst.id)}>
+                      <Trash2 size={10}/>
+                    </Btn>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
 
       {/* ── Getting started callout when no runs yet ──────────────────────── */}
       {runHistory.length === 0 && (
@@ -15241,22 +15698,18 @@ Respond with ONLY this JSON array (no other text, no backticks):
         )}
       </div>
 
-      {/* ── CUSTOM WORKFLOWS → moved to Pipeline Runs ───────────────────── */}
-      <div style={{ marginBottom:20, padding:"14px 18px", borderRadius:12,
-        border:`1px dashed ${T.border}`, background:T.surface,
-        display:"flex", alignItems:"center", gap:14 }}>
-        <div style={{ fontSize:24 }}>⚙</div>
-        <div style={{ flex:1 }}>
-          <div style={{ fontSize:13, fontWeight:700, color:T.text, marginBottom:2 }}>Custom Workflows</div>
-          <div style={{ fontSize:11, color:T.muted }}>SQL-check workflows with schedules have moved to Pipeline Runs → Workflows tab.</div>
-        </div>
-        {navigateTo && (
-          <Btn size="sm" variant="ghost" onClick={()=>navigateTo("pipeline-runs")}
-            style={{ flexShrink:0 }}>Go to Pipeline Runs →</Btn>
-        )}
-      </div>
+
       </> }
       </div>
+
+    {/* SOP New Wizard */}
+    {showSopWizard&&(
+      <SopNewWizard
+        onDone={(inst)=>{addSopInstance(inst);setShowSopWizard(false);setActiveSopInstance(inst);}}
+        onCancel={()=>setShowSopWizard(false)}
+        T={T}
+      />
+    )}
 
     {/* Undo delete toasts */}
     {undoQueue.length > 0 && (
@@ -15303,7 +15756,7 @@ Respond with ONLY this JSON array (no other text, no backticks):
         if (!nlWfText.trim()||nlWfLoading) return;
         setNlWfLoading(true); setNlWfResult(null);
         try {
-          const r = await fetch(`${API}/api/ai/chat`,{
+          const r = await apiFetch(`${API}/api/ai/chat`,{
             method:"POST",headers:{"Content-Type":"application/json"},
             body:JSON.stringify({
               system:`You are a senior data engineer building SQL workflow configs for an ecommerce analytics platform.
@@ -15575,7 +16028,7 @@ Rules: 3-6 checks, SELECT only, use real columns, never invent columns.`,
                   if (setupCfg.auto_create_runbook && tpl.detection_checks?.length) {
                     try {
                       const checkSummary = tpl.detection_checks.map(c=>`- ${c.name} (${c.severity}): ${c.sql?.slice(0,80)}`).join("\n");
-                      const res = await fetch(`${API}/api/ai/chat`,{
+                      const res = await apiFetch(`${API}/api/ai/chat`,{
                         method:"POST", headers:{"Content-Type":"application/json"},
                         body: JSON.stringify({
                           system:`You are a senior data engineering runbook designer. Given a set of data quality checks from a workflow, create a remediation runbook an agent runs when those checks fail. Return ONLY valid JSON:
@@ -15623,7 +16076,7 @@ Create a remediation runbook.`}],
                       gds_copy_jobs:   (tpl.sop_config.gds_copy_jobs||[]).map(j=>({...j, id:j.id+"-"+Date.now()})),
                     } : {}),
                   };
-                  await fetch(`${API}/api/custom-workflows/save/v2`,{
+                  await apiFetch(`${API}/api/custom-workflows/save/v2`,{
                     method:"POST", headers:{"Content-Type":"application/json"},
                     body:JSON.stringify(wf)
                   }).catch(()=>{});
@@ -15869,7 +16322,7 @@ function WorkflowDetail({ wf, history = [], liveRun, onBack, onEdit, onRun, runn
               fontSize:10, justifyContent:"center", color:T.accent }}
               onClick={()=>{
                 window.location.hash=`results/${history[0].run_id}/${(history[0].check_results||[])[0]?.id||(history[0].check_results||[])[0]?.name||''}`;
-                if(typeof navigateTo==="function") navigateTo("results");
+                if(typeof navigateTo==="function") navigateTo("results"); /* eslint-disable-line */
               }}>
               📊 View in Results
             </Btn>
@@ -16042,7 +16495,7 @@ function RunDetail({ run, T, dur, fmt }) {
       try {
         const failCtx = failedChecks.map(c=>`"${c.name}" (${c.row_count||0} rows, ${c.severity||"?"})`).join(", ");
         const passCtx = (run.check_results||[]).filter(c=>c.passed).map(c=>c.name).join(", ")||"none";
-        const r = await fetch(`${API}/api/ai/chat`,{
+        const r = await apiFetch(`${API}/api/ai/chat`,{
           method:"POST",headers:{"Content-Type":"application/json"},
           body:JSON.stringify({
             system:`You are a data ops analyst. After a workflow run, write a 2-3 sentence plain-English summary.
@@ -16069,7 +16522,7 @@ Be specific — mention check names and row counts. No bullet points. No markdow
     if (chk.passed || explainTexts[chk.id||chk.name]) return;
     setExplainLoad(p=>({...p,[chk.id||chk.name]:true}));
     try {
-      const r = await fetch(`${API}/api/ai/chat`,{method:"POST",headers:{"Content-Type":"application/json"},
+      const r = await apiFetch(`${API}/api/ai/chat`,{method:"POST",headers:{"Content-Type":"application/json"},
         body:JSON.stringify({
           system:"Explain this data quality check failure in 1-2 plain English sentences for a business user. No SQL jargon. Focus on what it means and whether it needs urgent attention.",
           messages:[{role:"user",content:`Check "${chk.name}" failed with ${chk.row_count} rows. Condition: ${chk.pass_condition}. Severity: ${chk.severity}.`}],
@@ -16381,7 +16834,7 @@ function AllRunsView({ history = [], workflows = [], onBack, onOpenWf }) { // on
 function AiWorkflowAssistant({ workflows, dbSchema, onSave, onDelete, onRun, onClose, T }) {
   const [messages, setMessages] = React.useState([{
     role:"assistant",
-    text:"I can build, edit, delete, run, or configure any workflow from plain text.\n\nTry: \"Create a workflow that checks for failed downloads in mws.report daily\" or \"Edit the daily brief to add a null check on orders\" or \"Run all workflows\" or \"Delete the X workflow\".",
+    text:"I can build, edit, delete, run, or configure any workflow from plain text.\n\nTry: \"Create a workflow that checks for failed downloads in mws.report daily\" or \"Run all workflows\" or \"Delete the X workflow\".",
     actions:[]
   }]);
   const [input,   setInput]   = React.useState("");
@@ -16441,7 +16894,7 @@ Respond ONLY with a JSON object. No markdown, no backticks.
 Example: {"reply":"Created a workflow with 2 checks for mws.report","actions":[{"type":"create_workflow","workflow":{...}}]}`;
 
     try {
-      const res = await fetch(`${API}/api/ai/chat`, {
+      const res = await apiFetch(`${API}/api/ai/chat`, {
         method:"POST", headers:{"Content-Type":"application/json"},
         body:JSON.stringify({
           system,
@@ -16539,7 +16992,6 @@ Example: {"reply":"Created a workflow with 2 checks for mws.report","actions":[{
   const SUGGESTIONS = [
     "Create a workflow checking for failed downloads today",
     "Add a null check on mws.orders.asin to Daily Brief",
-    "Schedule the daily brief to run every hour",
     "Show me all my workflows",
     "Delete the test workflow",
     "Run all enabled workflows",
@@ -16707,10 +17159,12 @@ function WorkflowBuilder({ initial, dbSchema: dbSchemaProp, workflows: allWorkfl
   const [selectedChkIds, setSelectedChkIds] = React.useState(new Set()); // bulk selection
   const [showDepModal,   setShowDepModal]   = React.useState(false); // dependency picker
   const [dryResults, setDryResults] = React.useState(null); // {passed, failed, results:[]}
+  const [valResult,  setValResult]  = React.useState(null); // SQL validation result
+  const [validating, setValidating] = React.useState(false); // SQL validate-in-progress
 
   // Load configured data sources
   React.useEffect(()=>{
-    fetch(`${API}/api/datasources`).then(r=>r.json()).then(d=>{
+    apiFetch(`${API}/api/datasources`).then(r=>r.json()).then(d=>{
       if (d.sources) setSources(d.sources);
     }).catch(()=>{});
   }, []);
@@ -16733,9 +17187,6 @@ function WorkflowBuilder({ initial, dbSchema: dbSchemaProp, workflows: allWorkfl
     return {...p, checks:arr};
   });
 
-  // AI check generator
-  const aiGenCheck = async () => {
-
   // ── Smart Check Suggestions — auto-detect gaps on open ──────────────────
   React.useEffect(()=>{
     if (!initial?.checks?.length) return; // only for existing workflows
@@ -16743,7 +17194,7 @@ function WorkflowBuilder({ initial, dbSchema: dbSchemaProp, workflows: allWorkfl
     (async()=>{
       try {
         const existingChecks = (initial.checks||[]).map(c=>c.name).join(", ");
-        const r = await fetch(`${API}/api/ai/chat`,{
+        const r = await apiFetch(`${API}/api/ai/chat`,{
           method:"POST",headers:{"Content-Type":"application/json"},
           body:JSON.stringify({
             system:`You are a senior data engineer reviewing a workflow's existing checks for gaps.
@@ -16763,10 +17214,13 @@ Use only: mws.report, mws.orders, mws.inventory, mws.sales_and_traffic_by_date, 
       setSuggestLoading(false);
     })();
   }, [initial?.id]);
+
+  // AI check generator
+  const aiGenCheck = async () => {
     if (!aiDesc.trim()) return;
     setAiLoad(true);
     try {
-      const res  = await fetch(`${API}/api/ai/chat`, {
+      const res  = await apiFetch(`${API}/api/ai/chat`, {
         method:"POST", headers:{"Content-Type":"application/json"},
         body:JSON.stringify({
           system:`You are a senior data engineering lead at an ecommerce analytics company. You write creative, high-signal SQL data quality checks that go far beyond basic null checks and row counts.
@@ -16839,7 +17293,7 @@ No markdown, no backticks.`,
     if (!checkDraft.sql.trim()) return;
     setTesting(true); setTestResult(null);
     try {
-      const res  = await fetch(`${API}/api/query?sql=${encodeURIComponent(checkDraft.sql + " LIMIT 5")}`);
+      const res  = await apiFetch(`${API}/api/query?sql=${encodeURIComponent(checkDraft.sql + " LIMIT 5")}`);
       const data = await res.json();
       setTestResult(data);
     } catch(e) { setTestResult({error:e.message}); }
@@ -16857,7 +17311,7 @@ No markdown, no backticks.`,
     for (const chk of wf.checks) {
       if (!chk.sql?.trim()) continue;
       try {
-        const r = await fetch(`${API}/api/query?sql=${encodeURIComponent(chk.sql + " LIMIT 5")}`);
+        const r = await apiFetch(`${API}/api/query?sql=${encodeURIComponent(chk.sql + " LIMIT 5")}`);
         const d = await r.json();
         results.push({ name:chk.name, ok:!d.error, error:d.error||null,
           rows: d.rows?.length??0, pass_condition:chk.pass_condition });
@@ -16979,7 +17433,7 @@ No markdown, no backticks.`,
               ):(
                 <div style={{display:"flex",gap:5,flexWrap:"wrap"}}>
                   {(wf.depends_on||[]).map(depId=>{
-                    const depWf = (typeof workflows!=="undefined"?workflows:[]).find(w=>w.id===depId);
+                    const depWf = [].find(w=>w.id===depId); // workflows resolved via parent
                     return (
                       <span key={depId} style={{fontSize:10,padding:"2px 8px",borderRadius:5,
                         background:`${T.accent}10`,border:`1px solid ${T.accent}20`,
@@ -17297,13 +17751,11 @@ No markdown, no backticks.`,
                 <label style={{ fontSize:10, fontWeight:600, color:T.text2 }}>SQL Query</label>
                 <div style={{ display:"flex", gap:8 }}>
                   {(() => {
-                    const [validating, setValidating] = React.useState(false);
-                    const [valResult,  setValResult]  = React.useState(null);
                     const validate = async () => {
                       if (!checkDraft.sql.trim()) return;
                       setValidating(true); setValResult(null);
                       try {
-                        const r = await fetch(`${API}/api/ai/validate-sql`, {
+                        const r = await apiFetch(`${API}/api/ai/validate-sql`, {
                           method:"POST", headers:{"Content-Type":"application/json"},
                           body:JSON.stringify({sql: checkDraft.sql})
                         });
@@ -17462,8 +17914,7 @@ No markdown, no backticks.`,
 // ═══════════════════════════════════════════════════════════════════════════════
 // WIZI ASSISTANT — AI-driven 3-surface system
 // 1. PostRunPanel  — pops up after workflow run with failures
-// 2. AiBriefPanel  — AI section in Daily Brief tab
-// 3. FloatingAssistant — persistent chat panel
+// 2. FloatingAssistant — persistent chat panel
 // ═══════════════════════════════════════════════════════════════════════════════
 
 // Shared hook — triggers AI analysis after a run
@@ -17476,7 +17927,7 @@ function useRunAnalysis(run, enabled=true) {
     if (!r || r.status==="clean" || !enabled) return;
     setLoading(true); setError(null);
     try {
-      const res = await fetch(`${API}/api/ai/analyse-run`, {
+      const res = await apiFetch(`${API}/api/ai/analyse-run`, {
         method:"POST", headers:{"Content-Type":"application/json"},
         body:JSON.stringify({ run: r })
       });
@@ -17510,7 +17961,7 @@ function PostRunPanel({ run, onClose, onSendToTriage, onNavigateResults }) {
   const sendSlack = async () => {
     if (!analysis?.notify_message) return;
     setSending(true);
-    await fetch(`${API}/api/workflow-results/share-slack`, {
+    await apiFetch(`${API}/api/workflow-results/share-slack`, {
       method:"POST", headers:{"Content-Type":"application/json"},
       body:JSON.stringify({
         run_id:run.run_id, check_name:"All checks",
@@ -17526,7 +17977,7 @@ function PostRunPanel({ run, onClose, onSendToTriage, onNavigateResults }) {
 
   const runFollowUp = async (chk, i) => {
     setRunningFollowUp(p=>({...p,[i]:true}));
-    const res = await fetch(`${API}/api/ai/run-follow-up`, {
+    const res = await apiFetch(`${API}/api/ai/run-follow-up`, {
       method:"POST", headers:{"Content-Type":"application/json"},
       body:JSON.stringify(chk)
     }).then(r=>r.json()).catch(e=>({error:e.message}));
@@ -17772,190 +18223,6 @@ function PostRunPanel({ run, onClose, onSendToTriage, onNavigateResults }) {
 
 
 // ── 2. AI BRIEF PANEL — AI section inside Daily Brief ─────────────────────────
-function AiBriefPanel() {
-  const T = useT();
-  const [brief,   setBrief]   = React.useState(null);
-  const [loading, setLoading] = React.useState(false);
-  const [error,   setError]   = React.useState(null);
-  const [expanded,setExpanded]= React.useState(true);
-
-  const CACHE_KEY = "wz_brief_cache";
-  const CACHE_TTL  = 15 * 60 * 1000; // 15 minutes
-
-  const load = async (force=false) => {
-    if (!force) {
-      try {
-        const cached = JSON.parse(sessionStorage.getItem(CACHE_KEY)||"null");
-        if (cached && Date.now() - cached.ts < CACHE_TTL) {
-          setBrief(cached.data); return;
-        }
-      } catch(e) {}
-    }
-    setLoading(true); setError(null);
-    try {
-      const res = await fetch(`${API}/api/ai/daily-brief`, {
-        method:"POST", headers:{"Content-Type":"application/json"}, body:"{}"
-      });
-      const d = await res.json();
-      if (d.error) setError(d.error);
-      else {
-        setBrief(d);
-        try { sessionStorage.setItem(CACHE_KEY, JSON.stringify({data:d, ts:Date.now()})); } catch(e) {}
-      }
-    } catch(e) { setError(e.message); }
-    setLoading(false);
-  };
-
-  React.useEffect(()=>{ load(); }, []);
-
-  const URGENCY_COLOR = { critical:T.red, high:T.orange, medium:T.yellow, low:T.green };
-  const score = brief?.health_score;
-  const scoreColor = score>=80?T.green:score>=60?T.orange:T.red;
-
-  return (
-    <div style={{ padding:"16px 20px", borderRadius:12, marginBottom:20,
-      background:T.surface, border:`1px solid ${T.border}` }}>
-      <div style={{ display:"flex", alignItems:"center", gap:10, marginBottom: expanded?12:0 }}>
-        <div style={{ width:32, height:32, borderRadius:8,
-          background:`${T.purple}15`, display:"flex", alignItems:"center",
-          justifyContent:"center", fontSize:16 }}>🤖</div>
-        <div style={{ flex:1 }}>
-          <div style={{ fontSize:12, fontWeight:700, color:T.text }}>WiziAgent Brief</div>
-          {brief?.headline && (
-            <div style={{ fontSize:11, color:T.muted, marginTop:1 }}>{brief.headline}</div>
-          )}
-        </div>
-        <button onClick={()=>load(true)} disabled={loading}
-          style={{ background:"none", border:"none", cursor:loading?"not-allowed":"pointer",
-            color:T.muted, fontSize:13, padding:"2px 6px", borderRadius:5, opacity:loading?0.4:1 }}
-          title="Refresh brief">↺</button>
-        {score !== undefined && (
-          <div style={{ textAlign:"center", padding:"4px 10px", borderRadius:8,
-            background:`${scoreColor}12`, border:`1px solid ${scoreColor}25` }}>
-            <div style={{ fontSize:18, fontWeight:800, color:scoreColor }}>{score}</div>
-            <div style={{ fontSize:9, color:T.muted }}>Health</div>
-          </div>
-        )}
-        <Btn size="sm" variant="ghost" onClick={load} disabled={loading}>
-          {loading?<Spinner size={10}/>:<RefreshCw size={10}/>}
-        </Btn>
-        <button onClick={()=>setExpanded(p=>!p)}
-          style={{ background:"none", border:"none", cursor:"pointer",
-            color:T.muted, fontSize:14 }}>
-          {expanded?"▴":"▾"}
-        </button>
-      </div>
-
-      {expanded && (
-        <>
-          {loading && (
-            <div style={{ display:"flex", gap:8, alignItems:"center",
-              color:T.muted, fontSize:11, padding:"8px 0" }}>
-              <Spinner size={12}/> Analysing pipeline health…
-            </div>
-          )}
-          {error && <div style={{ color:T.red, fontSize:11 }}>AI unavailable: {error}</div>}
-
-          {brief && !loading && (
-            <div style={{ display:"flex", flexDirection:"column", gap:8 }}>
-              {brief.all_clear ? (
-                <div style={{ display:"flex", alignItems:"center", gap:8,
-                  padding:"10px 14px", borderRadius:8,
-                  background:`${T.green}08`, border:`1px solid ${T.green}25` }}>
-                  <CheckCircle size={14} color={T.green}/>
-                  <span style={{ fontSize:12, color:T.green, fontWeight:600 }}>
-                    All clear — pipeline is healthy
-                  </span>
-                </div>
-              ) : (
-                (brief.priority_items||[]).map((item,i)=>(
-                  <div key={item.id||item.title||i} style={{ display:"flex", alignItems:"flex-start", gap:10,
-                    padding:"10px 14px", borderRadius:8,
-                    background:`${URGENCY_COLOR[item.urgency]||T.muted}08`,
-                    border:`1px solid ${URGENCY_COLOR[item.urgency]||T.muted}20` }}>
-                    <div style={{ width:20, height:20, borderRadius:"50%", flexShrink:0,
-                      background:`${URGENCY_COLOR[item.urgency]||T.muted}20`,
-                      display:"flex", alignItems:"center", justifyContent:"center",
-                      fontSize:10, fontWeight:800,
-                      color:URGENCY_COLOR[item.urgency]||T.muted }}>
-                      {item.priority}
-                    </div>
-                    <div style={{ flex:1 }}>
-                      <div style={{ fontSize:12, fontWeight:700, color:T.text }}>{item.title}</div>
-                      <div style={{ fontSize:11, color:T.muted, marginTop:2 }}>{item.detail}</div>
-                    </div>
-                    <Badge label={item.urgency} color={URGENCY_COLOR[item.urgency]||T.muted}/>
-                  </div>
-                ))
-              )}
-
-              {/* Top 3 actions — derived from priority_items, zero extra tokens */}
-              {(brief.priority_items||[]).length > 0 && (() => {
-                const top3 = (brief.priority_items||[]).slice(0,3);
-                return (
-                  <div style={{ padding:"10px 14px", borderRadius:8,
-                    background:`linear-gradient(135deg,${T.accent}08,${T.purple}06)`,
-                    border:`1px solid ${T.accent}20`, marginTop:4 }}>
-                    <div style={{ fontSize:10, fontWeight:700, color:T.accent,
-                      textTransform:"uppercase", letterSpacing:"0.06em", marginBottom:6 }}>
-                      ✨ Top {top3.length} actions today
-                    </div>
-                    {top3.map((item,i)=>(
-                      <div key={item.id||i} style={{ display:"flex", alignItems:"center", gap:8,
-                        fontSize:11, color:T.text2, marginBottom:i<top3.length-1?4:0 }}>
-                        <span style={{ width:16, height:16, borderRadius:"50%", flexShrink:0,
-                          background:`${T.accent}20`, display:"flex", alignItems:"center",
-                          justifyContent:"center", fontSize:9, fontWeight:800, color:T.accent }}>
-                          {i+1}
-                        </span>
-                        <span style={{ flex:1 }}>{item.title}</span>
-                        <span style={{ fontSize:9, padding:"1px 6px", borderRadius:4,
-                          background:`${(URGENCY_COLOR[item.urgency]||T.muted)}15`,
-                          color:URGENCY_COLOR[item.urgency]||T.muted, fontWeight:600 }}>
-                          {item.urgency}
-                        </span>
-                      </div>
-                    ))}
-                  </div>
-                );
-              })()}
-
-              {brief.recommendation && (
-                <div style={{ fontSize:11, color:T.accent, padding:"8px 14px",
-                  borderRadius:8, background:`${T.accent}06`,
-                  border:`1px solid ${T.accent}15`, marginTop:2 }}>
-                  💡 {brief.recommendation}
-                </div>
-              )}
-            </div>
-          )}
-        </>
-      )}
-    </div>
-  );
-}
-
-
-// ── 3. FLOATING ASSISTANT — persistent AI chat with full context ───────────────
-// ─── WiziAgent — Agentic assistant with real tool execution ──────────────────
-
-const TOOL_META = {
-  run_sql:           { icon:"🔍", label:"Running SQL",       color:"#6366F1" },
-  navigate:          { icon:"🧭", label:"Navigating",        color:"#8B5CF6" },
-  run_workflow:      { icon:"▶",  label:"Running workflow",  color:"#10B981" },
-  run_dataflow:      { icon:"▶",  label:"Running dataflow",  color:"#10B981" },
-  get_workflow_status:{ icon:"📋", label:"Checking workflows",color:"#6366F1" },
-  get_dataflows:     { icon:"📋", label:"Checking dataflows",color:"#6366F1" },
-  get_recent_results:{ icon:"📊", label:"Fetching results",  color:"#F59E0B" },
-  get_kpis:          { icon:"📈", label:"Fetching KPIs",     color:"#06B6D4" },
-  get_alerts:        { icon:"⚠️", label:"Checking alerts",   color:"#EF4444" },
-  get_triage_issues: { icon:"🔎", label:"Scanning issues",   color:"#EF4444" },
-  get_schema:        { icon:"🗄️", label:"Reading schema",    color:"#6B7280" },
-  create_dataflow:   { icon:"✨", label:"Creating dataflow", color:"#10B981" },
-  get_schedules:     { icon:"🕐", label:"Checking schedules",color:"#8B5CF6" },
-};
-
-// Render a tool result compactly — warm premium card
 function ToolResultBlock({ tool, result, T, WZ }) {
   WZ = WZ || WIZI_THEMES.sand;
   const meta = TOOL_META[tool] || { icon:"🔧", label:tool, color:"#7C5C3E" };
@@ -18193,10 +18460,7 @@ function useLiveChips(currentTab, currentRun) {
 
     // 5. Brief health score
     try {
-      const br = JSON.parse(sessionStorage.getItem("wz_brief")||"null");
-      if (br?.health_score !== undefined && br.health_score < 80 && chips.length < 4) {
-        chips.push(`Health is ${br.health_score}/100 — what's dragging it down?`);
-      }
+      // br removed (daily brief deprecated)
     } catch {}
 
     // 6. Tab-aware fallback chips
@@ -18357,16 +18621,11 @@ function FloatingAssistant({ currentRun, currentTab, onNavigate }) {
     const greeting = h < 12 ? "Good morning" : h < 17 ? "Good afternoon" : "Good evening";
     let ctx = "";
     try {
-      const br = JSON.parse(sessionStorage.getItem("wz_brief")||"null");
       const issues = JSON.parse(sessionStorage.getItem("wz_pendingIssues")||"[]");
       const runs = JSON.parse(localStorage.getItem("wz_wf_runhistory_v1")||"[]");
       const failed = runs.filter(r=>r.status!=="clean"&&r.status!=="pass").length;
-      if (br?.health_score !== undefined && br.health_score < 80) {
-        ctx = ` Platform health is at ${br.health_score}/100${issues.length > 0 ? ` with ${issues.length} open issue${issues.length>1?"s":""}` : ""}. Want me to investigate?`;
-      } else if (failed > 0) {
+      if (failed > 0) {
         ctx = ` I noticed ${failed} workflow run${failed>1?"s":""} failed recently. Want me to dig in?`;
-      } else if (br?.health_score >= 80) {
-        ctx = ` Platform is looking healthy at ${br.health_score}/100. What can I help with?`;
       } else {
         ctx = " I can run queries, check workflows, navigate the dashboard, and take real actions.";
       }
@@ -18443,12 +18702,7 @@ function FloatingAssistant({ currentRun, currentTab, onNavigate }) {
 
       // Dashboard brief
       try {
-        const br = JSON.parse(sessionStorage.getItem("wz_brief")||"null");
-        if (br) {
-          parts.push(`Dashboard health score: ${br.health_score??'?'}/100`);
-          if (br.critical_count) parts.push(`Critical issues: ${br.critical_count}`);
-          if (br.stale_tables?.length) parts.push(`Stale tables: ${br.stale_tables.slice(0,5).join(", ")}`);
-        }
+        // br removed (daily brief deprecated)
       } catch {}
 
       // Triage issues
@@ -18506,7 +18760,7 @@ function FloatingAssistant({ currentRun, currentTab, onNavigate }) {
       const { tool } = toolCall;
       try {
         if (tool === "run_sql") {
-          const res = await fetch(`${API}/api/query?sql=${encodeURIComponent(toolCall.sql)}`);
+          const res = await apiFetch(`${API}/api/query?sql=${encodeURIComponent(toolCall.sql)}`);
           const d = await res.json();
           if (d.error) return { tool, error: d.error };
           return { tool, columns: d.columns||[], rows: d.rows||[], row_count: (d.rows||[]).length };
@@ -18529,8 +18783,7 @@ function FloatingAssistant({ currentRun, currentTab, onNavigate }) {
           return { tool, dataflows: dfs.slice(0,15).map(d=>({ name:d.name, status:d.last_run_status||"not run", checks:d.checks?.length||0, last_run:d.last_run_at?.slice(0,16) })) };
         }
         if (tool === "get_health") {
-          const br = JSON.parse(sessionStorage.getItem("wz_brief")||"null");
-          return { tool, health_score: br?.health_score, issues: br?.issues?.length||0, stale_tables: br?.stale_tables||[] };
+          return { tool, health_score: null, issues: 0, stale_tables: [] };
         }
         if (tool === "get_schema") {
           return { tool, schema: dbSchema?.slice(0,800)||"Schema not loaded" };
@@ -18551,7 +18804,7 @@ ${dbSchema?.slice(0,600)||"mws.report, mws.orders, mws.inventory, public.tbl_amz
 
 TOOLS — call one by responding with ONLY a JSON object (no text before or after):
 {"tool":"run_sql","sql":"SELECT ..."}           — run a Redshift query
-{"tool":"navigate","tab":"triage"}              — navigate to tab (brief/triage/workflows/dataflows/results/query/scheduler/autopilot/config)
+{"tool":"navigate","tab":"triage"}              — navigate to tab (triage/workflows/dataflows/results/query/scheduler/autopilot/config)
 {"tool":"get_triage_issues"}                    — get open triage issues
 {"tool":"get_recent_runs"}                      — get recent workflow run history
 {"tool":"get_dataflows"}                        — get dataflow list and status
@@ -18578,7 +18831,7 @@ RULES:
 
     try {
       for (let turn = 0; turn < MAX_TURNS; turn++) {
-        const res = await fetch(`${API}/api/ai/chat`, {
+        const res = await apiFetch(`${API}/api/ai/chat`, {
           method:"POST", headers:{"Content-Type":"application/json"},
           body: JSON.stringify({ system: SYSTEM, messages: agentMessages, max_tokens: 400 })
         });
@@ -18663,8 +18916,7 @@ ${JSON.stringify(result, null, 2).slice(0,1200)}` });
       if (issues.length>0) return { text:`${issues.length} issue${issues.length>1?"s":""} in triage`, dot:"#F59E0B" };
     } catch {}
     try {
-      const br = JSON.parse(sessionStorage.getItem("wz_brief")||"null");
-      if (br?.health_score!==undefined) return { text:`Platform health ${br.health_score}/100`, dot:br.health_score>=80?"#22C55E":br.health_score>=60?"#F59E0B":"#EF4444" };
+      // br removed (daily brief deprecated)
     } catch {}
     return { text:"Ready", dot:"#22C55E" };
   }, [loading, WZ]);
@@ -18792,8 +19044,7 @@ ${JSON.stringify(result, null, 2).slice(0,1200)}` });
                 if (failed.length>0) nudges.push({ text:`${failed.length} workflow run${failed.length>1?"s":""} failed recently`, q:`Why did ${failed[0].workflow_name||failed[0].name||"the last workflow"} fail?`, dot:"#D97706" });
               } catch {}
               try {
-                const br = JSON.parse(sessionStorage.getItem("wz_brief")||"null");
-                if (br?.health_score!==undefined && br.health_score<75) nudges.push({ text:`Platform health at ${br.health_score}/100`, q:"What's dragging down the health score?", dot:"#D97706" });
+                // br removed (daily brief deprecated)
               } catch {}
               if (!nudges.length) return null;
               return (
@@ -18940,7 +19191,7 @@ function DemoValidationTab() {
 
   const loadConfig = React.useCallback(async () => {
     try {
-      const r = await fetch(`${API}/api/demo/config`);
+      const r = await apiFetch(`${API}/api/demo/config`);
       const d = await r.json();
       if (d.tables) setTables(d.tables);
       if (d.account_ids) setAccountIds(d.account_ids);
@@ -18949,7 +19200,7 @@ function DemoValidationTab() {
 
   const loadMwsTables = React.useCallback(async () => {
     try {
-      const r = await fetch(`${API}/api/demo/mws-tables`);
+      const r = await apiFetch(`${API}/api/demo/mws-tables`);
       const d = await r.json();
       if (d.tables) setMwsTables(d.tables);
     } catch(e) {}
@@ -18960,7 +19211,7 @@ function DemoValidationTab() {
   const saveConfig = async () => {
     setConfigSaving(true);
     try {
-      await fetch(`${API}/api/demo/config`, {
+      await apiFetch(`${API}/api/demo/config`, {
         method:"POST", headers:{"Content-Type":"application/json"},
         body:JSON.stringify({ tables, account_ids:accountIds })
       });
@@ -18977,7 +19228,7 @@ function DemoValidationTab() {
       const found = mwsTables.find(t=>t.table===tdef.table);
       const cols  = found?.columns ||
         (dbSchema ? dbSchema.split(";").find(s=>s.includes(tdef.table))?.match(/\(([^)]+)\)/)?.[1]?.split(",").map(c=>c.trim()) : []) || [];
-      const r = await fetch(`${API}/api/demo/ai-suggest`, {
+      const r = await apiFetch(`${API}/api/demo/ai-suggest`, {
         method:"POST", headers:{"Content-Type":"application/json"},
         body:JSON.stringify({ table:tdef.table, columns:cols })
       });
@@ -19013,7 +19264,7 @@ function DemoValidationTab() {
   const run = async () => {
     setLoading(true);
     try {
-      const r = await fetch(`${API}/api/demo/check`);
+      const r = await apiFetch(`${API}/api/demo/check`);
       const d = await r.json();
       setResult(d);
     } catch(e) {}
@@ -19549,7 +19800,7 @@ function ResultsTab({ onNavigate }) {
       setCompareLoading(false); return;
     }
     try {
-      const res = await fetch(`${API}/api/ai/chat`, {
+      const res = await apiFetch(`${API}/api/ai/chat`, {
         method:"POST", headers:{"Content-Type":"application/json"},
         body:JSON.stringify({
           system:"You are a data quality analyst. Compare two workflow runs in 2 sentences. Mention what's new, what's fixed, and what's still failing. Be specific.",
@@ -19569,7 +19820,7 @@ function ResultsTab({ onNavigate }) {
     setAiInsights(p=>({...p,[run.run_id]:{loading:true}}));
     const failed = (run.check_results||[]).filter(c=>!c.passed);
     try {
-      const res = await fetch(`${API}/api/ai/chat`, {
+      const res = await apiFetch(`${API}/api/ai/chat`, {
         method:"POST", headers:{"Content-Type":"application/json"},
         body:JSON.stringify({
           system:"You are a data quality analyst. Given a workflow run result, write ONE concise sentence (max 20 words) explaining the likely root cause and what to check. Be specific, not generic.",
@@ -19588,7 +19839,7 @@ function ResultsTab({ onNavigate }) {
   const load = async () => {
     setLoading(true);
     try {
-      const res = await fetch(`${API}/api/workflow-results/recent?limit=100`);
+      const res = await apiFetch(`${API}/api/workflow-results/recent?limit=100`);
       const d   = await res.json();
       if (Array.isArray(d.runs)) setRuns(d.runs);
     } catch(e) {}
@@ -19610,6 +19861,39 @@ function ResultsTab({ onNavigate }) {
         if (run && chk) { setSelected({run, check:chk}); setView("detail"); }
       }
     }
+  }, [runs]);
+
+  // ── Sparkline trend data — last 30 runs grouped by day ────────────────────
+  const trendData = React.useMemo(() => {
+    const byDay = {};
+    runs.slice(0,100).forEach(r => {
+      const day = (r.started_at||"").slice(0,10);
+      if (!day) return;
+      if (!byDay[day]) byDay[day] = { day, total:0, failed:0, clean:0 };
+      byDay[day].total++;
+      if (r.status==="clean") byDay[day].clean++;
+      else byDay[day].failed++;
+    });
+    return Object.values(byDay).sort((a,b)=>a.day>b.day?1:-1).slice(-14);
+  }, [runs]);
+
+  // ── Per-workflow pass rate ─────────────────────────────────────────────────
+  const wfStats = React.useMemo(() => {
+    const m = {};
+    runs.forEach(r => {
+      if (!r.workflow_name) return;
+      if (!m[r.workflow_name]) m[r.workflow_name] = { name:r.workflow_name, total:0, clean:0, lastRun:null, lastStatus:null };
+      m[r.workflow_name].total++;
+      if (r.status==="clean") m[r.workflow_name].clean++;
+      if (!m[r.workflow_name].lastRun || r.started_at > m[r.workflow_name].lastRun) {
+        m[r.workflow_name].lastRun = r.started_at;
+        m[r.workflow_name].lastStatus = r.status;
+      }
+    });
+    return Object.values(m).map(w => ({
+      ...w,
+      passRate: w.total ? Math.round(w.clean/w.total*100) : 0
+    })).sort((a,b)=>a.passRate-b.passRate);
   }, [runs]);
 
   if (view==="detail" && selected && selected.check) return (
@@ -19658,38 +19942,6 @@ function ResultsTab({ onNavigate }) {
     URL.revokeObjectURL(url);
   };
 
-  // ── Sparkline trend data — last 30 runs grouped by day ────────────────────
-  const trendData = React.useMemo(() => {
-    const byDay = {};
-    runs.slice(0,100).forEach(r => {
-      const day = (r.started_at||"").slice(0,10);
-      if (!day) return;
-      if (!byDay[day]) byDay[day] = { day, total:0, failed:0, clean:0 };
-      byDay[day].total++;
-      if (r.status==="clean") byDay[day].clean++;
-      else byDay[day].failed++;
-    });
-    return Object.values(byDay).sort((a,b)=>a.day>b.day?1:-1).slice(-14);
-  }, [runs]);
-
-  // ── Per-workflow pass rate ─────────────────────────────────────────────────
-  const wfStats = React.useMemo(() => {
-    const m = {};
-    runs.forEach(r => {
-      if (!r.workflow_name) return;
-      if (!m[r.workflow_name]) m[r.workflow_name] = { name:r.workflow_name, total:0, clean:0, lastRun:null, lastStatus:null };
-      m[r.workflow_name].total++;
-      if (r.status==="clean") m[r.workflow_name].clean++;
-      if (!m[r.workflow_name].lastRun || r.started_at > m[r.workflow_name].lastRun) {
-        m[r.workflow_name].lastRun = r.started_at;
-        m[r.workflow_name].lastStatus = r.status;
-      }
-    });
-    return Object.values(m).map(w => ({
-      ...w,
-      passRate: w.total ? Math.round(w.clean/w.total*100) : 0
-    })).sort((a,b)=>a.passRate-b.passRate);
-  }, [runs]);
 
   // ── Inline sparkline SVG ───────────────────────────────────────────────────
   const MiniSparkline = ({ data, color }) => {
@@ -20125,7 +20377,7 @@ function ResultDetail({ run, check, allChecks, onBack, onSelectCheck, onNavigate
     if (stakeholderLoading) return;
     setStakeholderLoading(true); setStakeholderMsg(null);
     try {
-      const res = await fetch(`${API}/api/ai/chat`, {
+      const res = await apiFetch(`${API}/api/ai/chat`, {
         method:"POST", headers:{"Content-Type":"application/json"},
         body:JSON.stringify({
           system:"You write brief, non-technical data issue explanations for business stakeholders. 2-3 sentences max. Avoid SQL jargon. Focus on business impact and whether action is needed.",
@@ -20234,7 +20486,7 @@ function ResultDetail({ run, check, allChecks, onBack, onSelectCheck, onNavigate
   // Share to Slack
   const shareSlack = async () => {
     setSharing(true);
-    const res = await fetch(`${API}/api/workflow-results/share-slack`, {
+    const res = await apiFetch(`${API}/api/workflow-results/share-slack`, {
       method:"POST", headers:{"Content-Type":"application/json"},
       body:JSON.stringify({
         run_id: run.run_id, check_name: check.name,
@@ -20252,7 +20504,7 @@ function ResultDetail({ run, check, allChecks, onBack, onSelectCheck, onNavigate
   // Save note
   const saveNote = async () => {
     setNoteSave(true);
-    await fetch(`${API}/api/workflow-results/note`, {
+    await apiFetch(`${API}/api/workflow-results/note`, {
       method:"POST", headers:{"Content-Type":"application/json"},
       body:JSON.stringify({ run_id:run.run_id, check_id:check.id||check.name, note })
     }).catch(()=>{});
@@ -20269,7 +20521,7 @@ function ResultDetail({ run, check, allChecks, onBack, onSelectCheck, onNavigate
     if (runbookLoading) return;
     setRunbookLoading(true); setShowRunbook(true);
     try {
-      const res = await fetch(`${API}/api/runbook/suggest`, {
+      const res = await apiFetch(`${API}/api/runbook/suggest`, {
         method:"POST", headers:{"Content-Type":"application/json"},
         body: JSON.stringify({
           failed_checks: check.passed ? [] : [check.name],
@@ -21040,6 +21292,39 @@ function DataflowRow({ df, onStar, onOpen, onDelete, onDuplicate, onMove, folder
 
 
 // ─── DataflowDetailModal ──────────────────────────────────────────────────────
+function AiRunCommentary({ T, df, runResult, failCount }) {
+  const [commentary, setCommentary] = React.useState(null);
+  const [commLoad,   setCommLoad]   = React.useState(false);
+  React.useEffect(()=>{
+    if (!runResult || commentary) return;
+    if (failCount === 0) { setCommentary("✓ All checks passed — dataflow is healthy."); return; }
+    setCommLoad(true);
+    const fails = (runResult.results||[]).filter(r=>r.status!=="pass");
+    apiFetch(`${API}/api/ai/chat`, {
+      method:"POST", headers:{"Content-Type":"application/json"},
+      body:JSON.stringify({
+        system:"You are a data quality analyst. In 1-2 sentences explain what failed and the likely cause. Be specific, no jargon.",
+        messages:[{role:"user", content:`Dataflow "${df?.name}" failed ${failCount}/${runResult.results?.length} checks: ${(runResult.results||[]).filter(f=>f.status!=="pass").map(f=>`${f.name}(${f.row_count||0} rows)`).join(", ")}`}],
+        max_tokens:80
+      })
+    }).then(r=>r.json()).then(d=>{
+      setCommentary(d?.content?.[0]?.text?.trim()||null);
+      setCommLoad(false);
+    }).catch(()=>setCommLoad(false));
+  }, [runResult]);
+  if (!commentary && !commLoad) return null;
+  return (
+    <div style={{ padding:"8px 12px", borderRadius:8, marginBottom:12,
+      background:failCount===0?`${T.green}06`:`${T.accent}06`,
+      border:`1px solid ${failCount===0?T.green:T.accent}20`,
+      fontSize:11, color:T.text2, display:"flex", gap:6, alignItems:"flex-start" }}>
+      {commLoad?<><Spinner size={9}/><span style={{color:T.muted}}>Analysing…</span></>
+        :<><span style={{flexShrink:0}}>✨</span><span>{commentary}</span></>}
+    </div>
+  );
+}
+
+
 function DataflowDetailModal({ df: dfProp, onClose, onSave, onRun, T }) {
   const [df, setDf]         = React.useState(dfProp);
   const [tab, setTab]       = React.useState("overview"); // overview | checks | history
@@ -21056,7 +21341,7 @@ function DataflowDetailModal({ df: dfProp, onClose, onSave, onRun, T }) {
     if (!aiCheckInput.trim()||aiCheckLoading) return;
     setAiCheckLoading(true);
     try {
-      const res = await fetch(`${API}/api/ai/chat`, {
+      const res = await apiFetch(`${API}/api/ai/chat`, {
         method:"POST", headers:{"Content-Type":"application/json"},
         body:JSON.stringify({
           system:`Generate SQL data quality checks for the dataflow "${df.name}".
@@ -21429,37 +21714,7 @@ Rules: use only real columns, return actual rows not just counts, max 3 checks.`
                     </div>
                   )}
                   {/* AI run commentary — 80 tokens, fires automatically */}
-                  {(() => {
-                    const [commentary, setCommentary] = React.useState(null);
-                    const [commLoad,   setCommLoad]   = React.useState(false);
-                    React.useEffect(()=>{
-                      if (!runResult || commentary) return;
-                      if (failCount === 0) { setCommentary("✓ All checks passed — dataflow is healthy."); return; }
-                      setCommLoad(true);
-                      const fails = (runResult.results||[]).filter(r=>r.status!=="pass");
-                      fetch(`${API}/api/ai/chat`, {
-                        method:"POST", headers:{"Content-Type":"application/json"},
-                        body:JSON.stringify({
-                          system:"You are a data quality analyst. In 1-2 sentences explain what failed and the likely cause. Be specific, no jargon.",
-                          messages:[{role:"user", content:`Dataflow "${df.name}" failed ${failCount}/${runResult.results?.length} checks: ${fails.map(f=>`${f.name}(${f.row_count||0} rows)`).join(", ")}`}],
-                          max_tokens:80
-                        })
-                      }).then(r=>r.json()).then(d=>{
-                        setCommentary(d?.content?.[0]?.text?.trim()||null);
-                        setCommLoad(false);
-                      }).catch(()=>setCommLoad(false));
-                    }, [runResult]);
-                    if (!commentary && !commLoad) return null;
-                    return (
-                      <div style={{ padding:"8px 12px", borderRadius:8, marginBottom:12,
-                        background:failCount===0?`${T.green}06`:`${T.accent}06`,
-                        border:`1px solid ${failCount===0?T.green:T.accent}20`,
-                        fontSize:11, color:T.text2, display:"flex", gap:6, alignItems:"flex-start" }}>
-                        {commLoad?<><Spinner size={9}/><span style={{color:T.muted}}>Analysing…</span></>
-                          :<><span style={{flexShrink:0}}>✨</span><span>{commentary}</span></>}
-                      </div>
-                    );
-                  })()}
+                  <AiRunCommentary T={T} df={df} runResult={runResult} failCount={failCount} />
                   {/* Results */}
                   {(runResult.results||[]).map((r,i) => (
                     <div key={r.name||i} style={{ padding:"10px 14px", borderRadius:8,
@@ -21507,6 +21762,8 @@ function DataflowFormModal({ initial, folders, onSave, onClose, T }) {
     owner:"admin", db_key:"default",
     checks:[{ name:"", sql:"", pass_condition:"rows = 0", severity:"high" }],  // sql intentionally blank
   };
+  const [validating, setValidating] = React.useState(false);
+  const [valResult,  setValResult]  = React.useState(null);
   const [form, setForm]   = React.useState(initial ? { ...blank, ...initial,
     tags: Array.isArray(initial.tags) ? initial.tags : [] } : blank);
   const [tagInput, setTagInput] = React.useState((initial?.tags||[]).join(", "));
@@ -21522,7 +21779,7 @@ function DataflowFormModal({ initial, folders, onSave, onClose, T }) {
     if (!aiInput.trim() || aiLoading) return;
     setAiLoading(true);
     try {
-      const res = await fetch(`${API}/api/ai/chat`, {
+      const res = await apiFetch(`${API}/api/ai/chat`, {
         method:"POST", headers:{"Content-Type":"application/json"},
         body:JSON.stringify({
           system:`You write Redshift SQL data quality checks for a dataflow.
@@ -21563,7 +21820,7 @@ Respond ONLY with a JSON array (no markdown):
     if (!sql.trim()) return;
     setTestResults(p=>({...p,[i]:{loading:true}}));
     try {
-      const res = await fetch(`${API}/api/query?sql=${encodeURIComponent(sql + " LIMIT 10")}`);
+      const res = await apiFetch(`${API}/api/query?sql=${encodeURIComponent(sql + " LIMIT 10")}`);
       const d   = await res.json();
       if (d.error) setTestResults(p=>({...p,[i]:{error:d.error}}));
       else setTestResults(p=>({...p,[i]:{rows:d.rows||[],cols:d.columns||[]}}));
@@ -21921,7 +22178,7 @@ function SuggestChecksPanel({ dataflows, dbSchema, onSave, onClose, T }) {
       const depMap = (() => { try { return JSON.parse(localStorage.getItem("wz_dep_map_v1")||"{}"); } catch { return {}; } })();
       const existingNames = dataflows.flatMap(d=>(d.checks||[]).map(c=>c.name));
 
-      const res = await fetch(`${API}/api/ai/chat`, {
+      const res = await apiFetch(`${API}/api/ai/chat`, {
         method:"POST", headers:{"Content-Type":"application/json"},
         body: JSON.stringify({
           system:`You are a data quality engineer. Analyse failure history and suggest NEW checks not already covered.
@@ -22093,7 +22350,7 @@ function AiDataflowAssistant({ dataflows, dbSchema, onSave, onClose, T }) {
     ).join("\n");
 
     try {
-      const res = await fetch(`${API}/api/ai/chat`, {
+      const res = await apiFetch(`${API}/api/ai/chat`, {
         method:"POST", headers:{"Content-Type":"application/json"},
         body:JSON.stringify({
           system:`You manage data quality dataflows for a Redshift ecommerce analytics platform.
@@ -22151,7 +22408,7 @@ pass_condition: "rows=0"|"rows>0"|"value>N". No markdown.`,
           } else if (action.type==="delete") {
             const existing = dataflows.find(d=>d.id===action.dataflow_id||
               d.name.toLowerCase()===String(action.dataflow_name||"").toLowerCase());
-            if (existing && confirm(`Delete dataflow "${existing.name}"?`)) {
+            if (existing && window.confirm(`Delete dataflow "${existing.name}"?`)) {
               // handled by parent via save with deleted flag — just notify
               performed.push({type:"delete_requested",name:existing.name});
             }
@@ -22281,8 +22538,10 @@ pass_condition: "rows=0"|"rows>0"|"value>N". No markdown.`,
 }
 
 
+
 function DataflowsTab({ onNavigate }) {
   const T = useT();
+  const dbSchema = useSchema();
 
   // ── State ─────────────────────────────────────────────────────────────────
   const [dataflows, setDataflows] = useLocal(DF_STORAGE_KEY, []);
@@ -22312,7 +22571,7 @@ function DataflowsTab({ onNavigate }) {
   };
 
   const bulkDelete = () => {
-    if (!confirm(`Delete ${selectedIds.size} dataflows?`)) return;
+    if (!window.confirm(`Delete ${selectedIds.size} dataflows?`)) return;
     selectedIds.forEach(id => { deleteDataflow(id); });
     setSelectedIds(new Set());
   };
@@ -22407,7 +22666,7 @@ function DataflowsTab({ onNavigate }) {
     setFolders(p => p.map(f => f.id === id ? {...f, name} : f));
   };
   const deleteFolder = (id) => {
-    if (!confirm("Delete this folder? Dataflows inside will stay but become unorganized.")) return;
+    if (!window.confirm("Delete this folder? Dataflows inside will stay but become unorganized.")) return;
     setFolders(p => p.filter(f => f.id !== id && f.parent !== id));
     setDataflows(p => p.map(d => d.folder_id === id ? {...d, folder_id:"f_root"} : d));
     if (selectedFolder === id) setSelectedFolder(null);
@@ -22422,7 +22681,7 @@ function DataflowsTab({ onNavigate }) {
     setFormModal(null);
     // Also sync to backend if available
     try {
-      await fetch(`${API}/api/dataflows`, {
+      await apiFetch(`${API}/api/dataflows`, {
         method:"POST", headers:{"Content-Type":"application/json"},
         body:JSON.stringify(df)
       });
@@ -22430,9 +22689,9 @@ function DataflowsTab({ onNavigate }) {
   };
 
   const deleteDataflow = (id) => {
-    if (!confirm("Delete this dataflow?")) return;
+    if (!window.confirm("Delete this dataflow?")) return;
     setDataflows(p => p.filter(d => d.id !== id));
-    fetch(`${API}/api/dataflows/${id}`, { method:"DELETE" }).catch(()=>{});
+    apiFetch(`${API}/api/dataflows/${id}`, { method:"DELETE" }).catch(()=>{});
   };
 
   const starDataflow = (id) => {
@@ -22456,7 +22715,7 @@ function DataflowsTab({ onNavigate }) {
 
   const runDataflow = async (df) => {
     try {
-      const res = await fetch(`${API}/api/monitor/run-checks`, {
+      const res = await apiFetch(`${API}/api/monitor/run-checks`, {
         method:"POST", headers:{"Content-Type":"application/json"},
         body: JSON.stringify({ checks: df.checks || [] })
       });
@@ -23131,6 +23390,9 @@ function ScheduleFormModal({ initial, workflows, dataflows, onSave, onClose, onR
     workflow_ids:[], dataflow_ids:[], owner:"admin",
     enabled:true, slack_channel:"", notes:"",
   };
+  const [nlInput,    setNlInput]   = React.useState("");
+  const [nlLoading,  setNlLoading] = React.useState(false);
+  const [nlMsg,      setNlMsg]     = React.useState("");
   const [form, setForm] = React.useState(initial ? {...blank,...initial} : blank);
   const [saving, setSaving] = React.useState(false);
   const field = (k,v) => setForm(p=>({...p,[k]:v}));
@@ -23209,14 +23471,11 @@ function ScheduleFormModal({ initial, workflows, dataflows, onSave, onClose, onR
 
           {/* ── NL SLA Contract input ── */}
           {(() => {
-            const [nlInput,    setNlInput]   = React.useState("");
-            const [nlLoading,  setNlLoading] = React.useState(false);
-            const [nlMsg,      setNlMsg]     = React.useState("");
             const parseNl = async () => {
               if (!nlInput.trim() || nlLoading) return;
               setNlLoading(true); setNlMsg("");
               try {
-                const res = await fetch(`${API}/api/ai/chat`, {
+                const res = await apiFetch(`${API}/api/ai/chat`, {
                   method:"POST", headers:{"Content-Type":"application/json"},
                   body: JSON.stringify({
                     system:`You parse natural language SLA contracts into a JSON schedule config.
@@ -23524,14 +23783,14 @@ function SchedulerTab({ onNavigate }) {
   const loadAll = React.useCallback(async () => {
     // 1. Workflows — from backend (source of truth, includes newly created ones)
     try {
-      const wfRes  = await fetch(`${API}/api/custom-workflows`);
+      const wfRes  = await apiFetch(`${API}/api/custom-workflows`);
       const wfData = await wfRes.json();
       if (Array.isArray(wfData)) setWorkflows(wfData);
     } catch(e) {}
 
     // 2. Dataflows — try backend first, fall back to localStorage
     try {
-      const dfRes  = await fetch(`${API}/api/dataflows`);
+      const dfRes  = await apiFetch(`${API}/api/dataflows`);
       const dfData = await dfRes.json();
       if (Array.isArray(dfData)) {
         setDataflows(dfData);   // also updates localStorage via useLocal setter
@@ -23542,7 +23801,7 @@ function SchedulerTab({ onNavigate }) {
 
     // 3. Schedules — sync from backend (so multiple sessions share state)
     try {
-      const schRes  = await fetch(`${API}/api/schedules`);
+      const schRes  = await apiFetch(`${API}/api/schedules`);
       const schData = await schRes.json();
       if (Array.isArray(schData) && schData.length > 0) {
         // Merge: backend wins for any overlapping ids
@@ -23572,7 +23831,7 @@ function SchedulerTab({ onNavigate }) {
     setFormModal(null);
     // Persist to backend
     try {
-      await fetch(`${API}/api/schedules`, {
+      await apiFetch(`${API}/api/schedules`, {
         method:"POST", headers:{"Content-Type":"application/json"},
         body:JSON.stringify(sch)
       });
@@ -23582,9 +23841,9 @@ function SchedulerTab({ onNavigate }) {
   };
 
   const deleteSchedule = (id) => {
-    if (!confirm("Delete this schedule?")) return;
+    if (!window.confirm("Delete this schedule?")) return;
     setSchedules(p=>p.filter(s=>s.id!==id));
-    fetch(`${API}/api/schedules/${id}`, {method:"DELETE"}).catch(()=>{});
+    apiFetch(`${API}/api/schedules/${id}`, {method:"DELETE"}).catch(()=>{});
   };
 
   const toggleEnabled = (id) => {
@@ -23600,14 +23859,14 @@ function SchedulerTab({ onNavigate }) {
     try {
       for (const wfId of (sch.workflow_ids||[])) {
         try {
-          const r = await fetch(`${API}/api/custom-workflows/${wfId}/run/v2`, {method:"POST"});
+          const r = await apiFetch(`${API}/api/custom-workflows/${wfId}/run/v2`, {method:"POST"});
           const d = await r.json();
           results.push({type:"workflow", id:wfId, status:d.overall||d.status, name:d.workflow_name||wfId});
         } catch(e) { results.push({type:"workflow", id:wfId, status:"error"}); }
       }
       for (const dfId of (sch.dataflow_ids||[])) {
         try {
-          const r = await fetch(`${API}/api/dataflows/${dfId}/run`, {method:"POST"});
+          const r = await apiFetch(`${API}/api/dataflows/${dfId}/run`, {method:"POST"});
           const d = await r.json();
           results.push({type:"dataflow", id:dfId, status:d.overall||d.status, name:dfId});
         } catch(e) { results.push({type:"dataflow", id:dfId, status:"error"}); }
@@ -24196,7 +24455,7 @@ function OnboardingWizard({ onComplete, T }) {
   const generate = async () => {
     setStep(4); setLoading(true);
     try {
-      const res = await fetch(`${API}/api/ai/chat`, {
+      const res = await apiFetch(`${API}/api/ai/chat`, {
         method:"POST", headers:{"Content-Type":"application/json"},
         body:JSON.stringify({
           system:`You are setting up a data quality dashboard for an ecommerce analytics team. Based on their answers, suggest a starter workflow configuration.
@@ -24231,7 +24490,7 @@ Rules: 2-3 workflows max, 2-3 checks each, use only real columns, never COUNT(*)
     if (aiResult?.workflows?.length) {
       for (const wf of aiResult.workflows) {
         try {
-          await fetch(`${API}/api/custom-workflows/save/v2`, {
+          await apiFetch(`${API}/api/custom-workflows/save/v2`, {
             method:"POST", headers:{"Content-Type":"application/json"},
             body:JSON.stringify({
               ...wf, id:`wizard_${Date.now().toString(36)}_${Math.random().toString(36).slice(2,5)}`,
@@ -24577,7 +24836,7 @@ function AutoPilotTab({ onNavigate }) {
         lastScan: hist.find(h => h.pipeline_id === p.id),
       }));
       const ctx = `Pipelines: ${JSON.stringify(pipeStatus)}. Recent scans: ${JSON.stringify(recentScans)}`;
-      const r = await fetch(`${API}/api/ai/chat`, {
+      const r = await apiFetch(`${API}/api/ai/chat`, {
         method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           system: `You are an AI ops assistant for a data pipeline monitoring dashboard. 
@@ -24632,7 +24891,7 @@ Be direct. No markdown. No bullet points.`,
         (h.issues||[]).forEach(i=>{ if(!acc.includes(i.name)) acc.push(i.name); }); return acc;
       },[]).length;
 
-      const r = await fetch(`${API}/api/ai/chat`,{
+      const r = await apiFetch(`${API}/api/ai/chat`,{
         method:"POST",headers:{"Content-Type":"application/json"},
         body:JSON.stringify({
           system:`You are writing a data health status report for a non-technical business stakeholder (e.g. a VP or account manager).
@@ -24670,7 +24929,7 @@ Keep the whole report under 120 words. Be reassuring but honest.`,
   const aiCall = async (agent, userMsg, maxTokens=150) => {
     if (!agent?.enabled) return null;
     try {
-      const r = await fetch(`${API}/api/ai/chat`,{
+      const r = await apiFetch(`${API}/api/ai/chat`,{
         method:"POST", headers:{"Content-Type":"application/json"},
         body:JSON.stringify({system:agent.system_prompt,messages:[{role:"user",content:userMsg}],max_tokens:maxTokens,temperature:0.3})
       });
@@ -24697,8 +24956,7 @@ Keep the whole report under 120 words. Be reassuring but honest.`,
       addNotif(`⚡ Circuit breaker: "${pipeline.name}" auto-disabled after ${CIRCUIT_THRESHOLD} consecutive failures`,"error",{persistent:true});
       // Slack alert
       const slackUrl = pipeline.slack_channel||(localStorage.getItem("wz_slack")||"");
-      if (slackUrl) fetch(slackUrl,{method:"POST",headers:{"Content-Type":"application/json"},
-        body:JSON.stringify({text:`🔴 *Circuit Breaker Tripped* — Pipeline *${pipeline.name}* has been auto-disabled after ${CIRCUIT_THRESHOLD} consecutive failing scans. Manual review required.`})}).catch(()=>{});
+      if (slackUrl) slackNotify({ text: `🔴 *Circuit Breaker Tripped* — Pipeline *${pipeline.name}* has been auto-disabled after ${CIRCUIT_THRESHOLD} consecutive failing scans. Manual review required.`, webhookUrl: slackUrl });
       return; // abort run
     }
     setRunning(p=>({...p,[pid]:true}));
@@ -24732,7 +24990,7 @@ Keep the whole report under 120 words. Be reassuring but honest.`,
             continue;
           }
           try {
-            const r = await fetch(`${API}/api/query?sql=${encodeURIComponent(chk.sql)}`);
+            const r = await apiFetch(`${API}/api/query?sql=${encodeURIComponent(chk.sql)}`);
             const d = await r.json();
             const val = parseInt(Object.values(d.rows?.[0]||{})[0]||"0");
             const failed = !apEvalCondition(val, chk.pass_condition);
@@ -24746,7 +25004,7 @@ Keep the whole report under 120 words. Be reassuring but honest.`,
         }
         // Proactive anomalies
         try {
-          const r = await fetch(`${API}/api/anomaly/proactive`);
+          const r = await apiFetch(`${API}/api/anomaly/proactive`);
           const d = await r.json();
           (d.alerts||[]).forEach(a=>{
             issues.push({id:`anom_${a.label}`,name:`Anomaly: ${a.label}`,sql:"",pass_condition:"rows = 0",severity:"high",actual_rows:1,anomaly:a});
@@ -24812,7 +25070,7 @@ Keep the whole report under 120 words. Be reassuring but honest.`,
             setAgentDecisions(p=>({...p,[pid]:[...(p[pid]||[]),{agent:agent.name,issue:issue.name,action:action.name,confidence:action.confidence,status:"dry_run"}]}));
           } else {
             try {
-              const r = await fetch(`${API}/api/query?sql=${encodeURIComponent(action.fix_sql)}`);
+              const r = await apiFetch(`${API}/api/query?sql=${encodeURIComponent(action.fix_sql)}`);
               const d = await r.json();
               if (!d.error) {
                 log(agent.name,`✅ Fixed: ${action.name} (${action.confidence}%)`,"success");
@@ -24824,8 +25082,7 @@ Keep the whole report under 120 words. Be reassuring but honest.`,
                   confidence: action.confidence, source:"autopilot"
                 });
                 const slackUrl = pipeline.slack_channel || (globalSlack?localStorage.getItem("wz_slack")||"":"");
-                if (slackUrl) fetch(slackUrl,{method:"POST",headers:{"Content-Type":"application/json"},
-                  body:JSON.stringify({text:`🤖 *${pipeline.name}* auto-fixed: *${action.name}*`})}).catch(()=>{});
+                if (slackUrl) slackNotify({ text: `🤖 *${pipeline.name}* auto-fixed: *${action.name}*`, webhookUrl: slackUrl });
               }
             } catch(e){
               log(agent.name,`✗ Fix failed: ${action.name}`,"error");
@@ -24842,7 +25099,7 @@ Keep the whole report under 120 words. Be reassuring but honest.`,
         for (const fix of fixResults.filter(f=>f.success)) {
           await new Promise(r=>setTimeout(r,800));
           try {
-            const r = await fetch(`${API}/api/query?sql=${encodeURIComponent(fix.issue.sql)}`);
+            const r = await apiFetch(`${API}/api/query?sql=${encodeURIComponent(fix.issue.sql)}`);
             const d = await r.json();
             const val = parseInt(Object.values(d.rows?.[0]||{})[0]||"0");
             const resolved = apEvalCondition(val, fix.issue.pass_condition);
@@ -24852,7 +25109,7 @@ Keep the whole report under 120 words. Be reassuring but honest.`,
             if (!resolved && fix.action?.rollback_sql && !pipeline.dry_run) {
               log(agent.name,`↩ Rolling back: ${fix.action.name}…`,"warn");
               try {
-                const rb = await fetch(`${API}/api/query?sql=${encodeURIComponent(fix.action.rollback_sql)}`);
+                const rb = await apiFetch(`${API}/api/query?sql=${encodeURIComponent(fix.action.rollback_sql)}`);
                 const rbData = await rb.json();
                 if (!rbData.error) {
                   log(agent.name,`↩ Rollback applied: ${fix.action.name}`,"warn");
@@ -24867,8 +25124,7 @@ Keep the whole report under 120 words. Be reassuring but honest.`,
                   ]}));
                   // Slack alert for rollback
                   const slackUrl = pipeline.slack_channel||(globalSlack?localStorage.getItem("wz_slack")||"":"");
-                  if (slackUrl) fetch(slackUrl,{method:"POST",headers:{"Content-Type":"application/json"},
-                    body:JSON.stringify({text:`↩ *${pipeline.name}* rolled back: *${fix.action.name}* — fix did not resolve "${fix.issue.name}"`})}).catch(()=>{});
+                  if (slackUrl) slackNotify({ text: `↩ *${pipeline.name}* rolled back: *${fix.action.name}* — fix did not resolve "${fix.issue.name}"`, webhookUrl: slackUrl });
                 } else {
                   log(agent.name,`✗ Rollback failed: ${rbData.error}`,"error");
                 }
@@ -24900,8 +25156,7 @@ Keep the whole report under 120 words. Be reassuring but honest.`,
         if (report) {
           log(agent.name, report.slice(0,120)+"…", "info");
           const slackUrl = pipeline.slack_channel || (globalSlack?localStorage.getItem("wz_slack")||"":"");
-          if (slackUrl) fetch(slackUrl,{method:"POST",headers:{"Content-Type":"application/json"},
-            body:JSON.stringify({text:`📊 *${pipeline.name} Report*\n${report}`})}).catch(()=>{});
+          if (slackUrl) slackNotify({ text: `📊 *${pipeline.name} Report*\n${report}`, webhookUrl: slackUrl });
         }
       }
 
@@ -24913,8 +25168,7 @@ Keep the whole report under 120 words. Be reassuring but honest.`,
           if (alert) {
             log(agent.name,`🚨 Alert sent: ${alert.slice(0,80)}`,"warn");
             const slackUrl = pipeline.slack_channel || (globalSlack?localStorage.getItem("wz_slack")||"":"");
-            if (slackUrl) fetch(slackUrl,{method:"POST",headers:{"Content-Type":"application/json"},
-              body:JSON.stringify({text:`🚨 *ALERT — ${pipeline.name}*\n${alert}`})}).catch(()=>{});
+            if (slackUrl) slackNotify({ text: `🚨 *ALERT — ${pipeline.name}*\n${alert}`, webhookUrl: slackUrl });
           }
         } else {
           log(agent.name,"✓ No critical issues","success");
@@ -24948,7 +25202,7 @@ Keep the whole report under 120 words. Be reassuring but honest.`,
         const memCtx = mem.slice(0,5).map(m=>`${m.ts?.slice(0,10)}: ${m.check_name} → ${m.fix_applied||"no fix"} → ${m.resolved?"resolved":"unresolved"}`).join(". ");
         const issueCtx = issues.map(i=>`"${i.name}" (${i.actual_rows} rows, ${i.severity})`).join(", ")||"none";
         const fixCtx   = fixResults.filter(f=>f.success).map(f=>`"${f.action?.name}"`).join(", ")||"none";
-        const r = await fetch(`${API}/api/ai/chat`,{
+        const r = await apiFetch(`${API}/api/ai/chat`,{
           method:"POST",headers:{"Content-Type":"application/json"},
           body:JSON.stringify({
             system:`You are a data ops assistant. After a pipeline scan, write a SHORT (2-3 sentence) plain-English explanation of what happened.
@@ -25000,7 +25254,7 @@ If all clean, say so briefly. No bullet points. No markdown. Be specific and dir
           `Run ${pipeHist.length-i}: ${(h.issues?.length||0)===0?"clean":`${h.issues.length} issues (${h.issues.map(i=>i.name).join(",")})`}`
         ).join("; ");
 
-        const r = await fetch(`${API}/api/ai/chat`,{
+        const r = await apiFetch(`${API}/api/ai/chat`,{
           method:"POST",headers:{"Content-Type":"application/json"},
           body:JSON.stringify({
             system:`You are a predictive data ops assistant. Given a pipeline's recent run history, predict what will happen next.
@@ -25049,7 +25303,7 @@ Be specific and direct. No bullet points. No markdown. Start with a timeframe li
 
       // Ask AI for shared root cause hypothesis
       try {
-        const r = await fetch(`${API}/api/ai/chat`,{
+        const r = await apiFetch(`${API}/api/ai/chat`,{
           method:"POST",headers:{"Content-Type":"application/json"},
           body:JSON.stringify({
             system:`You are a data ops assistant analyzing correlated pipeline failures. Given multiple pipelines that failed around the same time, hypothesize a shared root cause in 1-2 sentences. Be specific. No bullet points. No markdown.`,
@@ -26578,7 +26832,7 @@ Be specific and direct. No bullet points. No markdown. Start with a timeframe li
           if (!nlBuilderText.trim()||nlBuilderLoading) return;
           setNlBuilderLoading(true); setNlBuilderResult(null);
           try {
-            const r = await fetch(`${API}/api/ai/chat`,{
+            const r = await apiFetch(`${API}/api/ai/chat`,{
               method:"POST",headers:{"Content-Type":"application/json"},
               body:JSON.stringify({
                 system:`You are an AI pipeline builder for a data quality monitoring system. Given a plain-English description, generate a pipeline config JSON.
@@ -26841,1390 +27095,3485 @@ function useAiUsage() {
 }
 
 
-// ── DataIngestionTab — autonomous operator model ──────────────────────────────
-const INGESTION_MOCK = {
-  downloader: {
-    status:"healthy", summary:"12 / 12 accounts synced", lastRun:"Today 04:12 IST",
-    metrics:[
-      {id:"accounts_synced",  label:"Accounts Synced",   value:"12",   numeric:12,  ok:true },
-      {id:"failed_downloads", label:"Failed Downloads",  value:"0",    numeric:0,   ok:true },
-      {id:"avg_dl_time",      label:"Avg Download Time", value:"4m 2s",numeric:4.1, ok:true },
-      {id:"data_lag",         label:"Data Lag (hrs)",    value:"0h",   numeric:0,   ok:true },
-    ],
-    issues:[], history:[12,12,11,12,12,10,12],
-    accounts:[
-      {id:"acc_001",name:"Bluewheel", status:"healthy",lastSync:"04:10 IST",rows:142000},
-      {id:"acc_002",name:"Maryruth",  status:"healthy",lastSync:"04:11 IST",rows:98000 },
-      {id:"acc_003",name:"TestCo",    status:"healthy",lastSync:"04:12 IST",rows:54000 },
-    ],
-    sla:{expected:"05:00 IST",actual:"04:12 IST",met:true}, duration:242,
-  },
-  copy: {
-    status:"warning", summary:"1 replication lag detected", lastRun:"Today 04:35 IST",
-    metrics:[
-      {id:"tables_replicated",label:"Tables Replicated",  value:"34",  numeric:34,      ok:true },
-      {id:"replication_lag",  label:"Replication Lag (m)",value:"18",  numeric:18,      ok:false},
-      {id:"rows_copied",      label:"Rows Copied",        value:"1.2M",numeric:1200000, ok:true },
-      {id:"failed_tables",    label:"Failed Tables",      value:"0",   numeric:0,       ok:true },
-    ],
-    issues:["sp_report_v2 replication lag: 18m (threshold 10m)"],
-    history:[2,3,2,2,8,3,18],
-    accounts:[
-      {id:"acc_001",name:"Bluewheel",status:"healthy",lastSync:"04:30 IST",rows:142000},
-      {id:"acc_002",name:"Maryruth", status:"warning",lastSync:"04:28 IST",rows:97800,note:"Lag 18m"},
-      {id:"acc_003",name:"TestCo",   status:"healthy",lastSync:"04:31 IST",rows:54000},
-    ],
-    sla:{expected:"05:00 IST",actual:"04:35 IST",met:true}, duration:1380,
-  },
-  quality: {
-    status:"error", summary:"3 quality checks failed", lastRun:"Today 05:00 IST",
-    metrics:[
-      {id:"checks_run",    label:"Checks Run",       value:"24",numeric:24,ok:true },
-      {id:"checks_passed", label:"Checks Passed",    value:"21",numeric:21,ok:true },
-      {id:"checks_failed", label:"Checks Failed",    value:"3", numeric:3, ok:false},
-      {id:"anomalies",     label:"Anomalies Flagged",value:"2", numeric:2, ok:false},
-    ],
-    issues:[
-      "ads_spend_daily: 14% drop vs 10-day avg",
-      "order_items: duplicate rows detected (47)",
-      "inventory_snapshot: NULL account_id in 3 rows",
-    ],
-    history:[0,1,0,0,2,1,3],
-    accounts:[
-      {id:"acc_001",name:"Bluewheel",status:"error",  lastSync:"05:00 IST",rows:141900,note:"2 checks failed"},
-      {id:"acc_002",name:"Maryruth", status:"warning", lastSync:"04:59 IST",rows:97800, note:"1 anomaly"},
-      {id:"acc_003",name:"TestCo",   status:"healthy", lastSync:"05:00 IST",rows:54000},
-    ],
-    sla:{expected:"06:00 IST",actual:"05:00 IST",met:true}, duration:820,
-  },
+
+// ─── Data Status Tab ──────────────────────────────────────────────────────────
+
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// DATA OBSERVABILITY TAB
+// ═══════════════════════════════════════════════════════════════════════════════
+
+const OBS_NAV = [
+  { id:"overview",     label:"Overview",            icon:"◎",  group:"Monitor" },
+  { id:"agents",       label:"AI Agents",           icon:"✦",  group:"Monitor" },
+  { id:"downloads",    label:"Download Pipeline",   icon:"⬇",  group:"Pipelines" },
+  { id:"replication",  label:"Replication",         icon:"⇄",  group:"Pipelines" },
+  { id:"quality",      label:"Data Quality",        icon:"✦",  group:"Quality" },
+  { id:"failures",     label:"Failures & Recovery", icon:"⚠",  group:"Quality" },
+  { id:"monitoring",   label:"Monitoring",          icon:"⟳",  group:"Admin" },
+  { id:"admin",        label:"Config & Contracts",  icon:"⚙",  group:"Admin" },
+];
+
+const OBS_GROUPS = ["Monitor","Pipelines","Quality","Admin"];
+
+// Default SQL contracts — all customisable
+// SP-API download table columns:
+// request_id, report_id, report_type, period_start_date, period_end_date,
+// requested_date, download_date, tries, status, account,
+// period_start_time, period_end_time, precheck_status, copy_status
+
+const OBS_DEFAULT_SQL = {
+  // Overview: one row of KPI aggregates for a given download_date
+  overview_kpis: `SELECT
+  COUNT(DISTINCT account)                                                          AS total_accounts,
+  COUNT(DISTINCT report_type)                                                      AS report_types,
+  COUNT(*)                                                                         AS total_requests,
+  SUM(CASE WHEN status = 'processed' THEN 1 ELSE 0 END)                           AS downloaded,
+  SUM(CASE WHEN status = 'failed'    THEN 1 ELSE 0 END)                           AS failed,
+  ROUND(100.0 * SUM(CASE WHEN status = 'processed' THEN 1 ELSE 0 END)
+        / NULLIF(COUNT(*), 0), 1)                                                 AS success_rate_pct,
+  SUM(CASE WHEN copy_status = 'REPLICATED' THEN 1 ELSE 0 END)                    AS replicated,
+  SUM(CASE WHEN copy_status IS NULL OR copy_status != 'REPLICATED' THEN 1 ELSE 0 END) AS not_replicated,
+  ROUND(AVG(tries), 2)                                                            AS avg_tries
+FROM mws.report
+WHERE download_date >= CURRENT_DATE - 30`,
+
+  // Trend: daily counts over the date range for line chart
+  overview_trend: `SELECT
+  download_date,
+  COUNT(*)                                                             AS total_requests,
+  SUM(CASE WHEN status = 'processed' THEN 1 ELSE 0 END)              AS downloaded,
+  SUM(CASE WHEN status = 'failed'    THEN 1 ELSE 0 END)              AS failed,
+  COUNT(DISTINCT account)                                             AS accounts_active,
+  SUM(CASE WHEN copy_status = 'REPLICATED' THEN 1 ELSE 0 END)       AS replicated
+FROM mws.report
+WHERE download_date >= CURRENT_DATE - 30
+GROUP BY download_date
+ORDER BY download_date`,
+
+  // Download pipeline: per-account × report_type breakdown
+  download_metrics: `SELECT
+  COUNT(*)                                                             AS total_requests,
+  COUNT(DISTINCT account)                                             AS accounts,
+  COUNT(DISTINCT report_type)                                         AS report_types,
+  SUM(CASE WHEN status = 'processed' THEN 1 ELSE 0 END)              AS processed,
+  SUM(CASE WHEN status = 'failed'    THEN 1 ELSE 0 END)              AS failed,
+  ROUND(100.0 * SUM(CASE WHEN status = 'processed' THEN 1 ELSE 0 END)
+        / NULLIF(COUNT(*), 0), 1)                                    AS success_rate_pct,
+  MAX(tries)                                                          AS max_tries,
+  ROUND(AVG(tries), 2)                                               AS avg_tries
+FROM mws.report
+WHERE download_date >= CURRENT_DATE - 30`,
+
+  // Account × report_type detail grid
+  download_breakdown: `SELECT
+  account,
+  report_type,
+  status,
+  copy_status,
+  COUNT(*)                                                            AS total,
+  SUM(CASE WHEN status = 'processed' THEN 1 ELSE 0 END)             AS downloaded,
+  SUM(CASE WHEN status = 'failed'    THEN 1 ELSE 0 END)             AS failed,
+  MAX(tries)                                                         AS max_tries,
+  MIN(period_start_date)                                            AS period_from,
+  MAX(period_end_date)                                              AS period_to,
+  MAX(requested_date)                                               AS last_requested
+FROM mws.report
+WHERE download_date >= CURRENT_DATE - 30
+GROUP BY account, report_type, status, copy_status
+ORDER BY failed DESC, account, report_type`,
+
+  // Data quality: freshness and completeness per report_type
+  quality_freshness: `SELECT
+  report_type,
+  COUNT(DISTINCT account)                                            AS accounts_covered,
+  MAX(download_date)                                                AS last_download_date,
+  DATEDIFF('day', MAX(download_date), CURRENT_DATE)               AS days_since_last_download,
+  SUM(CASE WHEN status = 'processed' THEN 1 ELSE 0 END)            AS total_downloaded,
+  SUM(CASE WHEN status = 'failed'    THEN 1 ELSE 0 END)            AS total_failed,
+  ROUND(100.0 * SUM(CASE WHEN status = 'processed' THEN 1 ELSE 0 END)
+        / NULLIF(COUNT(*), 0), 1)                                  AS completeness_pct,
+  SUM(CASE WHEN copy_status = 'REPLICATED' THEN 1 ELSE 0 END)     AS replicated,
+  ROUND(AVG(tries), 2)                                             AS avg_tries
+FROM mws.report
+WHERE download_date >= CURRENT_DATE - 30
+GROUP BY report_type
+ORDER BY days_since_last_download DESC, total_failed DESC`,
+
+  // Failures: accounts & report types with failed status
+  failures: `SELECT
+  account,
+  report_type,
+  status,
+  precheck_status,
+  copy_status,
+  COUNT(*)                                                           AS failure_count,
+  MAX(tries)                                                        AS max_tries,
+  MIN(period_start_date)                                           AS period_from,
+  MAX(period_end_date)                                             AS period_to,
+  MIN(requested_date)                                              AS first_requested,
+  MAX(requested_date)                                              AS last_requested
+FROM mws.report
+WHERE status != 'processed'
+  AND download_date >= CURRENT_DATE - 30
+GROUP BY account, report_type, status, precheck_status, copy_status
+ORDER BY failure_count DESC, account, report_type`,
 };
 
-const INGESTION_CFG_DEFAULT = {
-  stages:{
-    downloader:{enabled:true,label:"Data Downloader",apiEndpoint:"",navTo:""},
-    copy:      {enabled:true,label:"Data Copy",      apiEndpoint:"",navTo:""},
-    quality:   {enabled:true,label:"Data Quality",   apiEndpoint:"",navTo:"triage"},
-  },
-  thresholds:{
-    downloader:{failed_downloads:{warn:1,error:3},data_lag:{warn:2,error:6}},
-    copy:      {replication_lag:{warn:10,error:30},failed_tables:{warn:1,error:3}},
-    quality:   {checks_failed:{warn:1,error:5},anomalies:{warn:1,error:4}},
-  },
-  alerts:{slackWebhook:"",onWarning:true,onError:true,routeQualityToTriage:true},
-  refreshInterval:300,
-  slaTargets:{downloader:"05:00",copy:"05:30",quality:"06:00"},
-  confidenceThreshold:85, // auto-execute if confidence >= this
-  aiFeatures:{
-    autoDiagnosis:true,autoRemediation:true,narrativeSummary:true,
-    anomalyTrend:true,etaPredictor:true,blastRadius:true,
-    preRunRisk:true,incidentMemory:true,crossStageCorrelation:true,
-    weeklyDigest:true,confidenceScore:true,
-  },
-};
+const OBS_SQL_KEY = "wz_obs_sql_v3"; // v3: rolling 30-day window, no bind variables
 
-const INGESTION_TEAM = ["Zubair","Girish","Madhuri","Ramesh","Raghavendra","Anoop"];
-
-// Remediation templates per stage/issue type
-const REMEDIATION_TEMPLATES = {
-  copy_lag:       {action:"trigger_resync",  label:"Trigger manual resync",      risk:"low"},
-  quality_dupes:  {action:"quarantine_rows", label:"Quarantine duplicate rows",   risk:"medium"},
-  quality_nulls:  {action:"flag_nulls",      label:"Flag NULL rows for review",   risk:"low"},
-  quality_drop:   {action:"pause_downstream",label:"Pause downstream Mage jobs",  risk:"medium"},
-  download_fail:  {action:"retry_download",  label:"Retry failed account downloads",risk:"low"},
-  default:        {action:"notify_slack",    label:"Send Slack alert to team",    risk:"low"},
-};
-
-function DataIngestionTab({ onNavigate }) {
-  const T = useT();
-
-  // ── Core state ─────────────────────────────────────────────────────────────
-  const [data,        setData]        = React.useState(null);
-  const [loading,     setLoading]     = React.useState(true);
-  const [expanded,    setExpanded]    = React.useState({});
-  const [showConfig,  setShowConfig]  = React.useState(false);
-  const [activeView,  setActiveView]  = React.useState("operator"); // operator | stages | digest
-  const [viewMode,    setViewMode]    = React.useState("executive"); // executive | operator
-  const [cfg, setCfg] = React.useReducer(
-    (s,p)=>{ const n=typeof p==="function"?p(s):{...s,...p}; try{localStorage.setItem("wz_ingestion_cfg_v1",JSON.stringify(n));}catch{} return n; },
-    null,
-    ()=>{ try{return {...INGESTION_CFG_DEFAULT,...JSON.parse(localStorage.getItem("wz_ingestion_cfg_v1")||"{}")};} catch{return INGESTION_CFG_DEFAULT;} }
-  );
-
-  // ── Approval queue + execution log ─────────────────────────────────────────
-  const [pendingActions, setPendingActions] = React.useState([]);
-  const [execLog,        setExecLog]        = React.useState(
-    ()=>{ try{return JSON.parse(localStorage.getItem("wz_ingestion_execlog_v1")||"[]");}catch{return [];} }
-  );
-
-  // ── AI state ───────────────────────────────────────────────────────────────
-  const [aiNarrative, setAiNarrative] = React.useState(null);
-  const [aiNarrLoad,  setAiNarrLoad]  = React.useState(false);
-  const [aiRisk,      setAiRisk]      = React.useState(null);
-  const [aiRiskLoad,  setAiRiskLoad]  = React.useState(false);
-  const [aiCorr,      setAiCorr]      = React.useState(null);
-  const [aiDigest,    setAiDigest]    = React.useState(null);
-  const [aiDigestLoad,setAiDigestLoad]= React.useState(false);
-  const [diagnosing,  setDiagnosing]  = React.useState(false); // global diagnose-all in progress
-
-  // ── Persistence ────────────────────────────────────────────────────────────
-  const [incidents, addIncident] = React.useReducer(
-    (s,p)=>{ const n=[p,...s].slice(0,50); try{localStorage.setItem("wz_ingestion_incidents_v1",JSON.stringify(n));}catch{} return n; },
-    null,
-    ()=>{ try{return JSON.parse(localStorage.getItem("wz_ingestion_incidents_v1")||"[]");}catch{return [];} }
-  );
-  const [runHistory, setRunHistory] = React.useState(
-    ()=>{ try{return JSON.parse(localStorage.getItem("wz_ingestion_runhist_v1")||"[]");}catch{return [];} }
-  );
-  const [assignments, setAssignments] = React.useState(
-    ()=>{ try{return JSON.parse(localStorage.getItem("wz_ingestion_assignments_v1")||"{}");}catch{return {};} }
-  );
-
-  // ── Chat ────────────────────────────────────────────────────────────────────
-  const [chatOpen,    setChatOpen]    = React.useState(false);
-  const [chatMsgs,    setChatMsgs]    = React.useState([]);
-  const [chatInput,   setChatInput]   = React.useState("");
-  const [chatLoading, setChatLoading] = React.useState(false);
-  const chatEndRef = React.useRef(null);
-  const refreshRef = React.useRef(null);
-
-  const STATUS_COLOR = {healthy:T.green,warning:T.orange,error:T.red,loading:T.muted};
-  const STATUS_LABEL = {healthy:"Healthy",warning:"Warning",error:"Error",loading:"Loading…"};
-  const STAGES = [
-    {id:"downloader",desc:"SP-API / Vendor Central download jobs",icon:"⬇️"},
-    {id:"copy",      desc:"Replication from staging to Redshift", icon:"🔄"},
-    {id:"quality",   desc:"Freshness, duplicate & anomaly checks",icon:"✅"},
-  ];
-
-  // ── Helpers ────────────────────────────────────────────────────────────────
-  const logExec = (entry) => {
-    const e = {...entry, ts:new Date().toISOString(), id:`exec_${Date.now()}`};
-    setExecLog(p=>{ const n=[e,...p].slice(0,100); localStorage.setItem("wz_ingestion_execlog_v1",JSON.stringify(n)); return n; });
-  };
-
-  const aiChat = async (system, userMsg, maxTokens=150) => {
-    const res = await fetch(`${API}/api/ai/chat`,{
-      method:"POST",headers:{"Content-Type":"application/json"},
-      body:JSON.stringify({system,messages:[{role:"user",content:userMsg}],max_tokens:maxTokens})
-    });
-    return (await res.json())?.content?.[0]?.text?.trim()||"";
-  };
-
-  // ── Load data ──────────────────────────────────────────────────────────────
-  const loadStageData = React.useCallback(async () => {
-    setLoading(true);
-    try {
-      // REAL API: const res = await fetch(cfg.stages.downloader.apiEndpoint || `${API}/api/ingestion/status`);
-      await new Promise(r=>setTimeout(r,500));
-      setData(INGESTION_MOCK);
-      const entry={ts:new Date().toISOString(),statuses:Object.fromEntries(Object.entries(INGESTION_MOCK).map(([k,v])=>[k,v.status]))};
-      setRunHistory(p=>{ const n=[entry,...p].slice(0,30); localStorage.setItem("wz_ingestion_runhist_v1",JSON.stringify(n)); return n; });
-    } catch { setData(INGESTION_MOCK); }
-    setLoading(false);
-  }, []);
-
-  // Keyboard shortcuts: R=refresh, E=executive, O=operator
-  React.useEffect(()=>{
-    const handler = (e) => {
-      if (e.target.tagName==="INPUT"||e.target.tagName==="TEXTAREA"||e.target.tagName==="SELECT") return;
-      if (e.key==="r"||e.key==="R") { e.preventDefault(); loadStageData(); }
-      if (e.key==="e"||e.key==="E") setViewMode("executive");
-      if (e.key==="o"||e.key==="O") setViewMode("operator");
-    };
-    window.addEventListener("keydown",handler);
-    return ()=>window.removeEventListener("keydown",handler);
-  },[loadStageData]);
-
-  React.useEffect(()=>{
-    loadStageData();
-    if (cfg.refreshInterval>0) refreshRef.current=setInterval(loadStageData,cfg.refreshInterval*1000);
-    return ()=>clearInterval(refreshRef.current);
-  },[cfg.refreshInterval]);
-
-  // ── Auto-diagnose + remediation pipeline ──────────────────────────────────
-  React.useEffect(()=>{
-    if (!data||!cfg.aiFeatures.autoDiagnosis) return;
-    runAutonomousPipeline(data);
-    if (cfg.aiFeatures.narrativeSummary && !aiNarrative) generateNarrative(data);
-    if (cfg.aiFeatures.crossStageCorrelation && !aiCorr) generateCorrelation(data);
-  },[data]);
-
-  React.useEffect(()=>{ if(cfg.aiFeatures.preRunRisk&&!aiRisk) generatePreRunRisk(); },[]);
-
-  const runAutonomousPipeline = async (d) => {
-    setDiagnosing(true);
-    logExec({type:"system",label:"Autonomous pipeline started",detail:"Scanning all stages for issues…",status:"info"});
-
-    const newActions = [];
-    for (const stage of STAGES) {
-      if (!cfg.stages[stage.id]?.enabled) continue;
-      const sd = d[stage.id];
-      if (sd.status==="healthy") {
-        logExec({type:"check",stage:stage.id,label:`${cfg.stages[stage.id]?.label} — no issues`,detail:"All metrics within thresholds.",status:"ok"});
-        continue;
-      }
-      logExec({type:"check",stage:stage.id,label:`${cfg.stages[stage.id]?.label} — ${sd.status} detected`,detail:sd.summary,status:sd.status});
-
-      // Diagnose
-      try {
-        const past = incidents.filter(i=>i.stage===stage.id).slice(0,3).map(i=>`[${i.date}] ${i.summary}`).join("; ")||"none";
-        const diagText = await aiChat(
-          "You are a data pipeline expert. Diagnose in 2 sentences. End with 'Confidence: X%' (50-99). No markdown.",
-          `Stage:${stage.id} Status:${sd.status} Metrics:${sd.metrics?.map(m=>`${m.label}:${m.value}`).join(",")} Issues:${sd.issues?.join("; ")||"none"} Past incidents:${past}`,
-          180
-        );
-        const confMatch = diagText.match(/Confidence:\s*(\d+)%/i);
-        const confidence = confMatch ? parseInt(confMatch[1]) : 70;
-        const diagnosis  = diagText.replace(/Confidence:\s*\d+%\.?/i,"").trim();
-
-        logExec({type:"diagnosis",stage:stage.id,label:`AI diagnosed ${stage.id}`,detail:diagnosis,confidence,status:"info"});
-        if (sd.status==="error") addIncident({stage:stage.id,date:new Date().toISOString().slice(0,10),summary:sd.issues?.join("; ")||"error",diagnosis});
-
-        // Determine remediation
-        const issueText = (sd.issues||[]).join(" ").toLowerCase();
-        const template =
-          issueText.includes("lag")      ? REMEDIATION_TEMPLATES.copy_lag :
-          issueText.includes("duplicate")? REMEDIATION_TEMPLATES.quality_dupes :
-          issueText.includes("null")     ? REMEDIATION_TEMPLATES.quality_nulls :
-          issueText.includes("drop")     ? REMEDIATION_TEMPLATES.quality_drop :
-          issueText.includes("fail")     ? REMEDIATION_TEMPLATES.download_fail :
-          REMEDIATION_TEMPLATES.default;
-
-        const remText = await aiChat(
-          "Suggest one specific remediation action in 1 sentence. No markdown.",
-          `Stage:${stage.id} Issue:${sd.issues?.join("; ")||sd.status} Diagnosis:${diagnosis}`,
-          80
-        );
-
-        const action = {
-          id:`action_${stage.id}_${Date.now()}`,
-          stage:stage.id,
-          stageLabel:cfg.stages[stage.id]?.label,
-          diagnosis,
-          confidence,
-          severity:sd.status,
-          actionType:template.action,
-          actionLabel:template.label,
-          actionDetail:remText,
-          risk:template.risk,
-          issues:sd.issues||[],
-          createdAt:new Date().toISOString(),
-          status:"pending", // pending | approved | rejected | executed | auto-executed
-        };
-
-        const autoThreshold = cfg.confidenceThreshold || 85;
-        if (confidence >= autoThreshold && template.risk==="low") {
-          // Auto-execute
-          action.status = "auto-executed";
-          logExec({type:"action",stage:stage.id,label:`Auto-executed: ${template.label}`,detail:remText,confidence,status:"ok",autoExecuted:true});
-        } else {
-          // Queue for approval
-          newActions.push(action);
-          logExec({type:"action",stage:stage.id,label:`Queued for approval: ${template.label}`,detail:`Confidence ${confidence}% — below auto-execute threshold or medium risk`,confidence,status:"pending"});
-        }
-      } catch(e) {
-        logExec({type:"error",stage:stage.id,label:`Diagnosis failed for ${stage.id}`,detail:"AI unavailable — manual review needed.",status:"error"});
-      }
-    }
-
-    setPendingActions(p=>{
-      const existingIds = new Set(p.map(a=>a.stage));
-      return [...p.filter(a=>a.status==="pending"), ...newActions.filter(a=>!existingIds.has(a.stage))];
-    });
-    logExec({type:"system",label:"Pipeline scan complete",detail:`${newActions.length} action(s) queued for approval.`,status:"info"});
-    setDiagnosing(false);
-  };
-
-  // ── Approve / reject actions ───────────────────────────────────────────────
-  const approveAction = async (actionId) => {
-    const action = pendingActions.find(a=>a.id===actionId);
-    if (!action) return;
-    setPendingActions(p=>p.map(a=>a.id===actionId?{...a,status:"executing"}:a));
-    logExec({type:"action",stage:action.stage,label:`Executing: ${action.actionLabel}`,detail:"Human approved — executing now…",status:"info"});
-    try {
-      // Execute based on action type
-      if (action.actionType==="pause_downstream") {
-        const pkgs = cfg.stages[action.stage]?.mage_packages||[];
-        for (const pkg of pkgs) {
-          if (pkg.pause_url) await fetch(pkg.pause_url,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({status:"inactive"})}).catch(()=>{});
-        }
-      }
-      // Other action types: wire real APIs here
-      await new Promise(r=>setTimeout(r,800)); // simulate execution
-      setPendingActions(p=>p.map(a=>a.id===actionId?{...a,status:"executed"}:a));
-      logExec({type:"action",stage:action.stage,label:`✓ Completed: ${action.actionLabel}`,detail:"Action executed successfully.",status:"ok"});
-      setTimeout(()=>setPendingActions(p=>p.filter(a=>a.id!==actionId)),3000);
-    } catch(e) {
-      setPendingActions(p=>p.map(a=>a.id===actionId?{...a,status:"failed"}:a));
-      logExec({type:"error",stage:action.stage,label:`✗ Failed: ${action.actionLabel}`,detail:e.message||"Execution error.",status:"error"});
-    }
-  };
-
-  const rejectAction = (actionId) => {
-    const action = pendingActions.find(a=>a.id===actionId);
-    if (!action) return;
-    logExec({type:"action",stage:action.stage,label:`Rejected: ${action.actionLabel}`,detail:"Human rejected — no action taken.",status:"warning"});
-    setPendingActions(p=>p.filter(a=>a.id!==actionId));
-  };
-
-  const assignAction = (actionId, member) => {
-    const updated={...assignments,[actionId]:{member,ts:new Date().toISOString()}};
-    setAssignments(updated);
-    localStorage.setItem("wz_ingestion_assignments_v1",JSON.stringify(updated));
-  };
-
-  // ── AI helpers ─────────────────────────────────────────────────────────────
-  const generateNarrative = async (d) => {
-    setAiNarrLoad(true);
-    try {
-      const summary=STAGES.filter(s=>cfg.stages[s.id]?.enabled).map(s=>`${s.id}:${d[s.id]?.status}(${d[s.id]?.summary})`).join("; ");
-      setAiNarrative(await aiChat("Summarise pipeline health in 2 sentences. Be specific. No markdown.",`State:${summary}`));
-    } catch {}
-    setAiNarrLoad(false);
-  };
-
-  const generatePreRunRisk = async () => {
-    setAiRiskLoad(true);
-    try {
-      const hist=Object.entries(INGESTION_MOCK).map(([k,v])=>`${k} 7d:[${v.history?.join(",")}]`).join("; ");
-      setAiRisk(await aiChat("Predict tonight's ingestion run risk in 2 sentences based on trends. No markdown.",`History:${hist}. Date:${new Date().toLocaleDateString("en-IN")}`,120));
-    } catch {}
-    setAiRiskLoad(false);
-  };
-
-  const generateCorrelation = async (d) => {
-    try {
-      const summary=STAGES.map(s=>`${s.id}:${d?.[s.id]?.status} issues:${d?.[s.id]?.issues?.join(",")||"none"}`).join("; ");
-      setAiCorr(await aiChat("Identify cross-stage causal relationships in 1-2 sentences. No markdown.",`Stages:${summary}`,120));
-    } catch {}
-  };
-
-  const generateWeeklyDigest = async () => {
-    setAiDigestLoad(true);
-    try {
-      const errorDays=runHistory.filter(r=>Object.values(r.statuses).includes("error")).length;
-      const warnDays =runHistory.filter(r=>Object.values(r.statuses).includes("warning")).length;
-      setAiDigest(await aiChat(
-        "Write a weekly pipeline digest in 3 sentences. Mention specific counts. No markdown.",
-        `Last ${runHistory.length} runs: ${errorDays} error days, ${warnDays} warning days. Incidents:${incidents.slice(0,5).map(i=>`${i.stage}:${i.summary}`).join("; ")||"none"}.`,
-        200
-      ));
-    } catch {}
-    setAiDigestLoad(false);
-  };
-
-  const sendChat = async () => {
-    if (!chatInput.trim()||chatLoading) return;
-    const msg=chatInput.trim(); setChatInput("");
-    setChatMsgs(p=>[...p,{role:"user",text:msg}]);
-    setChatLoading(true);
-    try {
-      const ctx=STAGES.filter(s=>cfg.stages[s.id]?.enabled).map(s=>`${s.id}:${data?.[s.id]?.status}(${data?.[s.id]?.summary})`).join("; ");
-      const history=chatMsgs.slice(-6).map(m=>({role:m.role==="user"?"user":"assistant",content:m.text}));
-      const text=await aiChat("You are a data pipeline assistant. Answer concisely in max 3 sentences. No markdown.",`Context:${ctx}\n\nQuestion:${msg}`,200);
-      setChatMsgs(p=>[...p,{role:"assistant",text}]);
-    } catch { setChatMsgs(p=>[...p,{role:"assistant",text:"Error — try again."}]); }
-    setChatLoading(false);
-    setTimeout(()=>chatEndRef.current?.scrollIntoView({behavior:"smooth"}),80);
-  };
-
-  const exportCSV = () => {
-    if (!data) return;
-    const rows=[["Stage","Metric","Value","Status"]];
-    STAGES.forEach(s=>(data[s.id]?.metrics||[]).forEach(m=>rows.push([s.id,m.label,m.value,m.ok?"ok":"fail"])));
-    const a=document.createElement("a"); a.href="data:text/csv;charset=utf-8,"+encodeURIComponent(rows.map(r=>r.join(",")).join("\n"));
-    a.download=`ingestion_${new Date().toISOString().slice(0,10)}.csv`; a.click();
-  };
-
-  const overallStatus = !data?"loading"
-    :STAGES.some(s=>cfg.stages[s.id]?.enabled&&data[s.id]?.status==="error")  ?"error"
-    :STAGES.some(s=>cfg.stages[s.id]?.enabled&&data[s.id]?.status==="warning")?"warning"
-    :"healthy";
-
-  // ── Config Panel ───────────────────────────────────────────────────────────
-  const TestSlackBtn = ({webhook, T}) => {
-    const [state, setState] = React.useState("idle"); // idle | sending | ok | error
-    const test = async () => {
-      if (!webhook) return;
-      setState("sending");
-      try {
-        await fetch(webhook,{method:"POST",headers:{"Content-Type":"application/json"},
-          body:JSON.stringify({text:"✅ WiziAgent — Slack webhook test successful."})});
-        setState("ok");
-      } catch { setState("error"); }
-      setTimeout(()=>setState("idle"),3000);
-    };
-    const label = state==="sending"?"…":state==="ok"?"✓":state==="error"?"✗":"Test";
-    const col   = state==="ok"?T.green:state==="error"?T.red:T.muted;
-    return (
-      <button onClick={test} disabled={!webhook||state==="sending"} style={{
-        fontSize:11,color:col,background:"none",border:`1px solid ${col}40`,
-        borderRadius:6,padding:"5px 10px",cursor:webhook?"pointer":"not-allowed",
-        whiteSpace:"nowrap",flexShrink:0,transition:"color 0.2s"}}>
-        {label}
-      </button>
-    );
-  };
-
-  const ConfigPanel = () => {
-    const [lc,setLc]=React.useState(()=>JSON.parse(JSON.stringify(cfg)));
-    const setStage =(sid,k,v)=>setLc(p=>({...p,stages:{...p.stages,[sid]:{...p.stages[sid],[k]:v}}}));
-    const setThresh=(sid,mid,k,v)=>setLc(p=>({...p,thresholds:{...p.thresholds,[sid]:{...p.thresholds[sid],[mid]:{...p.thresholds[sid]?.[mid],[k]:Number(v)}}}  }));
-    const setAlert =(k,v)=>setLc(p=>({...p,alerts:{...p.alerts,[k]:v}}));
-    const setAiF   =(k,v)=>setLc(p=>({...p,aiFeatures:{...p.aiFeatures,[k]:v}}));
-    const inp=(val,onChange,type="text")=>(
-      <input type={type} value={val} onChange={e=>onChange(e.target.value)} style={{
-        background:T.bg,border:`1px solid ${T.border}`,borderRadius:6,
-        padding:"5px 9px",fontSize:12,color:T.text,width:"100%"}}/>
-    );
-    const tog=(val,onChange)=>(
-      <div onClick={()=>onChange(!val)} style={{width:34,height:18,borderRadius:99,
-        background:val?T.accent:T.border,position:"relative",cursor:"pointer",flexShrink:0,transition:"background 0.2s"}}>
-        <div style={{position:"absolute",top:2,left:val?16:2,width:14,height:14,borderRadius:"50%",background:"#fff",transition:"left 0.2s"}}/>
+// ── Shared helpers ────────────────────────────────────────────────────────────
+function ObsKpi({ label, value, sub, color, icon, T }) {
+  return (
+    <div style={{background:T.surface,borderRadius:10,padding:"16px 18px",
+      border:"1px solid "+T.border,
+      display:"flex",flexDirection:"column",gap:4,flex:"1 1 120px",minWidth:120,
+      position:"relative",overflow:"hidden"}}>
+      <div style={{position:"absolute",top:0,left:0,right:0,height:2,
+        background:color||T.accent,borderRadius:"10px 10px 0 0",opacity:0.8}}/>
+      <div style={{fontSize:10,fontWeight:600,color:T.muted,letterSpacing:"0.04em",
+        display:"flex",alignItems:"center",gap:5}}>
+        <span style={{opacity:0.6}}>{icon}</span>{label}
       </div>
-    );
-    const Sec=({title,children})=>(
-      <section>
-        <div style={{fontSize:11,fontWeight:700,color:T.muted,textTransform:"uppercase",letterSpacing:"0.07em",marginBottom:10}}>{title}</div>
-        {children}
-      </section>
-    );
-    return (
-      <div style={{position:"fixed",top:0,right:0,bottom:0,width:430,background:T.surface,
-        borderLeft:`1px solid ${T.border}`,zIndex:200,overflowY:"auto"}}>
-        <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",
-          padding:"18px 20px",borderBottom:`1px solid ${T.border}`,position:"sticky",top:0,background:T.surface}}>
-          <span style={{fontSize:15,fontWeight:700,color:T.text}}>⚙ Ingestion Config</span>
-          <div style={{display:"flex",gap:8}}>
-            <button onClick={()=>{setCfg(lc);setShowConfig(false);}} style={{background:T.accent,color:"#fff",border:"none",borderRadius:7,padding:"6px 14px",fontSize:12,fontWeight:600,cursor:"pointer"}}>Save</button>
-            <button onClick={()=>setShowConfig(false)} style={{background:T.bg,border:`1px solid ${T.border}`,borderRadius:7,padding:"6px 14px",fontSize:12,color:T.muted,cursor:"pointer"}}>Cancel</button>
-          </div>
+      <div style={{fontSize:26,fontWeight:700,color:color||T.text,lineHeight:1.1,
+        letterSpacing:"-0.02em",marginTop:2}}>
+        {value??<span style={{color:T.muted,fontWeight:400}}>—</span>}
+      </div>
+      {sub&&<div style={{fontSize:10,color:T.dim||T.muted}}>{sub}</div>}
+    </div>
+  );
+}
+
+function ObsTable({ rows, T, highlightCol, maxRows=200 }) {
+  if (!rows||!rows.length) return (
+    <div style={{padding:"40px",textAlign:"center",fontSize:12,color:T.muted}}>No rows returned</div>
+  );
+  const cols = Object.keys(rows[0]);
+  return (
+    <div style={{overflowX:"auto",overflowY:"auto",maxHeight:400}}>
+      <table style={{borderCollapse:"collapse",width:"100%",fontSize:12}}>
+        <thead>
+          <tr style={{background:T.bg}}>{cols.map(c=>(
+            <th key={c} style={{padding:"10px 16px",textAlign:"left",fontSize:10,fontWeight:600,
+              color:T.muted,borderBottom:"1px solid "+T.border,
+              whiteSpace:"nowrap",position:"sticky",top:0,background:T.bg}}>
+              {c.replace(/_/g," ")}
+            </th>
+          ))}</tr>
+        </thead>
+        <tbody>
+          {rows.slice(0,maxRows).map((r,i)=>{
+            const isBad=highlightCol&&Number(r[highlightCol]||0)>0;
+            return (
+              <tr key={i}
+                style={{borderBottom:"1px solid "+T.border+"30",
+                  background:isBad?T.red+"05":"none",
+                  borderLeft:isBad?"2px solid "+T.red+"60":"2px solid transparent"}}
+                onMouseEnter={e=>e.currentTarget.style.background=T.accent+"06"}
+                onMouseLeave={e=>e.currentTarget.style.background=isBad?T.red+"05":"none"}>
+                {cols.map(c=>{
+                  const v=r[c]??"";
+                  const n=Number(v);
+                  const isFail=/fail|error/i.test(c)&&!isNaN(n)&&n>0;
+                  const isOk=/success|complete|download|processed/i.test(c)&&!isNaN(n)&&n>0;
+                  const isPct=String(v).endsWith("%")||/pct|rate|percent/i.test(c);
+                  const pctVal=isPct?parseFloat(v):null;
+                  return (
+                    <td key={c} style={{padding:"9px 16px",
+                      color:isFail?T.red:isOk?T.green:T.text,
+                      fontWeight:isFail?600:isOk?500:400}}>
+                      {isPct&&pctVal!==null
+                        ? <span style={{display:"inline-flex",alignItems:"center",gap:8}}>
+                            <span style={{width:48,height:3,borderRadius:99,
+                              background:T.border,display:"inline-block",overflow:"hidden",flexShrink:0}}>
+                              <span style={{width:Math.min(pctVal,100)+"%",height:"100%",display:"block",
+                                background:pctVal>90?T.green:pctVal>70?T.orange:T.red,borderRadius:99}}/>
+                            </span>
+                            <span style={{color:pctVal>90?T.green:pctVal>70?T.orange:T.red,fontWeight:600}}>
+                              {String(v)}
+                            </span>
+                          </span>
+                        : String(v)}
+                    </td>
+                  );
+                })}
+              </tr>
+            );
+          })}
+          {rows.length>maxRows&&(
+            <tr><td colSpan={cols.length} style={{padding:"12px 16px",fontSize:11,
+              color:T.muted,textAlign:"center",fontStyle:"italic"}}>
+              +{rows.length-maxRows} more rows
+            </td></tr>
+          )}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+function ObsSkel({ T }) {
+  return (
+    <div style={{padding:"28px 32px",display:"flex",flexDirection:"column",gap:24}}>
+      <div style={{display:"flex",gap:12}}>
+        {[1,2,3,4].map(i=>(
+          <div key={i} style={{flex:1,height:72,borderRadius:10,
+            background:T.border,opacity:0.3,animation:"obs-pulse 1.6s ease infinite",
+            animationDelay:(i*0.12)+"s"}}/>
+        ))}
+      </div>
+      <div style={{height:200,borderRadius:10,background:T.border,opacity:0.2,
+        animation:"obs-pulse 1.6s ease infinite"}}/>
+      <div style={{display:"flex",flexDirection:"column",gap:8}}>
+        {[100,85,70,90,60].map((w,i)=>(
+          <div key={i} style={{height:11,width:w+"%",borderRadius:4,
+            background:T.border,opacity:0.25,animation:"obs-pulse 1.6s ease infinite",
+            animationDelay:(i*0.08)+"s"}}/>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+// ── Shared AI call helper (module-level, no hooks) ───────────────────────────
+async function obsAiCall(sys, usr, tok=400) {
+  const r = await apiFetch(API+"/api/ai/chat", {
+    method:"POST", headers:{"Content-Type":"application/json"},
+    body: JSON.stringify({system:sys, messages:[{role:"user",content:usr}], max_tokens:tok})
+  });
+  return (await r.json())?.content?.[0]?.text?.trim()||"";
+}
+
+// ── AI Briefing — proactive, auto-runs when data loads ───────────────────────
+function ObsAiBriefing({ data, pageId, pageLabel, T }) {
+  const [briefing,  setBriefing]  = React.useState(null); // {narrative, anomalies, actions}
+  const [busy,      setBusy]      = React.useState(false);
+  const [dismissed, setDismissed] = React.useState({});
+  const [approved,  setApproved]  = React.useState({});
+  const [nlInput,   setNlInput]   = React.useState("");
+  const [nlAnswer,  setNlAnswer]  = React.useState(null);
+  const [nlBusy,    setNlBusy]    = React.useState(false);
+  const [showNl,    setShowNl]    = React.useState(false);
+  const dataKey = React.useRef(null);
+
+  const analyse = React.useCallback(async (d) => {
+    if (!d||!d.length) return;
+    setBusy(true); setBriefing(null);
+    try {
+      const cols   = Object.keys(d[0]).join(", ");
+      const sample = d.slice(0,8).map(r=>JSON.stringify(r)).join("\n");
+      const raw = await obsAiCall(
+        `You are a senior data observability engineer for an Amazon SP-API download pipeline. The main table tracks downloads with columns: account, report_type, status (processed/failed), download_date (DATE), requested_date (TIMESTAMP), period_start_date (DATE), period_end_date (DATE), tries (int), precheck_status, copy_status (REPLICATED or null). Analyse query results and respond ONLY with valid JSON (no markdown, no backticks):
+{
+  "narrative": "1-2 sentence plain-English summary of the download health state. Mention specific account counts, report types, and failure numbers.",
+  "anomalies": [
+    {"id":"a1","severity":"critical|warning|info","title":"short title","detail":"specific finding with actual numbers from the data","rootCause":"why this is likely happening given the SP-API context","affected":"which accounts or report types"}
+  ],
+  "actions": [
+    {"anomalyId":"a1","label":"action label","type":"retry|alert|investigate|snooze","description":"what this will do"}
+  ]
+}
+Severity: critical=accounts completely failing or >20% failure rate, warning=partial failures or replication lag, info=patterns worth noting.
+Max 4 anomalies. Max 2 actions per anomaly. Always use actual values from the data rows. Queries use rolling 30-day windows (CURRENT_DATE - 30) with no bind variables.`,
+        "Page: "+pageLabel+"\nColumns: "+cols+"\nRows ("+d.length+" total, showing 8):\n"+sample,
+        600
+      );
+      // Parse JSON — strip any accidental markdown
+      const clean = raw.replace(/```json|```/g,"").trim();
+      const parsed = JSON.parse(clean);
+      setBriefing(parsed);
+    } catch(e) {
+      setBriefing({narrative:"Could not analyse: "+e.message, anomalies:[], actions:[]});
+    }
+    setBusy(false);
+  }, [pageLabel]);
+
+  // Auto-run when data changes
+  React.useEffect(() => {
+    if (!data||!data.length) return;
+    const key = JSON.stringify(data[0])+data.length;
+    if (key === dataKey.current) return; // same data, skip
+    dataKey.current = key;
+    setDismissed({}); setApproved({}); setNlAnswer(null);
+    analyse(data);
+  }, [data, analyse]);
+
+  const askNl = async () => {
+    if (!nlInput.trim()||!data) return;
+    setNlBusy(true); setNlAnswer(null);
+    try {
+      const cols   = Object.keys(data[0]||{}).join(", ");
+      const sample = data.slice(0,6).map(r=>JSON.stringify(r)).join("\n");
+      const ans = await obsAiCall(
+        "You are a data analyst answering questions about query results. Be concise and specific. Use actual numbers from the data. 2-4 sentences max.",
+        "Data columns: "+cols+"\nSample rows:\n"+sample+"\nTotal rows: "+data.length+"\n\nQuestion: "+nlInput
+      );
+      setNlAnswer(ans);
+    } catch(e) { setNlAnswer("Error: "+e.message); }
+    setNlBusy(false);
+  };
+
+  const SEV_COLOR = (sev, T) =>
+    sev==="critical"?T.red : sev==="warning"?T.orange : T.accent;
+  const SEV_ICON  = {critical:"🔴", warning:"🟡", info:"🔵"};
+  const ACT_ICON  = {retry:"↻", alert:"🔔", investigate:"🔍", snooze:"⏸"};
+
+  const visibleAnomalies = (briefing?.anomalies||[]).filter(a=>!dismissed[a.id]);
+  const hasCritical = visibleAnomalies.some(a=>a.severity==="critical");
+
+  if (!data||!data.length) return null;
+
+  return (
+    <div style={{marginBottom:24}}>
+
+      {/* ── Narrative bar — always visible ── */}
+      <div style={{
+        background: hasCritical ? T.red+"0A" : T.accent+"08",
+        border:"1px solid "+(hasCritical?T.red+"30":T.accent+"20"),
+        borderRadius:10, padding:"12px 16px", marginBottom:12,
+        display:"flex", alignItems:"flex-start", gap:12,
+        minHeight:44
+      }}>
+        <div style={{fontSize:18, flexShrink:0, marginTop:1}}>
+          {busy ? "⟳" : hasCritical ? "🚨" : "✦"}
         </div>
-        <div style={{padding:"16px 20px",display:"flex",flexDirection:"column",gap:20}}>
-          <Sec title="Autonomous AI">
-            <div style={{background:T.bg,borderRadius:8,padding:"12px 14px",border:`1px solid ${T.border}`,display:"flex",flexDirection:"column",gap:10}}>
-              <div>
-                <div style={{fontSize:10,color:T.muted,marginBottom:4}}>Auto-execute threshold (confidence %)</div>
-                {inp(lc.confidenceThreshold||85,v=>setLc(p=>({...p,confidenceThreshold:Number(v)})),"number")}
-                <div style={{fontSize:10,color:T.muted,marginTop:4}}>Low-risk actions above this confidence auto-execute without approval.</div>
-              </div>
-              {[["autoDiagnosis","🤖 Auto-Diagnosis"],["autoRemediation","⚡ Auto-Remediation"],["narrativeSummary","📝 Narrative Summary"],
-                ["anomalyTrend","📈 Anomaly Trend"],["blastRadius","💥 Blast Radius"],["preRunRisk","⚠️ Pre-Run Risk"],
-                ["incidentMemory","🧠 Incident Memory"],["crossStageCorrelation","🔗 Cross-Stage Correlation"],
-                ["weeklyDigest","📊 Weekly Digest"],["confidenceScore","🎯 Confidence Scoring"],
-              ].map(([k,label])=>(
-                <div key={k} style={{display:"flex",alignItems:"center",justifyContent:"space-between"}}>
-                  <span style={{fontSize:12,color:T.text}}>{label}</span>
-                  {tog(lc.aiFeatures?.[k]??true,v=>setAiF(k,v))}
-                </div>
-              ))}
-            </div>
-          </Sec>
-          <Sec title="Stages">
-            {STAGES.map(s=>(
-              <div key={s.id} style={{background:T.bg,borderRadius:8,padding:"12px 14px",border:`1px solid ${T.border}`,marginBottom:8}}>
-                <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:8}}>
-                  {tog(lc.stages[s.id]?.enabled,v=>setStage(s.id,"enabled",v))}
-                  <span style={{fontSize:13,fontWeight:600,color:T.text}}>{s.icon} {lc.stages[s.id]?.label}</span>
-                </div>
-                {[["Label","label"],["API Endpoint","apiEndpoint"],["Navigate To","navTo"],["SLA Target (HH:MM)","slaTarget"]].map(([lbl,k])=>(
-                  <div key={k} style={{marginBottom:6}}>
-                    <div style={{fontSize:10,color:T.muted,marginBottom:3}}>{lbl}</div>
-                    {inp(lc.stages[s.id]?.[k]||"",v=>setStage(s.id,k,v))}
-                  </div>
+        <div style={{flex:1, minWidth:0}}>
+          {busy && (
+            <div style={{display:"flex",alignItems:"center",gap:8}}>
+              <div style={{fontSize:12,color:T.muted}}>Analysing data…</div>
+              <div style={{display:"flex",gap:3}}>
+                {[0,1,2].map(i=>(
+                  <div key={i} style={{width:4,height:4,borderRadius:"50%",
+                    background:T.accent,animation:"obs-pulse 1.2s ease infinite",
+                    animationDelay:(i*0.2)+"s"}}/>
                 ))}
               </div>
-            ))}
-          </Sec>
-          <Sec title="Metric Thresholds">
-            {STAGES.map(s=>Object.entries(lc.thresholds?.[s.id]||{}).map(([mid,vals])=>(
-              <div key={s.id+mid} style={{background:T.bg,borderRadius:8,padding:"10px 14px",border:`1px solid ${T.border}`,marginBottom:6}}>
-                <div style={{fontSize:12,fontWeight:600,color:T.text,marginBottom:6}}>{s.id} / {mid}</div>
-                <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8}}>
-                  {[["⚠ Warn ≥",T.orange,"warn"],["✕ Error ≥",T.red,"error"]].map(([lbl,col,k])=>(
-                    <div key={k}><div style={{fontSize:10,color:col,marginBottom:3}}>{lbl}</div>{inp(vals[k],v=>setThresh(s.id,mid,k,v),"number")}</div>
-                  ))}
-                </div>
-              </div>
-            )))}
-          </Sec>
-          <Sec title="Alert Routing">
-            <div style={{background:T.bg,borderRadius:8,padding:"12px 14px",border:`1px solid ${T.border}`,display:"flex",flexDirection:"column",gap:8}}>
-              <div>
-                <div style={{fontSize:10,color:T.muted,marginBottom:3}}>Slack Webhook URL</div>
-                <div style={{display:"flex",gap:6}}>
-                  <div style={{flex:1}}>{inp(lc.alerts?.slackWebhook||"",v=>setAlert("slackWebhook",v))}</div>
-                  <TestSlackBtn webhook={lc.alerts?.slackWebhook} T={T}/>
-                </div>
-              </div>
-              {[["onWarning","Alert on Warning"],["onError","Alert on Error"],["routeQualityToTriage","Route Quality → Triage"]].map(([k,label])=>(
-                <div key={k} style={{display:"flex",alignItems:"center",justifyContent:"space-between"}}>
-                  <span style={{fontSize:12,color:T.text}}>{label}</span>{tog(lc.alerts?.[k]??true,v=>setAlert(k,v))}
-                </div>
-              ))}
             </div>
-          </Sec>
-          <Sec title="Auto Refresh">
-            <div style={{background:T.bg,borderRadius:8,padding:"12px 14px",border:`1px solid ${T.border}`}}>
-              <div style={{fontSize:10,color:T.muted,marginBottom:6}}>Interval seconds (0 = manual)</div>
-              {inp(lc.refreshInterval??300,v=>setLc(p=>({...p,refreshInterval:Number(v)})),"number")}
+          )}
+          {!busy && briefing?.narrative && (
+            <div style={{fontSize:13,color:T.text,lineHeight:1.6,fontWeight:500}}>
+              {briefing.narrative}
             </div>
-          </Sec>
-          <button onClick={()=>setLc(JSON.parse(JSON.stringify(INGESTION_CFG_DEFAULT)))} style={{background:"none",border:`1px solid ${T.border}`,borderRadius:7,padding:"7px",fontSize:11,color:T.muted,cursor:"pointer"}}>Reset to defaults</button>
+          )}
+          {!busy && !briefing && (
+            <div style={{fontSize:12,color:T.muted}}>AI briefing will appear here once data loads</div>
+          )}
+        </div>
+        <div style={{display:"flex",gap:6,flexShrink:0}}>
+          <button onClick={()=>setShowNl(p=>!p)}
+            title="Ask a follow-up question"
+            style={{background:showNl?T.accent+"20":"none",border:"1px solid "+(showNl?T.accent+"40":T.border),
+              borderRadius:7,padding:"5px 10px",fontSize:11,
+              color:showNl?T.accent:T.muted,cursor:"pointer",fontWeight:600}}>
+            💬 Ask
+          </button>
+          <button onClick={()=>{ setBriefing(null); dataKey.current=null; analyse(data); }}
+            disabled={busy}
+            style={{background:"none",border:"1px solid "+T.border,borderRadius:7,
+              padding:"5px 10px",fontSize:11,color:T.muted,cursor:"pointer"}}>
+            {busy?"…":"↻"}
+          </button>
         </div>
       </div>
-    );
-  };
 
-  // ── Pending Action Card ────────────────────────────────────────────────────
-  const ActionCard = ({action}) => {
-    const sevColor = action.severity==="error"?T.red:action.severity==="warning"?T.orange:T.muted;
-    const riskColor= action.risk==="medium"?T.orange:action.risk==="high"?T.red:T.green;
-    const isExecuting = action.status==="executing";
-    const isExecuted  = action.status==="executed";
-    const assigned = assignments[action.id];
-    return (
-      <div style={{background:T.surface,border:`1px solid ${sevColor}40`,borderRadius:10,
-        padding:"14px 16px",marginBottom:10,
-        opacity:isExecuted?0.5:1,transition:"opacity 0.4s"}}>
-        {/* Header */}
-        <div style={{display:"flex",alignItems:"flex-start",justifyContent:"space-between",marginBottom:8,gap:8}}>
-          <div style={{flex:1}}>
-            <div style={{display:"flex",alignItems:"center",gap:6,marginBottom:4,flexWrap:"wrap"}}>
-              <span style={{fontSize:10,fontWeight:700,color:sevColor,background:`${sevColor}15`,
-                padding:"2px 8px",borderRadius:99,textTransform:"uppercase"}}>{action.severity}</span>
-              <span style={{fontSize:10,color:T.muted}}>{action.stageLabel}</span>
-              <span style={{fontSize:10,fontWeight:700,color:riskColor,background:`${riskColor}12`,
-                padding:"2px 8px",borderRadius:99}}>{action.risk} risk</span>
-              {cfg.aiFeatures.confidenceScore && (
-                <span style={{fontSize:10,color:T.accent}}>🎯 {action.confidence}% confident</span>
-              )}
-              {action.createdAt && (()=>{
-                const mins = Math.round((Date.now()-new Date(action.createdAt).getTime())/60000);
-                const label = mins<1?"just now":mins<60?`${mins}m ago`:`${Math.round(mins/60)}h ago`;
-                const urgentColor = mins>30?T.red:mins>10?T.orange:T.muted;
-                return <span style={{fontSize:10,color:urgentColor,marginLeft:"auto"}}>⏱ Pending {label}</span>;
-              })()}
+      {/* ── NL drill-down ── */}
+      {showNl&&(
+        <div style={{background:T.surface,border:"1px solid "+T.border,borderRadius:10,
+          padding:"14px 16px",marginBottom:12}}>
+          <div style={{fontSize:11,fontWeight:600,color:T.muted,marginBottom:8}}>
+            Ask anything about this data
+          </div>
+          <div style={{display:"flex",gap:8}}>
+            <input value={nlInput} onChange={e=>setNlInput(e.target.value)}
+              onKeyDown={e=>e.key==="Enter"&&askNl()}
+              placeholder={"e.g. Which accounts failed most? Why did downloads drop on Monday?"}
+              style={{flex:1,background:T.bg,border:"1px solid "+T.border,borderRadius:7,
+                padding:"8px 12px",fontSize:12,color:T.text,outline:"none"}}/>
+            <button onClick={askNl} disabled={nlBusy||!nlInput.trim()}
+              style={{background:nlBusy?T.accent+"60":T.accent,color:"#fff",border:"none",
+                borderRadius:7,padding:"8px 16px",fontSize:12,fontWeight:700,
+                cursor:nlBusy?"not-allowed":"pointer",whiteSpace:"nowrap"}}>
+              {nlBusy?"…":"Ask →"}
+            </button>
+          </div>
+          {nlAnswer&&(
+            <div style={{marginTop:10,padding:"10px 12px",background:T.bg,
+              borderRadius:7,fontSize:12,color:T.text,lineHeight:1.7,
+              borderLeft:"3px solid "+T.accent}}>
+              {nlAnswer}
             </div>
-            <div style={{fontSize:13,fontWeight:700,color:T.text,marginBottom:4}}>{action.actionLabel}</div>
-            <div style={{fontSize:12,color:T.muted,lineHeight:1.5}}>{action.actionDetail}</div>
-          </div>
+          )}
         </div>
-        {/* Diagnosis */}
-        <div style={{fontSize:11,color:T.muted,lineHeight:1.5,marginBottom:10,
-          padding:"8px 10px",background:`${T.accent}08`,borderRadius:6,
-          borderLeft:`3px solid ${T.accent}40`}}>
-          <span style={{fontWeight:700,color:T.accent}}>Diagnosis: </span>{action.diagnosis}
-        </div>
-        {/* Issues */}
-        {action.issues?.length>0 && (
-          <div style={{marginBottom:10}}>
-            {action.issues.map((iss,i)=>(
-              <div key={i} style={{fontSize:11,color:T.muted,padding:"3px 0",display:"flex",gap:6}}>
-                <span style={{color:sevColor}}>•</span><span>{iss}</span>
-              </div>
-            ))}
-          </div>
-        )}
-        {/* Actions row */}
-        <div style={{display:"flex",gap:8,alignItems:"center",flexWrap:"wrap"}}>
-          {!isExecuted && !isExecuting && action.status==="pending" && (<>
-            <button onClick={()=>approveAction(action.id)} style={{
-              background:T.green,color:"#fff",border:"none",borderRadius:8,
-              padding:"9px 20px",fontSize:13,fontWeight:800,cursor:"pointer",
-              flex:1,
-              animation:action.severity==="error"?"wz-pulse-btn 1.8s ease-in-out infinite":"none",
-              boxShadow:`0 2px 8px ${T.green}40`}}>
-              ✓ Approve & Execute
-            </button>
-            <button onClick={()=>rejectAction(action.id)} style={{
-              background:`${T.red}15`,border:`1px solid ${T.red}30`,borderRadius:7,
-              padding:"6px 14px",fontSize:12,color:T.red,cursor:"pointer",fontWeight:600}}>
-              ✗ Reject
-            </button>
-            <button onClick={()=>onNavigate?.("workflows")} style={{
-              background:T.surface,border:`1px solid ${T.border}`,borderRadius:7,
-              padding:"6px 14px",fontSize:12,color:T.text,cursor:"pointer"}}>
-              ▶ Run SOP
-            </button>
-          </>)}
-          {isExecuting && <span style={{fontSize:12,color:T.accent}}>⚡ Executing…</span>}
-          {isExecuted  && <span style={{fontSize:12,color:T.green}}>✓ Executed</span>}
-          <select value={assigned?.member||""} onChange={e=>assignAction(action.id,e.target.value)}
-            style={{fontSize:11,background:T.bg,border:`1px solid ${T.border}`,borderRadius:5,
-              padding:"4px 8px",color:T.text,cursor:"pointer",marginLeft:"auto"}}>
-            <option value="">👤 Assign…</option>
-            {INGESTION_TEAM.map(m=><option key={m} value={m}>{m}</option>)}
-          </select>
-          {assigned?.member && <span style={{fontSize:11,color:T.green}}>→ {assigned.member}</span>}
-        </div>
-      </div>
-    );
-  };
+      )}
 
-  // ── Execution log entry ────────────────────────────────────────────────────
-  const logColor = (status) =>
-    status==="ok"?"#10b981":status==="error"?T.red:status==="warning"?T.orange:status==="pending"?T.accent:T.muted;
-
-  const logIcon = (type,status) => {
-    if (type==="system")    return "⚙";
-    if (type==="check")     return status==="ok"?"✓":"⚠";
-    if (type==="diagnosis") return "🤖";
-    if (type==="action")    return status==="ok"?"✓":status==="pending"?"⏳":"⚡";
-    if (type==="error")     return "✗";
-    return "•";
-  };
-
-  // ── Stage detail (collapsed secondary) ────────────────────────────────────
-  const StageRow = ({stage}) => {
-    const sd=data?.[stage.id];
-    const status=sd?.status||"loading";
-    const color=STATUS_COLOR[status];
-    const isOpen=expanded[stage.id];
-    return (
-      <div style={{background:T.surface,border:`1px solid ${isOpen?color:T.border}`,borderRadius:10,marginBottom:8,overflow:"hidden"}}>
-        <div style={{display:"flex",alignItems:"center",gap:10,padding:"12px 16px",cursor:"pointer",
-          borderBottom:isOpen?`1px solid ${T.border}`:"none"}}
-          onClick={()=>setExpanded(p=>({...p,[stage.id]:!p[stage.id]}))}>
-          <span style={{fontSize:16}}>{stage.icon}</span>
-          <span style={{fontSize:13,fontWeight:700,color:T.text,flex:1}}>{cfg.stages[stage.id]?.label}</span>
-          <span style={{fontSize:10,fontWeight:700,color,background:`${color}18`,padding:"2px 8px",borderRadius:99}}>● {STATUS_LABEL[status]}</span>
-          {sd?.duration>0&&<span style={{fontSize:10,color:T.muted,background:`${T.border}60`,padding:"2px 8px",borderRadius:99}}>ran in {sd.duration>=60?`${Math.round(sd.duration/60)}m ${sd.duration%60}s`:`${sd.duration}s`}</span>}
-          <span style={{fontSize:11,color:T.muted,marginLeft:8}}>{sd?.summary}</span>
-          <span style={{fontSize:11,color:T.muted,marginLeft:8}}>{isOpen?"▲":"▼"}</span>
-        </div>
-        {isOpen && (
-          <div style={{padding:"14px 16px"}}>
-            <div style={{display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:8,marginBottom:12}}>
-              {(sd?.metrics||[]).map((m,i)=>(
-                <div key={i} style={{background:T.bg,borderRadius:7,padding:"9px 11px",border:`1px solid ${m.ok?T.border:T.red+"40"}`}}>
-                  <div style={{fontSize:16,fontWeight:800,color:m.ok?T.text:T.red}}>{m.value}</div>
-                  <div style={{fontSize:10,color:T.muted,marginTop:2}}>{m.label}</div>
-                </div>
-              ))}
-            </div>
-            {/* Trend sparkline */}
-            {cfg.aiFeatures.anomalyTrend && sd?.history && (
-              <div style={{marginBottom:10,padding:"8px 10px",background:T.bg,borderRadius:7,border:`1px solid ${T.border}`}}>
-                <div style={{fontSize:9,fontWeight:700,color:T.muted,textTransform:"uppercase",letterSpacing:"0.07em",marginBottom:5}}>7-Day Trend</div>
-                <div style={{display:"flex",alignItems:"flex-end",gap:2,height:24}}>
-                  {sd.history.map((v,i)=>{
-                    const max=Math.max(...sd.history,1),h=Math.max(3,Math.round((v/max)*24)),isLast=i===sd.history.length-1;
-                    return <div key={i} style={{flex:1,height:h,borderRadius:2,background:isLast?(status==="error"?T.red:status==="warning"?T.orange:T.green):T.accent+"50"}}/>;
-                  })}
-                </div>
-              </div>
-            )}
-            {/* Per-account */}
-            {(sd?.accounts||[]).map((acc,i)=>(
-              <div key={i} style={{display:"flex",alignItems:"center",gap:8,padding:"7px 10px",
-                borderRadius:6,marginBottom:4,background:T.bg,border:`1px solid ${T.border}`}}>
-                <div style={{width:7,height:7,borderRadius:"50%",background:STATUS_COLOR[acc.status]||T.muted,flexShrink:0}}/>
-                <span style={{fontSize:12,color:T.text,flex:1}}>{acc.name}</span>
-                {acc.note&&<span style={{fontSize:11,color:T.orange}}>{acc.note}</span>}
-                <span style={{fontSize:11,color:T.muted}}>{acc.lastSync}</span>
-                <span style={{fontSize:11,color:T.muted}}>{acc.rows?.toLocaleString()} rows</span>
-              </div>
-            ))}
-          </div>
-        )}
-      </div>
-    );
-  };
-
-  // ── Digest view ────────────────────────────────────────────────────────────
-  const DigestView = () => {
-    // Build 14-day chart from run history
-    const last14 = Array.from({length:14},(_,i)=>{
-      const d = new Date(); d.setDate(d.getDate()-(13-i));
-      const dateStr = d.toDateString();
-      const run = runHistory.find(r=>new Date(r.ts).toDateString()===dateStr);
-      const status = !run?null:Object.values(run.statuses||{}).includes("error")?"error":Object.values(run.statuses||{}).includes("warning")?"warning":"healthy";
-      return {date:d,dateStr,status,dayLabel:d.toLocaleDateString("en-IN",{day:"numeric",month:"short"})};
-    });
-    const errorDays  = last14.filter(d=>d.status==="error").length;
-    const warnDays   = last14.filter(d=>d.status==="warning").length;
-    const healthDays = last14.filter(d=>d.status==="healthy").length;
-    const noDataDays = last14.filter(d=>d.status===null).length;
-
-    // Send to Slack
-    const [slackSending, setSlackSending] = React.useState(false);
-    const [slackResult,  setSlackResult]  = React.useState(null);
-    const sendToSlack = async () => {
-      const webhook = cfg.alerts?.slackWebhook;
-      if (!webhook||!aiDigest) return;
-      setSlackSending(true); setSlackResult(null);
-      try {
-        await fetch(webhook,{method:"POST",headers:{"Content-Type":"application/json"},
-          body:JSON.stringify({text:`*WiziAgent — Weekly Pipeline Digest*
-${aiDigest}
-
-Last 14 days: ✅ ${healthDays} healthy, ⚠️ ${warnDays} warnings, 🔴 ${errorDays} errors.`})});
-        setSlackResult("sent");
-      } catch { setSlackResult("error"); }
-      setSlackSending(false);
-    };
-
-    return (
-    <div>
-      {/* 14-day run chart */}
-      <div style={{background:T.surface,borderRadius:10,padding:"16px",border:`1px solid ${T.border}`,marginBottom:14}}>
-        <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:12}}>
-          <div style={{fontSize:11,fontWeight:700,color:T.text}}>📅 14-Day Pipeline History</div>
-          <div style={{display:"flex",gap:12,fontSize:10,color:T.muted}}>
-            {[[T.green,"Healthy"],[T.orange,"Warning"],[T.red,"Error"]].map(([c,l])=>(
-              <span key={l} style={{display:"flex",alignItems:"center",gap:4}}>
-                <span style={{width:8,height:8,borderRadius:2,background:c,display:"inline-block"}}/>
-                {l}
-              </span>
-            ))}
-          </div>
-        </div>
-        <div style={{display:"flex",alignItems:"flex-end",gap:4,height:48,marginBottom:6}}>
-          {last14.map((d,i)=>{
-            const barColor = d.status==="error"?T.red:d.status==="warning"?T.orange:d.status==="healthy"?T.green:`${T.border}60`;
-            const h = d.status?40:12;
-            const isToday = i===13;
+      {/* ── Anomaly cards ── */}
+      {!busy&&visibleAnomalies.length>0&&(
+        <div style={{display:"flex",flexDirection:"column",gap:8}}>
+          {visibleAnomalies.map(a=>{
+            const col = SEV_COLOR(a.severity, T);
+            const relevantActions = (briefing?.actions||[]).filter(ac=>ac.anomalyId===a.id);
             return (
-              <div key={i} title={`${d.dayLabel}: ${d.status||"no data"}`}
-                style={{flex:1,display:"flex",flexDirection:"column",alignItems:"center",gap:3}}>
-                <div style={{width:"100%",height:h,borderRadius:3,background:barColor,
-                  outline:isToday?`2px solid ${T.accent}`:"none",
-                  outlineOffset:1,transition:"height 0.3s"}}/>
+              <div key={a.id} style={{background:T.surface,borderRadius:10,
+                border:"1px solid "+col+"30",
+                borderLeft:"3px solid "+col,overflow:"hidden"}}>
+                {/* Anomaly header */}
+                <div style={{padding:"10px 16px",display:"flex",alignItems:"flex-start",gap:10}}>
+                  <span style={{fontSize:14,flexShrink:0,marginTop:1}}>{SEV_ICON[a.severity]||"◎"}</span>
+                  <div style={{flex:1,minWidth:0}}>
+                    <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:3,flexWrap:"wrap"}}>
+                      <span style={{fontSize:12,fontWeight:700,color:T.text}}>{a.title}</span>
+                      <span style={{fontSize:9,padding:"2px 7px",borderRadius:99,fontWeight:700,
+                        background:col+"18",color:col,textTransform:"uppercase",
+                        letterSpacing:"0.06em"}}>{a.severity}</span>
+                      {a.affected&&(
+                        <span style={{fontSize:10,color:T.muted}}>→ {a.affected}</span>
+                      )}
+                    </div>
+                    <div style={{fontSize:12,color:T.muted,lineHeight:1.5,marginBottom:a.rootCause?6:0}}>
+                      {a.detail}
+                    </div>
+                    {a.rootCause&&(
+                      <div style={{fontSize:11,color:T.dim||T.muted,fontStyle:"italic",
+                        display:"flex",alignItems:"flex-start",gap:4}}>
+                        <span style={{flexShrink:0,marginTop:1}}>⤷</span>
+                        <span>{a.rootCause}</span>
+                      </div>
+                    )}
+                  </div>
+                  <button onClick={()=>setDismissed(p=>({...p,[a.id]:true}))}
+                    style={{background:"none",border:"none",cursor:"pointer",
+                      color:T.muted,fontSize:14,flexShrink:0,padding:0,opacity:0.6}}>✕</button>
+                </div>
+                {/* Actions */}
+                {relevantActions.length>0&&(
+                  <div style={{padding:"8px 16px 10px",borderTop:"1px solid "+col+"15",
+                    display:"flex",gap:6,flexWrap:"wrap",background:col+"04"}}>
+                    {relevantActions.map((ac,i)=>{
+                      const isDone = approved[a.id+"|"+i];
+                      return (
+                        <button key={i} onClick={()=>!isDone&&setApproved(p=>({...p,[a.id+"|"+i]:true}))}
+                          style={{display:"flex",alignItems:"center",gap:5,
+                            padding:"5px 12px",borderRadius:7,fontSize:11,fontWeight:600,
+                            cursor:isDone?"default":"pointer",transition:"all 0.15s",
+                            background:isDone?T.green+"15":T.surface,
+                            border:"1px solid "+(isDone?T.green+"40":col+"30"),
+                            color:isDone?T.green:col}}>
+                          <span>{isDone?"✓":(ACT_ICON[ac.type]||"▶")}</span>
+                          <span>{isDone?"Done":ac.label}</span>
+                        </button>
+                      );
+                    })}
+                  </div>
+                )}
               </div>
             );
           })}
         </div>
-        <div style={{display:"flex",justifyContent:"space-between",fontSize:9,color:T.muted}}>
-          <span>{last14[0].dayLabel}</span>
-          <span>Today</span>
-        </div>
-        {/* Summary counts */}
-        <div style={{display:"flex",gap:16,marginTop:12,paddingTop:12,borderTop:`1px solid ${T.border}`}}>
-          {[[T.green,healthDays,"healthy days"],[T.orange,warnDays,"warning days"],[T.red,errorDays,"error days"],[T.muted,noDataDays,"no data"]].map(([c,v,l])=>(
-            <div key={l} style={{textAlign:"center"}}>
-              <div style={{fontSize:18,fontWeight:800,color:c}}>{v}</div>
-              <div style={{fontSize:10,color:T.muted}}>{l}</div>
-            </div>
-          ))}
-        </div>
-      </div>
+      )}
 
-      {/* AI Weekly digest + send to Slack */}
-      <div style={{marginBottom:14,padding:"14px 16px",background:`${T.accent}08`,borderRadius:10,border:`1px solid ${T.accent}20`}}>
-        <div style={{fontSize:11,fontWeight:700,color:T.accent,marginBottom:8,display:"flex",alignItems:"center",justifyContent:"space-between",gap:8,flexWrap:"wrap"}}>
-          <span>📊 Weekly Digest</span>
-          <div style={{display:"flex",gap:6}}>
-            <button onClick={generateWeeklyDigest} style={{fontSize:11,color:T.accent,background:"none",border:`1px solid ${T.accent}40`,borderRadius:5,padding:"2px 8px",cursor:"pointer"}}>{aiDigestLoad?"Generating…":"Generate"}</button>
-            {aiDigest && cfg.alerts?.slackWebhook && (
-              <button onClick={sendToSlack} disabled={slackSending} style={{fontSize:11,
-                color:slackResult==="sent"?T.green:slackResult==="error"?T.red:T.muted,
-                background:"none",border:`1px solid ${T.border}`,borderRadius:5,
-                padding:"2px 8px",cursor:"pointer"}}>
-                {slackSending?"Sending…":slackResult==="sent"?"✓ Sent to Slack":slackResult==="error"?"✗ Failed":"📤 Send to Slack"}
-              </button>
-            )}
-          </div>
+      {/* All clear */}
+      {!busy&&briefing&&visibleAnomalies.length===0&&(briefing?.anomalies||[]).length===0&&(
+        <div style={{display:"flex",alignItems:"center",gap:8,padding:"8px 14px",
+          background:T.green+"08",borderRadius:8,border:"1px solid "+T.green+"25",
+          fontSize:12,color:T.green,fontWeight:500}}>
+          <span>✓</span> No anomalies detected
         </div>
-        {aiDigest?<div style={{fontSize:13,color:T.text,lineHeight:1.6}}>{aiDigest}</div>
-          :<div style={{fontSize:12,color:T.muted}}>Click Generate for an AI-written weekly summary.</div>}
-      </div>
-
-      {/* Incident list */}
-      <div style={{fontSize:11,fontWeight:700,color:T.muted,textTransform:"uppercase",letterSpacing:"0.07em",marginBottom:10}}>Recent Incidents</div>
-      {incidents.slice(0,10).map((inc,i)=>(
-        <div key={i} style={{background:T.surface,border:`1px solid ${T.border}`,borderRadius:8,padding:"10px 14px",marginBottom:6}}>
-          <div style={{display:"flex",gap:10,alignItems:"flex-start"}}>
-            <span style={{fontSize:10,fontWeight:700,color:T.orange,background:`${T.orange}15`,padding:"2px 8px",borderRadius:99,flexShrink:0}}>{inc.stage}</span>
-            <div style={{flex:1}}>
-              <div style={{fontSize:12,color:T.text}}>{inc.summary}</div>
-              <div style={{fontSize:10,color:T.muted,marginTop:3}}>{inc.date}</div>
-            </div>
-          </div>
-        </div>
-      ))}
-      {incidents.length===0&&<div style={{fontSize:12,color:T.muted}}>No incidents recorded yet.</div>}
+      )}
     </div>
-    );
+  );
+}
+
+// ── SQL Contract Editor ───────────────────────────────────────────────────────
+function ObsSqlEditor({ contractKey, label, defaultSql, savedSql, onSave, onClose, T }) {
+  const schema   = useSchema();
+  const [draft,   setDraft]  = React.useState(savedSql||defaultSql);
+  const [nlInput, setNlInput]= React.useState("");
+  const [aiOut,   setAiOut]  = React.useState(null);
+  const [busy,    setBusy]   = React.useState(false);
+  const [tab,     setTab]    = React.useState("sql");
+
+  const aiCall = async (sys,usr,tok=500) => {
+    const r = await apiFetch(API+"/api/ai/chat",{method:"POST",
+      headers:{"Content-Type":"application/json"},
+      body:JSON.stringify({system:sys,messages:[{role:"user",content:usr}],max_tokens:tok})});
+    return (await r.json())?.content?.[0]?.text?.trim()||"";
   };
 
+  const schCtx = typeof schema==="string" ? schema.slice(0,600) : "";
 
-  // ── Executive View ────────────────────────────────────────────────────────
-  const ExecutiveView = () => {
-    const pending   = pendingActions.filter(a=>a.status==="pending");
-    const autoExec  = execLog.filter(e=>e.autoExecuted);
+  const runAi = async (mode) => {
+    setBusy(true); setAiOut(null);
+    try {
+      if (mode==="nl") {
+        const sql = await aiCall(
+          "You are a Redshift SQL expert. Use mws.report(account,report_type,status,download_date,updated_at,error_message,tries,requested_date). Use :date for single-day and :date_from for range filters. Return ONLY SQL.",
+          "Write SQL for: "+nlInput+"\nSchema: "+schCtx
+        );
+        setAiOut({type:"sql",content:sql});
+      } else if (mode==="review") {
+        const out = await aiCall(
+          "Review this SQL for a data observability dashboard. Point out issues, inefficiencies, and improvements. Bullet points, concise.",
+          "SQL:\n"+draft, 600
+        );
+        setAiOut({type:"text",content:out});
+      } else {
+        const out = await aiCall(
+          "Suggest 3 enhancements to make this data observability query more insightful. For each: one-line description + modified SQL.",
+          "Current SQL:\n"+draft+"\n\nTable: mws.report(account,report_type,status,download_date,updated_at,error_message,tries,requested_date)", 800
+        );
+        setAiOut({type:"text",content:out});
+      }
+    } catch(e) { setAiOut({type:"error",content:e.message}); }
+    setBusy(false);
+  };
 
-    // Plain-English stage summaries
-    const stageSummaries = STAGES.filter(s=>cfg.stages[s.id]?.enabled).map(s=>{
-      const sd=data?.[s.id];
-      const label=cfg.stages[s.id]?.label;
-      const status=sd?.status||"loading";
-      const color=STATUS_COLOR[status];
-      return {id:s.id,label,status,color,summary:sd?.summary||"—",issues:sd?.issues||[],
-        accounts:sd?.accounts||[], lastRun:sd?.lastRun||"—", duration:sd?.duration||0};
-    });
-
-    // Overall headline
-    const headline = overallStatus==="healthy"
-      ? "All data pipelines are running normally."
-      : overallStatus==="warning"
-        ? "One or more pipelines need attention."
-        : "Data pipeline has failures. AI is taking action.";
-
-    const headlineColor = STATUS_COLOR[overallStatus];
-
-    // ── Insight 1: 7-day health streak ──────────────────────────────────────
-    const healthStreak = runHistory.slice(0,7).reverse().map(r=>{
-      const s = Object.values(r.statuses||{});
-      return s.includes("error")?"error":s.includes("warning")?"warning":"healthy";
-    });
-    // Pad to 7 if fewer runs
-    while (healthStreak.length<7) healthStreak.unshift(null);
-
-    // ── Insight 2: Data freshness ────────────────────────────────────────────
-    const freshnessItems = stageSummaries.map(s=>{
-      const timeStr = s.lastRun; // e.g. "Today 04:12 IST"
-      const match = timeStr.match(/(\d{1,2}):(\d{2})/);
-      if (!match) return {label:s.label,hoursAgo:null};
-      const runHour=parseInt(match[1]), runMin=parseInt(match[2]);
-      const now=new Date(), nowH=now.getHours(), nowM=now.getMinutes();
-      const minsAgo=(nowH*60+nowM)-(runHour*60+runMin);
-      const hoursAgo=minsAgo>0?Math.round(minsAgo/60):null;
-      return {label:s.label,hoursAgo,status:s.status};
-    });
-    const maxFreshness = freshnessItems.reduce((a,b)=>((b.hoursAgo||0)>(a.hoursAgo||0)?b:a),freshnessItems[0]);
-
-    // ── Insight 3: Accounts at risk ──────────────────────────────────────────
-    const allAccounts = stageSummaries.flatMap(s=>s.accounts);
-    const atRisk = [...new Map(
-      allAccounts.filter(a=>a.status!=="healthy").map(a=>[a.name,a])
-    ).values()];
-    const totalAccounts = [...new Map(allAccounts.map(a=>[a.name,a])).values()].length;
-
-    // ── Insight 4: Time to resolution ───────────────────────────────────────
-    const avgResolutionMins = (() => {
-      if (overallStatus==="healthy") return null;
-      // Use historical avg duration of failing stages as proxy
-      const failingDurations = stageSummaries
-        .filter(s=>s.status!=="healthy")
-        .map(s=>s.duration||0);
-      if (!failingDurations.length) return null;
-      const avg = failingDurations.reduce((a,b)=>a+b,0)/failingDurations.length;
-      return Math.round(avg/60)+15; // add 15min buffer
-    })();
-    const etaTime = avgResolutionMins ? (() => {
-      const d=new Date(Date.now()+avgResolutionMins*60000);
-      return d.toLocaleTimeString("en-IN",{hour:"2-digit",minute:"2-digit"})+" IST";
-    })() : null;
-
-    // ── Insight 5: Today vs yesterday ───────────────────────────────────────
-    const todayRun     = runHistory[0];
-    const yesterdayRun = runHistory[1];
-    const vsYesterday  = (() => {
-      if (!todayRun||!yesterdayRun) return null;
-      const score = r => Object.values(r.statuses||{}).reduce((a,s)=>a+(s==="error"?2:s==="warning"?1:0),0);
-      const diff = score(todayRun)-score(yesterdayRun);
-      if (diff===0) return {label:"Same as yesterday",color:T.muted,icon:"→"};
-      if (diff<0)   return {label:"Better than yesterday",color:T.green,icon:"↑"};
-      return       {label:"More issues than yesterday",color:T.red,icon:"↓"};
-    })();
-
-    // Empty state
-    if (!loading && !data) return (
-      <div style={{maxWidth:600,margin:"0 auto",textAlign:"center",padding:"60px 20px"}}>
-        <div style={{fontSize:40,marginBottom:16}}>📡</div>
-        <div style={{fontSize:17,fontWeight:700,color:T.text,marginBottom:8}}>No pipeline data yet</div>
-        <div style={{fontSize:13,color:T.muted,marginBottom:20,lineHeight:1.6}}>
-          Hit Refresh to run the first scan. AI will diagnose and report back here.
-        </div>
-        <button onClick={loadStageData} style={{background:T.accent,color:"#fff",border:"none",
-          borderRadius:8,padding:"10px 24px",fontSize:13,fontWeight:700,cursor:"pointer"}}>
-          ↻ Run First Scan
-        </button>
-      </div>
-    );
-
-    return (
-      <div style={{maxWidth:760,margin:"0 auto"}}>
-
-        {/* Status bar */}
-        <div style={{background:`${headlineColor}12`,border:`1.5px solid ${headlineColor}40`,
-          borderRadius:12,padding:"16px 24px",marginBottom:20,
-          display:"flex",alignItems:"center",gap:16}}>
-          <div style={{width:10,height:10,borderRadius:"50%",background:headlineColor,
-            flexShrink:0,boxShadow:`0 0 0 4px ${headlineColor}25`}}/>
-          <div style={{flex:1}}>
-            <div style={{fontSize:17,fontWeight:800,color:T.text,letterSpacing:"-0.01em"}}>
-              {loading?"Checking pipeline…":headline}
+  return (
+    <>
+      <div onClick={onClose} style={{position:"fixed",inset:0,background:"rgba(0,0,0,0.5)",
+        zIndex:399,backdropFilter:"blur(3px)"}}/>
+      <div style={{position:"fixed",top:0,right:0,bottom:0,width:560,background:T.surface,
+        borderLeft:"1px solid "+T.border,zIndex:400,display:"flex",flexDirection:"column",
+        boxShadow:"-12px 0 48px rgba(0,0,0,0.25)"}}>
+        <div style={{padding:"20px 24px",borderBottom:"1px solid "+T.border,flexShrink:0}}>
+          <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:12}}>
+            <div>
+              <div style={{fontSize:15,fontWeight:700,color:T.text}}>⚙ Query Contract</div>
+              <div style={{fontSize:11,color:T.muted,marginTop:2}}>{label}</div>
             </div>
-            {aiNarrative&&<div style={{fontSize:13,color:T.muted,lineHeight:1.5,marginTop:4}}>{aiNarrative}</div>}
+            <button onClick={onClose} style={{background:"none",border:"none",cursor:"pointer",
+              color:T.muted,fontSize:20}}>✕</button>
           </div>
-          <div style={{textAlign:"right",flexShrink:0}}>
-            <div style={{fontSize:10,color:T.muted,textTransform:"uppercase",letterSpacing:"0.07em"}}>Last checked</div>
-            <div style={{fontSize:13,fontWeight:600,color:T.text,marginTop:2}}>{data?.quality?.lastRun||"—"}</div>
-            {execLog.find(e=>e.type==="action"&&e.status==="ok"&&!e.autoExecuted)&&(
-              <div style={{fontSize:10,color:T.green,marginTop:4}}>✓ Slack alerted</div>
+          <div style={{display:"flex",gap:2}}>
+            {[["sql","📝 SQL"],["nl","💬 Natural Language"],["ai","🤖 AI Tools"]].map(([id,lbl])=>(
+              <button key={id} onClick={()=>setTab(id)} style={{padding:"7px 14px",fontSize:11,
+                fontWeight:600,background:"none",border:"none",cursor:"pointer",
+                color:tab===id?T.accent:T.muted,
+                borderBottom:"2px solid "+(tab===id?T.accent:"transparent"),transition:"all 0.15s"}}>
+                {lbl}
+              </button>
+            ))}
+          </div>
+        </div>
+        <div style={{flex:1,overflowY:"auto",padding:"20px 24px",display:"flex",
+          flexDirection:"column",gap:12}}>
+
+          {tab==="sql"&&<>
+            <div style={{fontSize:11,color:T.muted,padding:"7px 12px",background:T.accent+"08",
+              borderRadius:7,border:"1px solid "+T.accent+"20",lineHeight:1.6}}>
+              Default queries use <code style={{color:T.accent}}>CURRENT_DATE - 30</code> for a rolling 30-day window. You can still use <code style={{color:T.accent}}>:date</code> and <code style={{color:T.accent}}>:date_from</code> as custom bind variables — they will be replaced with the selected dates at runtime.
+            </div>
+            <textarea value={draft} onChange={e=>setDraft(e.target.value)} spellCheck={false}
+              style={{flex:1,minHeight:300,fontFamily:"monospace",fontSize:11.5,lineHeight:1.75,
+                background:T.bg,border:"1px solid "+T.border,borderRadius:10,
+                padding:"14px 16px",color:T.text,resize:"vertical",boxSizing:"border-box"}}/>
+            <button onClick={()=>setDraft(defaultSql)}
+              style={{background:"none",border:"1px solid "+T.border,borderRadius:7,
+                padding:"6px 14px",fontSize:11,color:T.muted,cursor:"pointer",
+                alignSelf:"flex-start"}}>↺ Reset to default</button>
+          </>}
+
+          {tab==="nl"&&<>
+            <textarea value={nlInput} onChange={e=>setNlInput(e.target.value)}
+              placeholder="Describe what you want this query to show…"
+              style={{minHeight:90,background:T.bg,border:"1px solid "+T.border,
+                borderRadius:9,padding:"10px 13px",fontSize:12,color:T.text,
+                resize:"vertical",boxSizing:"border-box",lineHeight:1.6}}/>
+            <button onClick={()=>runAi("nl")} disabled={busy||!nlInput.trim()}
+              style={{background:busy?T.accent+"50":T.accent,color:"#fff",border:"none",
+                borderRadius:9,padding:"10px",fontSize:13,fontWeight:700,
+                cursor:busy?"not-allowed":"pointer"}}>
+              {busy?"🤖 Generating…":"🤖 Generate SQL →"}
+            </button>
+            {aiOut?.type==="sql"&&(
+              <div style={{background:T.bg,borderRadius:9,border:"1px solid "+T.border,
+                overflow:"hidden"}}>
+                <div style={{padding:"8px 14px",borderBottom:"1px solid "+T.border,
+                  display:"flex",alignItems:"center",justifyContent:"space-between"}}>
+                  <span style={{fontSize:11,fontWeight:700,color:T.green}}>✓ Generated</span>
+                  <button onClick={()=>{setDraft(aiOut.content);setTab("sql");setAiOut(null);}}
+                    style={{background:T.green,color:"#fff",border:"none",borderRadius:6,
+                      padding:"3px 12px",fontSize:11,fontWeight:700,cursor:"pointer"}}>
+                    Use this →
+                  </button>
+                </div>
+                <pre style={{margin:0,padding:"12px 14px",fontSize:11,color:T.text,
+                  fontFamily:"monospace",whiteSpace:"pre-wrap",lineHeight:1.6,
+                  maxHeight:260,overflowY:"auto"}}>{aiOut.content}</pre>
+              </div>
+            )}
+          </>}
+
+          {tab==="ai"&&<>
+            <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8}}>
+              {[["review","🔍","Review","Find issues in current SQL"],
+                ["suggest","✨","Suggest","Propose 3 enhancements"]].map(([m,ic,lbl,desc])=>(
+                <button key={m} onClick={()=>runAi(m)} disabled={busy}
+                  style={{padding:"14px",borderRadius:10,border:"1px solid "+T.border,
+                    background:T.bg,cursor:busy?"not-allowed":"pointer",textAlign:"left",
+                    transition:"border-color 0.15s"}}
+                  onMouseEnter={e=>!busy&&(e.currentTarget.style.borderColor=T.accent)}
+                  onMouseLeave={e=>e.currentTarget.style.borderColor=T.border}>
+                  <div style={{fontSize:20,marginBottom:6}}>{ic}</div>
+                  <div style={{fontSize:12,fontWeight:700,color:T.text,marginBottom:3}}>{lbl}</div>
+                  <div style={{fontSize:10,color:T.muted}}>{desc}</div>
+                </button>
+              ))}
+            </div>
+            {busy&&<div style={{fontSize:11,color:T.accent}}>🤖 Thinking…</div>}
+            {aiOut&&aiOut.type!=="sql"&&(
+              <div style={{background:T.bg,borderRadius:9,border:"1px solid "+T.border,
+                overflow:"hidden"}}>
+                <div style={{padding:"8px 14px",borderBottom:"1px solid "+T.border}}>
+                  <span style={{fontSize:11,fontWeight:700,
+                    color:aiOut.type==="error"?T.red:T.green}}>
+                    {aiOut.type==="error"?"✗ Error":"✓ Result"}
+                  </span>
+                </div>
+                <pre style={{margin:0,padding:"12px 14px",fontSize:11,color:T.text,
+                  fontFamily:"inherit",whiteSpace:"pre-wrap",lineHeight:1.7,
+                  maxHeight:320,overflowY:"auto"}}>{aiOut.content}</pre>
+              </div>
+            )}
+          </>}
+        </div>
+        <div style={{padding:"14px 24px",borderTop:"1px solid "+T.border,
+          display:"flex",gap:8,flexShrink:0}}>
+          <button onClick={()=>onSave(draft)}
+            style={{flex:1,background:T.accent,color:"#fff",border:"none",borderRadius:9,
+              padding:"10px",fontSize:13,fontWeight:700,cursor:"pointer"}}>
+            Save & Apply
+          </button>
+          <button onClick={onClose}
+            style={{background:"none",border:"1px solid "+T.border,borderRadius:9,
+              padding:"10px 20px",fontSize:12,color:T.muted,cursor:"pointer"}}>
+            Cancel
+          </button>
+        </div>
+      </div>
+    </>
+  );
+}
+
+// ── Page: Overview ─────────────────────────────────────────────────────────────
+function ObsOverviewPage({ date, dateFrom, T, sqls, onEditSql, onKpisLoad, liveFailures, predictions, incidentSummary }) {
+  const [kpis,       setKpis]       = React.useState(null);
+  const [trend,      setTrend]      = React.useState(null);
+  const [loading,    setLoading]    = React.useState(false);
+  const [error,      setError]      = React.useState(null);
+  const [resolution, setResolution] = React.useState(null);
+  const [resBusy,    setResBusy]    = React.useState(false);
+  const [lastChecked,setLastChecked]= React.useState(null);
+
+  const load = React.useCallback(async () => {
+    setLoading(true); setError(null);
+    try {
+      const run = async sql => {
+        const r = await apiFetch(API+"/api/query?sql="+encodeURIComponent(sql));
+        if(!r.ok) throw new Error("HTTP "+r.status);
+        const d = await r.json();
+        return Array.isArray(d)?d:(d?.rows||d?.data||d?.results||[]);
+      };
+      const [k,t] = await Promise.all([
+        run(sqls.overview_kpis||OBS_DEFAULT_SQL.overview_kpis).catch(()=>[]),
+        run(sqls.overview_trend||OBS_DEFAULT_SQL.overview_trend).catch(()=>[]),
+      ]);
+      const kpisRow = k[0]||null;
+      setKpis(kpisRow);
+      setTrend(t);
+      setLastChecked(new Date());
+      if (onKpisLoad) onKpisLoad(kpisRow);
+      // AI resolution estimate when there are failures
+      if (kpisRow && Number(kpisRow.failed||0) > 0) {
+        estimateResolution(kpisRow, t);
+      }
+    } catch(e) { setError(e.message); }
+    setLoading(false);
+  }, [JSON.stringify(sqls)]);
+
+  React.useEffect(()=>{ load().catch(e=>setError(e?.message||String(e))); },[load]);
+
+  const estimateResolution = async (kpisRow, trendData) => {
+    setResBusy(true);
+    try {
+      const failed       = Number(kpisRow.failed||0);
+      const avgTries     = Number(kpisRow.avg_tries||1);
+      const successRate  = Number(kpisRow.success_rate_pct||0);
+      const recentTrend  = (trendData||[]).slice(-3).map(r=>r.downloaded).join(", ");
+      const ans = await obsAiCall(
+        "You are a data pipeline reliability expert. Given pipeline failure stats, estimate when issues will likely be resolved. Return ONLY a JSON object with keys time (HH:MM am/pm IST format) and basis (one short sentence). No markdown.",
+        "Failed downloads: "+failed+", avg tries: "+avgTries+", success rate: "+successRate+"%, recent daily downloads: "+recentTrend+". Current time: "+new Date().toLocaleTimeString("en-IN",{timeZone:"Asia/Kolkata",hour:"2-digit",minute:"2-digit",hour12:true})+" IST",
+        120
+      );
+      const parsed = JSON.parse(ans.replace(/```json|```/g,"").trim());
+      setResolution(parsed);
+    } catch { setResolution({time:"—", basis:"Could not estimate"}); }
+    setResBusy(false);
+  };
+
+  // ── Derive stage statuses from kpis + live failures ────────────────────────
+  const stages = React.useMemo(() => {
+    if (!kpis) return null;
+    // Use live failure count from Failures page if available (more accurate)
+    const liveFailCount = liveFailures ? liveFailures.length : null;
+    const failed       = liveFailCount !== null ? liveFailCount : Number(kpis.failed||0);
+    const downloaded   = Number(kpis.downloaded||0);
+    const total        = Number(kpis.total_requests||0);
+    const replicated   = Number(kpis.replicated||0);
+    const notReplicated= Number(kpis.not_replicated||0);
+    const sr           = Number(kpis.success_rate_pct||0);
+    const accounts     = Number(kpis.total_accounts||0);
+
+    // Stage 1: Data Downloader — any failures = at least warn
+    const dlStatus = failed===0 ? "ok" : failed<=3 ? "warn" : "issue";
+    const dlDetail = failed===0
+      ? accounts+" / "+accounts+" accounts synced"
+      : failed+" of "+total+" downloads failed";
+    const dlNote   = failed>0 ? "Success rate: "+sr+"%" : null;
+
+    // Stage 2: Data Copy (from copy_status = REPLICATED)
+    const copyTotal  = replicated + notReplicated;
+    const copyPct    = copyTotal>0 ? Math.round(replicated/copyTotal*100) : 100;
+    const copyStatus = notReplicated===0 ? "ok" : notReplicated<=5 ? "warn" : "issue";
+    const copyDetail = notReplicated===0
+      ? replicated+" records replicated"
+      : notReplicated+" records pending replication";
+    const copyNote   = notReplicated>0 ? copyPct+"% replicated" : null;
+
+    // Stage 3: Data Quality (proxy: avg tries > 1 or failed > 0 = quality concern)
+    const avgTries = Number(kpis.avg_tries||0);
+    const qStatus  = failed===0 && avgTries<=1 ? "ok" : avgTries>2 ? "issue" : "warn";
+    const qDetail  = failed===0
+      ? "All checks passing"
+      : failed+" report types with failures";
+    const qNote    = avgTries>1 ? "Avg tries: "+avgTries : null;
+
+    return [
+      { id:"dl",   label:"Data Downloader", status:dlStatus,   detail:dlDetail,   note:dlNote,   num:1 },
+      { id:"copy", label:"Data Copy",       status:copyStatus,  detail:copyDetail,  note:copyNote,  num:2 },
+      { id:"qual", label:"Data Quality",    status:qStatus,     detail:qDetail,     note:qNote,     num:3 },
+    ];
+  }, [kpis]);
+
+  // ── 7-day heatmap from trend ─────────────────────────────────────────────────
+  const heatDays = React.useMemo(() => {
+    if (!trend||!trend.length) return [];
+    return trend.slice(-7).map(r => {
+      const dl = Number(r.downloaded||0);
+      const fl = Number(r.failed||0);
+      const tot = dl+fl;
+      const pct = tot>0 ? dl/tot : 1;
+      return { date: r.download_date, pct, failed: fl };
+    });
+  }, [trend]);
+
+  // ── Trend direction ──────────────────────────────────────────────────────────
+  const trendDir = React.useMemo(() => {
+    if (!trend||trend.length<2) return "same";
+    const last  = Number(trend[trend.length-1]?.downloaded||0);
+    const prev  = Number(trend[trend.length-2]?.downloaded||0);
+    if (last > prev*1.05) return "up";
+    if (last < prev*0.95) return "down";
+    return "same";
+  }, [trend]);
+
+  // ── Overall status ───────────────────────────────────────────────────────────
+  const overallStatus = React.useMemo(() => {
+    if (!stages) return "loading";
+    if (stages.some(s=>s.status==="issue")) return "issue";
+    if (stages.some(s=>s.status==="warn"))  return "warn";
+    return "ok";
+  }, [stages]);
+
+  const STAGE_COLORS = {ok:T.green, warn:T.orange, issue:T.red};
+  const STAGE_LABELS = {ok:"ON TRACK", warn:"ATTENTION", issue:"ISSUE"};
+  const STAGE_ICONS  = {ok:"✓", warn:"⚠", issue:"✗"};
+
+  const fmt = dt => dt ? dt.toLocaleTimeString("en-IN",{
+    timeZone:"Asia/Kolkata", hour:"2-digit", minute:"2-digit", hour12:true
+  }).toUpperCase()+" IST" : "—";
+
+  return (
+    <div style={{overflowY:"auto",height:"100%",padding:"24px 28px",
+      background:T.bg,fontFamily:"inherit"}}>
+
+      {/* ── Top bar ── */}
+      <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:20}}>
+        <div style={{display:"flex",alignItems:"center",gap:8}}>
+          <select onChange={e=>e.target.value&&onEditSql(e.target.value)} defaultValue=""
+            style={{background:"none",border:"1px solid "+T.border,borderRadius:6,
+              padding:"5px 10px",fontSize:11,color:T.muted,cursor:"pointer",appearance:"none"}}>
+            <option value="" disabled>⚙ SQL</option>
+            <option value="overview_kpis">KPIs query</option>
+            <option value="overview_trend">Trend query</option>
+          </select>
+          <button onClick={load} disabled={loading}
+            style={{background:"none",border:"1px solid "+T.border,borderRadius:6,
+              padding:"5px 10px",fontSize:11,color:T.muted,cursor:"pointer"}}>
+            {loading?"…":"↻"}
+          </button>
+        </div>
+        {lastChecked&&(
+          <div style={{textAlign:"right"}}>
+            <div style={{fontSize:9,fontWeight:700,color:T.muted,
+              textTransform:"uppercase",letterSpacing:"0.08em"}}>Last checked</div>
+            <div style={{fontSize:12,fontWeight:700,color:T.text}}>
+              {lastChecked.toLocaleDateString("en-IN",{day:"2-digit",month:"short"})} {fmt(lastChecked)}
+            </div>
+          </div>
+        )}
+      </div>
+
+      {loading&&<ObsSkel T={T}/>}
+      {!loading&&error&&(
+        <div style={{padding:"14px 18px",background:T.red+"08",border:"1px solid "+T.red+"30",
+          borderRadius:10,fontSize:12,color:T.red,marginBottom:16}}>✗ {error}</div>
+      )}
+
+      {!loading&&stages&&<>
+        {/* ── Status banner ── */}
+        <div style={{padding:"16px 20px",borderRadius:12,marginBottom:20,
+          background:overallStatus==="ok"?T.green+"0A":overallStatus==="warn"?T.orange+"0A":T.red+"0A",
+          border:"1px solid "+(overallStatus==="ok"?T.green+"25":overallStatus==="warn"?T.orange+"25":T.red+"25"),
+          display:"flex",alignItems:"center",justifyContent:"space-between",gap:12}}>
+          <div style={{display:"flex",alignItems:"center",gap:10,flex:1}}>
+            <div style={{width:10,height:10,borderRadius:"50%",flexShrink:0,
+              background:overallStatus==="ok"?T.green:overallStatus==="warn"?T.orange:T.red,
+              boxShadow:"0 0 0 3px "+(overallStatus==="ok"?T.green:overallStatus==="warn"?T.orange:T.red)+"25"}}/>
+            <span style={{fontSize:16,fontWeight:700,color:T.text}}>
+              {overallStatus==="ok"
+                ? "All pipelines healthy."
+                : overallStatus==="warn"
+                  ? "Pipeline needs attention. AI is monitoring."
+                  : "Data pipeline has failures. AI is taking action."}
+            </span>
+            {liveFailures===null&&(
+              <span style={{fontSize:10,color:T.muted,marginLeft:4}}>
+                · Navigate to Failures tab to load real-time failure count
+              </span>
             )}
           </div>
         </div>
 
-        {/* Pipeline flow */}
-        <div style={{display:"flex",alignItems:"stretch",gap:0,marginBottom:20}}>
-          {stageSummaries.map((s,i)=>(
-            <React.Fragment key={s.id}>
-              <div style={{flex:1,background:T.surface,border:`1.5px solid ${s.color}50`,
-                borderRadius:10,padding:"14px 16px",cursor:"pointer",position:"relative",
-                transition:"box-shadow 0.15s"}}
-                onClick={()=>{ setViewMode("operator"); setActiveView("stages"); setExpanded(p=>({...p,[s.id]:true})); }}
-                onMouseEnter={e=>e.currentTarget.style.boxShadow=`0 0 0 3px ${s.color}30`}
-                onMouseLeave={e=>e.currentTarget.style.boxShadow="none"}>
-                <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:6}}>
-                  <span style={{fontSize:11,fontWeight:700,color:s.color,textTransform:"uppercase",letterSpacing:"0.07em"}}>
-                    {s.status==="healthy"?"✓ On track":s.status==="warning"?"⚠ Attention":"✗ Issue"}
-                  </span>
-                  <span style={{fontSize:9,color:T.muted}}>↗</span>
-                </div>
-                <div style={{fontSize:14,fontWeight:700,color:T.text,marginBottom:4}}>{s.label}</div>
-                <div style={{fontSize:11,color:T.muted,marginBottom:s.issues.length>0?6:0}}>{s.summary}</div>
-                {s.issues.length>0&&(
-                  <div style={{fontSize:11,color:s.color,lineHeight:1.4,padding:"5px 8px",background:`${s.color}10`,borderRadius:6}}>
-                    {s.issues[0]}{s.issues.length>1&&<span style={{color:T.muted}}> +{s.issues.length-1}</span>}
-                  </div>
-                )}
-                <div style={{position:"absolute",top:8,right:8,width:16,height:16,borderRadius:"50%",
-                  background:`${s.color}20`,display:"flex",alignItems:"center",justifyContent:"center",
-                  fontSize:9,fontWeight:700,color:s.color}}>{i+1}</div>
+        {/* ── Predictions strip (from AI Agents) ── */}
+        {predictions&&predictions.length>0&&(
+          <div style={{background:"#8B5CF608",border:"1px solid #8B5CF630",
+            borderRadius:10,padding:"10px 16px",marginBottom:16,
+            display:"flex",alignItems:"flex-start",gap:10}}>
+            <span style={{fontSize:14,flexShrink:0,marginTop:1}}>🔮</span>
+            <div style={{flex:1}}>
+              <div style={{fontSize:11,fontWeight:700,color:"#8B5CF6",marginBottom:4}}>
+                AI Predictions — {predictions.length} account{predictions.length!==1?"s":""} at risk today
               </div>
-              {i<stageSummaries.length-1&&(
-                <div style={{display:"flex",alignItems:"center",padding:"0 4px",color:T.muted,fontSize:18,flexShrink:0}}>→</div>
-              )}
-            </React.Fragment>
-          ))}
-        </div>
-
-        {/* AI actions summary */}
-        <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:12,marginBottom:20}}>
-          {/* Auto-handled */}
-          <div style={{background:T.surface,borderRadius:12,padding:"16px",border:`1px solid ${T.border}`}}>
-            <div style={{fontSize:11,fontWeight:700,color:T.green,marginBottom:8}}>
-              ✓ AI handled automatically
+              <div style={{display:"flex",gap:6,flexWrap:"wrap"}}>
+                {predictions.slice(0,4).map((p,i)=>(
+                  <span key={i} style={{fontSize:10,padding:"2px 9px",borderRadius:99,
+                    background:p.risk==="high"?T.red+"12":T.orange+"12",
+                    color:p.risk==="high"?T.red:T.orange,
+                    border:"1px solid "+(p.risk==="high"?T.red+"20":T.orange+"20")}}>
+                    {p.account} / {String(p.reportType||"").replace(/^GET_|^SP_/,"").slice(0,14)}
+                  </span>
+                ))}
+                {predictions.length>4&&(
+                  <span style={{fontSize:10,color:"#8B5CF6",fontWeight:600}}>
+                    +{predictions.length-4} more → AI Agents
+                  </span>
+                )}
+              </div>
             </div>
-            {autoExec.length===0
-              ? <div style={{fontSize:12,color:T.muted}}>Nothing needed yet.</div>
-              : autoExec.slice(0,3).map((e,i)=>(
-                  <div key={i} style={{fontSize:12,color:T.text,marginBottom:4,
-                    display:"flex",gap:6,alignItems:"flex-start"}}>
-                    <span style={{color:T.green,flexShrink:0}}>•</span>
-                    <span>{e.label.replace("Auto-executed: ","")}</span>
-                  </div>
-                ))
-            }
-            {autoExec.length>3&&<div style={{fontSize:11,color:T.muted,marginTop:4}}>+{autoExec.length-3} more actions</div>}
-          </div>
-
-          {/* Needs your input */}
-          <div style={{background:T.surface,borderRadius:12,padding:"16px",
-            border:`1px solid ${pending.length>0?T.orange+"60":T.border}`}}>
-            <div style={{fontSize:11,fontWeight:700,color:pending.length>0?T.orange:T.muted,marginBottom:8}}>
-              {pending.length>0?"⏳ Needs your approval":"✓ No approvals needed"}
-            </div>
-            {pending.length===0
-              ? <div style={{fontSize:12,color:T.muted}}>AI is handling everything.</div>
-              : pending.slice(0,3).map((a,i)=>(
-                  <div key={i} style={{marginBottom:10}}>
-                    <div style={{fontSize:12,color:T.text,fontWeight:600,marginBottom:4}}>{a.actionLabel}</div>
-                    <div style={{fontSize:11,color:T.muted,marginBottom:6}}>{a.actionDetail}</div>
-                    <div style={{display:"flex",gap:6}}>
-                      <button onClick={()=>approveAction(a.id)} style={{
-                        background:T.green,color:"#fff",border:"none",borderRadius:6,
-                        padding:"5px 12px",fontSize:11,fontWeight:700,cursor:"pointer"}}>
-                        Approve
-                      </button>
-                      <button onClick={()=>rejectAction(a.id)} style={{
-                        background:"none",border:`1px solid ${T.border}`,borderRadius:6,
-                        padding:"5px 12px",fontSize:11,color:T.muted,cursor:"pointer"}}>
-                        Dismiss
-                      </button>
-                    </div>
-                  </div>
-                ))
-            }
-          </div>
-        </div>
-
-        {/* Pre-run risk if present */}
-        {cfg.aiFeatures.preRunRisk && aiRisk && (
-          <div style={{background:`${T.orange}08`,borderRadius:12,padding:"16px",
-            border:`1px solid ${T.orange}25`,marginBottom:20}}>
-            <div style={{fontSize:11,fontWeight:700,color:T.orange,marginBottom:6}}>
-              ⚠️ Tonight's run — early warning
-            </div>
-            <div style={{fontSize:13,color:T.text,lineHeight:1.6}}>{aiRisk}</div>
           </div>
         )}
 
-        {/* ── Row: streak + vs-yesterday + freshness ── */}
-        <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:12,marginBottom:16}}>
+        {/* ── 3 Stage cards ── */}
+        <div style={{display:"grid",gridTemplateColumns:"1fr auto 1fr auto 1fr",
+          gap:0,alignItems:"center",marginBottom:20}}>
+          {stages.map((stage,i)=>{
+            const col = STAGE_COLORS[stage.status];
+            return (
+              <React.Fragment key={stage.id}>
+                <div style={{background:T.surface,borderRadius:12,padding:"18px 20px",
+                  border:"1px solid "+T.border,
+                  borderTop:"2px solid "+(stage.status==="ok"?T.border:col)}}>
+                  {/* Stage header */}
+                  <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",
+                    marginBottom:8}}>
+                    <div style={{fontSize:10,fontWeight:800,color:col,
+                      textTransform:"uppercase",letterSpacing:"0.08em",
+                      display:"flex",alignItems:"center",gap:5}}>
+                      <span>{STAGE_ICONS[stage.status]}</span>
+                      {STAGE_LABELS[stage.status]}
+                    </div>
+                    <div style={{width:20,height:20,borderRadius:"50%",
+                      background:col+"15",border:"1px solid "+col+"30",
+                      display:"flex",alignItems:"center",justifyContent:"center",
+                      fontSize:10,fontWeight:800,color:col}}>
+                      {stage.num}
+                    </div>
+                  </div>
+                  <div style={{fontSize:15,fontWeight:700,color:T.text,marginBottom:4}}>
+                    {stage.label}
+                  </div>
+                  <div style={{fontSize:12,color:T.muted}}>{stage.detail}</div>
+                  {stage.note&&(
+                    <div style={{marginTop:8,padding:"5px 10px",borderRadius:6,
+                      background:col+"12",border:"1px solid "+col+"20",
+                      fontSize:11,color:col,fontWeight:500}}>
+                      {stage.note}
+                    </div>
+                  )}
+                </div>
+                {i<2&&(
+                  <div style={{padding:"0 10px",color:T.muted,fontSize:18,
+                    display:"flex",alignItems:"center",justifyContent:"center"}}>
+                    →
+                  </div>
+                )}
+              </React.Fragment>
+            );
+          })}
+        </div>
 
-          {/* 7-day streak */}
-          <div style={{background:T.surface,borderRadius:12,padding:"14px 16px",border:`1px solid ${T.border}`}}>
-            <div style={{fontSize:10,fontWeight:700,color:T.muted,textTransform:"uppercase",letterSpacing:"0.07em",marginBottom:10}}>
-              📅 Last 7 Days
+        {/* ── AI Actions + Approvals ── */}
+        <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:12,marginBottom:20}}>
+          <div style={{background:T.surface,borderRadius:12,padding:"16px 20px",
+            border:"1px solid "+T.border}}>
+            <div style={{fontSize:11,fontWeight:700,color:T.green,marginBottom:8,
+              display:"flex",alignItems:"center",gap:6}}>
+              <span>✓</span> AI handled automatically
             </div>
-            <div style={{display:"flex",gap:5,alignItems:"flex-end",marginBottom:6}}>
-              {healthStreak.map((s,i)=>(
-                <div key={i} title={s||"No data"} style={{
-                  flex:1,height:s?20:8,borderRadius:4,
-                  background:!s?`${T.border}60`:s==="healthy"?T.green:s==="warning"?T.orange:T.red,
-                  opacity:i===6?1:0.5+i*0.08,
-                  transition:"height 0.3s"}}/>
-              ))}
+            <div style={{fontSize:12,color:T.muted}}>
+              {overallStatus==="ok"
+                ? "Nothing needed yet."
+                : "Monitoring failures and triggering retries for affected accounts."}
             </div>
-            <div style={{display:"flex",justifyContent:"space-between"}}>
-              <span style={{fontSize:9,color:T.muted}}>7d ago</span>
-              <span style={{fontSize:9,color:T.muted}}>Today</span>
+          </div>
+          <div style={{background:T.surface,borderRadius:12,padding:"16px 20px",
+            border:"1px solid "+T.border}}>
+            <div style={{fontSize:11,fontWeight:700,
+              color:overallStatus==="issue"?T.orange:T.green,
+              marginBottom:8,display:"flex",alignItems:"center",gap:6}}>
+              <span>✓</span> {overallStatus==="issue"?"Review recommended":"No approvals needed"}
+            </div>
+            <div style={{fontSize:12,color:T.muted}}>
+              {overallStatus==="issue"
+                ? "Check Failures & Recovery for accounts needing attention."
+                : "AI is handling everything."}
+            </div>
+          </div>
+        </div>
+
+        {/* ── Bottom row: 7-day heat + Trend + Freshness ── */}
+        <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:12,marginBottom:20}}>
+
+          {/* Last 7 days heatmap */}
+          <div style={{background:T.surface,borderRadius:12,padding:"16px 20px",
+            border:"1px solid "+T.border}}>
+            <div style={{fontSize:10,fontWeight:700,color:T.muted,
+              textTransform:"uppercase",letterSpacing:"0.08em",marginBottom:12,
+              display:"flex",alignItems:"center",gap:6}}>
+              <span>📅</span> Last 7 Days
+            </div>
+            <div style={{display:"flex",gap:4,alignItems:"flex-end",height:36}}>
+              {heatDays.length===0
+                ? <div style={{fontSize:11,color:T.muted}}>No trend data</div>
+                : heatDays.map((d,i)=>{
+                    const col = d.failed>0
+                      ? `rgba(${T.isDark?"248,113,113":"220,38,38"},${0.3+d.failed/10})`
+                      : T.green+"60";
+                    const h = Math.max(8, Math.round(d.pct*36));
+                    return (
+                      <div key={i} title={d.date+": "+(d.failed>0?d.failed+" failed":"ok")}
+                        style={{flex:1,height:h,borderRadius:4,background:col,
+                          transition:"height 0.3s",cursor:"default"}}/>
+                    );
+                  })
+              }
+            </div>
+            {heatDays.length>0&&(
+              <div style={{display:"flex",justifyContent:"space-between",
+                fontSize:9,color:T.muted,marginTop:6}}>
+                <span>7d ago</span><span>Today</span>
+              </div>
+            )}
+          </div>
+
+          {/* Trend */}
+          <div style={{background:T.surface,borderRadius:12,padding:"16px 20px",
+            border:"1px solid "+T.border,display:"flex",flexDirection:"column",
+            alignItems:"center",justifyContent:"center"}}>
+            <div style={{fontSize:10,fontWeight:700,color:T.muted,
+              textTransform:"uppercase",letterSpacing:"0.08em",marginBottom:12,
+              alignSelf:"flex-start",display:"flex",alignItems:"center",gap:6}}>
+              <span>📈</span> Trend
+            </div>
+            <div style={{fontSize:28,marginBottom:4}}>
+              {trendDir==="up"?"↑":trendDir==="down"?"↓":"→"}
+            </div>
+            <div style={{fontSize:12,fontWeight:700,color:T.text}}>
+              {trendDir==="up"?"Improving":trendDir==="down"?"Declining":"Same as yesterday"}
             </div>
           </div>
 
-          {/* Vs yesterday */}
-          <div style={{background:T.surface,borderRadius:12,padding:"14px 16px",border:`1px solid ${T.border}`,
-            display:"flex",flexDirection:"column",justifyContent:"center",alignItems:"center",textAlign:"center"}}>
-            <div style={{fontSize:10,fontWeight:700,color:T.muted,textTransform:"uppercase",letterSpacing:"0.07em",marginBottom:8}}>
-              📊 Trend
+          {/* Data Freshness */}
+          <div style={{background:T.surface,borderRadius:12,padding:"16px 20px",
+            border:"1px solid "+T.border}}>
+            <div style={{fontSize:10,fontWeight:700,color:T.muted,
+              textTransform:"uppercase",letterSpacing:"0.08em",marginBottom:12,
+              display:"flex",alignItems:"center",gap:6}}>
+              <span>⏱</span> Data Freshness
             </div>
-            {vsYesterday
-              ? <>
-                  <div style={{fontSize:28,fontWeight:800,color:vsYesterday.color,letterSpacing:"-0.02em"}}>
-                    {vsYesterday.icon}
-                  </div>
-                  <div style={{fontSize:12,color:vsYesterday.color,fontWeight:600,marginTop:4}}>
-                    {vsYesterday.label}
-                  </div>
-                </>
-              : <div style={{fontSize:12,color:T.muted}}>Not enough history yet</div>
-            }
-          </div>
-
-          {/* Data freshness */}
-          <div style={{background:T.surface,borderRadius:12,padding:"14px 16px",border:`1px solid ${T.border}`}}>
-            <div style={{fontSize:10,fontWeight:700,color:T.muted,textTransform:"uppercase",letterSpacing:"0.07em",marginBottom:8}}>
-              🕐 Data Freshness
-            </div>
-            {freshnessItems.map((f,i)=>(
-              <div key={i} style={{display:"flex",alignItems:"center",justifyContent:"space-between",
-                marginBottom:i<freshnessItems.length-1?6:0}}>
-                <span style={{fontSize:11,color:T.muted}}>{f.label}</span>
+            {[
+              ["Data Downloader", kpis?.downloaded>0],
+              ["Data Copy",       kpis?.replicated>0],
+              ["Data Quality",    Number(kpis?.failed||0)===0],
+            ].map(([label,fresh])=>(
+              <div key={label} style={{display:"flex",alignItems:"center",
+                justifyContent:"space-between",marginBottom:8}}>
+                <span style={{fontSize:12,color:T.text}}>{label}</span>
                 <span style={{fontSize:11,fontWeight:700,
-                  color:!f.hoursAgo?T.muted:f.hoursAgo<=2?T.green:f.hoursAgo<=6?T.orange:T.red}}>
-                  {f.hoursAgo!=null?`${f.hoursAgo}h ago`:"—"}
+                  color:fresh?T.green:T.red}}>
+                  {fresh?"✓ Current":"✗ Stale"}
                 </span>
               </div>
             ))}
           </div>
         </div>
 
-        {/* ── Row: accounts at risk + time to resolution ── */}
-        <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:12,marginBottom:16}}>
+        {/* ── Accounts + Expected Resolution ── */}
+        <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:12,marginBottom:20}}>
 
-          {/* Accounts at risk */}
-          <div style={{background:T.surface,borderRadius:12,padding:"14px 16px",border:`1px solid ${atRisk.length>0?T.orange+"50":T.border}`}}>
-            <div style={{fontSize:10,fontWeight:700,color:T.muted,textTransform:"uppercase",letterSpacing:"0.07em",marginBottom:8}}>
-              👥 Accounts
+          {/* Accounts */}
+          <div style={{background:T.surface,borderRadius:12,padding:"16px 20px",
+            border:"1px solid "+T.border}}>
+            <div style={{fontSize:10,fontWeight:700,color:T.muted,
+              textTransform:"uppercase",letterSpacing:"0.08em",marginBottom:12,
+              display:"flex",alignItems:"center",gap:6}}>
+              <span>👥</span> Accounts
             </div>
-            {atRisk.length===0
-              ? <div style={{display:"flex",alignItems:"center",gap:8}}>
-                  <span style={{fontSize:22,fontWeight:800,color:T.green}}>{totalAccounts}</span>
-                  <span style={{fontSize:12,color:T.muted}}>of {totalAccounts} accounts healthy</span>
-                </div>
-              : <>
-                  <div style={{display:"flex",alignItems:"baseline",gap:6,marginBottom:6}}>
-                    <span style={{fontSize:22,fontWeight:800,color:T.orange}}>{atRisk.length}</span>
-                    <span style={{fontSize:12,color:T.muted}}>of {totalAccounts} accounts affected</span>
-                  </div>
-                  {atRisk.slice(0,3).map((a,i)=>(
-                    <div key={i} style={{display:"flex",alignItems:"center",gap:6,marginBottom:3}}>
-                      <div style={{width:6,height:6,borderRadius:"50%",flexShrink:0,
-                        background:a.status==="error"?T.red:T.orange}}/>
-                      <span style={{fontSize:11,color:T.text}}>{a.name}</span>
-                      {a.note&&<span style={{fontSize:10,color:T.muted}}>— {a.note}</span>}
-                    </div>
-                  ))}
-                  {atRisk.length>3&&<div style={{fontSize:10,color:T.muted,marginTop:4}}>+{atRisk.length-3} more</div>}
-                </>
-            }
+            <div style={{display:"flex",alignItems:"baseline",gap:6,marginBottom:8}}>
+              <span style={{fontSize:32,fontWeight:800,color:T.text,lineHeight:1}}>
+                {kpis?.total_accounts||0}
+              </span>
+              <span style={{fontSize:13,color:T.muted}}>
+                accounts in last 30 days
+              </span>
+            </div>
+            <div style={{fontSize:12,color:T.muted}}>
+              {Number(kpis?.failed||0)===0
+                ? <span style={{color:T.green}}>● All accounts healthy</span>
+                : <span style={{color:T.orange}}>
+                    ● {kpis?.failed} failed downloads across accounts
+                  </span>
+              }
+            </div>
           </div>
 
-          {/* Time to resolution */}
-          <div style={{background:T.surface,borderRadius:12,padding:"14px 16px",border:`1px solid ${T.border}`,
-            display:"flex",flexDirection:"column",justifyContent:"center"}}>
-            <div style={{fontSize:10,fontWeight:700,color:T.muted,textTransform:"uppercase",letterSpacing:"0.07em",marginBottom:8}}>
-              ⏱ Expected Resolution
+          {/* Expected Resolution */}
+          <div style={{background:T.surface,borderRadius:12,padding:"16px 20px",
+            border:"1px solid "+T.border}}>
+            <div style={{fontSize:10,fontWeight:700,color:T.muted,
+              textTransform:"uppercase",letterSpacing:"0.08em",marginBottom:12,
+              display:"flex",alignItems:"center",gap:6}}>
+              <span>⏰</span> Expected Resolution
             </div>
-            {overallStatus==="healthy"
-              ? <div style={{display:"flex",alignItems:"center",gap:8}}>
-                  <span style={{fontSize:20}}>✓</span>
-                  <span style={{fontSize:13,color:T.green,fontWeight:600}}>No issues to resolve</span>
-                </div>
-              : etaTime
-                ? <>
-                    <div style={{fontSize:22,fontWeight:800,color:T.text,letterSpacing:"-0.02em",marginBottom:4}}>
-                      {etaTime}
+            {overallStatus==="ok"
+              ? <div style={{fontSize:13,color:T.green,fontWeight:600}}>✓ No issues to resolve</div>
+              : resBusy
+                ? <div style={{fontSize:12,color:T.muted}}>🤖 AI estimating…</div>
+                : resolution
+                  ? <>
+                      <div style={{fontSize:30,fontWeight:800,color:T.text,lineHeight:1,marginBottom:6}}>
+                        {resolution.time}
+                      </div>
+                      <div style={{fontSize:11,color:T.muted,lineHeight:1.5}}>
+                        {resolution.basis}
+                      </div>
+                    </>
+                  : <div style={{fontSize:12,color:T.muted}}>
+                      Run with failures to get AI estimate
                     </div>
-                    <div style={{fontSize:11,color:T.muted,lineHeight:1.5}}>
-                      Estimated based on typical fix times. AI is working on it now.
-                    </div>
-                  </>
-                : <div style={{fontSize:12,color:T.muted}}>Estimating…</div>
             }
           </div>
         </div>
 
-        {/* Footer note */}
-        <div style={{textAlign:"center",fontSize:11,color:T.muted,paddingBottom:8}}>
-          AI is monitoring continuously.{cfg.refreshInterval>0&&` Refreshing every ${cfg.refreshInterval}s.`}
-        </div>
-      </div>
-    );
-  };
+      </>}
 
-  // ── Main render ────────────────────────────────────────────────────────────
+      {!loading&&!stages&&!error&&(
+        <div style={{padding:"40px",textAlign:"center"}}>
+          <div style={{fontSize:12,color:T.muted}}>
+            No data — check your SQL query or confirm the table has data for the last 30 days
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ── Page: Download Pipeline ───────────────────────────────────────────────────
+function ObsDownloadPage({ date, T, sqls, onEditSql, agentPredictions=[], agentAnomalies=[] }) {
+  const RC = useRecharts();
+  const [metrics,   setMetrics]   = React.useState(null);
+  const [breakdown, setBreakdown] = React.useState(null);
+  const [loading,   setLoading]   = React.useState(false);
+  const [error,     setError]     = React.useState(null);
+  const [search,    setSearch]    = React.useState("");
+  const [sortBy,    setSortBy]    = React.useState("failed"); // failed | account | downloaded
+
+  const load = React.useCallback(async () => {
+    setLoading(true); setError(null);
+    try {
+      const run = async sql => {
+        const r = await apiFetch(API+"/api/query?sql="+encodeURIComponent(sql));
+        if(!r.ok) throw new Error("HTTP "+r.status);
+        const d = await r.json();
+        return Array.isArray(d)?d:(d?.rows||d?.data||d?.results||[]);
+      };
+      const [m,b] = await Promise.all([
+        run(sqls.download_metrics||OBS_DEFAULT_SQL.download_metrics).catch(()=>[]),
+        run(sqls.download_breakdown||OBS_DEFAULT_SQL.download_breakdown).catch(()=>[]),
+      ]);
+      setMetrics(m[0]||null);
+      setBreakdown(b);
+    } catch(e) { setError(e.message); }
+    setLoading(false);
+  },[JSON.stringify(sqls)]);
+
+  React.useEffect(()=>{ load().catch(e=>setError(e?.message||String(e))); },[load]);
+
+  // ── Derived: group rows by account ──────────────────────────────────────────
+  const accountGroups = React.useMemo(() => {
+    if (!breakdown) return [];
+    const map = {};
+    breakdown.forEach(r => {
+      const acc = r.account||"unknown";
+      if (!map[acc]) map[acc] = { account:acc, total:0, downloaded:0, failed:0, pending:0,
+        replicated:0, notReplicated:0, maxTries:0, reportTypes:[] };
+      const g = map[acc];
+      g.total       += Number(r.total||0);
+      g.downloaded  += Number(r.downloaded||0);
+      g.failed      += Number(r.failed||0);
+      g.replicated  += r.copy_status==="REPLICATED"?Number(r.total||0):0;
+      g.notReplicated += r.copy_status!=="REPLICATED"?Number(r.total||0):0;
+      g.maxTries     = Math.max(g.maxTries, Number(r.max_tries||0));
+      const rt = r.report_type;
+      if (rt && !g.reportTypes.find(x=>x.name===rt)) {
+        g.reportTypes.push({
+          name: rt,
+          downloaded: Number(r.downloaded||0),
+          failed: Number(r.failed||0),
+          status: r.status,
+          copyStatus: r.copy_status,
+          tries: Number(r.max_tries||0),
+        });
+      }
+    });
+    return Object.values(map).map(g => ({
+      ...g,
+      successPct: g.total>0 ? Math.round(g.downloaded/g.total*100) : 0,
+      health: g.failed>0 ? "issue" : g.notReplicated>0 ? "warn" : "ok",
+    })).sort((a,b) => {
+      if (sortBy==="failed") return b.failed-a.failed || String(a.account||"").localeCompare(String(b.account||""));
+      if (sortBy==="downloaded") return b.downloaded-a.downloaded;
+      return String(a.account||"").localeCompare(String(b.account||""));
+    });
+  }, [breakdown, sortBy]);
+
+  // ── Report type aggregates for bar chart ────────────────────────────────────
+  const byReportType = React.useMemo(() => {
+    if (!breakdown) return [];
+    const map = {};
+    breakdown.forEach(r => {
+      const rt = (r.report_type||"unknown").replace(/^GET_|^SP_/,"").replace(/_/g," ");
+      if (!map[rt]) map[rt] = { name:rt.slice(0,16), downloaded:0, failed:0 };
+      map[rt].downloaded += Number(r.downloaded||0);
+      map[rt].failed     += Number(r.failed||0);
+    });
+    return Object.values(map).sort((a,b)=>b.downloaded+b.failed - (a.downloaded+a.failed)).slice(0,16);
+  }, [breakdown]);
+
+  const filtered = React.useMemo(() =>
+    accountGroups.filter(g =>
+      !search || g.account.toLowerCase().includes(search.toLowerCase())
+    ), [accountGroups, search]);
+
+  const sr  = Number(metrics?.success_rate_pct||0);
+  const col = sr>=95?T.green:sr>=80?T.orange:T.red;
+
+  const HEALTH_COL = {ok:T.green, warn:T.orange, issue:T.red};
+  const HEALTH_ICON = {ok:"✓", warn:"⚠", issue:"✗"};
+
   return (
-    <div style={{padding:"20px 24px",maxWidth:1100,margin:"0 auto",position:"relative"}}>
-      {showConfig&&<ConfigPanel/>}
+    <div style={{height:"100%",overflowY:"auto",background:T.bg}}>
       <style>{`
-        @keyframes wz-pulse-btn {
-          0%,100% { box-shadow: 0 2px 8px rgba(16,185,129,0.4); transform: scale(1); }
-          50%      { box-shadow: 0 4px 16px rgba(16,185,129,0.7); transform: scale(1.02); }
-        }
-        @keyframes wz-shimmer {
-          0%   { background-position: -400px 0; }
-          100% { background-position: 400px 0; }
-        }
-        .wz-skel {
-          background: linear-gradient(90deg, var(--wz-border,#333) 25%, var(--wz-surface,#444) 50%, var(--wz-border,#333) 75%);
-          background-size: 400px 100%;
-          animation: wz-shimmer 1.4s ease infinite;
-          border-radius: 6px;
-        }
+        @keyframes obs-count-in { from{opacity:0;transform:translateY(6px)} to{opacity:1;transform:none} }
+        .obs-row:hover { background: rgba(99,102,241,0.04) !important; }
       `}</style>
 
-      {/* Header */}
-      <div style={{display:"flex",alignItems:"flex-start",justifyContent:"space-between",marginBottom:14,flexWrap:"wrap",gap:10}}>
-        <div>
-          <div style={{fontSize:20,fontWeight:800,color:T.text,letterSpacing:"-0.02em",display:"flex",alignItems:"center",gap:10}}>
-            Data Ingestion
-            {diagnosing&&<span style={{fontSize:11,color:T.accent,fontWeight:400,animation:"pulse 1.5s infinite"}}>🤖 AI scanning…</span>}
+      {/* ── Sticky header ── */}
+      <div style={{position:"sticky",top:0,zIndex:10,background:T.bg,
+        borderBottom:"1px solid "+T.border,padding:"12px 24px",
+        display:"flex",alignItems:"center",gap:10}}>
+        <div style={{flex:1}}>
+          <span style={{fontSize:14,fontWeight:700,color:T.text}}>Download Pipeline</span>
+          <span style={{fontSize:11,color:T.muted,marginLeft:10,fontFamily:"monospace"}}>
+            mws.report · last 30 days
+          </span>
+        </div>
+        <input value={search} onChange={e=>setSearch(e.target.value)}
+          placeholder="Search accounts…"
+          style={{background:T.surface,border:"1px solid "+T.border,borderRadius:7,
+            padding:"6px 12px",fontSize:11,color:T.text,width:160,outline:"none"}}/>
+        <select value={sortBy} onChange={e=>setSortBy(e.target.value)}
+          style={{background:T.surface,border:"1px solid "+T.border,borderRadius:7,
+            padding:"6px 10px",fontSize:11,color:T.muted,cursor:"pointer"}}>
+          <option value="failed">Sort: Failures first</option>
+          <option value="downloaded">Sort: Most downloaded</option>
+          <option value="account">Sort: Account name</option>
+        </select>
+        <button onClick={load} disabled={loading}
+          style={{background:"none",border:"1px solid "+T.border,borderRadius:7,
+            padding:"6px 12px",fontSize:11,color:T.muted,cursor:"pointer"}}>
+          {loading?"…":"↻"}
+        </button>
+        <select onChange={e=>e.target.value&&onEditSql(e.target.value)} defaultValue=""
+          style={{background:"none",border:"1px solid "+T.border,borderRadius:7,
+            padding:"6px 10px",fontSize:11,color:T.muted,cursor:"pointer",appearance:"none"}}>
+          <option value="" disabled>⚙</option>
+          <option value="download_metrics">Metrics SQL</option>
+          <option value="download_breakdown">Breakdown SQL</option>
+        </select>
+      </div>
+
+      <div style={{padding:"20px 24px"}}>
+        {loading&&<ObsSkel T={T}/>}
+        {!loading&&error&&(
+          <div style={{padding:"14px",background:T.red+"08",border:"1px solid "+T.red+"30",
+            borderRadius:10,fontSize:12,color:T.red,marginBottom:16}}>✗ {error}</div>
+        )}
+
+        {!loading&&metrics&&<>
+          {/* ── Top metrics row ── */}
+          <div style={{display:"grid",gridTemplateColumns:"180px 1fr",gap:16,marginBottom:20}}>
+
+            {/* Big success rate ring */}
+            <div style={{background:T.surface,borderRadius:14,padding:"20px",
+              border:"1px solid "+T.border,display:"flex",flexDirection:"column",
+              alignItems:"center",justifyContent:"center",gap:8}}>
+              <svg width="100" height="100" viewBox="0 0 100 100">
+                <circle cx="50" cy="50" r="40" fill="none"
+                  stroke={T.border} strokeWidth="10"/>
+                <circle cx="50" cy="50" r="40" fill="none"
+                  stroke={col} strokeWidth="10"
+                  strokeDasharray={`${sr*2.513} ${251.3}`}
+                  strokeLinecap="round"
+                  transform="rotate(-90 50 50)"
+                  style={{transition:"stroke-dasharray 0.8s ease"}}/>
+                <text x="50" y="46" textAnchor="middle"
+                  style={{fontSize:18,fontWeight:800,fill:col,fontFamily:"monospace"}}>
+                  {sr}%
+                </text>
+                <text x="50" y="62" textAnchor="middle"
+                  style={{fontSize:9,fill:T.muted,fontFamily:"inherit"}}>
+                  success
+                </text>
+              </svg>
+              <div style={{fontSize:10,fontWeight:600,color:T.muted,textAlign:"center",
+                letterSpacing:"0.04em"}}>
+                {metrics.processed} / {metrics.total_requests} downloaded
+              </div>
+            </div>
+
+            {/* Metric pills */}
+            <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",
+              gridTemplateRows:"1fr 1fr",gap:10}}>
+              {[
+                {label:"Accounts",   value:metrics.accounts,   color:T.accent,  icon:"👤"},
+                {label:"Failed",     value:metrics.failed,     color:Number(metrics.failed||0)>0?T.red:T.green, icon:"✗"},
+                {label:"Avg Tries",  value:metrics.avg_tries,  color:Number(metrics.avg_tries||0)>1?T.orange:T.green, icon:"↻"},
+                {label:"Report Types",value:metrics.report_types||"—", color:T.accent, icon:"📋"},
+              ].map(m=>(
+                <div key={m.label} style={{background:T.surface,borderRadius:10,
+                  padding:"14px 16px",border:"1px solid "+T.border,
+                  display:"flex",alignItems:"center",gap:10}}>
+                  <div style={{width:32,height:32,borderRadius:8,
+                    background:m.color+"15",border:"1px solid "+m.color+"25",
+                    display:"flex",alignItems:"center",justifyContent:"center",
+                    fontSize:14,flexShrink:0}}>{m.icon}</div>
+                  <div>
+                    <div style={{fontSize:9,fontWeight:600,color:T.muted,
+                      textTransform:"uppercase",letterSpacing:"0.06em",marginBottom:2}}>
+                      {m.label}
+                    </div>
+                    <div style={{fontSize:20,fontWeight:800,color:m.color,
+                      fontFamily:"monospace",lineHeight:1}}>
+                      {m.value??<span style={{color:T.muted}}>—</span>}
+                    </div>
+                  </div>
+                </div>
+              ))}
+            </div>
           </div>
-          <div style={{marginTop:8,display:"flex",background:T.bg,border:`1px solid ${T.border}`,borderRadius:8,padding:2,gap:1,width:"fit-content"}}>
-            {[["executive","👤 Executive"],["operator","⚙ Operator"]].map(([m,label])=>(
-              <button key={m} onClick={()=>setViewMode(m)} style={{
-                padding:"5px 16px",fontSize:12,fontWeight:viewMode===m?700:400,
-                color:viewMode===m?"#fff":T.muted,
-                background:viewMode===m?T.accent:"none",
-                border:"none",borderRadius:6,cursor:"pointer",
-                transition:"all 0.15s"}}>
-                {label}
+
+          {/* ── AI briefing ── */}
+          <ObsAiBriefing data={breakdown||[]} pageId="downloads" pageLabel="Download Pipeline" T={T}/>
+
+          {/* ── Report type bar chart ── */}
+          {RC&&byReportType.length>0&&(()=>{
+            const {BarChart,Bar,XAxis,YAxis,CartesianGrid,Tooltip,ResponsiveContainer}=RC;
+            return (
+              <div style={{background:T.surface,borderRadius:12,border:"1px solid "+T.border,
+                padding:"16px 20px",marginBottom:20}}>
+                <div style={{fontSize:12,fontWeight:700,color:T.text,marginBottom:14,
+                  display:"flex",alignItems:"center",justifyContent:"space-between"}}>
+                  <span>Downloads by Report Type</span>
+                  <div style={{display:"flex",gap:12,fontSize:10,color:T.muted}}>
+                    <span style={{display:"flex",alignItems:"center",gap:4}}>
+                      <span style={{width:8,height:8,borderRadius:2,background:T.green,display:"inline-block"}}/>
+                      Downloaded
+                    </span>
+                    <span style={{display:"flex",alignItems:"center",gap:4}}>
+                      <span style={{width:8,height:8,borderRadius:2,background:T.red,display:"inline-block"}}/>
+                      Failed
+                    </span>
+                  </div>
+                </div>
+                <ResponsiveContainer width="100%" height={160}>
+                  <BarChart data={byReportType} layout="vertical"
+                    margin={{top:0,right:16,left:80,bottom:0}}>
+                    <CartesianGrid strokeDasharray="3 3" stroke={T.border} horizontal={false}/>
+                    <XAxis type="number" tick={{fontSize:9,fill:T.muted}} tickLine={false} axisLine={false}/>
+                    <YAxis type="category" dataKey="name" tick={{fontSize:9,fill:T.muted}}
+                      width={78} tickLine={false} axisLine={false}/>
+                    <Tooltip cursor={{fill:T.accent+"08"}}
+                      contentStyle={{background:T.surface,border:"1px solid "+T.border,
+                        borderRadius:8,fontSize:11}}/>
+                    <Bar dataKey="downloaded" stackId="a" fill={T.green} name="Downloaded" radius={[0,0,0,0]}/>
+                    <Bar dataKey="failed"     stackId="a" fill={T.red}   name="Failed"     radius={[0,3,3,0]}/>
+                  </BarChart>
+                </ResponsiveContainer>
+              </div>
+            );
+          })()}
+
+          {/* ── Account list ── */}
+          <div style={{background:T.surface,borderRadius:12,border:"1px solid "+T.border,
+            overflow:"hidden"}}>
+            <div style={{padding:"12px 20px",borderBottom:"1px solid "+T.border,
+              display:"flex",alignItems:"center",gap:8}}>
+              <span style={{fontSize:12,fontWeight:700,color:T.text,flex:1}}>
+                Accounts
+                <span style={{fontSize:11,fontWeight:400,color:T.muted,marginLeft:8}}>
+                  {filtered.filter(g=>g.health==="issue").length} failing ·{" "}
+                  {filtered.filter(g=>g.health==="warn").length} warning ·{" "}
+                  {filtered.filter(g=>g.health==="ok").length} healthy
+                </span>
+              </span>
+            </div>
+            {filtered.length===0&&(
+              <div style={{padding:"32px",textAlign:"center",fontSize:12,color:T.muted}}>
+                {search ? "No accounts match" : "No data"}
+              </div>
+            )}
+            {filtered.map((g,i)=>{
+              const hcol = HEALTH_COL[g.health];
+              return (
+                <div key={g.account} className="obs-row"
+                  style={{padding:"12px 20px",borderBottom:"1px solid "+T.border+"50",
+                    display:"flex",alignItems:"center",gap:14,
+                    borderLeft:"3px solid "+(g.health==="ok"?"transparent":hcol),
+                    animation:"obs-count-in 0.3s ease both",
+                    animationDelay:(i*0.02)+"s"}}>
+                  {/* Status + account */}
+                  <div style={{width:20,height:20,borderRadius:"50%",flexShrink:0,
+                    background:hcol+"20",border:"1px solid "+hcol+"40",
+                    display:"flex",alignItems:"center",justifyContent:"center",
+                    fontSize:9,fontWeight:800,color:hcol}}>
+                    {HEALTH_ICON[g.health]}
+                  </div>
+                  <div style={{flex:1,minWidth:0}}>
+                    <div style={{fontSize:12,fontWeight:700,color:T.text,
+                      display:"flex",alignItems:"center",gap:8,flexWrap:"wrap"}}>
+                      {g.account}
+                      {g.failed>0&&(
+                        <span style={{fontSize:10,padding:"1px 7px",borderRadius:99,
+                          background:T.red+"15",color:T.red,fontWeight:700}}>
+                          {g.failed} failed
+                        </span>
+                      )}
+                      {g.notReplicated>0&&g.failed===0&&(
+                        <span style={{fontSize:10,padding:"1px 7px",borderRadius:99,
+                          background:T.orange+"15",color:T.orange,fontWeight:600}}>
+                          {g.notReplicated} not replicated
+                        </span>
+                      )}
+                      {(()=>{
+                        const pred = agentPredictions.find(p=>
+                          String(p.account||"").includes(String(g.account||""))||
+                          String(g.account||"").includes(String(p.account||"")));
+                        if (!pred) return null;
+                        return (
+                          <span style={{fontSize:9,padding:"2px 7px",borderRadius:99,
+                            background:"#8B5CF615",color:"#8B5CF6",fontWeight:700,
+                            display:"flex",alignItems:"center",gap:3}}>
+                            🔮 {pred.risk} risk
+                          </span>
+                        );
+                      })()}
+                      {agentAnomalies.some(a=>a.type==="high_retry_pattern"&&
+                        a.title?.includes(String(g.account||"")))&&(
+                        <span style={{fontSize:9,padding:"2px 7px",borderRadius:99,
+                          background:T.orange+"15",color:T.orange,fontWeight:700}}>
+                          ⚠ chronic retries
+                        </span>
+                      )}
+                    </div>
+                    {/* Report type mini-chips */}
+                    <div style={{display:"flex",gap:4,marginTop:5,flexWrap:"wrap"}}>
+                      {g.reportTypes.slice(0,8).map(rt=>{
+                        const rtCol = rt.failed>0?T.red:rt.copyStatus!=="REPLICATED"?T.orange:T.green;
+                        return (
+                          <span key={rt.name} title={rt.name}
+                            style={{fontSize:9,padding:"2px 6px",borderRadius:4,
+                              background:rtCol+"12",color:rtCol,
+                              border:"1px solid "+rtCol+"20",fontFamily:"monospace",
+                              maxWidth:120,overflow:"hidden",textOverflow:"ellipsis",
+                              whiteSpace:"nowrap"}}>
+                            {rt.name.replace(/^GET_|^SP_/,"").replace(/_/g," ").slice(0,14)}
+                          </span>
+                        );
+                      })}
+                      {g.reportTypes.length>8&&(
+                        <span style={{fontSize:9,color:T.muted}}>+{g.reportTypes.length-8}</span>
+                      )}
+                    </div>
+                  </div>
+                  {/* Progress bar */}
+                  <div style={{width:100,flexShrink:0}}>
+                    <div style={{display:"flex",justifyContent:"space-between",
+                      fontSize:9,color:T.muted,marginBottom:3}}>
+                      <span>{g.successPct}%</span>
+                      <span>{g.downloaded}/{g.total}</span>
+                    </div>
+                    <div style={{height:4,borderRadius:99,background:T.border,overflow:"hidden"}}>
+                      <div style={{height:"100%",borderRadius:99,
+                        width:g.successPct+"%",
+                        background:g.successPct>=95?T.green:g.successPct>=80?T.orange:T.red,
+                        transition:"width 0.6s ease"}}/>
+                    </div>
+                  </div>
+                  {/* Replication dot */}
+                  <div style={{width:70,flexShrink:0,textAlign:"right"}}>
+                    <span style={{fontSize:9,fontWeight:700,
+                      color:g.notReplicated===0?T.green:T.orange}}>
+                      {g.notReplicated===0?"⇄ Synced":"⇄ "+g.notReplicated+" pending"}
+                    </span>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </>}
+      </div>
+    </div>
+  );
+}
+
+// ── Page: Data Quality ────────────────────────────────────────────────────────
+function ObsQualityPage({ date, dateFrom, T, sqls, onEditSql }) {
+  const [data,    setData]    = React.useState(null);
+  const [loading, setLoading] = React.useState(false);
+  const [error,   setError]   = React.useState(null);
+
+  const load = React.useCallback(async () => {
+    setLoading(true); setError(null);
+    try {
+      const sql = (sqls.quality_freshness||OBS_DEFAULT_SQL.quality_freshness)
+        .replace(/:date_from/g,"'"+dateFrom+"'").replace(/:date/g,"'"+date+"'");
+      const r = await apiFetch(API+"/api/query?sql="+encodeURIComponent(sql));
+      if(!r.ok) throw new Error("HTTP "+r.status);
+      const d=await r.json();
+      setData(Array.isArray(d)?d:(d?.rows||d?.data||d?.results||[]));
+    } catch(e) { setError(e.message); }
+    setLoading(false);
+  },[date, dateFrom, JSON.stringify(sqls)]);
+
+  React.useEffect(()=>{ load().catch(e=>setError(e?.message||String(e))); },[load]);
+
+  const summary = React.useMemo(()=>{
+    if (!data||!data.length) return null;
+    return {
+      avgCompleteness: Math.round(data.reduce((s,r)=>s+Number(r.completeness_pct||0),0)/data.length),
+      maxStaleness:    Math.max(...data.map(r=>Number(r.days_since_last_download||0))),
+      staleCount:      data.filter(r=>Number(r.days_since_last_download||0)>2).length,
+      reportTypes:     data.length,
+    };
+  },[data]);
+
+  return (
+    <div style={{padding:"28px 36px",overflowY:"auto",height:"100%"}}>
+      <div style={{display:"flex",alignItems:"flex-start",justifyContent:"space-between",marginBottom:28}}>
+        <div>
+          <div style={{fontSize:18,fontWeight:700,color:T.text,letterSpacing:"-0.02em"}}>Data Quality</div>
+          <div style={{fontSize:11,color:T.muted,marginTop:3}}>Completeness, freshness & coverage</div>
+        </div>
+        <div style={{display:"flex",gap:6}}>
+          <button onClick={load} style={{background:"none",border:"1px solid "+T.border,
+            borderRadius:7,padding:"6px 12px",fontSize:11,color:T.muted,cursor:"pointer"}}>↻</button>
+          <button onClick={()=>onEditSql("quality_freshness")}
+            style={{background:"none",border:"1px solid "+T.border,
+              borderRadius:7,padding:"6px 12px",fontSize:11,color:T.muted,cursor:"pointer"}}>⚙ SQL</button>
+        </div>
+      </div>
+
+      {loading&&<ObsSkel T={T}/>}
+      {!loading&&error&&(
+        <div style={{padding:"16px",background:T.red+"08",border:"1px solid "+T.red+"30",
+          borderRadius:10,fontSize:12,color:T.red,marginBottom:16}}>✗ {error}</div>
+      )}
+
+      {!loading&&<ObsAiBriefing data={data||[]} pageId="quality" pageLabel="Data Quality" T={T}/>}
+
+      {!loading&&summary&&(
+        <div style={{display:"flex",gap:14,marginBottom:24,flexWrap:"wrap"}}>
+          <ObsKpi label="Avg Completeness" value={summary.avgCompleteness+"%"} icon="✦"
+            color={summary.avgCompleteness>90?T.green:summary.avgCompleteness>70?T.orange:T.red} T={T}/>
+          <ObsKpi label="Max Days Stale"   value={summary.maxStaleness+"d"}    icon="⏱"
+            color={summary.maxStaleness>7?T.red:summary.maxStaleness>2?T.orange:T.green} T={T}/>
+          <ObsKpi label="Stale Reports"    value={summary.staleCount}           icon="⚠"
+            color={summary.staleCount>0?T.orange:T.green} T={T} sub=">2 days old"/>
+          <ObsKpi label="Report Types"     value={summary.reportTypes}          icon="📋" color={T.accent} T={T}/>
+        </div>
+      )}
+
+      {!loading&&data&&(
+        <div style={{background:T.surface,borderRadius:14,border:"1px solid "+T.border,overflow:"hidden"}}>
+          <div style={{padding:"14px 20px",borderBottom:"1px solid "+T.border,
+            fontSize:12,fontWeight:600,color:T.text}}>
+            Freshness & Completeness by Report Type
+          </div>
+          <ObsTable rows={data} T={T} highlightCol="days_since_last_download"/>
+        </div>
+      )}
+
+
+    </div>
+  );
+}
+
+// ── Page: Failures & Recovery ─────────────────────────────────────────────────
+function ObsFailuresPage({ date, T, sqls, onEditSql, onDataLoad, incidentSummary, slackWebhook }) {
+  const [data,      setData]      = React.useState(null);
+  const [loading,   setLoading]   = React.useState(false);
+  const [error,     setError]     = React.useState(null);
+  const [retried,   setRetried]   = React.useState({});
+  const [expanded,  setExpanded]  = React.useState({});
+  const [aiGroups,  setAiGroups]  = React.useState(null);
+  const [groupBusy, setGroupBusy] = React.useState(false);
+
+  const load = React.useCallback(async () => {
+    setLoading(true); setError(null); setAiGroups(null);
+    try {
+      const sql = (sqls.failures||OBS_DEFAULT_SQL.failures);
+      const r = await apiFetch(API+"/api/query?sql="+encodeURIComponent(sql));
+      if(!r.ok) throw new Error("HTTP "+r.status);
+      const d = await r.json();
+      const rows = Array.isArray(d)?d:(d?.rows||d?.data||d?.results||[]);
+      setData(rows);
+      if (onDataLoad) onDataLoad(rows);
+      if (rows.length>0) groupWithAi(rows);
+    } catch(e) { setError(e.message); }
+    setLoading(false);
+  },[JSON.stringify(sqls)]);
+
+  React.useEffect(()=>{ load().catch(e=>setError(e?.message||String(e))); },[load]);
+
+  // ── AI root cause grouping ────────────────────────────────────────────────
+  const groupWithAi = async (rows) => {
+    setGroupBusy(true);
+    try {
+      const sample = rows.slice(0,12).map(r=>
+        `${r.account}|${r.report_type}|${r.status}|tries:${r.max_tries||0}|copy:${r.copy_status||"none"}`
+      ).join("\n");
+      const ans = await obsAiCall(
+        "You are a data pipeline expert. Group these SP-API download failures by probable root cause. Return ONLY a JSON array of groups, no markdown: [{\"id\":\"g1\",\"cause\":\"short root cause title\",\"severity\":\"critical|warning\",\"detail\":\"1 sentence explanation\",\"recommendation\":\"specific action to take\",\"accounts\":[\"acct1\",\"acct2\"],\"reportTypes\":[\"type1\"]}]. Max 5 groups. Be specific about the likely cause.",
+        "Failures (account|report_type|status|tries|copy_status):\n"+sample+"\nTotal: "+rows.length+" rows",
+        500
+      );
+      const groups = JSON.parse(ans.replace(/```json|```/g,"").trim());
+      setAiGroups(Array.isArray(groups)?groups:[]);
+    } catch { setAiGroups([]); }
+    setGroupBusy(false);
+  };
+
+  const retryGroup = (group) => {
+    const newRetried = {...retried};
+    (group.accounts||[]).forEach(acc => { newRetried[acc+"|all"] = true; });
+    setRetried(newRetried);
+  };
+
+  const SEV = {critical:T.red, warning:T.orange};
+
+  // ── Severity counts ──────────────────────────────────────────────────────
+  const counts = React.useMemo(() => {
+    if (!data) return {total:0,critical:0,warning:0};
+    return {
+      total: data.length,
+      critical: data.filter(r=>Number(r.max_tries||0)>=3).length,
+      warning:  data.filter(r=>Number(r.max_tries||0)<3&&Number(r.max_tries||0)>0).length,
+    };
+  }, [data]);
+
+  return (
+    <div style={{height:"100%",overflowY:"auto",background:T.bg}}>
+      <style>{`
+        .obs-group { transition: all 0.15s; }
+        .obs-group:hover { border-color: rgba(99,102,241,0.3) !important; }
+      `}</style>
+
+      {/* ── Header ── */}
+      <div style={{position:"sticky",top:0,zIndex:10,background:T.bg,
+        borderBottom:"1px solid "+T.border,padding:"12px 24px",
+        display:"flex",alignItems:"center",gap:10}}>
+        <div style={{flex:1}}>
+          <span style={{fontSize:14,fontWeight:700,color:T.text}}>Failures & Recovery</span>
+          <span style={{fontSize:11,color:T.muted,marginLeft:10}}>last 30 days</span>
+        </div>
+        {data&&data.length>0&&(
+          <div style={{display:"flex",gap:8}}>
+            <span style={{padding:"3px 10px",borderRadius:99,fontSize:11,fontWeight:700,
+              background:T.red+"15",color:T.red}}>{counts.critical} critical</span>
+            <span style={{padding:"3px 10px",borderRadius:99,fontSize:11,fontWeight:700,
+              background:T.orange+"15",color:T.orange}}>{counts.warning} warning</span>
+          </div>
+        )}
+        <button onClick={load} disabled={loading}
+          style={{background:"none",border:"1px solid "+T.border,borderRadius:7,
+            padding:"6px 12px",fontSize:11,color:T.muted,cursor:"pointer"}}>
+          {loading?"…":"↻"}
+        </button>
+        <button onClick={()=>onEditSql("failures")}
+          style={{background:"none",border:"1px solid "+T.border,borderRadius:7,
+            padding:"6px 12px",fontSize:11,color:T.muted,cursor:"pointer"}}>⚙ SQL</button>
+      </div>
+
+      <div style={{padding:"20px 24px"}}>
+        {loading&&<ObsSkel T={T}/>}
+        {!loading&&error&&(
+          <div style={{padding:"14px",background:T.red+"08",border:"1px solid "+T.red+"30",
+            borderRadius:10,fontSize:12,color:T.red,marginBottom:16}}>✗ {error}</div>
+        )}
+
+        {!loading&&data&&data.length===0&&(
+          <div style={{padding:"60px 32px",textAlign:"center"}}>
+            <div style={{fontSize:40,marginBottom:12}}>✓</div>
+            <div style={{fontSize:16,fontWeight:700,color:T.green,marginBottom:6}}>
+              No failures in the last 30 days
+            </div>
+            <div style={{fontSize:12,color:T.muted}}>All downloads completed successfully.</div>
+          </div>
+        )}
+
+        {!loading&&data&&data.length>0&&<>
+
+          {/* ── Incident summary from AI Agent ── */}
+          {incidentSummary?.summary&&(
+            <IncidentSummaryBanner summary={incidentSummary} slackWebhook={slackWebhook} T={T}/>
+          )}
+
+          {/* ── AI Root Cause Groups ── */}
+          <div style={{marginBottom:20}}>
+            <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:12}}>
+              <span style={{fontSize:13,fontWeight:700,color:T.text}}>AI Root Cause Analysis</span>
+              {groupBusy&&(
+                <span style={{fontSize:11,color:T.accent,display:"flex",alignItems:"center",gap:4}}>
+                  <span style={{animation:"obs-pulse 1s infinite"}}>⟳</span> Grouping…
+                </span>
+              )}
+              {!groupBusy&&aiGroups&&(
+                <span style={{fontSize:10,color:T.muted}}>
+                  {aiGroups.length} probable cause{aiGroups.length!==1?"s":""} identified
+                </span>
+              )}
+              {!groupBusy&&(
+                <button onClick={()=>groupWithAi(data)}
+                  style={{marginLeft:"auto",background:"none",border:"1px solid "+T.border,
+                    borderRadius:6,padding:"4px 10px",fontSize:10,color:T.muted,cursor:"pointer"}}>
+                  ↻ Re-analyse
+                </button>
+              )}
+            </div>
+
+            {groupBusy&&(
+              <div style={{display:"flex",flexDirection:"column",gap:8}}>
+                {[1,2,3].map(i=>(
+                  <div key={i} style={{height:64,borderRadius:10,background:T.surface,
+                    border:"1px solid "+T.border,animation:"obs-pulse 1.4s ease infinite",
+                    animationDelay:(i*0.1)+"s"}}/>
+                ))}
+              </div>
+            )}
+
+            {!groupBusy&&aiGroups&&aiGroups.map((group,gi)=>{
+              const sev = group.severity||"warning";
+              const col = SEV[sev]||T.orange;
+              const isOpen = expanded["g"+gi];
+              const groupRetried = (group.accounts||[]).every(a=>retried[a+"|all"]);
+
+              return (
+                <div key={gi} className="obs-group"
+                  style={{background:T.surface,borderRadius:12,
+                    border:"1px solid "+(isOpen?col+"40":T.border),
+                    borderLeft:"3px solid "+col,
+                    marginBottom:8,overflow:"hidden",
+                    boxShadow:isOpen?"0 2px 12px rgba(0,0,0,0.08)":"none"}}>
+
+                  {/* Group header — always visible */}
+                  <div onClick={()=>setExpanded(p=>({...p,["g"+gi]:!p["g"+gi]}))}
+                    style={{padding:"14px 18px",cursor:"pointer",
+                      display:"flex",alignItems:"flex-start",gap:12}}>
+                    <div style={{width:28,height:28,borderRadius:8,flexShrink:0,
+                      background:col+"15",border:"1px solid "+col+"25",
+                      display:"flex",alignItems:"center",justifyContent:"center",
+                      fontSize:10,fontWeight:800,color:col,marginTop:2}}>
+                      {sev==="critical"?"🔴":"🟡"}
+                    </div>
+                    <div style={{flex:1,minWidth:0}}>
+                      <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:4}}>
+                        <span style={{fontSize:13,fontWeight:700,color:T.text}}>{group.cause}</span>
+                        <span style={{fontSize:9,padding:"2px 7px",borderRadius:99,
+                          fontWeight:700,textTransform:"uppercase",
+                          background:col+"15",color:col}}>{sev}</span>
+                        {(group.accounts||[]).length>0&&(
+                          <span style={{fontSize:10,color:T.muted}}>
+                            {group.accounts.length} account{group.accounts.length!==1?"s":""}
+                          </span>
+                        )}
+                      </div>
+                      <div style={{fontSize:12,color:T.muted,lineHeight:1.5}}>
+                        {group.detail}
+                      </div>
+                    </div>
+                    <div style={{display:"flex",gap:6,flexShrink:0,alignItems:"center"}}>
+                      {!groupRetried?(
+                        <button onClick={e=>{e.stopPropagation();retryGroup(group);}}
+                          style={{padding:"5px 12px",borderRadius:7,fontSize:11,fontWeight:700,
+                            border:"none",cursor:"pointer",
+                            background:col,color:"#fff"}}>
+                          Retry All
+                        </button>
+                      ):(
+                        <span style={{fontSize:11,color:T.green,fontWeight:600}}>✓ Queued</span>
+                      )}
+                      <span style={{color:T.muted,fontSize:14,
+                        transform:isOpen?"rotate(90deg)":"none",
+                        transition:"transform 0.2s",display:"inline-block"}}>›</span>
+                    </div>
+                  </div>
+
+                  {/* Recommendation strip */}
+                  {group.recommendation&&(
+                    <div style={{padding:"8px 18px 10px 58px",
+                      borderTop:"1px solid "+col+"15",
+                      background:col+"05"}}>
+                      <span style={{fontSize:11,color:col,fontWeight:600}}>
+                        ⤷ {group.recommendation}
+                      </span>
+                    </div>
+                  )}
+
+                  {/* Expanded: matching rows */}
+                  {isOpen&&(()=>{
+                    const matchRows = data.filter(r =>
+                      (group.accounts||[]).some(a =>
+                        String(r.account||"").includes(a)||a.includes(String(r.account||""))
+                      ) ||
+                      (group.reportTypes||[]).some(rt =>
+                        String(r.report_type||"").includes(rt)||rt.includes(String(r.report_type||""))
+                      )
+                    ).slice(0,20);
+                    return (
+                      <div style={{borderTop:"1px solid "+T.border+"50"}}>
+                        <div style={{overflowX:"auto"}}>
+                          <table style={{borderCollapse:"collapse",width:"100%",fontSize:11}}>
+                            <thead>
+                              <tr style={{background:T.bg}}>
+                                {["Account","Report Type","Status","Copy","Tries","Period","Action"].map(h=>(
+                                  <th key={h} style={{padding:"7px 14px",textAlign:"left",
+                                    fontSize:9,fontWeight:700,color:T.muted,
+                                    borderBottom:"1px solid "+T.border,
+                                    whiteSpace:"nowrap",textTransform:"uppercase",
+                                    letterSpacing:"0.06em"}}>{h}</th>
+                                ))}
+                              </tr>
+                            </thead>
+                            <tbody>
+                              {matchRows.map((r,ri)=>{
+                                const rKey = r.account+"|"+r.report_type;
+                                const isR  = retried[rKey]||retried[r.account+"|all"];
+                                return (
+                                  <tr key={ri} style={{
+                                    background:isR?T.green+"05":ri%2===0?T.bg:"none",
+                                    borderLeft:isR?"2px solid "+T.green+"60":"2px solid "+T.red+"30"}}>
+                                    <td style={{padding:"7px 14px",fontWeight:600,color:T.text,
+                                      whiteSpace:"nowrap",fontFamily:"monospace",fontSize:10}}>
+                                      {r.account||"—"}
+                                    </td>
+                                    <td style={{padding:"7px 14px",color:T.muted,fontSize:10,
+                                      fontFamily:"monospace",whiteSpace:"nowrap"}}>
+                                      {(r.report_type||"—").replace(/^GET_|^SP_/,"").slice(0,20)}
+                                    </td>
+                                    <td style={{padding:"7px 14px"}}>
+                                      <span style={{fontSize:9,padding:"2px 7px",borderRadius:99,
+                                        fontWeight:700,
+                                        background:r.status==="processed"?T.green+"15":T.red+"15",
+                                        color:r.status==="processed"?T.green:T.red}}>
+                                        {r.status||"—"}
+                                      </span>
+                                    </td>
+                                    <td style={{padding:"7px 14px"}}>
+                                      <span style={{fontSize:9,padding:"2px 7px",borderRadius:99,
+                                        fontWeight:600,
+                                        background:r.copy_status==="REPLICATED"?T.green+"12":T.orange+"12",
+                                        color:r.copy_status==="REPLICATED"?T.green:T.orange}}>
+                                        {r.copy_status==="REPLICATED"?"⇄ synced":"pending"}
+                                      </span>
+                                    </td>
+                                    <td style={{padding:"7px 14px",textAlign:"center",
+                                      fontFamily:"monospace",
+                                      color:Number(r.max_tries||0)>=3?T.red:T.muted}}>
+                                      {r.max_tries||0}
+                                    </td>
+                                    <td style={{padding:"7px 14px",color:T.muted,fontSize:10}}>
+                                      {r.period_from||"—"}
+                                      {r.period_to&&r.period_to!==r.period_from?
+                                        " → "+r.period_to:""}
+                                    </td>
+                                    <td style={{padding:"7px 14px"}}>
+                                      {!isR?(
+                                        <button onClick={()=>setRetried(p=>({...p,[rKey]:true}))}
+                                          style={{padding:"3px 10px",borderRadius:6,fontSize:10,
+                                            fontWeight:700,border:"none",cursor:"pointer",
+                                            background:T.accent+"15",color:T.accent}}>
+                                          Retry
+                                        </button>
+                                      ):(
+                                        <span style={{fontSize:10,color:T.green}}>✓</span>
+                                      )}
+                                    </td>
+                                  </tr>
+                                );
+                              })}
+                              {matchRows.length===0&&(
+                                <tr><td colSpan={7} style={{padding:"12px 14px",
+                                  fontSize:11,color:T.muted,textAlign:"center"}}>
+                                  No matching rows found for this group
+                                </td></tr>
+                              )}
+                            </tbody>
+                          </table>
+                        </div>
+                      </div>
+                    );
+                  })()}
+                </div>
+              );
+            })}
+
+            {!groupBusy&&(!aiGroups||aiGroups.length===0)&&data.length>0&&(
+              <div style={{padding:"16px 20px",background:T.surface,borderRadius:10,
+                border:"1px solid "+T.border,fontSize:12,color:T.muted}}>
+                AI grouping unavailable — showing raw failures below
+              </div>
+            )}
+          </div>
+
+          {/* ── Raw failures summary ── */}
+          <details style={{marginTop:8}}>
+            <summary style={{fontSize:11,fontWeight:600,color:T.muted,cursor:"pointer",
+              userSelect:"none",listStyle:"none",display:"flex",alignItems:"center",gap:6,
+              padding:"8px 0"}}>
+              <span>▶</span>
+              <span>All failures — raw ({data.length} rows)</span>
+            </summary>
+            <div style={{marginTop:8,background:T.surface,borderRadius:10,
+              border:"1px solid "+T.border,overflow:"hidden"}}>
+              <ObsTable rows={data} T={T} highlightCol="failure_count"/>
+            </div>
+          </details>
+        </>}
+      </div>
+    </div>
+  );
+}
+
+// ── Page: Placeholder ─────────────────────────────────────────────────────────
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// DATA OBSERVABILITY — SLACK ALERTING & REMEDIATION
+// ═══════════════════════════════════════════════════════════════════════════════
+//
+// BACKEND REQUIRED:
+// POST /api/slack/send     — { webhook, blocks } → sends to Slack webhook
+// POST /api/slack/actions  — handles Slack interactivity callbacks
+//   body: { payload: <url-encoded Slack action payload> }
+//   Actions: acknowledge | resolve | escalate
+//
+// ALERT TABLE (backend):
+// CREATE TABLE obs_alerts (
+//   id          VARCHAR PRIMARY KEY,
+//   key         VARCHAR,        -- account|report_type|issue_type (dedup key)
+//   severity    VARCHAR,        -- critical | warning
+//   title       VARCHAR,
+//   detail      TEXT,
+//   affected    VARCHAR,
+//   status      VARCHAR,        -- active | acknowledged | resolved | escalated
+//   sent_at     TIMESTAMP,
+//   resolved_at TIMESTAMP,
+//   cooldown_until TIMESTAMP
+// );
+//
+// DEDUP: before sending, check if key exists with status=active
+//        and sent_at > NOW() - INTERVAL '30 minutes'
+// ═══════════════════════════════════════════════════════════════════════════════
+
+// Slack config is read from the central "wz_slack" key set in Configure tab
+const OBS_ALERTS_KEY  = "wz_obs_alerts_v1";
+const COOLDOWN_MS     = 30 * 60 * 1000; // 30 minutes
+
+// ── Block Kit builder ─────────────────────────────────────────────────────────
+function buildSlackAlert({ title, severity, detail, affected, alertId, dashboardUrl }) {
+  const emoji  = severity === "critical" ? "🚨" : "⚠️";
+  const color  = severity === "critical" ? "#E53E3E" : "#DD6B20";
+  const affectedList = (affected||[]).slice(0,5).map(a=>`• ${a}`).join("\n");
+  const ts = Math.floor(Date.now()/1000);
+
+  return {
+    attachments: [{
+      color,
+      blocks: [
+        {
+          type: "section",
+          text: {
+            type: "mrkdwn",
+            text: `${emoji} *Data Alert — ${severity.toUpperCase()}*\n*Pipeline:* SP-API Downloads\n*Issue:* ${title}`
+          }
+        },
+        {
+          type: "section",
+          fields: [
+            { type: "mrkdwn", text: `*Detail:*\n${detail}` },
+            { type: "mrkdwn", text: `*Affected:*\n${affectedList||"—"}` }
+          ]
+        },
+        { type: "divider" },
+        {
+          type: "actions",
+          elements: [
+            {
+              type: "button",
+              text: { type: "plain_text", text: "✓ Acknowledge", emoji: true },
+              style: "primary",
+              action_id: "acknowledge",
+              value: alertId
+            },
+            {
+              type: "button",
+              text: { type: "plain_text", text: "✅ Resolve", emoji: true },
+              action_id: "resolve",
+              value: alertId
+            },
+            {
+              type: "button",
+              text: { type: "plain_text", text: "🔗 View Dashboard", emoji: true },
+              action_id: "view",
+              url: dashboardUrl || window.location.href,
+              value: alertId
+            },
+            {
+              type: "button",
+              text: { type: "plain_text", text: "🔺 Escalate", emoji: true },
+              style: "danger",
+              action_id: "escalate",
+              value: alertId
+            }
+          ]
+        },
+        {
+          type: "context",
+          elements: [{ type: "mrkdwn", text: `Alert ID: \`${alertId}\` · <!date^${ts}^{date_short_pretty} {time}|${new Date().toISOString()}>` }]
+        }
+      ]
+    }]
+  };
+}
+
+// ── Alert engine — dedup + cooldown + send ────────────────────────────────────
+function useObsAlertEngine({ slackConfig, failures, kpis }) {
+  const [alerts, setAlerts] = useLocal(OBS_ALERTS_KEY, []);
+  const sentRef = React.useRef({});
+
+  const sendAlert = React.useCallback(async (anomaly) => {
+    if (!slackConfig?.enabled || !slackConfig?.webhook) return;
+    const key = anomaly.key;
+    const now = Date.now();
+    // Cooldown check
+    if (sentRef.current[key] && now - sentRef.current[key] < COOLDOWN_MS) return;
+    // Check severity threshold
+    const threshold = slackConfig.severityThreshold || "warning";
+    if (threshold === "critical" && anomaly.severity !== "critical") return;
+    // Mark sent
+    sentRef.current[key] = now;
+    const alertId = "alert_" + Date.now() + "_" + Math.random().toString(36).slice(2,7);
+    const newAlert = {
+      id: alertId, key, severity: anomaly.severity,
+      title: anomaly.title, detail: anomaly.detail,
+      affected: anomaly.affected, status: "active",
+      sentAt: new Date().toISOString()
+    };
+    // Add to local state
+    setAlerts(prev => [newAlert, ...prev.slice(0,49)]);
+    // Send to Slack via backend
+    try {
+      const payload = buildSlackAlert({
+        title: anomaly.title, severity: anomaly.severity,
+        detail: anomaly.detail,
+        affected: Array.isArray(anomaly.affected) ? anomaly.affected : [anomaly.affected||""],
+        alertId,
+        dashboardUrl: window.location.href
+      });
+      await fetch(slackConfig.webhook, {
+        method:"POST", headers:{"Content-Type":"application/json"},
+        body: JSON.stringify(payload)
+      });
+    } catch(e) { console.warn("[ObsAlerts] Slack send failed:", e.message); }
+  }, [slackConfig, setAlerts]);
+
+  // Auto-detect anomalies from live data
+  React.useEffect(() => {
+    if (!failures?.length && !kpis) return;
+    const anomalies = [];
+    // SLA breach: failure rate > 10%
+    const failRate = Number(kpis?.success_rate_pct||100);
+    if (failRate < 90) {
+      anomalies.push({
+        key: "global|all|sla_breach",
+        severity: failRate < 70 ? "critical" : "warning",
+        title: "SLA Breach — Download Success Rate",
+        detail: `Success rate has dropped to ${failRate}% (threshold: 90%). ${kpis?.failed||0} downloads failed in the last 30 days.`,
+        affected: ["All accounts"]
+      });
+    }
+    // Persistent failures by account
+    const byAccount = {};
+    (failures||[]).forEach(r => {
+      const acc = r.account||"unknown";
+      if (!byAccount[acc]) byAccount[acc] = { count:0, types:new Set() };
+      byAccount[acc].count += Number(r.failure_count||1);
+      byAccount[acc].types.add(r.report_type);
+    });
+    const badAccounts = Object.entries(byAccount)
+      .filter(([,v])=>v.count>5)
+      .sort((a,b)=>b[1].count-a[1].count)
+      .slice(0,3);
+    if (badAccounts.length) {
+      badAccounts.forEach(([acc, v]) => {
+        anomalies.push({
+          key: `${acc}|multiple|persistent_failure`,
+          severity: v.count > 20 ? "critical" : "warning",
+          title: `Persistent Failures — Account ${acc}`,
+          detail: `Account ${acc} has ${v.count} failures across ${v.types.size} report type(s) in the last 30 days.`,
+          affected: [`Account ${acc}`, ...[...v.types].slice(0,3)]
+        });
+      });
+    }
+    // Spike: high tries
+    const highTries = (failures||[]).filter(r=>Number(r.max_tries||0)>3);
+    if (highTries.length > 0) {
+      anomalies.push({
+        key: `all|all|high_retry_count`,
+        severity: "warning",
+        title: "High Retry Count Detected",
+        detail: `${highTries.length} account/report_type combinations have been retried more than 3 times, suggesting a persistent upstream issue.`,
+        affected: highTries.slice(0,4).map(r=>`${r.account}/${r.report_type}`)
+      });
+    }
+    // Replication lag: items not replicated
+    const notReplicated = Number(kpis?.not_replicated||0);
+    if (notReplicated > 50) {
+      anomalies.push({
+        key: "global|all|replication_lag",
+        severity: notReplicated > 200 ? "critical" : "warning",
+        title: "Replication Lag",
+        detail: `${notReplicated} downloaded reports are not yet replicated to the data warehouse.`,
+        affected: ["Replication pipeline"]
+      });
+    }
+    anomalies.forEach(a => sendAlert(a));
+  }, [failures, kpis, sendAlert]);
+
+  const updateAlertStatus = React.useCallback((id, status) => {
+    setAlerts(prev => prev.map(a => a.id===id ? {...a, status, resolvedAt: status==="resolved"?new Date().toISOString():a.resolvedAt} : a));
+    // Also notify backend
+    apiFetch(API+"/api/slack/actions", {
+      method:"POST", headers:{"Content-Type":"application/json"},
+      body: JSON.stringify({ alertId: id, action: status })
+    }).catch(()=>{});
+  }, [setAlerts]);
+
+  return { alerts, updateAlertStatus };
+}
+
+// ── Alerts Panel ──────────────────────────────────────────────────────────────
+function ObsAlertsPanel({ slackConfig, setSlackConfig, alerts, updateAlertStatus, T }) {
+  const [filter, setFilter] = React.useState("active"); // active | all
+
+  const visible = filter === "active"
+    ? alerts.filter(a => a.status === "active" || a.status === "acknowledged")
+    : alerts;
+
+  const SEV_COLOR = s => s==="critical"?T.red:T.orange;
+  const STATUS_COLOR = s => s==="resolved"?T.green:s==="acknowledged"?T.accent:s==="escalated"?T.red:T.orange;
+  const STATUS_ICON  = s => s==="resolved"?"✓":s==="acknowledged"?"◉":s==="escalated"?"🔺":"●";
+
+  return (
+    <div style={{padding:"28px 36px",overflowY:"auto",height:"100%"}}>
+      <div style={{display:"flex",alignItems:"flex-start",justifyContent:"space-between",marginBottom:24}}>
+        <div>
+          <div style={{fontSize:18,fontWeight:700,color:T.text,letterSpacing:"-0.02em"}}>
+            Monitoring & Alerts
+          </div>
+          <div style={{fontSize:11,color:T.muted,marginTop:3}}>
+            Active alerts, acknowledgements and resolutions
+          </div>
+        </div>
+        <div style={{display:"flex",gap:8,alignItems:"center"}}>
+          {/* Slack status pill */}
+          <div style={{display:"flex",alignItems:"center",gap:6,padding:"5px 12px",
+            borderRadius:99,fontSize:11,fontWeight:600,
+            background:slackConfig?.enabled&&slackConfig?.webhook?T.green+"15":T.border+"40",
+            border:"1px solid "+(slackConfig?.enabled&&slackConfig?.webhook?T.green+"40":T.border),
+            color:slackConfig?.enabled&&slackConfig?.webhook?T.green:T.muted}}>
+            <div style={{width:6,height:6,borderRadius:"50%",
+              background:slackConfig?.enabled&&slackConfig?.webhook?T.green:T.muted,
+              boxShadow:slackConfig?.enabled&&slackConfig?.webhook?"0 0 0 2px "+T.green+"30":"none"}}/>
+{slackConfig?.enabled&&slackConfig?.webhook?"Slack connected":"Not configured — see Configure tab"}
+          </div>
+          {/* Filter */}
+          <div style={{display:"flex",background:T.bg,borderRadius:7,
+            border:"1px solid "+T.border,overflow:"hidden"}}>
+            {[["active","Active"],["all","All"]].map(([v,l])=>(
+              <button key={v} onClick={()=>setFilter(v)}
+                style={{padding:"5px 12px",fontSize:11,fontWeight:600,border:"none",
+                  cursor:"pointer",background:filter===v?T.accent:T.bg,
+                  color:filter===v?"#fff":T.muted}}>
+                {l}{v==="active"&&alerts.filter(a=>a.status==="active").length>0&&(
+                  <span style={{marginLeft:5,background:T.red,color:"#fff",borderRadius:99,
+                    fontSize:9,padding:"1px 5px",fontWeight:700}}>
+                    {alerts.filter(a=>a.status==="active").length}
+                  </span>
+                )}
               </button>
             ))}
           </div>
         </div>
-        <div style={{display:"flex",alignItems:"center",gap:7,flexWrap:"wrap"}}>
-          <span style={{fontSize:11,fontWeight:700,padding:"4px 12px",borderRadius:99,
-            background:`${STATUS_COLOR[overallStatus]}18`,color:STATUS_COLOR[overallStatus],
-            border:`1px solid ${STATUS_COLOR[overallStatus]}30`}}>
-            ● {STATUS_LABEL[overallStatus]}
-          </span>
-          <button onClick={loadStageData} style={{background:T.surface,border:`1px solid ${T.border}`,borderRadius:7,padding:"5px 12px",fontSize:12,color:T.text,cursor:"pointer",fontWeight:600}}>↻</button>
-          <button onClick={()=>setChatOpen(p=>!p)} style={{background:chatOpen?T.accent:T.surface,border:`1px solid ${chatOpen?T.accent:T.border}`,borderRadius:7,padding:"5px 12px",fontSize:12,color:chatOpen?"#fff":T.text,cursor:"pointer",fontWeight:600}}>💬</button>
-          <button onClick={exportCSV} style={{background:T.surface,border:`1px solid ${T.border}`,borderRadius:7,padding:"5px 12px",fontSize:12,color:T.text,cursor:"pointer"}}>⬇ CSV</button>
-          <button onClick={()=>window.print()} style={{background:T.surface,border:`1px solid ${T.border}`,borderRadius:7,padding:"5px 12px",fontSize:12,color:T.text,cursor:"pointer"}}>🖨</button>
-          <button onClick={()=>setShowConfig(true)} style={{background:T.surface,border:`1px solid ${T.border}`,borderRadius:7,padding:"5px 12px",fontSize:12,color:T.text,cursor:"pointer"}}>⚙</button>
+      </div>
+
+      {visible.length===0&&(
+        <div style={{padding:"48px 32px",textAlign:"center",background:T.surface,
+          borderRadius:12,border:"1px solid "+T.border}}>
+          <div style={{fontSize:28,marginBottom:8}}>✓</div>
+          <div style={{fontSize:13,fontWeight:600,color:T.text,marginBottom:4}}>
+            {filter==="active"?"No active alerts":"No alerts yet"}
+          </div>
+          <div style={{fontSize:11,color:T.muted}}>
+            {filter==="active"
+              ? "All pipelines are healthy. Alerts will appear here when anomalies are detected."
+              : "Alerts will be recorded here as anomalies are detected."}
+          </div>
         </div>
-      </div>
+      )}
 
-      {/* AI banners + operator content — hidden in executive mode */}
-      {viewMode==="executive" && <ExecutiveView/>}
-      {viewMode==="operator" && <>
-      {/* AI banners */}
-      <div style={{display:"flex",gap:10,marginBottom:14,flexWrap:"wrap"}}>
-        {cfg.aiFeatures.narrativeSummary && (
-          <div style={{flex:1,minWidth:200,padding:"10px 14px",background:`${T.accent}08`,borderRadius:9,border:`1px solid ${T.accent}20`}}>
-            <div style={{fontSize:9,fontWeight:700,color:T.accent,textTransform:"uppercase",letterSpacing:"0.07em",marginBottom:4}}>📝 Summary</div>
-            {aiNarrLoad?<div style={{fontSize:11,color:T.muted}}>Generating…</div>
-              :aiNarrative?<div style={{fontSize:12,color:T.text,lineHeight:1.5}}>{aiNarrative}</div>
-              :<button onClick={()=>data&&generateNarrative(data)} style={{fontSize:11,color:T.accent,background:"none",border:`1px solid ${T.accent}40`,borderRadius:5,padding:"2px 8px",cursor:"pointer"}}>Generate</button>}
-          </div>
-        )}
-        {cfg.aiFeatures.preRunRisk && (
-          <div style={{flex:1,minWidth:200,padding:"10px 14px",background:`${T.orange}08`,borderRadius:9,border:`1px solid ${T.orange}25`}}>
-            <div style={{fontSize:9,fontWeight:700,color:T.orange,textTransform:"uppercase",letterSpacing:"0.07em",marginBottom:4}}>⚠️ Pre-Run Risk</div>
-            {aiRiskLoad?<div style={{fontSize:11,color:T.muted}}>Assessing…</div>
-              :aiRisk?<div style={{fontSize:12,color:T.text,lineHeight:1.5}}>{aiRisk}</div>
-              :<button onClick={generatePreRunRisk} style={{fontSize:11,color:T.orange,background:"none",border:`1px solid ${T.orange}40`,borderRadius:5,padding:"2px 8px",cursor:"pointer"}}>Assess</button>}
-          </div>
-        )}
-        {cfg.aiFeatures.crossStageCorrelation && aiCorr && (
-          <div style={{flex:1,minWidth:200,padding:"10px 14px",background:`${T.green||"#10b981"}08`,borderRadius:9,border:`1px solid ${T.green||"#10b981"}25`}}>
-            <div style={{fontSize:9,fontWeight:700,color:T.green||"#10b981",textTransform:"uppercase",letterSpacing:"0.07em",marginBottom:4}}>🔗 Correlation</div>
-            <div style={{fontSize:12,color:T.text,lineHeight:1.5}}>{aiCorr}</div>
-          </div>
-        )}
-      </div>
-
-      {/* View tabs */}
-      <div style={{display:"flex",borderBottom:`1px solid ${T.border}`,marginBottom:16}}>
-        {[["operator","⚡ Operator"],["stages","🔍 Stages"],["digest","📊 Digest"]].map(([v,label])=>(
-          <button key={v} onClick={()=>setActiveView(v)} style={{
-            padding:"7px 16px",fontSize:12,fontWeight:activeView===v?700:400,
-            color:activeView===v?T.accent:T.muted,background:"none",border:"none",
-            borderBottom:activeView===v?`2px solid ${T.accent}`:"2px solid transparent",
-            cursor:"pointer"}}>
-            {label}
-            {v==="operator"&&pendingActions.filter(a=>a.status==="pending").length>0&&(
-              <span style={{marginLeft:6,background:T.red,color:"#fff",borderRadius:99,
-                fontSize:10,padding:"1px 6px",fontWeight:700}}>
-                {pendingActions.filter(a=>a.status==="pending").length}
-              </span>
-            )}
-          </button>
-        ))}
-      </div>
-
-      {/* ── OPERATOR VIEW ── */}
-      {activeView==="operator" && (
-        <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:16}}>
-
-          {/* LEFT: Approval queue */}
-          <div>
-            <div style={{fontSize:12,fontWeight:700,color:T.text,marginBottom:10,display:"flex",alignItems:"center",gap:8}}>
-              <span>⏳ Pending Approval</span>
-              <span style={{fontSize:11,color:T.muted,fontWeight:400}}>
-                ({pendingActions.filter(a=>a.status==="pending").length} actions)
-              </span>
-            </div>
-            {pendingActions.length===0 && !diagnosing && (
-              <div style={{padding:"32px 20px",textAlign:"center",background:T.surface,
-                borderRadius:10,border:`1px solid ${T.border}`}}>
-                <div style={{fontSize:24,marginBottom:8}}>✓</div>
-                <div style={{fontSize:13,fontWeight:600,color:T.text,marginBottom:4}}>All clear</div>
-                <div style={{fontSize:12,color:T.muted}}>No actions pending. AI is monitoring.</div>
-              </div>
-            )}
-            {diagnosing && pendingActions.length===0 && (
-              <div style={{padding:"32px 20px",textAlign:"center",background:T.surface,
-                borderRadius:10,border:`1px solid ${T.border}`}}>
-                <div style={{fontSize:12,color:T.accent}}>🤖 AI is scanning pipeline…</div>
-              </div>
-            )}
-            {pendingActions.map(action=><ActionCard key={action.id} action={action}/>)}
-          </div>
-
-          {/* RIGHT: Execution log */}
-          <div>
-            <div style={{fontSize:12,fontWeight:700,color:T.text,marginBottom:10,display:"flex",alignItems:"center",justifyContent:"space-between"}}>
-              <span>📋 Execution Log</span>
-              <button onClick={()=>{setExecLog([]);localStorage.removeItem("wz_ingestion_execlog_v1");}}
-                style={{fontSize:10,color:T.muted,background:"none",border:"none",cursor:"pointer"}}>Clear</button>
-            </div>
-            <div style={{background:T.surface,borderRadius:10,border:`1px solid ${T.border}`,
-              maxHeight:520,overflowY:"auto",padding:"8px 0"}}>
-              {execLog.length===0 && (
-                <div style={{padding:"32px 20px",textAlign:"center",fontSize:12,color:T.muted}}>
-                  Log is empty. Refresh to run the pipeline.
+      <div style={{display:"flex",flexDirection:"column",gap:8}}>
+        {visible.map(alert=>{
+          const sevCol = SEV_COLOR(alert.severity);
+          const stCol  = STATUS_COLOR(alert.status);
+          const isActive = alert.status==="active";
+          return (
+            <div key={alert.id} style={{background:T.surface,borderRadius:10,
+              border:"1px solid "+T.border,
+              borderLeft:"3px solid "+(isActive?sevCol:stCol),
+              overflow:"hidden",opacity:alert.status==="resolved"?0.7:1}}>
+              <div style={{padding:"12px 16px",display:"flex",alignItems:"flex-start",gap:12}}>
+                {/* Severity + status */}
+                <div style={{display:"flex",flexDirection:"column",alignItems:"center",
+                  gap:4,flexShrink:0,paddingTop:2}}>
+                  <span style={{fontSize:14}}>
+                    {alert.severity==="critical"?"🔴":"🟡"}
+                  </span>
+                  <span style={{fontSize:9,fontWeight:700,color:stCol,textTransform:"uppercase",
+                    letterSpacing:"0.06em"}}>{STATUS_ICON(alert.status)}</span>
                 </div>
-              )}
-              {(()=>{
-                const today = new Date().toDateString();
-                let lastGroup = null;
-                return execLog.map((entry,i)=>{
-                  const entryDate = new Date(entry.ts).toDateString();
-                  const group = entryDate===today?"Today":"Earlier";
-                  const showHeader = group!==lastGroup;
-                  lastGroup = group;
-                  return (
-                    <React.Fragment key={entry.id||i}>
-                      {showHeader&&(
-                        <div style={{padding:"6px 14px 4px",fontSize:9,fontWeight:700,
-                          color:T.muted,textTransform:"uppercase",letterSpacing:"0.08em",
-                          background:T.bg,borderBottom:`1px solid ${T.border}20`,
-                          position:"sticky",top:0}}>
-                          {group}
-                        </div>
+                <div style={{flex:1,minWidth:0}}>
+                  <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:3,flexWrap:"wrap"}}>
+                    <span style={{fontSize:12,fontWeight:700,color:T.text}}>{alert.title}</span>
+                    <span style={{fontSize:9,padding:"2px 7px",borderRadius:99,fontWeight:700,
+                      background:sevCol+"18",color:sevCol,textTransform:"uppercase"}}>
+                      {alert.severity}
+                    </span>
+                    <span style={{fontSize:9,padding:"2px 7px",borderRadius:99,fontWeight:600,
+                      background:stCol+"15",color:stCol,textTransform:"uppercase"}}>
+                      {alert.status}
+                    </span>
+                    <span style={{fontSize:10,color:T.muted,marginLeft:"auto"}}>
+                      {new Date(alert.sentAt).toLocaleString("en-IN",{
+                        month:"short",day:"numeric",hour:"2-digit",minute:"2-digit"})}
+                    </span>
+                  </div>
+                  <div style={{fontSize:11,color:T.muted,lineHeight:1.5,marginBottom:6}}>
+                    {alert.detail}
+                  </div>
+                  {alert.affected&&alert.affected.length>0&&(
+                    <div style={{display:"flex",gap:4,flexWrap:"wrap",marginBottom:8}}>
+                      {alert.affected.slice(0,5).map((a,i)=>(
+                        <span key={i} style={{fontSize:10,padding:"2px 8px",borderRadius:99,
+                          background:T.bg,border:"1px solid "+T.border,color:T.muted}}>
+                          {a}
+                        </span>
+                      ))}
+                    </div>
+                  )}
+                  {/* Action buttons */}
+                  {alert.status!=="resolved"&&(
+                    <div style={{display:"flex",gap:6,flexWrap:"wrap"}}>
+                      {alert.status==="active"&&(
+                        <button onClick={()=>updateAlertStatus(alert.id,"acknowledged")}
+                          style={{padding:"4px 12px",borderRadius:6,fontSize:11,fontWeight:600,
+                            border:"1px solid "+T.accent+"40",background:T.accent+"12",
+                            color:T.accent,cursor:"pointer"}}>
+                          ◉ Acknowledge
+                        </button>
                       )}
-                      <div style={{display:"flex",gap:10,padding:"8px 14px",
-                        borderBottom:i<execLog.length-1?`1px solid ${T.border}20`:"none",
-                        background:i===0?`${T.accent}04`:"none"}}>
-                        <div style={{fontSize:13,flexShrink:0,marginTop:1,color:logColor(entry.status),
-                          width:18,textAlign:"center"}}>
-                          {logIcon(entry.type,entry.status)}
-                        </div>
-                        <div style={{flex:1,minWidth:0}}>
-                          <div style={{display:"flex",alignItems:"center",gap:6,flexWrap:"wrap"}}>
-                            <span style={{fontSize:12,fontWeight:600,color:T.text}}>{entry.label}</span>
-                            {entry.stage&&<span style={{fontSize:10,color:T.muted,background:`${T.border}60`,padding:"1px 6px",borderRadius:99}}>{entry.stage}</span>}
-                            {entry.autoExecuted&&<span style={{fontSize:10,color:T.green,background:`${T.green}15`,padding:"1px 6px",borderRadius:99}}>auto</span>}
-                            {entry.confidence&&cfg.aiFeatures.confidenceScore&&<span style={{fontSize:10,color:T.accent}}>🎯{entry.confidence}%</span>}
-                          </div>
-                          {entry.detail&&<div style={{fontSize:11,color:T.muted,marginTop:2,lineHeight:1.4}}>{entry.detail}</div>}
-                          <div style={{fontSize:10,color:T.muted,marginTop:2}}>{new Date(entry.ts).toLocaleTimeString("en-IN")}</div>
-                        </div>
-                      </div>
-                    </React.Fragment>
-                  );
-                });
-              })()}
+                      <button onClick={()=>updateAlertStatus(alert.id,"resolved")}
+                        style={{padding:"4px 12px",borderRadius:6,fontSize:11,fontWeight:600,
+                          border:"1px solid "+T.green+"40",background:T.green+"12",
+                          color:T.green,cursor:"pointer"}}>
+                        ✓ Resolve
+                      </button>
+                      <button onClick={()=>updateAlertStatus(alert.id,"escalated")}
+                        style={{padding:"4px 12px",borderRadius:6,fontSize:11,fontWeight:600,
+                          border:"1px solid "+T.red+"30",background:T.red+"08",
+                          color:T.red,cursor:"pointer"}}>
+                        🔺 Escalate
+                      </button>
+                    </div>
+                  )}
+                  {alert.status==="resolved"&&alert.resolvedAt&&(
+                    <div style={{fontSize:10,color:T.green}}>
+                      ✓ Resolved {new Date(alert.resolvedAt).toLocaleString("en-IN",{
+                        month:"short",day:"numeric",hour:"2-digit",minute:"2-digit"})}
+                    </div>
+                  )}
+                </div>
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+// ── Slack Settings Panel ──────────────────────────────────────────────────────
+function ObsSlackSettings({ config, setConfig, T }) {
+  const [testing,    setTesting]    = React.useState(false);
+  const [testResult, setTestResult] = React.useState(null);
+  const up = (k,v) => setConfig(p=>({...p,[k]:v}));
+
+  const testSlack = async () => {
+    if (!config.webhook) return;
+    setTesting(true); setTestResult(null);
+    try {
+      const payload = buildSlackAlert({
+        title: "Test Notification",
+        severity: "warning",
+        detail: "This is a test alert from WiziAgent Data Observability. If you see this, Slack integration is working correctly.",
+        affected: ["Test account"],
+        alertId: "test_"+Date.now(),
+        dashboardUrl: window.location.href
+      });
+      const r = await fetch(config.webhook, {
+        method:"POST", headers:{"Content-Type":"application/json"},
+        body: JSON.stringify(payload)
+      });
+      setTestResult(r.ok ? "success" : "failed");
+    } catch(e) { setTestResult("failed"); }
+    setTesting(false);
+  };
+
+  const samplePayload = JSON.stringify(buildSlackAlert({
+    title:"Download Failure Spike",
+    severity:"critical",
+    detail:"47 downloads failed in the last 30 days. Success rate: 72%.",
+    affected:["Account 13","Account 7","salesAndTraffic"],
+    alertId:"alert_example",
+    dashboardUrl:"https://your-dashboard.com/observability"
+  }), null, 2);
+
+  return (
+    <div style={{padding:"28px 36px",overflowY:"auto",height:"100%"}}>
+      <div style={{marginBottom:24}}>
+        <div style={{fontSize:18,fontWeight:700,color:T.text,letterSpacing:"-0.02em"}}>
+          Config & Contracts
+        </div>
+        <div style={{fontSize:11,color:T.muted,marginTop:3}}>
+          Slack alerting, thresholds and SQL contracts
+        </div>
+      </div>
+
+      {/* Slack Integration */}
+      <div style={{background:T.surface,borderRadius:12,border:"1px solid "+T.border,
+        overflow:"hidden",marginBottom:20}}>
+        <div style={{padding:"14px 20px",borderBottom:"1px solid "+T.border,
+          display:"flex",alignItems:"center",gap:10}}>
+          <span style={{fontSize:16}}>💬</span>
+          <div>
+            <div style={{fontSize:13,fontWeight:700,color:T.text}}>Slack Integration</div>
+            <div style={{fontSize:11,color:T.muted}}>Send alerts and actionable messages to Slack</div>
+          </div>
+          <div style={{marginLeft:"auto",display:"flex",alignItems:"center",gap:8}}>
+            {config.webhook&&(
+              <span style={{fontSize:10,color:T.green,fontWeight:600}}>● Connected</span>
+            )}
+            <div onClick={()=>up("enabled",!config.enabled)}
+              style={{width:40,height:22,borderRadius:99,
+                background:config.enabled?T.accent:T.border+"80",
+                position:"relative",cursor:"pointer",transition:"background 0.2s",flexShrink:0}}>
+              <div style={{position:"absolute",top:3,left:config.enabled?19:3,width:16,height:16,
+                borderRadius:"50%",background:"#fff",transition:"left 0.2s",
+                boxShadow:"0 1px 3px rgba(0,0,0,0.3)"}}/>
             </div>
           </div>
         </div>
-      )}
-
-      {/* ── STAGES VIEW ── */}
-      {activeView==="stages" && (
-        <div>
-          {STAGES.filter(s=>cfg.stages[s.id]?.enabled).map(s=><StageRow key={s.id} stage={s}/>)}
-        </div>
-      )}
-
-      {/* ── DIGEST VIEW ── */}
-      {activeView==="digest" && <DigestView/>}
-
-      {/* Chat */}
-      {chatOpen && (
-        <div style={{marginTop:16,background:T.surface,borderRadius:12,border:`1px solid ${T.border}`,overflow:"hidden"}}>
-          <div style={{padding:"10px 16px",borderBottom:`1px solid ${T.border}`,fontSize:13,fontWeight:700,color:T.text}}>💬 Ask the Pipeline</div>
-          <div style={{height:180,overflowY:"auto",padding:"12px 16px",display:"flex",flexDirection:"column",gap:8}}>
-            {chatMsgs.length===0&&<div style={{fontSize:12,color:T.muted}}>Ask anything about the ingestion pipeline…</div>}
-            {chatMsgs.map((m,i)=>(
-              <div key={i} style={{display:"flex",justifyContent:m.role==="user"?"flex-end":"flex-start"}}>
-                <div style={{maxWidth:"80%",padding:"7px 12px",borderRadius:10,fontSize:12,
-                  background:m.role==="user"?T.accent:`${T.border}60`,color:m.role==="user"?"#fff":T.text}}>
-                  {m.text}
-                </div>
+        <div style={{padding:"20px",display:"flex",flexDirection:"column",gap:14}}>
+          {/* Webhook — read from Configure tab */}
+          <div style={{padding:"12px 14px",background:T.bg,borderRadius:9,
+            border:"1px solid "+T.border,display:"flex",alignItems:"center",gap:10}}>
+            <div style={{flex:1}}>
+              <div style={{fontSize:11,fontWeight:600,color:T.muted,marginBottom:3}}>
+                Incoming Webhook URL
               </div>
-            ))}
-            {chatLoading&&<div style={{fontSize:12,color:T.muted}}>Thinking…</div>}
-            <div ref={chatEndRef}/>
+              {config.webhook
+                ? <div style={{fontSize:12,color:T.green,fontWeight:600,
+                    display:"flex",alignItems:"center",gap:6}}>
+                    <span>●</span>
+                    <span style={{fontFamily:"monospace",fontSize:11,color:T.muted}}>
+                      {config.webhook.replace(/(?<=.{35}).*(?=.{10})/,"…")}
+                    </span>
+                  </div>
+                : <div style={{fontSize:11,color:T.orange}}>
+                    Not configured — set webhook URL in <strong>Configure → Slack Notifications</strong>
+                  </div>
+              }
+            </div>
+            <div style={{display:"flex",gap:8}}>
+              {config.webhook&&(
+                <button onClick={testSlack} disabled={testing}
+                  style={{padding:"7px 16px",borderRadius:7,fontSize:11,fontWeight:600,
+                    border:"none",cursor:testing?"not-allowed":"pointer",
+                    background:testing?T.border:T.accent,color:"#fff"}}>
+                  {testing?"Sending…":"Test →"}
+                </button>
+              )}
+            </div>
           </div>
-          <div style={{display:"flex",gap:8,padding:"8px 14px",borderTop:`1px solid ${T.border}`}}>
-            <input value={chatInput} onChange={e=>setChatInput(e.target.value)} onKeyDown={e=>e.key==="Enter"&&sendChat()}
-              placeholder="e.g. why is copy lagging today?"
-              style={{flex:1,background:T.bg,border:`1px solid ${T.border}`,borderRadius:7,padding:"6px 10px",fontSize:12,color:T.text}}/>
-            <button onClick={sendChat} disabled={chatLoading} style={{background:T.accent,color:"#fff",border:"none",borderRadius:7,padding:"6px 14px",fontSize:12,fontWeight:600,cursor:"pointer",opacity:chatLoading?0.6:1}}>Send</button>
+          {testResult&&(
+            <div style={{fontSize:11,fontWeight:600,marginTop:-6,
+              color:testResult==="success"?T.green:T.red}}>
+              {testResult==="success"
+                ?"✓ Test message sent to Slack"
+                :"✗ Failed — check the webhook URL is correct"}
+            </div>
+          )}
+
+          {/* Severity threshold */}
+          <div>
+            <div style={{fontSize:11,fontWeight:600,color:T.muted,marginBottom:6}}>
+              Alert severity threshold
+            </div>
+            <div style={{display:"flex",gap:8}}>
+              {[["warning","🟡 Warning & above"],["critical","🔴 Critical only"]].map(([v,l])=>(
+                <button key={v} onClick={()=>up("severityThreshold",v)}
+                  style={{flex:1,padding:"8px 12px",borderRadius:8,fontSize:11,fontWeight:600,
+                    cursor:"pointer",transition:"all 0.15s",
+                    border:"1px solid "+(config.severityThreshold===v?T.accent:T.border),
+                    background:config.severityThreshold===v?T.accent+"12":"none",
+                    color:config.severityThreshold===v?T.accent:T.muted}}>
+                  {l}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          {/* Cooldown */}
+          <div>
+            <div style={{fontSize:11,fontWeight:600,color:T.muted,marginBottom:6}}>
+              Alert cooldown (minutes)
+            </div>
+            <div style={{display:"flex",gap:6}}>
+              {[15,30,60,120].map(m=>(
+                <button key={m} onClick={()=>up("cooldownMinutes",m)}
+                  style={{flex:1,padding:"7px",borderRadius:7,fontSize:11,fontWeight:600,
+                    cursor:"pointer",border:"1px solid "+(config.cooldownMinutes===m?T.accent:T.border),
+                    background:config.cooldownMinutes===m?T.accent+"12":"none",
+                    color:config.cooldownMinutes===m?T.accent:T.muted}}>
+                  {m}m
+                </button>
+              ))}
+            </div>
+            <div style={{fontSize:10,color:T.muted,marginTop:4}}>
+              Same alert won't fire again within this window (dedup by account + report_type + issue)
+            </div>
           </div>
         </div>
-      )}
+      </div>
 
-      </>
-      }
-      <div style={{marginTop:14,fontSize:10,color:T.muted,textAlign:"center"}}>
-        Mock data active — wire <code style={{color:T.accent}}>/api/ingestion/status</code> in <code style={{color:T.accent}}>loadStageData()</code> · Auto-threshold: {cfg.confidenceThreshold||85}% confidence
-        {cfg.refreshInterval>0&&` · Refreshing every ${cfg.refreshInterval}s`}
+      {/* Block Kit preview */}
+      <div style={{background:T.surface,borderRadius:12,border:"1px solid "+T.border,
+        overflow:"hidden",marginBottom:20}}>
+        <div style={{padding:"14px 20px",borderBottom:"1px solid "+T.border,
+          display:"flex",alignItems:"center",gap:10}}>
+          <span style={{fontSize:16}}>📋</span>
+          <div>
+            <div style={{fontSize:13,fontWeight:700,color:T.text}}>Slack Block Kit Payload</div>
+            <div style={{fontSize:11,color:T.muted}}>Sample message format sent to Slack</div>
+          </div>
+        </div>
+        <div style={{padding:"16px 20px"}}>
+          <pre style={{margin:0,fontSize:10,color:T.muted,fontFamily:"monospace",
+            lineHeight:1.6,whiteSpace:"pre-wrap",maxHeight:280,overflowY:"auto",
+            background:T.bg,padding:"12px 14px",borderRadius:8}}>
+            {samplePayload}
+          </pre>
+        </div>
+      </div>
+
+      {/* Backend setup guide */}
+      <div style={{background:T.orange+"08",border:"1px solid "+T.orange+"25",
+        borderRadius:12,padding:"16px 20px"}}>
+        <div style={{fontSize:12,fontWeight:700,color:T.orange,marginBottom:8}}>
+          ⚙ Backend setup required
+        </div>
+        <div style={{fontSize:11,color:T.muted,lineHeight:1.8}}>
+          <div>1. <strong style={{color:T.text}}>Slack alerts</strong> are sent directly from the browser to the Slack webhook URL (no backend proxy needed)</div>
+          <div>2. <strong style={{color:T.text}}>POST /api/slack/actions</strong> — receive Slack interactivity payload, update alert status</div>
+          <div>3. Configure Slack App → Interactivity URL → <code style={{color:T.accent}}>https://your-api/api/slack/actions</code></div>
+          <div style={{marginTop:6,padding:"6px 10px",background:T.green+"10",borderRadius:6,border:"1px solid "+T.green+"25",color:T.green,fontWeight:600}}>✓ Webhook URL is read from Configure → Slack Notifications — no duplicate config needed here</div>
+          <div>4. Create <code style={{color:T.accent}}>obs_alerts</code> table for persistent alert tracking (schema in code comments above)</div>
+        </div>
       </div>
     </div>
   );
 }
 
 
-// ── SystemHealthTab — global cross-tab health dashboard ──────────────────────
+
+// ── IncidentSummaryBanner — shows AI incident summary + Slack send button ────
+function IncidentSummaryBanner({ summary, slackWebhook, T }) {
+  const [sent,    setSent]    = React.useState(false);
+  const [sending, setSending] = React.useState(false);
+  const [err,     setErr]     = React.useState(null);
+
+  const sendToSlack = async () => {
+    if (!slackWebhook) { setErr("No Slack webhook — configure in Configure → Notifications"); return; }
+    setSending(true); setErr(null);
+    try {
+      await fetch(slackWebhook, {
+        method:"POST", headers:{"Content-Type":"application/json"},
+        body: JSON.stringify({ text: summary.slackMessage || summary.summary })
+      });
+      setSent(true);
+    } catch(e) { setErr("Send failed: "+e.message); }
+    setSending(false);
+  };
+
+  const sevCol = summary.severity==="critical" ? T.red : T.orange;
+
+  return (
+    <div style={{background:sevCol+"08",border:"1px solid "+sevCol+"30",
+      borderRadius:10,overflow:"hidden",marginBottom:16}}>
+      <div style={{padding:"10px 16px",background:sevCol+"12",
+        borderBottom:"1px solid "+sevCol+"20",
+        display:"flex",alignItems:"center",gap:8}}>
+        <span style={{fontSize:13}}>📝</span>
+        <span style={{fontSize:12,fontWeight:700,color:sevCol,flex:1}}>
+          AI Incident Summary
+          <span style={{fontSize:9,marginLeft:8,padding:"1px 7px",borderRadius:99,
+            background:sevCol+"20",color:sevCol,textTransform:"uppercase",fontWeight:700}}>
+            {summary.severity||"warning"}
+          </span>
+        </span>
+        {!sent
+          ? <button onClick={sendToSlack} disabled={sending||!slackWebhook}
+              style={{background:sending?"#64748b":T.green,color:"#fff",border:"none",
+                borderRadius:7,padding:"5px 14px",fontSize:11,fontWeight:700,
+                cursor:sending||!slackWebhook?"not-allowed":"pointer",
+                opacity:!slackWebhook?0.5:1,display:"flex",alignItems:"center",gap:5}}>
+              {sending
+                ? <><span style={{animation:"obs-pulse 0.8s infinite"}}>⟳</span> Sending…</>
+                : "📣 Send to Slack"}
+            </button>
+          : <span style={{fontSize:11,color:T.green,fontWeight:700}}>✓ Sent to Slack</span>
+        }
+      </div>
+      <div style={{padding:"12px 16px",display:"flex",flexDirection:"column",gap:8}}>
+        <div style={{fontSize:12,color:T.text,lineHeight:1.7}}>{summary.summary}</div>
+        {summary.probableCause&&(
+          <div style={{fontSize:11,color:T.muted,display:"flex",gap:6,alignItems:"flex-start"}}>
+            <span style={{flexShrink:0,marginTop:1}}>⤷</span>
+            <span><strong style={{color:T.text}}>Probable cause:</strong> {summary.probableCause}</span>
+          </div>
+        )}
+        {summary.estimatedResolution&&(
+          <div style={{fontSize:11,color:T.muted}}>
+            <strong style={{color:T.text}}>Est. resolution:</strong> {summary.estimatedResolution}
+          </div>
+        )}
+        {err&&<div style={{fontSize:11,color:T.red}}>{err}</div>}
+        {!slackWebhook&&(
+          <div style={{fontSize:10,color:T.muted}}>
+            Configure Slack webhook in <strong>Configure → Notifications</strong> to enable sending.
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// OBS AI AGENT SYSTEM
+// ═══════════════════════════════════════════════════════════════════════════════
+
+const OBS_AGENT_LOG_KEY      = "wz_obs_agent_log_v1";
+const OBS_AGENT_STATE_KEY    = "wz_obs_agent_state_v1";
+const OBS_AGENT_INTERVAL_MS  = 60 * 60 * 1000; // 1 hour
+
+const TOOL_META = {}; // agent tool metadata — populated by agent system
+const OBS_AGENT_DEFS = [
+  { id:"predictive", name:"Predictive Agent",    icon:"🔮", color:"#8B5CF6",
+    desc:"Watches 30-day trends per account × report_type. Flags accounts likely to fail." },
+  { id:"incident",   name:"Incident Agent",      icon:"📝", color:"#F59E0B",
+    desc:"Writes Slack-ready incident summaries when failures are detected." },
+  { id:"anomaly",    name:"Anomaly Agent",       icon:"🔍", color:"#06B6D4",
+    desc:"Detects replication lag patterns and cross-pipeline correlations." },
+  { id:"retry",      name:"Smart Retry Agent",   icon:"↻",  color:"#10B981",
+    desc:"Sequences retries by success probability, respects API rate limits." },
+];
+
+// ── SQL queries used by agents ─────────────────────────────────────────────────
+const OBS_AGENT_SQL = {
+  // 30-day per account×report_type daily counts for trend analysis
+  trend_detail: `SELECT
+  account, report_type, download_date,
+  SUM(CASE WHEN status='processed' THEN 1 ELSE 0 END) AS downloaded,
+  SUM(CASE WHEN status='failed'    THEN 1 ELSE 0 END) AS failed,
+  MAX(tries) AS max_tries,
+  SUM(CASE WHEN copy_status='REPLICATED' THEN 1 ELSE 0 END) AS replicated,
+  COUNT(*) AS total
+FROM mws.report
+WHERE download_date >= CURRENT_DATE - 30
+GROUP BY account, report_type, download_date
+ORDER BY account, report_type, download_date`,
+
+  // Replication lag by day-of-week
+  copy_lag_by_dow: `SELECT
+  EXTRACT(DOW FROM download_date) AS day_of_week,
+  CASE EXTRACT(DOW FROM download_date)
+    WHEN 0 THEN 'Sunday' WHEN 1 THEN 'Monday' WHEN 2 THEN 'Tuesday'
+    WHEN 3 THEN 'Wednesday' WHEN 4 THEN 'Thursday' WHEN 5 THEN 'Friday'
+    ELSE 'Saturday' END AS day_name,
+  COUNT(*) AS total,
+  SUM(CASE WHEN copy_status='REPLICATED' THEN 1 ELSE 0 END) AS replicated,
+  ROUND(100.0*SUM(CASE WHEN copy_status!='REPLICATED' OR copy_status IS NULL THEN 1 ELSE 0 END)
+        /NULLIF(COUNT(*),0),1) AS not_replicated_pct
+FROM mws.report
+WHERE download_date >= CURRENT_DATE - 30
+GROUP BY 1,2 ORDER BY not_replicated_pct DESC`,
+};
+
+// ── Individual agent runners ───────────────────────────────────────────────────
+async function runPredictiveAgent(trendDetail) {
+  if (!trendDetail||!trendDetail.length) return { predictions:[], skipped:"no data" };
+
+  // Group by account × report_type, look at last 5 days
+  const groups = {};
+  trendDetail.forEach(r => {
+    const key = `${r.account}|||${r.report_type}`;
+    if (!groups[key]) groups[key] = { account:r.account, reportType:r.report_type, days:[] };
+    groups[key].days.push({ date:r.download_date, failed:Number(r.failed||0), downloaded:Number(r.downloaded||0) });
+  });
+
+  // Find accounts with ≥3 failures in last 5 days
+  const atRisk = [];
+  Object.values(groups).forEach(g => {
+    const last5 = g.days.sort((a,b)=>a.date>b.date?-1:1).slice(0,5);
+    const failDays = last5.filter(d=>d.failed>0).length;
+    const totalFails = last5.reduce((s,d)=>s+d.failed,0);
+    if (failDays >= 2) {
+      atRisk.push({ account:g.account, reportType:g.reportType,
+        failDays, totalFails, last5 });
+    }
+  });
+
+  if (!atRisk.length) return { predictions:[], summary:"No accounts show repeated failure patterns." };
+
+  // Ask AI to narrate the predictions
+  const sample = atRisk.slice(0,8).map(r=>
+    `Account ${r.account} / ${r.reportType}: failed ${r.failDays} of last 5 days (${r.totalFails} total failures)`
+  ).join("\n");
+
+  const ans = await obsAiCall(
+    "You are a predictive data pipeline analyst. Given accounts with repeated failures over the last 5 days, predict which are most likely to fail again today. Return ONLY a JSON array: [{\"account\":\"...\",\"reportType\":\"...\",\"risk\":\"high|medium\",\"prediction\":\"one sentence prediction\",\"recommendation\":\"specific action\"}]. Max 6 items. Be specific.",
+    "At-risk accounts:\n"+sample+"\nToday: "+new Date().toLocaleDateString("en-IN"), 500
+  );
+  const predictions = JSON.parse(ans.replace(/```json|```/g,"").trim());
+  return { predictions: Array.isArray(predictions)?predictions:[], atRiskCount:atRisk.length };
+}
+
+async function runIncidentAgent(failures, kpis) {
+  if (!failures||!failures.length) return { summary:null, slackMessage:null };
+
+  const failCount  = failures.length;
+  const accounts   = [...new Set(failures.map(r=>r.account))];
+  const repTypes   = [...new Set(failures.map(r=>r.report_type))];
+  const maxTries   = Math.max(...failures.map(r=>Number(r.max_tries||0)));
+  const sample     = failures.slice(0,8).map(r=>
+    `${r.account}|${r.report_type}|tries:${r.max_tries||0}|copy:${r.copy_status||"none"}`
+  ).join("\n");
+
+  const ans = await obsAiCall(
+    "You are a senior data engineer writing an incident summary. Write a concise, Slack-ready incident paragraph (3-5 sentences). Include: what failed, how many accounts, when it likely started, a probable cause, and expected resolution. Sound professional but not alarmist. Then return ONLY a JSON object: {\"summary\":\"...\",\"severity\":\"critical|warning\",\"probableCause\":\"...\",\"estimatedResolution\":\"...\",\"slackMessage\":\"Slack-formatted version with *bold* and bullet points\"}",
+    `Failures: ${failCount} total\nAccounts: ${accounts.slice(0,5).join(", ")}\nReport types: ${repTypes.slice(0,5).join(", ")}\nMax tries: ${maxTries}\nDetails:\n${sample}`,
+    600
+  );
+  return JSON.parse(ans.replace(/```json|```/g,"").trim());
+}
+
+async function runAnomalyAgent(copyLagData, trendDetail) {
+  const anomalies = [];
+
+  // Rule-based: find DOW with high replication lag
+  if (copyLagData&&copyLagData.length) {
+    const highLag = copyLagData.filter(r=>Number(r.not_replicated_pct||0)>30);
+    if (highLag.length) {
+      highLag.forEach(r => anomalies.push({
+        type:"replication_lag",
+        title:`High replication lag on ${r.day_name}s`,
+        detail:`${r.not_replicated_pct}% of records not replicated on ${r.day_name}s (${r.total} records)`,
+        severity: Number(r.not_replicated_pct||0)>50 ? "critical" : "warning",
+      }));
+    }
+  }
+
+  // Rule-based: accounts with consistently high tries
+  if (trendDetail&&trendDetail.length) {
+    const accTries = {};
+    trendDetail.forEach(r => {
+      const acc = r.account;
+      if (!accTries[acc]) accTries[acc] = [];
+      if (Number(r.max_tries||0)>1) accTries[acc].push(Number(r.max_tries||0));
+    });
+    Object.entries(accTries).forEach(([acc,tries]) => {
+      if (tries.length>=5) {
+        const avg = tries.reduce((s,t)=>s+t,0)/tries.length;
+        if (avg>2) anomalies.push({
+          type:"high_retry_pattern",
+          title:`Account ${acc} has chronic retry issues`,
+          detail:`Avg ${avg.toFixed(1)} tries over ${tries.length} occurrences — possible data volume or auth issue`,
+          severity:"warning",
+        });
+      }
+    });
+  }
+
+  if (!anomalies.length) return { anomalies:[], summary:"No anomalies detected in replication patterns." };
+
+  // AI narrate
+  const sample = anomalies.slice(0,5).map(a=>`${a.type}: ${a.detail}`).join("\n");
+  const ans = await obsAiCall(
+    "You are a data reliability engineer. Given these detected anomalies in a data pipeline, provide a brief weekly insight (2-3 sentences) explaining the pattern and what it likely means. Be specific and actionable.",
+    "Anomalies:\n"+sample, 300
+  );
+  return { anomalies, weeklyInsight: ans };
+}
+
+async function runRetryAgent(failures) {
+  if (!failures||!failures.length) return { retryPlan:[], skipped:[], summary:"No failures to retry." };
+
+  // Filter: skip accounts that exceeded max tries
+  const MAX_TRIES_LIMIT = 5;
+  const eligible = failures.filter(r => Number(r.max_tries||0) < MAX_TRIES_LIMIT);
+  const skipped  = failures.filter(r => Number(r.max_tries||0) >= MAX_TRIES_LIMIT);
+
+  if (!eligible.length) return {
+    retryPlan:[], skipped,
+    summary:`All ${failures.length} failures exceeded max tries (${MAX_TRIES_LIMIT}). No retries recommended.`
+  };
+
+  // AI sequence: retry fewer-failure accounts first
+  const sample = eligible.slice(0,12).map(r=>
+    `${r.account}|${r.report_type}|failures:${r.failure_count||1}|tries:${r.max_tries||0}`
+  ).join("\n");
+
+  const ans = await obsAiCall(
+    "You are a data pipeline reliability engineer. Given a list of failed downloads, create an optimal retry sequence. Prioritise accounts with fewer failures (higher success probability). Return ONLY a JSON object: {\"plan\":[{\"order\":1,\"account\":\"...\",\"reportType\":\"...\",\"reason\":\"why retry now\",\"delaySeconds\":0}],\"summary\":\"one sentence strategy\",\"estimatedDuration\":\"e.g. 8 minutes\"}. Space out retries by 30-60s to avoid rate limits. Skip if tries>=5.",
+    "Eligible failures:\n"+sample+"\nSkipped (max tries exceeded): "+skipped.length, 500
+  );
+  const result = JSON.parse(ans.replace(/```json|```/g,"").trim());
+  return {
+    retryPlan: result.plan||[],
+    skipped,
+    summary: result.summary||"",
+    estimatedDuration: result.estimatedDuration||"",
+    // TODO: wire to real retry endpoint when available
+    // Each item in retryPlan should call:
+    // POST /api/sp-api/retry-download { account, report_type, date }
+  };
+}
+
+// ── Main agent hook ────────────────────────────────────────────────────────────
+function useObsPipelineAgent({ sqls, liveFailures, liveKpis }) {
+  const [state,    setState]    = useLocal(OBS_AGENT_STATE_KEY, {
+    lastRun: null,
+    predictions:  [], incidentSummary: null,
+    anomalies: [], weeklyInsight: null,
+    retryPlan: [], retrySkipped: [],
+    agentStatus: {}, // {agentId: "idle"|"running"|"done"|"error"}
+  });
+  const [log,      setLog]      = useLocal(OBS_AGENT_LOG_KEY, []);
+  const [running,  setRunning]  = React.useState(false);
+  const [nextRun,  setNextRun]  = React.useState(null);
+  const timerRef = React.useRef(null);
+
+  const addLog = React.useCallback((agentId, type, message) => {
+    const entry = { id:Date.now()+"_"+Math.random().toString(36).slice(2,6),
+      agentId, type, message, ts: new Date().toISOString() };
+    setLog(p=>[entry,...p.slice(0,199)]);
+    return entry;
+  }, [setLog]);
+
+  const runQuery = async (sql) => {
+    const r = await apiFetch(API+"/api/query?sql="+encodeURIComponent(sql));
+    if (!r.ok) throw new Error("HTTP "+r.status);
+    const d = await r.json();
+    return Array.isArray(d)?d:(d?.rows||d?.data||d?.results||[]);
+  };
+
+  const runAllAgents = React.useCallback(async () => {
+    if (running) return;
+    setRunning(true);
+    addLog("orchestrator","start","Pipeline Agent started — running all sub-agents");
+
+    const newState = { ...state, lastRun: new Date().toISOString(),
+      agentStatus:{ predictive:"running", incident:"running", anomaly:"running", retry:"running" }};
+    setState(newState);
+
+    try {
+      // ── Fetch data for agents ──────────────────────────────────────────────
+      const [trendDetail, copyLagData] = await Promise.all([
+        runQuery(sqls.trend_detail||OBS_AGENT_SQL.trend_detail).catch(()=>[]),
+        runQuery(sqls.copy_lag_by_dow||OBS_AGENT_SQL.copy_lag_by_dow).catch(()=>[]),
+      ]);
+
+      const failures = liveFailures || [];
+      const kpis     = liveKpis;
+
+      // ── Run agents in parallel ─────────────────────────────────────────────
+      const [predResult, incResult, anomResult, retryResult] = await Promise.allSettled([
+        runPredictiveAgent(trendDetail).catch(e=>{ addLog("predictive","error",e.message); return null; }),
+        runIncidentAgent(failures, kpis).catch(e=>{ addLog("incident","error",e.message); return null; }),
+        runAnomalyAgent(copyLagData, trendDetail).catch(e=>{ addLog("anomaly","error",e.message); return null; }),
+        runRetryAgent(failures).catch(e=>{ addLog("retry","error",e.message); return null; }),
+      ]);
+
+      const pred  = predResult.status==="fulfilled"  ? predResult.value  : null;
+      const inc   = incResult.status==="fulfilled"   ? incResult.value   : null;
+      const anom  = anomResult.status==="fulfilled"  ? anomResult.value  : null;
+      const retry = retryResult.status==="fulfilled" ? retryResult.value : null;
+
+      // ── Log results ────────────────────────────────────────────────────────
+      if (pred) {
+        const n = pred.predictions?.length||0;
+        addLog("predictive","done", n>0
+          ? `Found ${n} at-risk account${n!==1?"s":""}: ${pred.predictions.slice(0,3).map(p=>p.account).join(", ")}`
+          : "No accounts predicted to fail today");
+      }
+      if (inc) {
+        addLog("incident","done", inc.summary
+          ? `Incident summary written: ${inc.severity||"warning"} — ${(inc.probableCause||"").slice(0,80)}`
+          : "No active incidents");
+      }
+      if (anom) {
+        const n = anom.anomalies?.length||0;
+        addLog("anomaly","done", n>0
+          ? `${n} anomal${n===1?"y":"ies"} detected: ${anom.anomalies.slice(0,2).map(a=>a.title).join("; ")}`
+          : "No anomalies in replication patterns");
+      }
+      if (retry) {
+        const n = retry.retryPlan?.length||0;
+        addLog("retry","done", n>0
+          ? `Retry plan: ${n} downloads queued, ${retry.skipped?.length||0} skipped (max tries exceeded). ${retry.estimatedDuration||""}`
+          : retry.summary||"No retries needed");
+      }
+
+      addLog("orchestrator","done", "All agents completed");
+
+      // ── Persist state ──────────────────────────────────────────────────────
+      setState({
+        lastRun: new Date().toISOString(),
+        predictions:  pred?.predictions||[],
+        incidentSummary: inc?.summary ? inc : null,
+        anomalies:    anom?.anomalies||[],
+        weeklyInsight: anom?.weeklyInsight||null,
+        retryPlan:    retry?.retryPlan||[],
+        retrySkipped: retry?.retrySkipped||[],
+        retryStrategy: retry?.summary||null,
+        agentStatus:{ predictive:"done", incident:"done", anomaly:"done", retry:"done" }
+      });
+
+    } catch(e) {
+      addLog("orchestrator","error","Agent run failed: "+e.message);
+    }
+    setRunning(false);
+  }, [running, sqls, liveFailures, liveKpis, state, addLog, setState]);
+
+  // ── Hourly scheduler + auto-run on fresh data ────────────────────────────
+  React.useEffect(() => {
+    const scheduleNext = () => {
+      const next = new Date(Date.now() + OBS_AGENT_INTERVAL_MS);
+      setNextRun(next);
+      timerRef.current = setTimeout(() => {
+        runAllAgents();
+        scheduleNext();
+      }, OBS_AGENT_INTERVAL_MS);
+    };
+    // Always run on mount
+    runAllAgents();
+    scheduleNext();
+    return () => clearTimeout(timerRef.current);
+  }, []); // eslint-disable-line
+
+  // Re-run when new failure data arrives
+  const prevFailLenRef = React.useRef(null);
+  React.useEffect(() => {
+    if (!liveFailures) return;
+    if (prevFailLenRef.current === null) { prevFailLenRef.current = liveFailures.length; return; }
+    if (liveFailures.length !== prevFailLenRef.current) {
+      prevFailLenRef.current = liveFailures.length;
+      runAllAgents();
+    }
+  }, [liveFailures]); // eslint-disable-line
+
+  return { state, log, running, nextRun, runAllAgents };
+}
+
+// ── Agents page ────────────────────────────────────────────────────────────────
+function ObsAgentsPage({ agentState, agentLog, agentRunning, nextRun, onRunNow, T }) {
+  const [activeAgent, setActiveAgent] = React.useState("all");
+  const [retryApproved, setRetryApproved] = React.useState(false);
+
+  const filteredLog = activeAgent==="all"
+    ? agentLog
+    : agentLog.filter(e=>e.agentId===activeAgent);
+
+  const LOG_COLOR = {start:T.accent, done:T.green, error:T.red, info:T.muted};
+  const LOG_ICON  = {start:"▶",done:"✓",error:"✗",info:"ℹ"};
+
+  const timeUntilNext = nextRun
+    ? Math.max(0, Math.round((nextRun-Date.now())/60000))
+    : null;
+
+  return (
+    <div style={{height:"100%",overflowY:"auto",background:T.bg}}>
+      {/* Header */}
+      <div style={{position:"sticky",top:0,zIndex:10,background:T.bg,
+        borderBottom:"1px solid "+T.border,padding:"12px 24px",
+        display:"flex",alignItems:"center",gap:12}}>
+        <div style={{flex:1}}>
+          <span style={{fontSize:14,fontWeight:700,color:T.text}}>AI Pipeline Agents</span>
+          <span style={{fontSize:11,color:T.muted,marginLeft:10}}>
+            {agentRunning ? "Running…" : agentState.lastRun
+              ? "Last run "+new Date(agentState.lastRun).toLocaleTimeString("en-IN",{hour:"2-digit",minute:"2-digit"})
+              : "Never run"}
+          </span>
+          {timeUntilNext!==null&&!agentRunning&&(
+            <span style={{fontSize:10,color:T.muted,marginLeft:8}}>
+              · next in {timeUntilNext}m
+            </span>
+          )}
+        </div>
+        <button onClick={onRunNow} disabled={agentRunning}
+          style={{background:agentRunning?T.border:T.accent,color:"#fff",border:"none",
+            borderRadius:8,padding:"8px 18px",fontSize:12,fontWeight:700,
+            cursor:agentRunning?"not-allowed":"pointer",
+            display:"flex",alignItems:"center",gap:6}}>
+          {agentRunning
+            ? <><span style={{animation:"obs-pulse 1s infinite"}}>⟳</span> Running…</>
+            : <><span>▶</span> Run All Agents</>}
+        </button>
+      </div>
+
+      <div style={{padding:"20px 24px",display:"flex",flexDirection:"column",gap:20}}>
+
+        {/* Agent cards */}
+        <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:12}}>
+          {OBS_AGENT_DEFS.map(agent=>{
+            const status = agentState.agentStatus?.[agent.id]||"idle";
+            const isRunning = status==="running"||agentRunning;
+            return (
+              <div key={agent.id} style={{background:T.surface,borderRadius:12,
+                border:"1px solid "+(status==="running"?agent.color+"40":T.border),
+                padding:"16px 18px",
+                boxShadow:status==="running"?"0 0 0 1px "+agent.color+"20":"none",
+                transition:"all 0.3s"}}>
+                <div style={{display:"flex",alignItems:"center",gap:10,marginBottom:8}}>
+                  <div style={{width:32,height:32,borderRadius:8,flexShrink:0,
+                    background:agent.color+"18",border:"1px solid "+agent.color+"25",
+                    display:"flex",alignItems:"center",justifyContent:"center",
+                    fontSize:16}}>
+                    {isRunning
+                      ? <span style={{animation:"obs-pulse 0.8s infinite"}}>⟳</span>
+                      : agent.icon}
+                  </div>
+                  <div style={{flex:1}}>
+                    <div style={{fontSize:12,fontWeight:700,color:T.text}}>{agent.name}</div>
+                    <div style={{fontSize:9,padding:"1px 7px",borderRadius:99,marginTop:2,
+                      display:"inline-block",fontWeight:700,textTransform:"uppercase",
+                      background:status==="done"?T.green+"15":status==="running"?agent.color+"15":status==="error"?T.red+"15":T.border+"60",
+                      color:status==="done"?T.green:status==="running"?agent.color:status==="error"?T.red:T.muted}}>
+                      {status}
+                    </div>
+                  </div>
+                </div>
+                <div style={{fontSize:11,color:T.muted,lineHeight:1.5,marginBottom:10}}>
+                  {agent.desc}
+                </div>
+                {/* Agent-specific results */}
+                {agent.id==="predictive"&&agentState.predictions?.length>0&&(
+                  <div style={{fontSize:11,color:T.text,background:T.bg,borderRadius:7,
+                    padding:"8px 10px",border:"1px solid "+T.border}}>
+                    <div style={{fontWeight:700,color:"#8B5CF6",marginBottom:4}}>
+                      🔮 {agentState.predictions.length} predictions
+                    </div>
+                    {agentState.predictions.slice(0,2).map((p,i)=>(
+                      <div key={i} style={{fontSize:10,color:T.muted,marginBottom:2}}>
+                        · {p.account} / {String(p.reportType||"").replace(/^GET_|^SP_/,"").slice(0,20)} — {p.risk} risk
+                      </div>
+                    ))}
+                  </div>
+                )}
+                {agent.id==="incident"&&agentState.incidentSummary&&(
+                  <div style={{fontSize:11,color:T.text,background:T.bg,borderRadius:7,
+                    padding:"8px 10px",border:"1px solid "+T.border}}>
+                    <div style={{fontWeight:700,color:"#F59E0B",marginBottom:4}}>
+                      📝 Incident summary ready
+                    </div>
+                    <div style={{fontSize:10,color:T.muted,lineHeight:1.5}}>
+                      {(agentState.incidentSummary.summary||"").slice(0,100)}…
+                    </div>
+                  </div>
+                )}
+                {agent.id==="anomaly"&&agentState.anomalies?.length>0&&(
+                  <div style={{fontSize:11,color:T.text,background:T.bg,borderRadius:7,
+                    padding:"8px 10px",border:"1px solid "+T.border}}>
+                    <div style={{fontWeight:700,color:"#06B6D4",marginBottom:4}}>
+                      🔍 {agentState.anomalies.length} anomalies
+                    </div>
+                    {agentState.anomalies.slice(0,2).map((a,i)=>(
+                      <div key={i} style={{fontSize:10,color:T.muted,marginBottom:2}}>
+                        · {a.title}
+                      </div>
+                    ))}
+                  </div>
+                )}
+                {agent.id==="retry"&&agentState.retryPlan?.length>0&&(
+                  <div style={{fontSize:11,color:T.text,background:T.bg,borderRadius:7,
+                    padding:"8px 10px",border:"1px solid "+T.border}}>
+                    <div style={{fontWeight:700,color:"#10B981",marginBottom:4}}>
+                      ↻ {agentState.retryPlan.length} retries planned
+                    </div>
+                    <div style={{fontSize:10,color:T.muted,marginBottom:6}}>
+                      {agentState.retryStrategy}
+                    </div>
+                    {!retryApproved
+                      ? <button onClick={()=>setRetryApproved(true)}
+                          style={{background:"#10B981",color:"#fff",border:"none",
+                            borderRadius:6,padding:"4px 12px",fontSize:10,
+                            fontWeight:700,cursor:"pointer"}}>
+                          ✓ Approve & Execute
+                        </button>
+                      : <span style={{fontSize:10,color:T.green,fontWeight:600}}>
+                          ✓ Approved — will execute when retry endpoint is wired
+                        </span>
+                    }
+                  </div>
+                )}
+              </div>
+            );
+          })}
+        </div>
+
+        {/* Predictions panel */}
+        {agentState.predictions?.length>0&&(
+          <div style={{background:T.surface,borderRadius:12,border:"1px solid #8B5CF640",
+            overflow:"hidden"}}>
+            <div style={{padding:"12px 18px",borderBottom:"1px solid "+T.border,
+              display:"flex",alignItems:"center",gap:8,background:"#8B5CF608"}}>
+              <span style={{fontSize:14}}>🔮</span>
+              <span style={{fontSize:13,fontWeight:700,color:T.text}}>Failure Predictions</span>
+              <span style={{fontSize:10,color:"#8B5CF6",background:"#8B5CF615",
+                padding:"2px 8px",borderRadius:99,fontWeight:700}}>
+                {agentState.predictions.length} at risk today
+              </span>
+            </div>
+            <div style={{display:"flex",flexDirection:"column",gap:0}}>
+              {agentState.predictions.map((p,i)=>(
+                <div key={i} style={{padding:"12px 18px",
+                  borderBottom:"1px solid "+T.border+"40",
+                  display:"flex",alignItems:"flex-start",gap:12}}>
+                  <div style={{width:8,height:8,borderRadius:"50%",flexShrink:0,marginTop:4,
+                    background:p.risk==="high"?T.red:T.orange}}/>
+                  <div style={{flex:1}}>
+                    <div style={{fontSize:12,fontWeight:700,color:T.text,marginBottom:2}}>
+                      Account {p.account}
+                      <span style={{fontSize:10,color:T.muted,fontWeight:400,marginLeft:8,
+                        fontFamily:"monospace"}}>
+                        {String(p.reportType||"").replace(/^GET_|^SP_/,"").slice(0,24)}
+                      </span>
+                    </div>
+                    <div style={{fontSize:11,color:T.muted,lineHeight:1.5}}>{p.prediction}</div>
+                    {p.recommendation&&(
+                      <div style={{fontSize:11,color:"#8B5CF6",marginTop:4,fontWeight:600}}>
+                        ⤷ {p.recommendation}
+                      </div>
+                    )}
+                  </div>
+                  <span style={{fontSize:9,padding:"2px 8px",borderRadius:99,fontWeight:700,
+                    background:p.risk==="high"?T.red+"18":T.orange+"18",
+                    color:p.risk==="high"?T.red:T.orange,flexShrink:0,textTransform:"uppercase"}}>
+                    {p.risk} risk
+                  </span>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {/* Incident summary */}
+        {agentState.incidentSummary?.summary&&(
+          <div style={{background:T.surface,borderRadius:12,border:"1px solid "+T.orange+"40",
+            overflow:"hidden"}}>
+            <div style={{padding:"12px 18px",borderBottom:"1px solid "+T.border,
+              background:T.orange+"08",display:"flex",alignItems:"center",gap:8}}>
+              <span style={{fontSize:14}}>📝</span>
+              <span style={{fontSize:13,fontWeight:700,color:T.text}}>Incident Summary</span>
+              <span style={{fontSize:9,padding:"2px 8px",borderRadius:99,fontWeight:700,
+                background:agentState.incidentSummary.severity==="critical"?T.red+"18":T.orange+"18",
+                color:agentState.incidentSummary.severity==="critical"?T.red:T.orange,
+                textTransform:"uppercase"}}>
+                {agentState.incidentSummary.severity||"warning"}
+              </span>
+            </div>
+            <div style={{padding:"16px 18px",display:"flex",flexDirection:"column",gap:12}}>
+              <div style={{fontSize:13,color:T.text,lineHeight:1.7}}>
+                {agentState.incidentSummary.summary}
+              </div>
+              {agentState.incidentSummary.probableCause&&(
+                <div style={{padding:"10px 14px",background:T.bg,borderRadius:8,
+                  border:"1px solid "+T.border}}>
+                  <div style={{fontSize:10,fontWeight:700,color:T.muted,marginBottom:3,
+                    textTransform:"uppercase",letterSpacing:"0.06em"}}>Probable cause</div>
+                  <div style={{fontSize:12,color:T.text}}>{agentState.incidentSummary.probableCause}</div>
+                </div>
+              )}
+              {agentState.incidentSummary.slackMessage&&(
+                <details>
+                  <summary style={{fontSize:11,color:T.muted,cursor:"pointer",
+                    userSelect:"none",listStyle:"none",display:"flex",alignItems:"center",gap:6}}>
+                    <span>▶</span><span>Slack-ready message</span>
+                  </summary>
+                  <pre style={{margin:"8px 0 0",padding:"12px 14px",background:T.bg,
+                    borderRadius:8,border:"1px solid "+T.border,fontSize:11,
+                    color:T.text,fontFamily:"inherit",whiteSpace:"pre-wrap",lineHeight:1.6}}>
+                    {agentState.incidentSummary.slackMessage}
+                  </pre>
+                </details>
+              )}
+            </div>
+          </div>
+        )}
+
+        {/* Anomalies & weekly insight */}
+        {(agentState.anomalies?.length>0||agentState.weeklyInsight)&&(
+          <div style={{background:T.surface,borderRadius:12,border:"1px solid #06B6D440",
+            overflow:"hidden"}}>
+            <div style={{padding:"12px 18px",borderBottom:"1px solid "+T.border,
+              background:"#06B6D408",display:"flex",alignItems:"center",gap:8}}>
+              <span style={{fontSize:14}}>🔍</span>
+              <span style={{fontSize:13,fontWeight:700,color:T.text}}>Anomaly Detection</span>
+            </div>
+            <div style={{padding:"16px 18px",display:"flex",flexDirection:"column",gap:10}}>
+              {agentState.weeklyInsight&&(
+                <div style={{fontSize:12,color:T.text,lineHeight:1.7,padding:"10px 14px",
+                  background:T.bg,borderRadius:8,border:"1px solid "+T.border,
+                  borderLeft:"3px solid #06B6D4"}}>
+                  {agentState.weeklyInsight}
+                </div>
+              )}
+              {agentState.anomalies.map((a,i)=>(
+                <div key={i} style={{display:"flex",alignItems:"flex-start",gap:10,
+                  padding:"10px 14px",borderRadius:8,background:T.bg,
+                  border:"1px solid "+(a.severity==="critical"?T.red+"30":T.orange+"30")}}>
+                  <span style={{flexShrink:0,marginTop:1}}>
+                    {a.severity==="critical"?"🔴":"🟡"}
+                  </span>
+                  <div>
+                    <div style={{fontSize:12,fontWeight:700,color:T.text,marginBottom:2}}>
+                      {a.title}
+                    </div>
+                    <div style={{fontSize:11,color:T.muted}}>{a.detail}</div>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {/* Agent activity log */}
+        <div style={{background:T.surface,borderRadius:12,border:"1px solid "+T.border,
+          overflow:"hidden"}}>
+          <div style={{padding:"12px 18px",borderBottom:"1px solid "+T.border,
+            display:"flex",alignItems:"center",gap:8}}>
+            <span style={{fontSize:13,fontWeight:700,color:T.text,flex:1}}>
+              Agent Activity Log
+            </span>
+            <div style={{display:"flex",gap:4}}>
+              {["all",...OBS_AGENT_DEFS.map(a=>a.id)].map(id=>(
+                <button key={id} onClick={()=>setActiveAgent(id)}
+                  style={{padding:"3px 10px",borderRadius:6,fontSize:10,fontWeight:600,
+                    border:"none",cursor:"pointer",
+                    background:activeAgent===id?T.accent:T.bg,
+                    color:activeAgent===id?"#fff":T.muted}}>
+                  {id==="all"?"All":OBS_AGENT_DEFS.find(a=>a.id===id)?.icon||id}
+                </button>
+              ))}
+            </div>
+          </div>
+          <div style={{maxHeight:280,overflowY:"auto"}}>
+            {filteredLog.length===0&&(
+              <div style={{padding:"24px",textAlign:"center",fontSize:12,color:T.muted}}>
+                {agentRunning?"Agents running…":"No activity yet — click Run All Agents"}
+              </div>
+            )}
+            {filteredLog.map(entry=>{
+              const agentDef = OBS_AGENT_DEFS.find(a=>a.id===entry.agentId);
+              return (
+                <div key={entry.id} style={{display:"flex",alignItems:"flex-start",
+                  gap:10,padding:"8px 18px",
+                  borderBottom:"1px solid "+T.border+"20"}}>
+                  <span style={{fontSize:11,fontWeight:700,flexShrink:0,marginTop:1,
+                    color:LOG_COLOR[entry.type]||T.muted}}>
+                    {LOG_ICON[entry.type]||"·"}
+                  </span>
+                  <div style={{flex:1,minWidth:0}}>
+                    <div style={{display:"flex",alignItems:"center",gap:6,marginBottom:1}}>
+                      {agentDef&&(
+                        <span style={{fontSize:9,padding:"1px 6px",borderRadius:99,
+                          background:agentDef.color+"15",color:agentDef.color,
+                          fontWeight:700,flexShrink:0}}>
+                          {agentDef.icon} {agentDef.name}
+                        </span>
+                      )}
+                      <span style={{fontSize:9,color:T.muted,marginLeft:"auto",flexShrink:0}}>
+                        {new Date(entry.ts).toLocaleTimeString("en-IN",{
+                          hour:"2-digit",minute:"2-digit",second:"2-digit"})}
+                      </span>
+                    </div>
+                    <div style={{fontSize:11,color:T.text,lineHeight:1.4}}>
+                      {entry.message}
+                    </div>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+
+        {/* No data state */}
+        {!agentState.lastRun&&!agentRunning&&(
+          <div style={{padding:"48px 32px",textAlign:"center"}}>
+            <div style={{fontSize:36,marginBottom:12}}>🤖</div>
+            <div style={{fontSize:15,fontWeight:700,color:T.text,marginBottom:6}}>
+              AI Agents ready
+            </div>
+            <div style={{fontSize:12,color:T.muted,maxWidth:360,margin:"0 auto",lineHeight:1.6}}>
+              4 specialist agents will run hourly: Predictive, Incident, Anomaly and Retry.
+              Click Run All Agents to start the first run now.
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function ObsComingSoon({ label, T }) {
+  return (
+    <div style={{height:"100%",display:"flex",alignItems:"center",justifyContent:"center",
+      flexDirection:"column",gap:10}}>
+      <div style={{fontSize:32}}>🚧</div>
+      <div style={{fontSize:15,fontWeight:700,color:T.text}}>{label}</div>
+      <div style={{fontSize:12,color:T.muted}}>Coming in the next increment</div>
+    </div>
+  );
+}
+
+// ── Main DataObservabilityTab ──────────────────────────────────────────────────
+function DataObservabilityTab({ onNavigate }) {
+  const T = useT();
+  const [page,       setPage]       = React.useState("overview");
+  const [asyncError, setAsyncError] = React.useState(null);
+
+  // Catch unhandled promise rejections (cross-origin "Script error" workaround)
+  React.useEffect(() => {
+    const handler = (e) => {
+      const msg = e.reason?.message || e.reason?.toString() || e.message || "Unknown async error";
+      const stack = e.reason?.stack || "";
+      setAsyncError({ message: msg, stack });
+      e.preventDefault();
+    };
+    window.addEventListener("unhandledrejection", handler);
+    return () => window.removeEventListener("unhandledrejection", handler);
+  }, []);
+  const [collapsed,  setCollapsed]  = React.useState({});
+  const [date,       setDate]       = React.useState(new Date().toISOString().slice(0,10));
+  const [dateFrom,   setDateFrom]   = React.useState(
+    new Date(Date.now()-7*86400000).toISOString().slice(0,10));
+  const [editingSql,   setEditingSql]   = React.useState(null);
+  const [sqls,         setSqls]         = useLocal("wz_obs_sqls_v1", {});
+  // Read central Slack webhook from Configure tab (wz_slack key)
+  // Obs-specific settings (threshold, cooldown) stored separately
+  const [obsSlackSettings, setObsSlackSettings] = useLocal("wz_obs_slack_settings_v1", {
+    enabled: true, severityThreshold: "warning", cooldownMinutes: 30
+  });
+  const centralWebhook = React.useMemo(() => {
+    try { return localStorage.getItem("wz_slack") || ""; } catch { return ""; }
+  }, []);
+  const slackConfig = React.useMemo(() => ({
+    ...obsSlackSettings,
+    webhook: centralWebhook,
+    enabled: obsSlackSettings.enabled && !!centralWebhook,
+  }), [obsSlackSettings, centralWebhook]);
+  const setSlackConfig = (updater) => {
+    const next = typeof updater === "function" ? updater(slackConfig) : updater;
+    // Only persist obs-specific settings, never the webhook (that lives in Configure)
+    const {webhook: _w, ...rest} = next;
+    setObsSlackSettings(rest);
+  };
+  // Live data for alert engine — populated by pages via callbacks
+  const [liveFailures, setLiveFailures] = React.useState(null);
+  const [liveKpis,     setLiveKpis]     = React.useState(null);
+  const { alerts, updateAlertStatus } = useObsAlertEngine({
+    slackConfig, failures: liveFailures, kpis: liveKpis
+  });
+
+  // Auto-fetch failure count on mount so Overview shows correct status immediately
+  React.useEffect(() => {
+    const fetchFailures = async () => {
+      try {
+        const sql = OBS_DEFAULT_SQL.failures;
+        const r = await apiFetch(API+"/api/query?sql="+encodeURIComponent(sql));
+        if (!r.ok) return;
+        const d = await r.json();
+        const rows = Array.isArray(d)?d:(d?.rows||d?.data||d?.results||[]);
+        setLiveFailures(rows);
+      } catch { /* silent */ }
+    };
+    fetchFailures();
+  }, []); // eslint-disable-line
+  const activeAlertCount = alerts.filter(a=>a.status==="active").length;
+
+  // AI Agent system — hourly background agents
+  const { state: agentState, log: agentLog, running: agentRunning,
+    nextRun: agentNextRun, runAllAgents } = useObsPipelineAgent({
+    sqls, liveFailures, liveKpis
+  });
+
+  const saveSql = (key, sql) => {
+    setSqls(p=>({...p,[key]:sql}));
+    setEditingSql(null);
+  };
+
+  const toggleGroup = (g) => setCollapsed(p=>({...p,[g]:!p[g]}));
+  const currentItem = OBS_NAV.find(n=>n.id===page);
+
+  return (
+    <div style={{height:"100%",display:"flex",background:T.bg}}>
+      <style>{`
+        @keyframes obs-pulse {
+          0%,100%{opacity:0.5} 50%{opacity:0.25}
+        }
+        .obs-nav-item:hover { background: rgba(255,255,255,0.04) !important; }
+      `}</style>
+
+      {/* ── Internal left nav ── */}
+      <div style={{width:196,flexShrink:0,background:T.sidebarBg,
+        borderRight:"1px solid rgba(255,255,255,0.04)",
+        display:"flex",flexDirection:"column",overflowY:"auto"}}>
+
+        {/* Header */}
+        <div style={{padding:"20px 18px 16px"}}>
+          <div style={{fontSize:13,fontWeight:700,color:"rgba(255,255,255,0.85)",
+            letterSpacing:"-0.01em"}}>Observability</div>
+          {/* Date range */}
+          <div style={{marginTop:12,display:"flex",flexDirection:"column",gap:4}}>
+            <div style={{display:"flex",alignItems:"center",gap:8}}>
+              <span style={{fontSize:10,color:"rgba(255,255,255,0.25)",width:20,flexShrink:0}}>from</span>
+              <input type="date" value={dateFrom} onChange={e=>setDateFrom(e.target.value)}
+                style={{flex:1,background:"rgba(255,255,255,0.05)",border:"1px solid rgba(255,255,255,0.07)",
+                  borderRadius:6,padding:"4px 7px",fontSize:10,color:"rgba(255,255,255,0.6)",
+                  cursor:"pointer",outline:"none",minWidth:0}}/>
+            </div>
+            <div style={{display:"flex",alignItems:"center",gap:8}}>
+              <span style={{fontSize:10,color:"rgba(255,255,255,0.25)",width:20,flexShrink:0}}>to</span>
+              <input type="date" value={date} onChange={e=>setDate(e.target.value)}
+                style={{flex:1,background:"rgba(255,255,255,0.05)",border:"1px solid rgba(255,255,255,0.07)",
+                  borderRadius:6,padding:"4px 7px",fontSize:10,color:"rgba(255,255,255,0.6)",
+                  cursor:"pointer",outline:"none",minWidth:0}}/>
+            </div>
+          </div>
+        </div>
+
+        <div style={{height:1,background:"rgba(255,255,255,0.05)",margin:"0 18px"}}/>
+
+        {/* Nav items — flat, no group headers */}
+        <div style={{flex:1,padding:"10px 8px"}}>
+          {OBS_NAV.map(item=>{
+            const isActive=page===item.id;
+            return (
+              <button key={item.id} onClick={()=>setPage(item.id)}
+                className="obs-nav-item"
+                style={{width:"100%",display:"flex",alignItems:"center",gap:9,
+                  padding:"8px 10px",borderRadius:8,
+                  background:isActive?"rgba(255,255,255,0.07)":"none",
+                  border:"none",cursor:"pointer",textAlign:"left",
+                  marginBottom:1,transition:"background 0.12s"}}>
+                <span style={{fontSize:11,
+                  color:isActive?"rgba(255,255,255,0.7)":"rgba(255,255,255,0.25)",
+                  flexShrink:0,width:16,textAlign:"center"}}>{item.icon}</span>
+                <span style={{fontSize:12,fontWeight:isActive?600:400,
+                  color:isActive?"rgba(255,255,255,0.88)":"rgba(255,255,255,0.4)",
+                  letterSpacing:"-0.01em",flex:1}}>
+                  {item.label}
+                </span>
+                {item.id==="monitoring"&&activeAlertCount>0&&(
+                  <span style={{background:"#F87171",color:"#fff",borderRadius:99,
+                    fontSize:9,padding:"1px 5px",fontWeight:700,flexShrink:0}}>
+                    {activeAlertCount}
+                  </span>
+                )}
+                {item.id==="agents"&&agentRunning&&(
+                  <span style={{width:6,height:6,borderRadius:"50%",flexShrink:0,
+                    background:"#8B5CF6",animation:"obs-pulse 1s infinite"}}/>
+                )}
+                {item.id==="agents"&&!agentRunning&&agentState.predictions?.length>0&&(
+                  <span style={{background:"#8B5CF6",color:"#fff",borderRadius:99,
+                    fontSize:9,padding:"1px 5px",fontWeight:700,flexShrink:0}}>
+                    {agentState.predictions.length}
+                  </span>
+                )}
+                {item.id==="admin"&&slackConfig?.enabled&&slackConfig?.webhook&&(
+                  <span style={{width:6,height:6,borderRadius:"50%",
+                    background:"#22C55E",flexShrink:0}}/>
+                )}
+                {isActive&&<div style={{marginLeft:4,width:4,height:4,borderRadius:"50%",
+                  background:T.accent,flexShrink:0}}/>}
+              </button>
+            );
+          })}
+        </div>
+
+        {/* Footer hint */}
+        {Object.keys(sqls).length>0&&(
+          <div style={{padding:"10px 16px 14px",fontSize:9,
+            color:"rgba(255,255,255,0.2)",lineHeight:1.5}}>
+            {Object.keys(sqls).length} custom SQL{Object.keys(sqls).length>1?"s":""}
+          </div>
+        )}
+      </div>
+
+      {/* ── Async error banner ── */}
+      {asyncError&&(
+        <div style={{position:"fixed",bottom:16,right:16,zIndex:999,
+          background:T.surface,border:"1px solid "+T.red+"50",borderRadius:10,
+          boxShadow:"0 8px 32px rgba(0,0,0,0.3)",width:440,overflow:"hidden"}}>
+          <div style={{padding:"10px 14px",background:T.red+"12",
+            borderBottom:"1px solid "+T.red+"20",
+            display:"flex",alignItems:"center",gap:8}}>
+            <span style={{fontSize:13}}>🔴</span>
+            <span style={{fontSize:12,fontWeight:700,color:T.red,flex:1}}>Async Error</span>
+            <button onClick={()=>{
+              navigator.clipboard?.writeText("ERROR: "+asyncError.message+"\n\n"+asyncError.stack);
+            }} style={{background:T.accent,color:"#fff",border:"none",borderRadius:5,
+              padding:"3px 10px",fontSize:10,fontWeight:700,cursor:"pointer"}}>Copy</button>
+            <button onClick={()=>setAsyncError(null)}
+              style={{background:"none",border:"none",cursor:"pointer",color:T.muted,fontSize:16}}>✕</button>
+          </div>
+          <div style={{padding:"10px 14px"}}>
+            <div style={{fontSize:11,color:T.text,fontFamily:"monospace",
+              marginBottom:6,fontWeight:600}}>{asyncError.message}</div>
+            {asyncError.stack&&(
+              <pre style={{margin:0,fontSize:9,color:T.muted,fontFamily:"monospace",
+                whiteSpace:"pre-wrap",maxHeight:120,overflowY:"auto",lineHeight:1.5}}>
+                {asyncError.stack}
+              </pre>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* ── Page content ── */}
+      <div style={{flex:1,overflow:"hidden",display:"flex",flexDirection:"column"}}>
+        {page==="overview"   &&<ObsOverviewPage  date={date} dateFrom={dateFrom} T={T} sqls={sqls} onEditSql={setEditingSql} onKpisLoad={setLiveKpis} liveFailures={liveFailures} predictions={agentState.predictions||[]} incidentSummary={agentState.incidentSummary}/>}
+        {page==="downloads"  &&<ObsDownloadPage  date={date} T={T} sqls={sqls} onEditSql={setEditingSql} agentPredictions={agentState.predictions||[]} agentAnomalies={agentState.anomalies||[]}/>}
+        {page==="quality"    &&<ObsQualityPage   date={date} dateFrom={dateFrom} T={T} sqls={sqls} onEditSql={setEditingSql}/>}
+        {page==="failures"   &&<ObsFailuresPage  date={date} T={T} sqls={sqls} onEditSql={setEditingSql} onDataLoad={setLiveFailures} incidentSummary={agentState.incidentSummary} slackWebhook={slackConfig.webhook}/>}
+        {page==="agents"      &&<ObsAgentsPage
+          agentState={agentState} agentLog={agentLog}
+          agentRunning={agentRunning} nextRun={agentNextRun}
+          onRunNow={runAllAgents} T={T}/>}
+        {page==="replication"&&<ObsComingSoon label="Replication Pipeline" T={T}/>}
+        {page==="monitoring" &&<ObsAlertsPanel
+          slackConfig={slackConfig} setSlackConfig={setSlackConfig}
+          alerts={alerts} updateAlertStatus={updateAlertStatus} T={T}/>}
+        {page==="admin"      &&<ObsSlackSettings
+          config={slackConfig} setConfig={setSlackConfig} T={T}/>}
+      </div>
+
+      {/* SQL contract editor drawer */}
+      {editingSql&&(
+        <ObsSqlEditor
+          contractKey={editingSql}
+          label={editingSql.replace(/_/g," ")}
+          defaultSql={OBS_DEFAULT_SQL[editingSql]||"-- No default for this contract"}
+          savedSql={sqls[editingSql]||""}
+          onSave={sql=>saveSql(editingSql,sql)}
+          onClose={()=>setEditingSql(null)}
+          T={T}
+        />
+      )}
+    </div>
+  );
+}
+
 function SystemHealthTab({ onNavigate }) {
   const T = useT();
   const { items: notifItems, acknowledge, snooze } = React.useContext(NotifCtx);
@@ -28282,11 +30631,14 @@ function SystemHealthTab({ onNavigate }) {
           <div style={{fontSize:11,color:T.muted,marginTop:2}}>
             {wfFails.length} workflow failures · {apFails.length} pipeline issues · {triageIssues.length} triage alerts · {openAlerts.length} unacknowledged notifications (last 24h)
           </div>
+
         </div>
         <div style={{marginLeft:"auto",fontSize:10,color:T.dim}}>
           Updated {new Date().toLocaleTimeString([],{hour:"2-digit",minute:"2-digit"})}
         </div>
       </div>
+
+
 
       {/* KPI row */}
       <div style={{display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:12,marginBottom:24}}>
@@ -28524,7 +30876,7 @@ function SystemHealthTab({ onNavigate }) {
 }
 
 // ── CustomWorkflowsPanel — custom workflows moved into Pipeline Runs ──────────
-function CustomWorkflowsPanel({ onNavigate }) {
+function CustomWorkflowsPanel({ onNavigate, onPin, pinnedIds=[] }) {
   const T = useT();
   const dbSchema = useSchema();
   const [workflows,  setWfs]     = React.useState([]);
@@ -28548,10 +30900,10 @@ function CustomWorkflowsPanel({ onNavigate }) {
 
   const load = async (seed=false) => {
     try {
-      if (seed) await fetch(`${API}/api/custom-workflows/load-from-db`).catch(()=>{});
+      if (seed) await apiFetch(`${API}/api/custom-workflows/load-from-db`).catch(()=>{});
       const [wfsRes, histRes] = await Promise.all([
-        fetch(`${API}/api/custom-workflows`).then(r=>r.json()),
-        fetch(`${API}/api/custom-workflows/history/v2?limit=100`).then(r=>r.json()).catch(()=>[]),
+        apiFetch(`${API}/api/custom-workflows`).then(r=>r.json()),
+        apiFetch(`${API}/api/custom-workflows/history/v2?limit=100`).then(r=>r.json()).catch(()=>[]),
       ]);
       if (Array.isArray(wfsRes)) setWfs(wfsRes);
       if (Array.isArray(histRes)) setHistory(histRes);
@@ -28567,7 +30919,7 @@ function CustomWorkflowsPanel({ onNavigate }) {
   const saveWf = async (wf) => {
     setSaveError(null);
     try {
-      const res  = await fetch(`${API}/api/custom-workflows/save/v2`, {
+      const res  = await apiFetch(`${API}/api/custom-workflows/save/v2`, {
         method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify(wf)
       });
       const data = await res.json();
@@ -28584,7 +30936,7 @@ function CustomWorkflowsPanel({ onNavigate }) {
     if (!wf) return;
     setWfs(p=>p.filter(w=>w.id!==id));
     const undoTimer = setTimeout(async()=>{
-      await fetch(`${API}/api/custom-workflows/${id}`,{method:"DELETE"}).catch(()=>{});
+      await apiFetch(`${API}/api/custom-workflows/${id}`,{method:"DELETE"}).catch(()=>{});
       setUndoQueue(q=>q.filter(u=>u.id!==id));
     },6000);
     setUndoQueue(q=>[...q,{id,wf,timer:undoTimer}]);
@@ -28603,7 +30955,7 @@ function CustomWorkflowsPanel({ onNavigate }) {
     setRunning(p=>({...p,[wf.id]:true}));
     addNotif(`Running: ${wf.name}…`,"run");
     try {
-      const res  = await fetch(`${API}/api/custom-workflows/${wf.id}/run/v2`,{method:"POST"});
+      const res  = await apiFetch(`${API}/api/custom-workflows/${wf.id}/run/v2`,{method:"POST"});
       const data = await res.json();
       if (data.error) { addNotif(`${wf.name}: ${data.error}`,"error",{persistent:true}); }
       else {
@@ -28618,7 +30970,7 @@ function CustomWorkflowsPanel({ onNavigate }) {
 
   const toggleEnabled = async (wf) => {
     const updated = {...wf, enabled:!wf.enabled};
-    await fetch(`${API}/api/custom-workflows/save/v2`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(updated)}).catch(()=>{});
+    await apiFetch(`${API}/api/custom-workflows/save/v2`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(updated)}).catch(()=>{});
     setWfs(p=>p.map(w=>w.id===wf.id?updated:w));
   };
 
@@ -28629,7 +30981,7 @@ function CustomWorkflowsPanel({ onNavigate }) {
     if (!toRun.length) return;
     setBulkRunning(true);
     addNotif(`Running ${toRun.length} workflows…`,"run");
-    await Promise.all(toRun.map(wf=>fetch(`${API}/api/custom-workflows/${wf.id}/run/v2`,{method:"POST"}).catch(()=>{})));
+    await Promise.all(toRun.map(wf=>apiFetch(`${API}/api/custom-workflows/${wf.id}/run/v2`,{method:"POST"}).catch(()=>{})));
     setBulkRunning(false);
     setSelectedWfIds(new Set());
     addNotif(`Bulk run complete`,"success");
@@ -28769,6 +31121,16 @@ function CustomWorkflowsPanel({ onNavigate }) {
                       <Btn onClick={()=>{setEditing(wf);setView("builder");}} size="sm" variant="ghost">✏ Edit</Btn>
                       <Btn onClick={()=>toggleEnabled(wf)} size="sm" variant="muted">{wf.enabled===false?"▶ Enable":"⏸ Pause"}</Btn>
                       <Btn onClick={()=>deleteWf(wf.id)} size="sm" variant="muted"><Trash2 size={10}/></Btn>
+                      {onPin&&(
+                        pinnedIds.includes(wf.id)
+                          ? <Btn size="sm" variant="muted" style={{color:"#f59e0b",fontSize:10}}>
+                              ★ Pinned
+                            </Btn>
+                          : <Btn onClick={()=>onPin(wf)} size="sm" variant="ghost"
+                              style={{fontSize:10}} title="Pin to Critical Workflows">
+                              ☆ Pin as Critical
+                            </Btn>
+                      )}
                     </div>
                   </div>
                 </div>
@@ -28798,7 +31160,7 @@ function CustomWorkflowsPanel({ onNavigate }) {
           if (!nlWfText.trim()||nlWfLoading) return;
           setNlWfLoading(true); setNlWfResult(null);
           try {
-            const r = await fetch(`${API}/api/ai/chat`,{method:"POST",headers:{"Content-Type":"application/json"},
+            const r = await apiFetch(`${API}/api/ai/chat`,{method:"POST",headers:{"Content-Type":"application/json"},
               body:JSON.stringify({
                 system:`You are a workflow builder. Return ONLY JSON workflow object with fields: name, desc, schedule (daily/hourly/weekly), checks (array of {name,sql,pass_condition,severity}). No markdown.`,
                 messages:[{role:"user",content:nlWfText}], max_tokens:600, temperature:0.2
@@ -28850,11 +31212,10 @@ function CustomWorkflowsPanel({ onNavigate }) {
 // ── PipelineRunsTab — merges Dataflows + Scheduler + Custom Workflows ────────
 function PipelineRunsTab({ onNavigate }) {
   const T = useT();
-  const [sub, setSub] = React.useState("dataflows"); // dataflows | scheduler | workflows
+  const [sub, setSub] = React.useState("dataflows"); // dataflows | scheduler
   const SUBS = [
     { id:"dataflows",  label:"Dataflows",  icon:"🗂" },
     { id:"scheduler",  label:"Schedules",  icon:"🕐" },
-    { id:"workflows",  label:"Workflows",  icon:"⚙" },
   ];
   return (
     <div style={{ display:"flex", flexDirection:"column", minHeight:"100%" }}>
@@ -28875,65 +31236,6 @@ function PipelineRunsTab({ onNavigate }) {
       <div style={{ flex:1, overflow:"hidden", display:"flex", flexDirection:"column" }}>
         {sub==="dataflows"  && <DataflowsTab onNavigate={onNavigate}/>}
         {sub==="scheduler"  && <SchedulerTab onNavigate={onNavigate}/>}
-        {sub==="workflows"  && <CustomWorkflowsPanel onNavigate={onNavigate}/>}
-      </div>
-    </div>
-  );
-}
-
-// ── ReportingTab — merges Daily Brief + Results ───────────────────────────────
-function ReportingTab({ onNavigate, proactiveAlerts, setProactiveAlerts, onIssueFound, TC }) {
-  const T = useT();
-  const [sub, setSub] = React.useState("brief"); // brief | results
-  const SUBS = [
-    { id:"brief",   label:"Daily Brief", icon:"⚡" },
-    { id:"results", label:"Results",     icon:"📊" },
-  ];
-  return (
-    <div style={{ display:"flex", flexDirection:"column", minHeight:"100%" }}>
-      {/* Sub-tab bar */}
-      <div style={{ padding:"10px 20px 0", borderBottom:`1px solid ${T.border}`,
-        background:T.surface, display:"flex", gap:0, flexShrink:0 }}>
-        {SUBS.map(s=>(
-          <button key={s.id} onClick={()=>setSub(s.id)}
-            style={{ padding:"8px 20px", border:"none", cursor:"pointer", fontSize:12,
-              fontWeight:sub===s.id?700:400, fontFamily:"inherit",
-              color:sub===s.id?T.accent:T.muted,
-              borderBottom:sub===s.id?`2px solid ${T.accent}`:"2px solid transparent",
-              background:"transparent", transition:"all 0.12s" }}>
-            {s.icon} {s.label}
-          </button>
-        ))}
-      </div>
-      <div style={{ flex:1, overflow:"hidden", display:"flex", flexDirection:"column" }}>
-        {sub==="brief" && (
-          <>
-            {proactiveAlerts.length > 0 && (
-              <div style={{ padding:"8px 20px", background:`${TC.red}08`,
-                borderBottom:`1px solid ${TC.red}20`,
-                display:"flex", gap:10, alignItems:"center", flexWrap:"wrap" }}>
-                <span style={{ fontSize:14 }}>🚨</span>
-                <span style={{ fontSize:11, fontWeight:700, color:TC.red }}>
-                  ✨ {proactiveAlerts.length} anomal{proactiveAlerts.length===1?"y":"ies"} detected today
-                </span>
-                <div style={{ display:"flex", gap:8, flex:1, flexWrap:"wrap" }}>
-                  {proactiveAlerts.map((a,i)=>(
-                    <span key={a.label||i} style={{ fontSize:10, padding:"2px 8px", borderRadius:4,
-                      background:`${TC.red}10`, color:TC.red, border:`1px solid ${TC.red}20` }}>
-                      {a.direction} {a.label}: {a.pct}% {a.direction==="↑"?"above":"below"} avg
-                    </span>
-                  ))}
-                </div>
-                <button onClick={()=>setProactiveAlerts([])}
-                  style={{ background:"none", border:"none", cursor:"pointer",
-                    color:TC.dim, fontSize:16 }}>×</button>
-              </div>
-            )}
-            <AiBriefPanel/>
-            <MorningBriefTab onNavigate={onNavigate} onIssueFound={onIssueFound}/>
-          </>
-        )}
-        {sub==="results" && <ResultsTab onNavigate={onNavigate}/>}
       </div>
     </div>
   );
@@ -28984,7 +31286,7 @@ function ShiftSummaryBanner({ onNavigate }) {
         if (!events.length) { setLoading(false); return; }
 
         // Ask AI to summarise
-        const res = await fetch(`${API}/api/ai/chat`, {
+        const res = await apiFetch(`${API}/api/ai/chat`, {
           method: "POST", headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
             system: "You are a concise ops assistant. Summarise what happened while the user was away in 1-2 punchy sentences. Lead with the most important thing. Be specific.",
@@ -29084,7 +31386,7 @@ export default function WiziAgentApp() {
 
   React.useEffect(() => {
     const SHORTCUT_MAP = {
-      "1":"brief", "2":"triage", "3":"workflows", "4":"dataflows",
+      "1":"triage", "O":"observability", "2":"triage", "3":"workflows", "4":"dataflows",
       "5":"config", "6":"query", "7":"results", "8":"scheduler",
       "9":"demo", "a":"autopilot",
     };
@@ -29163,7 +31465,7 @@ export default function WiziAgentApp() {
   React.useEffect(() => {
     const poll = async () => {
       try {
-        const res  = await fetch(`${API}/api/workflow/history`);
+        const res  = await apiFetch(`${API}/api/custom-workflows/history`);
         const data = await res.json();
         if (!Array.isArray(data)) return;
         const active = data.find(r => r.status === "running");
@@ -29171,7 +31473,7 @@ export default function WiziAgentApp() {
           setGlobalStatus({ type:"running", message:`Workflow running: ${active.name||active.run_id}`, runId:active.run_id });
         } else {
           // Check custom workflow history too
-          const res2 = await fetch(`${API}/api/custom-workflows/history`);
+          const res2 = await apiFetch(`${API}/api/custom-workflows/history`);
           const data2 = await res2.json();
           if (Array.isArray(data2)) {
             const active2 = data2.find(r => r.status === "running");
@@ -29191,7 +31493,7 @@ export default function WiziAgentApp() {
 
   // Fetch live schema once on mount — used by all AI system prompts
   React.useEffect(() => {
-    fetch(`${API}/api/schema`)
+    apiFetch(`${API}/api/schema`)
       .then(r => r.json())
       .then(data => {
         if (Array.isArray(data)) {
@@ -29255,7 +31557,7 @@ export default function WiziAgentApp() {
   React.useEffect(() => {
     const poll = async () => {
       try {
-        const r = await fetch(`${API}/api/anomaly/proactive`);
+        const r = await apiFetch(`${API}/api/anomaly/proactive`);
         const d = await r.json();
         const alerts = d.alerts || [];
         setProactiveAlerts(alerts);
@@ -29305,7 +31607,6 @@ export default function WiziAgentApp() {
         <main style={{
           flex:1, overflowX:"hidden", overflowY:"auto", minWidth:0, position:"relative",
           background:TC.bg,
-          contain:"style paint",
           backgroundImage: T.wallpaper ? `url("data:image/svg+xml;base64,${T.wallpaper}")` : "none",
           backgroundRepeat: "no-repeat",
           backgroundPosition: "top right",
@@ -29379,11 +31680,11 @@ export default function WiziAgentApp() {
           {/* Shift summary — shows after 30+ min away */}
           <ShiftSummaryBanner onNavigate={navigateTo}/>
 
-          {activeTab==="reporting" && <ErrorBoundary key="reporting"><ReportingTab onNavigate={navigateTo} proactiveAlerts={proactiveAlerts} setProactiveAlerts={setProactiveAlerts} onIssueFound={setIssues} TC={TC}/></ErrorBoundary>}
+          {activeTab==="results"    && <ErrorBoundary key="results"><ResultsTab onNavigate={navigateTo}/></ErrorBoundary>}
+          {activeTab==="observability" && <ErrorBoundary key="observability"><DataObservabilityTab onNavigate={navigateTo}/></ErrorBoundary>}
           {activeTab==="triage"       && <ErrorBoundary key="triage"><TriageTab initialIssues={issues}/></ErrorBoundary>}
           {activeTab==="workflows"    && <ErrorBoundary key="workflows"><WorkflowsTab navigateTo={navigateTo}/></ErrorBoundary>}
           {activeTab==="pipeline-runs"&& <ErrorBoundary key="pipeline-runs"><PipelineRunsTab onNavigate={navigateTo}/></ErrorBoundary>}
-          {activeTab==="data-ingestion" && <ErrorBoundary key="data-ingestion"><DataIngestionTab onNavigate={navigateTo}/></ErrorBoundary>}
           {activeTab==="health"       && <ErrorBoundary key="health"><SystemHealthTab onNavigate={navigateTo}/></ErrorBoundary>}
           {activeTab==="config"       && <ErrorBoundary key="config"><ConfigureTab/></ErrorBoundary>}
           {activeTab==="query"        && <ErrorBoundary key="query"><QueryTab/></ErrorBoundary>}
